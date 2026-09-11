@@ -43,11 +43,13 @@ watch:
 check:
     cargo check --manifest-path {{MANIFEST}} --all-targets
 
+# 注意：cargo fmt 在仓库根会因"找不到 Cargo.toml"而失败，必须显式指定 manifest。
+# 这正是 ADR-0001 决策一想消掉的那类问题（见该 ADR §2.1）。
 fmt:
-    cargo fmt --all
+    cargo fmt --manifest-path {{MANIFEST}} --all
 
 fmt-check:
-    cargo fmt --all -- --check
+    cargo fmt --manifest-path {{MANIFEST}} --all -- --check
 
 # DoD 第一项：必须全绿
 lint:
@@ -84,4 +86,6 @@ gen-types:
 
 # ── 提交前 ──────────────────────────────────────────────────────────────────
 
-precommit: fmt-check lint test
+# 可执行的 DoD（AGENTS.md §7）。能在命令里表达的验收标准，就不要写成散文。
+# gen-types 漂移检查在 tauri-specta 接入后加入（ROADMAP 阶段 3）。
+ready: fmt-check lint test deny-offline
