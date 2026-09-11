@@ -315,7 +315,11 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 | `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |
 | `just gen-types` | Rust command/event → `src/ipc/bindings.ts`（待接入 tauri-specta） | 转发 |
 | `just lint` | clippy（crate 级）+ ast-grep scan（仓库级） | 根组合 |
-| `just ready` | **可执行的 DoD**：fmt-check + lint + test + deny-offline + docs-check | 根组合 |
+| `just ready` | **可执行的 DoD**（安静聚合，失败才倾倒）：fmt-check + lint + test + deny-offline + docs-check | 根组合 |
 | `just docs-check` | 校验本表与 justfile 未漂移 | 根 |
 
 在 `src-tauri/` 目录里直接跑 `just check` 同样可用（just 就近取 justfile）。
+
+**人类快速上手**（任务视角、典型工作流、排错）见 [`docs/just.md`](./docs/just.md)。
+本表与那份文档都由 `just docs-check` 校验：本表必须覆盖**全部**配方；
+`docs/just.md` 可以只提一部分，但它提到的每个命令都必须真实存在。
