@@ -169,7 +169,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 ## 6. 结构护栏（ast-grep 从"搜索"升级为"约束执行"）
 
 - 配置：根目录 `sgconfig.yml`，规则目录 `.ast-grep/rules/`。
-- `just lint` 包含 `ast-grep scan`；pre-commit 与 CI 都跑。
+- `just lint` 包含 `ast-grep scan`；本地与 CI 都跑（CI 见 `.github/workflows/ci.yml`）。
 - **规则与它守护的代码同 PR 落地**：规则先红、代码补上后转绿。
 - 计划的规则清单（按需逐条添加）：
 
@@ -201,7 +201,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 ### DoD：一条命令 + 两件机器查不了的事
 
 ```bash
-just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + deny-offline
+just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + deny-offline + docs-check
 ```
 
 `just ready` 就是**可执行的 DoD**。能在命令里表达的验收标准，不要写成散文 ——
@@ -250,7 +250,7 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 
 - 约定式提交：`feat|fix|refactor|perf|test|docs|chore|build(scope): 摘要`。
 - 一个提交一件事；**规范文件、CI、格式化等大范围改动单独提交**。
-- 提交前跑 `just ready`（fmt-check + lint + test + deny-offline）—— 见 §7。
+- 提交前跑 `just ready`（fmt-check + lint + test + deny-offline + docs-check）—— 见 §7。
 - 不要提交：`node_modules/`、`dist/`、`target/`、生成的 `gen/schemas`。
 - **要提交**：`Cargo.lock` / `pnpm-lock.yaml`（这是应用不是库，锁文件必须进仓库）。
 - 大文件（图标除外）不进 git。
@@ -279,3 +279,43 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 
 > **当前装了什么、哪些门禁是绿的、还剩哪些待办 —— 见 [`docs/STATUS.md`](./docs/STATUS.md)。**
 > 状态不写在本文件里（见 §8）。
+
+---
+
+## 11. 命令表（justfile 是唯一入口）
+
+**命令体只写一处**，按归属分两个文件：
+
+- **项目级**（dev / lint / ready / 环境检查）→ 根 `justfile`
+- **crate 级**（cargo / nextest / bacon / cargo-deny）→ `src-tauri/justfile`
+  —— just 用 **justfile 所在目录**作为配方工作目录，所以那里 `cargo check` 天然找得到
+  manifest，**不需要任何 `--manifest-path`**
+- 根 `justfile` 对 crate 级命令**只做转发**，不复制命令体
+
+> ⚠️ **本表由 `just docs-check` 校验，且已纳入 CI。** 任何新增或改名的配方若没同步到本表，
+> 门禁直接失败。设立它的原因很具体：agent 最容易犯的错就是照着一份**过期的规则**
+> 去用一个已经不存在的旧命令，而这类错误在类型检查里看不出来。
+
+| 命令 | 作用 | 归属 |
+|---|---|---|
+| `just dev` | 常驻开发主控：前端 HMR + Rust 改动自动重编译并重启 app | 根 |
+| `just dev-web` | 只跑前端，配合 mockIPC 在浏览器里迭代 UI | 根 |
+| `just tools` | 按 `mise.toml` 装齐全局 CLI 工具 | 根 |
+| `just tools-ls` | 查看工具版本与来源 | 根 |
+| `just syscheck` | 系统库前置检查（缺 webkit2gtk 时提前报错，别等构建脚本） | 根 |
+| `just doctor` | 确认 Victauri 连到的是 akasha 而不是别的实例 | 根 |
+| `just check` | 类型检查（含 tests / benches） | 转发 |
+| `just clippy` | clippy，警告即错误 | 转发 |
+| `just fmt` | rustfmt 格式化 | 转发 |
+| `just fmt-check` | rustfmt 检查，不改文件 | 转发 |
+| `just watch` | bacon 秒级反馈循环，不启动 app | 转发 |
+| `just test` | 单元测试（cargo-nextest） | 转发 |
+| `just test-e2e` | E2E，需要 app 正在运行 | 转发 |
+| `just deny` | 许可证 + 漏洞 + 来源门禁（advisories 需联网） | 转发 |
+| `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |
+| `just gen-types` | Rust command/event → `src/ipc/bindings.ts`（待接入 tauri-specta） | 转发 |
+| `just lint` | clippy（crate 级）+ ast-grep scan（仓库级） | 根组合 |
+| `just ready` | **可执行的 DoD**：fmt-check + lint + test + deny-offline + docs-check | 根组合 |
+| `just docs-check` | 校验本表与 justfile 未漂移 | 根 |
+
+在 `src-tauri/` 目录里直接跑 `just check` 同样可用（just 就近取 justfile）。
