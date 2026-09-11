@@ -1,0 +1,61 @@
+# src-tauri 的 crate 级命令。
+#
+# 为什么放在这里：just 用 **justfile 所在目录**作为配方的工作目录，
+# 所以在 src-tauri/ 下 `cargo check` 天然能找到 manifest ——
+# 不需要任何 `--manifest-path` 参数（这正是把它们从仓库根搬下来的原因）。
+# 附带好处：`cd src-tauri && just check` 单独也能用。
+#
+# 项目级命令（dev / lint / ready / tools / syscheck）在根 justfile，
+# 它对本文件的配方只做**转发**，命令体永远只有一处。
+
+set shell := ["bash", "-uc"]
+
+default:
+    @just --list
+
+# ── 编译与检查 ──────────────────────────────────────────────────────────────
+
+# 类型检查（含 tests / benches）
+check:
+    cargo check --all-targets
+
+# clippy，警告即错误
+clippy:
+    cargo clippy --all-targets -- -D warnings
+
+fmt:
+    cargo fmt --all
+
+fmt-check:
+    cargo fmt --all -- --check
+
+# Rust 秒级反馈循环，全程不启动 app —— 改纯逻辑时用这个
+watch:
+    bacon clippy
+
+# ── 测试 ────────────────────────────────────────────────────────────────────
+
+# 单元测试。smoke / integration 在没有 VICTAURI_E2E 时会自行跳过
+test:
+    cargo nextest run
+
+# E2E：需要 app 正在运行（根目录 `just dev`）。
+# 用 cargo test 而非 nextest —— 这些用例要求串行且依赖真实 app 进程。
+test-e2e:
+    VICTAURI_E2E=1 cargo test --test smoke --test integration -- --test-threads=1
+
+# ── 依赖门禁 ────────────────────────────────────────────────────────────────
+
+# 许可证 + 漏洞 + 来源。advisories 需要联网拉 RustSec 数据库
+deny:
+    cargo deny --config deny.toml check
+
+# 同上但跳过需要联网的 advisories，离线可用
+deny-offline:
+    cargo deny --config deny.toml check licenses bans sources
+
+# ── 类型边界 ────────────────────────────────────────────────────────────────
+
+# Rust command/event → src/ipc/bindings.ts。改过 IPC 就必须跑并提交产物
+gen-types:
+    @echo "TODO: 接入 tauri-specta 后启用（见 AGENTS.md §5）"

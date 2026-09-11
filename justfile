@@ -1,16 +1,22 @@
-# akasha — 唯一命令入口。规则文件只引用这里的配方，不要另写一套命令。
-# 依赖：just / bacon / cargo-nextest / cargo-deny / sccache（已安装，见 AGENTS.md §10）。
+# akasha — 项目级命令入口。
+#
+# 分工（详见 AGENTS.md §11）：
+#   * crate 级命令住在 src-tauri/justfile（那里 cwd 天然正确，无需 --manifest-path）
+#   * 本文件放项目级命令，并对 crate 级命令**只做转发**
+#   * 命令体永远只有一处，不复制 —— 复制出来的第二份必然漂移
+#
+# 依赖：just / bacon / cargo-nextest / cargo-deny / sccache（见 mise.toml、AGENTS.md §10）
 
 set shell := ["bash", "-uc"]
 
-MANIFEST := "src-tauri/Cargo.toml"
+SRC := "src-tauri"
 
 default:
     @just --list
 
 # ── 环境 ────────────────────────────────────────────────────────────────────
 
-# 按 mise.toml 装齐全局 CLI 工具（这些不是 Cargo.toml 依赖，见 AGENTS.md §10）
+# 按 mise.toml 装齐全局 CLI 工具（这些不是 Cargo.toml 依赖）
 tools:
     mise install
 
@@ -18,74 +24,83 @@ tools:
 tools-ls:
     @mise ls
 
-# 系统库前置检查（Arch 系：webkit2gtk-4.1 缺失会让 cargo 在构建脚本阶段才失败）。
-# 刻意不用 shebang 配方 —— 那要求 just 能写 runtime dir，在受限/CI 环境里会无谓失败。
+# 系统库前置检查（Arch 系缺 webkit2gtk-4.1 时，cargo 要到构建脚本阶段才报错）
 syscheck:
     @for p in webkit2gtk-4.1 javascriptcoregtk-4.1 gtk+-3.0 librsvg-2.0; do pkg-config --exists "$p" && echo "✅ $p $(pkg-config --modversion "$p")" || { echo "❌ $p 缺失 → Arch 系: sudo pacman -S webkit2gtk-4.1"; exit 1; }; done
-
-# ── 开发循环 ────────────────────────────────────────────────────────────────
-
-# 常驻开发主控：前端 HMR；Rust 改动自动增量重编译 + 重启 app。
-# 只需启动一次，不要每次手动重跑（AGENTS.md §1）。
-dev:
-    pnpm tauri dev
-
-# 只跑前端：不启动 app，配合 mockIPC 在浏览器里迭代 UI。
-dev-web:
-    pnpm dev
-
-# Rust 秒级反馈循环，全程不启动 app。修纯逻辑时用这个，别等 app 重启。
-watch:
-    bacon clippy
-
-# ── 质量门禁 ────────────────────────────────────────────────────────────────
-
-check:
-    cargo check --manifest-path {{MANIFEST}} --all-targets
-
-# 注意：cargo fmt 在仓库根会因"找不到 Cargo.toml"而失败，必须显式指定 manifest。
-# 这正是 ADR-0001 决策一想消掉的那类问题（见该 ADR §2.1）。
-fmt:
-    cargo fmt --manifest-path {{MANIFEST}} --all
-
-fmt-check:
-    cargo fmt --manifest-path {{MANIFEST}} --all -- --check
-
-# DoD 第一项：必须全绿
-lint:
-    cargo clippy --manifest-path {{MANIFEST}} --all-targets -- -D warnings
-    ast-grep scan
-
-# 单元测试：纯 crate 不启动 app
-test:
-    cargo nextest run --manifest-path {{MANIFEST}}
-
-# 依赖门禁：许可证 + 漏洞 + 来源。配置在 src-tauri/deny.toml。
-# advisories 需要联网拉取 RustSec 数据库。
-deny:
-    cargo deny --manifest-path {{MANIFEST}} --config src-tauri/deny.toml check
-
-# 同上但跳过需要联网的 advisories（离线可用）
-deny-offline:
-    cargo deny --manifest-path {{MANIFEST}} --config src-tauri/deny.toml check licenses bans sources
-
-# E2E：需要 app 正在运行（just dev）。
-# 用 cargo test 而非 nextest —— 这些用例要求串行且依赖真实 app 进程。
-test-e2e:
-    VICTAURI_E2E=1 cargo test --manifest-path {{MANIFEST}} --test smoke --test integration -- --test-threads=1
 
 # 连接检查：确认连到的是 akasha，而不是别的 Victauri app
 doctor:
     victauri doctor
 
-# ── 类型边界 ────────────────────────────────────────────────────────────────
+# ── 开发循环 ────────────────────────────────────────────────────────────────
 
-# Rust command/event → src/ipc/bindings.ts。改过 IPC 就必须跑，并提交产物。
+# 常驻开发主控：前端 HMR；Rust 改动自动增量重编译 + 重启 app。只需启动一次
+dev:
+    pnpm tauri dev
+
+# 只跑前端：不启动 app，配合 mockIPC 在浏览器里迭代 UI
+dev-web:
+    pnpm dev
+
+# ── crate 级命令（转发到 src-tauri/justfile）─────────────────────────────────
+
+# 类型检查（含 tests / benches）
+check:
+    just --justfile {{SRC}}/justfile check
+
+# clippy，警告即错误
+clippy:
+    just --justfile {{SRC}}/justfile clippy
+
+fmt:
+    just --justfile {{SRC}}/justfile fmt
+
+fmt-check:
+    just --justfile {{SRC}}/justfile fmt-check
+
+# Rust 秒级反馈循环（bacon），不启动 app
+watch:
+    just --justfile {{SRC}}/justfile watch
+
+# 单元测试（cargo-nextest）
+test:
+    just --justfile {{SRC}}/justfile test
+
+# E2E：需要 app 正在运行（`just dev`）
+test-e2e:
+    just --justfile {{SRC}}/justfile test-e2e
+
+# 依赖门禁：许可证 + 漏洞 + 来源（advisories 需联网）
+deny:
+    just --justfile {{SRC}}/justfile deny
+
+# 依赖门禁，跳过需要联网的 advisories
+deny-offline:
+    just --justfile {{SRC}}/justfile deny-offline
+
+# Rust command/event → src/ipc/bindings.ts
 gen-types:
-    @echo "TODO: 接入 tauri-specta 后启用（见 AGENTS.md §5）"
+    just --justfile {{SRC}}/justfile gen-types
 
-# ── 提交前 ──────────────────────────────────────────────────────────────────
+# ── 组合门禁（跨越根与 crate，所以只能在根定义）──────────────────────────────
 
-# 可执行的 DoD（AGENTS.md §7）。能在命令里表达的验收标准，就不要写成散文。
-# gen-types 漂移检查在 tauri-specta 接入后加入（ROADMAP 阶段 3）。
-ready: fmt-check lint test deny-offline
+# lint = clippy（crate 级）+ ast-grep scan（仓库级，读根 sgconfig.yml）
+lint:
+    just clippy
+    ast-grep scan
+
+# 可执行的 DoD（AGENTS.md §7）：提交前跑这一个。
+# 含 docs-check —— 命令表一旦与 justfile 漂移就当场失败，避免 agent 用过期命令。
+ready: fmt-check lint test deny-offline docs-check
+
+# 校验 AGENTS.md §11 的命令表没有与 justfile 漂移 ——
+# 防止 agent 照着一份过期的规则去用已经不存在的旧命令。
+docs-check:
+    @miss=0; \
+    recipes=$( { just --summary; just --justfile {{SRC}}/justfile --summary; } | tr ' ' '\n' | sort -u ); \
+    for r in $recipes; do \
+      if [ "$r" = "default" ]; then continue; fi; \
+      if ! grep -qF "\`just $r\`" AGENTS.md; then echo "❌ AGENTS.md §11 未记录: just $r"; miss=1; fi; \
+    done; \
+    if [ "$miss" = "1" ]; then echo "→ 请更新 AGENTS.md §11 的命令表"; exit 1; fi; \
+    echo "✅ AGENTS.md §11 命令表与 justfile 同步"
