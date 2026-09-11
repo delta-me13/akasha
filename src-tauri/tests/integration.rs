@@ -16,11 +16,15 @@ fn skip_unless_e2e() -> bool {
 
 #[tokio::test]
 async fn full_stack_health_check() {
-    if skip_unless_e2e() { return; }
-    let mut client = VictauriClient::discover().await
+    if skip_unless_e2e() {
+        return;
+    }
+    let mut client = VictauriClient::discover()
+        .await
         .expect("Failed to connect — is your Tauri dev server running?");
 
-    let report = client.verify()
+    let report = client
+        .verify()
         .ipc_healthy()
         .no_console_errors()
         .run()
@@ -36,7 +40,9 @@ async fn full_stack_health_check() {
 
 #[tokio::test]
 async fn command_greet() {
-    if skip_unless_e2e() { return; }
+    if skip_unless_e2e() {
+        return;
+    }
     let mut client = VictauriClient::discover().await.unwrap();
 
     let result = client.invoke_command("greet", None).await;
@@ -46,4 +52,3 @@ async fn command_greet() {
         result.err()
     );
 }
-
