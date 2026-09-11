@@ -23,10 +23,20 @@
 | 依赖已就位：`portable-pty 0.9.0`、`vte 0.15.0`、`tauri-specta 2.0.0-rc.25`、`insta`、`criterion` | `src-tauri/Cargo.toml` |
 | **项目当前无法编译** | `just check` 退出码 101；`javascriptcore-rs-sys` 构建脚本报 `Package 'javascriptcoregtk-4.1' was not found`（缺 `webkit2gtk-4.1` 系统库） |
 | **CI workflow 当前是坏的** | `.github/workflows/victauri.yml` 在仓库根执行 `cargo build` 与 `cargo metadata`，但根目录没有 `Cargo.toml` |
-| `cargo deny init` 无法执行 | 报 `the directory ... doesn't contain a Cargo.toml file` |
+| ~~`cargo deny init` 无法执行~~ **已更正** | 报缺少 `Cargo.toml`；但**实测在 `src-tauri/` 中执行退出码 0**，正常生成 `deny.toml`。它只要求"当前目录含 `Cargo.toml`"，见 §2.1 |
+| 项目已可编译，质量门禁全绿 | `just check` / `just lint` / `just deny-offline` 均退出码 0（装好 `webkit2gtk-4.1 2.52.6` 后复测） |
 
-事实 3 意味着：**本 ADR 的验证工作必须先装 `webkit2gtk-4.1` 才能完成**。
-事实 4、5 说明"仓库根没有 manifest"已经开始造成实际损失，而不只是风格问题。
+### 2.1 更正：cargo-deny **不是**支持决策一的论据
+
+初稿把"`cargo deny init` 在仓库根失败"当作采纳根 workspace 的证据，**这是错的**。
+
+实测：`cd src-tauri && cargo deny init` 退出码 0，正常生成 `deny.toml`（之后已替换为
+一份显式白名单配置，因为模板里 `[licenses] allow = []` 的含义是**拒绝一切许可证**）。
+它要求的只是"当前目录含 `Cargo.toml`"——`src-tauri/` 正是如此。
+
+因此决策一的理由中，涉及工具可用性的部分**只有 CI 那一条是真实存在的**；
+而 CI 同样可以通过改 workflow（加 `--manifest-path`、写死 bin 名）解决。
+决策一必须靠下面的结构性理由支撑，不能靠"顺手修好某个工具"。
 
 ### 1.2 待解决的问题
 
@@ -59,13 +69,15 @@ unwrap_used = "warn"
 | 选项 | 描述 | 评价 |
 |---|---|---|
 | **A. 根 workspace** | `members = ["src-tauri", "crates/*"]` | ✅ 采纳 |
-| B. `src-tauri/crates/` | 保持 `src-tauri` 为包根，crates 嵌在其下 | 目标目录不动、CI 不用改，但 `cargo deny init` / 根级工具仍不可用；crates 名义上"与 Tauri 无关"却住在 `src-tauri/` 下，边界含糊 |
+| B. `src-tauri/crates/` | 保持 `src-tauri` 为包根，crates 嵌在其下 | 不动 target 路径、不动 CI（这两点比初稿说的更有分量）；代价是共享增量缓存、跨 crate 统一 lint、`cargo test --workspace` 都拿不到，且 crates 名义上"与 Tauri 无关"却住在 `src-tauri/` 下 |
 
 ### 选择 A 的理由
 
-1. **顺带修好 CI 与 cargo-deny**：根目录有 manifest 后，workflow 的 `cargo build`
-   与 `cargo metadata` 才成立，`cargo deny init` 才能跑。这不是副产品，是当前阻塞项。
+1. **CI 是真实存在的问题**（workflow 在根跑 `cargo build`，根目录没有 manifest）——
+   但必须说明：**这一点两种方案都能修**（B 可以改 workflow 加 `--manifest-path`），
+   所以它是"要么改这里、要么改那里"，不是 A 独有优势。见 §2.1 的更正。
 2. **单一 target 目录**：`crates/*` 与 `src-tauri` 共享增量缓存，避免两份编译产物。
+   对这个"编译速度即迭代速度"的项目，这是最实质的理由。
 3. **单一 lint 配置点**：`[workspace.lints]` 让 clippy 档位只在一个地方定义。
 4. **命令入口统一**：`just check` / `just test` 可以在根目录一条命令覆盖全部 crate，
    bacon、nextest 同理。
@@ -219,7 +231,8 @@ pub trait PtySession: Send + Sync {
 
 - 纯逻辑（PTY 生命周期、写路径、合批）可在**不启动 app** 的前提下编译与测试，
   直接对应 `AGENTS.md` §1 的迭代速度目标。
-- 根 workspace 同时修好 CI 与 `cargo deny init` 两个当前阻塞项。
+- 共享单一 target 目录，且 `cargo test --workspace` / bacon / nextest 在根目录一条命令覆盖全部 crate。
+  （*更正*：初稿此处写"同时修好 CI 与 `cargo deny init`"——cargo-deny 部分是错的，见 §2.1。）
 - PTY 后端可替换（`FakePty` 用于单测，`portable-pty` 用于真实运行），
   E2E 不必是唯一验证手段。
 
@@ -236,8 +249,9 @@ pub trait PtySession: Send + Sync {
 - `AGENTS.md` §3.1（分层图去掉 `akasha-vt`，或标注为"未来"）
 - 根 `.gitignore`（`/target/`）、删除 `src-tauri/.gitignore` 中的 `/target/`
 - `justfile`（`MANIFEST` → `--workspace`）
+- `src-tauri/deny.toml` → 根 `deny.toml`（cargo-deny 按 cwd 发现配置；`just deny` 的 `--config` 路径同步）
 - `.github/workflows/victauri.yml`（bin 名写死，加 `ast-grep scan` / `cargo deny check`）
-- commits：`Cargo.lock`、`deny.toml`
+- commits：`Cargo.lock`（移到根）、`deny.toml`
 
 ---
 
