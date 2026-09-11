@@ -126,23 +126,26 @@ ready:
     echo "✅ just ready 全绿（$ok/$total）"
 
 # 校验文档里的命令与实际 justfile 未漂移，防止照着一份过期规则去用已不存在的旧命令。
-#   * AGENTS.md §11 必须覆盖**全部**配方（正向 —— 新增配方不能不记录）
-#   * docs/just.md 可以只提一部分，但它提到的每个命令必须真实存在（反向 —— 防过期）
+#   * docs/just.md §2 是**权威清单**：必须覆盖**全部**配方（正向，且**只认 §2 表格内的记录**）
+#   * AGENTS.md / docs/just.md 可以只提一部分，但提到的每个命令必须真实存在（反向）
 #
-# 坑：这里刻意不用反引号做锚点。grep -E 里写反斜杠转义的反引号时，匹配结果里
-# 反引号本身会被吞掉，于是后续 sed 剥不掉 "just " 前缀，提取出的名字全带前缀。
-# 用「just <名> + 右侧边界」来判定，既躲开这个坑，也不依赖 markdown 写法。
+# 两个坑都踩过，写在这里免得重蹈：
+#   1. 反斜杠转义的反引号在 grep -E 里会把反引号本身吞掉，于是 sed 剥不掉 "just " 前缀。
+#      改用「just <名> + 右侧边界」判定，不依赖 markdown 写法。
+#   2. 正向检查若不限定在 §2 表格内就形同虚设 —— 某条命令可能只在排错段落里被顺带提及，
+#      而表格里其实已经删掉了。所以用 awk 取出 §2 段落，只在那里面找。
 docs-check:
     @miss=0; \
     recipes=$( { just --summary; just --justfile {{SRC}}/justfile --summary; } | tr ' ' '\n' | sort -u ); \
+    sec2=$(awk '/^## 2\. /{f=1} /^## 3\. /{f=0} f' docs/just.md); \
     for r in $recipes; do \
       if [ "$r" = "default" ]; then continue; fi; \
-      grep -qE "just $r([^a-z0-9-]|$)" AGENTS.md || { echo "❌ AGENTS.md §11 未记录: just $r"; miss=1; }; \
+      printf '%s\n' "$sec2" | grep -qE "just $r([^a-z0-9-]|$)" || { echo "❌ docs/just.md §2 表格未记录: just $r"; miss=1; }; \
     done; \
-    if [ -f docs/just.md ]; then \
-      for m in $(grep -oE "just [a-z][a-z0-9-]*" docs/just.md | sed 's/^just //' | sort -u); do \
-        printf '%s\n' "$recipes" | grep -qx "$m" || { echo "❌ docs/just.md 提到了不存在的配方: just $m"; miss=1; }; \
+    for f in AGENTS.md docs/just.md; do \
+      for m in $(grep -oE "just [a-z][a-z0-9-]*" $f | sed 's/^just //' | sort -u); do \
+        printf '%s\n' "$recipes" | grep -qx "$m" || { echo "❌ $f 提到了不存在的配方: just $m"; miss=1; }; \
       done; \
-    fi; \
-    if [ "$miss" = "1" ]; then echo "→ 请更新 AGENTS.md §11 与 docs/just.md"; exit 1; fi; \
-    echo "✅ 文档命令与 justfile 同步（AGENTS.md §11 + docs/just.md）"
+    done; \
+    if [ "$miss" = "1" ]; then echo "→ 请同步 docs/just.md §2 与 AGENTS.md"; exit 1; fi; \
+    echo "✅ 文档命令与 justfile 同步（权威清单 docs/just.md §2）"

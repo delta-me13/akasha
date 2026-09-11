@@ -15,25 +15,36 @@
 | 提交前 | `just ready` | 一条命令跑完全部门禁 |
 | 忘了有啥 | `just --list` | 列出全部配方及其一句话说明 |
 
-## 2. 按「我想做什么」查
+## 2. 全部命令（权威清单）
 
-| 我想… | 命令 |
-|---|---|
-| 只看类型能不能过（不链接） | `just check` |
-| 看 lint 问题 | `just lint` |
-| 单独跑 clippy | `just clippy` |
-| 格式化代码 | `just fmt` |
-| 只检查格式、不改文件 | `just fmt-check` |
-| 跑单元测试 | `just test` |
-| 跑需要真实 app 的 E2E | `just test-e2e`（先 `just dev`） |
-| 检查依赖的许可证 / 漏洞 / 来源 | `just deny`（需联网） |
-| 同上但离线 | `just deny-offline` |
-| 确认 Victauri 连的是本项目 | `just doctor` |
-| 检查系统库是否齐 | `just syscheck` |
-| 装齐全局 CLI 工具 | `just tools` |
-| 看工具版本与来源 | `just tools-ls` |
-| 重新生成前端类型 | `just gen-types`（待接入 tauri-specta） |
-| 校验文档命令没写错 | `just docs-check` |
+> **这是全部配方的权威清单。** 由 `just docs-check` 强制保证：**每个配方都必须出现在下面这张表里**
+> （只认这张表，不认别处的顺带提及），且本文与 `AGENTS.md` 提到的每个命令都必须真实存在。
+> `AGENTS.md` §11 只讲归属原则，不再重复这张表。
+
+「归属」列的含义：**根** = 直接实现在根 `justfile`；**转发** = 实现在 `src-tauri/justfile`、
+根只转发；**根组合** = 跨根与 crate 的组合，只能在根定义。
+
+| 命令 | 作用 | 归属 |
+|---|---|---|
+| `just dev` | 起 app：前端 HMR + Rust 改动自动重编译并重启。**起一次就别关** | 根 |
+| `just dev-web` | 只跑前端，不启动 app（浏览器里迭代界面） | 根 |
+| `just watch` | bacon 秒级反馈循环，不启动 app —— 改纯逻辑时最快 | 转发 |
+| `just ready` | **提交前跑这一个**：全部门禁（安静聚合，失败才倾倒） | 根组合 |
+| `just check` | 类型检查（含 tests / benches） | 转发 |
+| `just clippy` | clippy，警告即错误 | 转发 |
+| `just lint` | clippy + `ast-grep scan`（结构性护栏） | 根组合 |
+| `just fmt` | rustfmt 格式化 | 转发 |
+| `just fmt-check` | 只检查格式，不改文件 | 转发 |
+| `just test` | 单元测试（cargo-nextest） | 转发 |
+| `just test-e2e` | E2E，需要 app 正在运行（先 `just dev`） | 转发 |
+| `just deny` | 依赖门禁：许可证 / 漏洞 / 来源（需联网） | 转发 |
+| `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |
+| `just gen-types` | Rust command/event → `src/ipc/bindings.ts`（待接入 tauri-specta） | 转发 |
+| `just doctor` | 确认 Victauri 连的是本项目，而不是别的实例 | 根 |
+| `just syscheck` | 检查系统库是否齐（缺 webkit2gtk 会提前报错） | 根 |
+| `just tools` | 按 `mise.toml` 装齐全局 CLI 工具 | 根 |
+| `just tools-ls` | 看工具版本与来源 | 根 |
+| `just docs-check` | 校验本文与 `AGENTS.md` 的命令没和 justfile 漂移 | 根 |
 
 ## 3. 两个 justfile 是什么关系
 
