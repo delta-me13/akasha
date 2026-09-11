@@ -8,13 +8,19 @@
 
 ## 一句话
 
-地基阶段收尾：项目可编译、`just ready` 全绿、CI 已重写完成；**CI 的真实验证要等首次推送**；
-ADR-0001 待拍板。
-**产品范围已扩大且仍在明确期** —— 三后端（local/ssh/serial）+ SFTP + 四套配置池 +
-Bitwarden + **SSH 端口转发 + 常驻系统托盘**，见 [`docs/scope.md`](./scope.md)。
-范围已记录，阶段划分与 ADR **尚未动**，实现上仍按 plan-0001 推进。
-两条定位性约束：**可搬迁**（搬走 bin 文件夹仍能开）与**不依赖 OS 组件**
-（webview 及依赖栈的写入已由用户豁免，见 `scope.md` §1.1）。
+地基阶段收尾：项目可编译、`just ready` 全绿、CI 已重写完成；**CI 的真实验证要等首次推送**。
+
+**范围与文档已同步完毕，可以开工。** 产品范围为三后端（local/ssh/serial）+ SFTP +
+四套配置池 + Bitwarden + SSH 端口转发（L/R/D）+ 常驻托盘，见
+[`docs/scope.md`](./scope.md)。阶段划分已按新范围重写（[`ROADMAP.md`](../ROADMAP.md)，
+10 个阶段，**CI 平台矩阵已提前到阶段 1**），ADR 收敛为 3 份
+（[`docs/adr/README.md`](./adr/README.md)）。
+
+**下一步**：[`docs/plans/0001`](./plans/0001-root-workspace.md)（根 workspace）——
+ADR-0001 决策二已裁定，不再阻塞。
+
+两条定位性约束：**可搬迁**（搬走 bin 文件夹后仍能开且数据还在）与**不依赖 OS 组件**
+（webview 及其依赖栈的写入已由用户豁免，见 `scope.md` §1.1）。
 
 ## 已验证为绿（命令 + 实际结果）
 
@@ -68,15 +74,17 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
 - [ ] **落地决策一**（根 workspace）：步骤与验收见 [`docs/plans/0001`](./plans/0001-root-workspace.md)
       —— ADR-0001 决策二已裁定（见 ADR §0 补记），**不再阻塞**
 
-### 文档待收尾（能力已记录在 `scope.md`，下面这些还没做）
+### 文档同步（本轮已完成）
 
-- [ ] `AGENTS.md` §8 的文档体系表加入 `docs/scope.md` 与 `docs/portable.md`
-      （属规范改动，**必须单独提交**）
-- [ ] `ROADMAP.md` 阶段 1–4 重构（平台矩阵从阶段 4 提前到阶段 1）
+- [x] `AGENTS.md` §8 文档体系表加入 `docs/scope.md` 与 `docs/portable.md`；
+      §3.1 加入**命名约定**；§6 加入计划规则 `no-ui-vocab-in-types`
+- [x] `ROADMAP.md` **按新范围重写**（4 阶段 → 10 阶段；CI 平台矩阵提前到阶段 1；
+      每个条目都带可执行验收标准）
 - [x] **ADR 队列收敛为 3 份**：0001（切分与后端抽象）/ 0002（机密存储与可搬迁）/
       0003（SSH 栈与资源模型）。原 7~8 份的合并去向见 [`docs/adr/README.md`](./adr/README.md)。
       0002 / 0003 **不在现在写** —— 等真正要动那块代码之前再写，
       避免塞满"还没被代码验证过的细节"
+- [x] `docs/scope.md` 全文 `tab` → `Session` 统一（40 处），并新增 §1.2 命名约定
 
 ### 已定案（cyrene 裁定，2026-09-11）
 
@@ -87,10 +95,11 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
 | `~/.ssh/config` | **只支持受限子集**；遇 `Match`/`Include` **显式报错**，不静默跳过 |
 | Bitwarden 接入 | `bw` CLI 作**用户自备前置**（不打包）+ v1 只读导入 |
 | `bw` 许可证 | **专有变体禁止分发（2.3(i)）与生产使用（2.1）**；OSS 变体是 GPL-3.0-only |
-| 连接模型 | **不复用** —— 每 tab 各一条 SSH 连接 |
-| 连接生命周期 | **= 拥有它的 tab 的生命周期**；关 tab 立刻断连（连带中止重连与传输） |
+| **命名** | 后端容器叫 **`Session`**；原 `Session` trait 改名 **`Transport`**；SSH 连接叫 `Connection`。**后端类型名不得编码 UI 呈现方式**（详见 `scope.md` §1.2） |
+| 连接模型 | **不复用** —— 每个 `Session` 各一条 SSH 连接 |
+| 连接生命周期 | **= 拥有它的 `Session` 的生命周期**；关 `Session` 立刻断连（连带中止重连与传输） |
 | 重连 | **3 次 + 指数退避**，然后标记失败 |
-| 传输落盘 | **临时名 + 原子重命名**；失败/取消/关 tab 删除临时文件；不做断点续传 |
+| 传输落盘 | **临时名 + 原子重命名**；失败/取消/关 `Session` 删除临时文件；不做断点续传 |
 | `libudev` | 做成 **cargo feature，仅 Linux 编译时启用** |
 | `akasha-vt` | **维持延后**；若必要则建于 **`crates/akasha-vt/`**，不在仓库根平铺 |
 
