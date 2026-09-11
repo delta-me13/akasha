@@ -223,13 +223,18 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | `no-bare-invoke` | 前端 `invoke("...")` 裸调用 |
 | `no-println` ✅ 已落地 | Rust `println!` / `eprintln!` |
 | `no-unwrap-in-commands` | command / 长驻任务中的 `unwrap()` |
-| `no-tauri-in-core-crates` | `crates/**` 里 `use tauri::` |
+| `no-tauri-in-core-crates` ✅ 已落地 | `crates/**` 里 `use tauri::` |
 | `no-std-command-bypass` | 绕过 `akasha-pty` 直接用 `std::process::Command` |
 | `no-string-pty-channel` | PTY 字节流走 `Channel<String>` 而非 `Channel<Vec<u8>>` |
-| `no-ui-vocab-in-types` | `crates/**` 与 `src-tauri/src/**` 类型名中的 `Tab`/`Pane`/`Window`/`View`（见 §3.1 命名规则） |
+| `no-ui-vocab-in-types` ✅ 已落地 | `crates/**` 与 `src-tauri/src/**` 类型名中的 `Tab`/`Pane`/`Window`/`View`（见 §3.1 命名规则） |
 
 > 现阶段这些规则尚**未全部创建** —— 每条规则应与它守护的代码一起落地，
 > 否则只是噪音。新增规则时同步更新上表。
+>
+> ⚠️ **规则必须用负例验证过**才算落地：只跑一次"全绿"分不清"规则在工作"与
+> "规则写错了、什么都没匹配到"。负例要一对 —— 一个应当命中、一个诱饵应当**不**命中
+> （例如 `no-ui-vocab-in-types` 命中 `NegTabProbe` 但不命中 `Previewer`）。
+> 验证后删掉探针文件，别留在仓库里。
 
 ---
 
