@@ -28,14 +28,14 @@
 - **栈**：Rust 后端（PTY / 进程 / VT 状态）+ React 19 + Vite 8 前端（xterm 渲染）。
 - **架构原则**：
   1. **Rust 侧是唯一真相源** —— IPC 签名从 Rust 生成到 TS，不反向手写。
-  2. **`src-tauri` 是薄壳** —— 纯逻辑下沉到不依赖 Tauri 的 `crates/`，可脱离 app 测试。
+  2. **`src-tauri` 是薄壳** —— 纯逻辑下沉到不依赖 Tauri 的 `src-tauri/crates/`，可脱离 app 测试。
   3. **终端输出与用户按键都是不可信输入** —— 解析层永远假设输入带恶意 escape 序列。
 
 ### 绝对禁止（违反即视为"未完成"，不接受"下次再改"）
 
 1. 前端裸调 `invoke("字符串命令名")` —— 必须走 `src/ipc/` 生成层。
 2. PTY 字节当 `String` 跨 IPC 传，或逐字节 / 逐行 emit。
-3. 在 `src-tauri/src/` 里写业务逻辑（应下沉到 `crates/`）。
+3. 在 `src-tauri/src/` 里写业务逻辑（应下沉到 `src-tauri/crates/`）。
 4. `unwrap()` / `expect()` 出现在 command 边界或长驻任务中。
 5. 用固定 `sleep` 等待异步完成 —— 用 Victauri `wait_for`（见 §7）。
 6. 手改 `src/ipc/bindings.ts`（生成物）。
@@ -52,7 +52,7 @@
 | 改动 | 行为 | 代价 |
 |---|---|---|
 | 前端 (`src/**`) | Vite HMR | 毫秒级，**不重启 app** |
-| Rust (`src-tauri/**`, `crates/**`) | 增量重编译 + **重启 app** | 秒～分钟级，**唯一路径** |
+| Rust (`src-tauri/**`，含 `crates/`) | 增量重编译 + **重启 app** | 秒～分钟级，**唯一路径** |
 
 **Victauri 不提供热重载。** 它是在*已运行*进程内嵌的 MCP 服务，35 个工具全部是
 检查/驱动（DOM、IPC、后端状态、数据库、窗口）。它的价值不是"不用重启"，而是
@@ -64,7 +64,7 @@
 - **常驻一个 `just dev`，不要每次手动重跑。** Rust 保存后 CLI 自动重编译 + 重启；
   重启后 Victauri bridge 会**重新发现端口**，MCP 无需重连 —— 继续调用即可。
 - **Rust 侧提速的正解是"下沉 + 独立循环"，而不是等重启**：
-  - 纯逻辑（PTY 抽象、VT 解析、状态机、布局）放 `crates/`，零 Tauri 依赖；
+  - 纯逻辑（PTY 抽象、VT 解析、状态机、布局）放 `src-tauri/crates/`，零 Tauri 依赖；
   - `just watch`（bacon）提供秒级 `check`/`test`，**全程不启动 app**；
   - `src-tauri` 只留 IPC 编组，改它的频率越低，重编译成本越低。
 - **前端迭代不启动 app**：`just dev-web` + Tauri `mockIPC`，浏览器里跑 Vite HMR。
@@ -119,14 +119,14 @@
 ### 3.1 分层
 
 ```
-crates/akasha-pty/   # PTY 抽象：trait + portable-pty 实现；无 Tauri 依赖，可 mock
-crates/akasha-vt/    # VT 解析 / 屏幕状态 / 回滚缓冲；纯函数式，可快照测试
-crates/akasha-core/  # (按需) 会话模型、配置、布局
+src-tauri/crates/akasha-pty/   # PTY 抽象：trait + portable-pty 实现；无 Tauri 依赖，可 mock
+src-tauri/crates/akasha-vt/    # VT 解析 / 屏幕状态 / 回滚缓冲；纯函数式，可快照测试
+src-tauri/crates/akasha-core/  # (按需) 会话模型、配置、布局
 src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 ```
 
-- 依赖方向**单向**：`src-tauri` → `crates/*`，反向依赖视为架构违规。
-- `crates/*` 不得 `use tauri::*`。这条用 ast-grep 规则强制（§6）。
+- 依赖方向**单向**：`src-tauri` → `src-tauri/crates/*`，反向依赖视为架构违规。
+- `src-tauri/crates/*` 不得 `use tauri::*`。这条用 ast-grep 规则强制（§6）。
 - 范围扩大后还会引入更多 crate（ssh / serial / sftp / store / 托盘与隧道），
   能力与切分见 `docs/scope.md`；**依赖方向规则同上，对新 crate 一律适用**。
 - **命名：后端类型名不得编码 UI 呈现方式。** 前端把 `Session` 渲染成标签页 / 面板 /
@@ -135,9 +135,12 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
   **`Transport`** = 字节载体（PTY / SSH shell 通道 / 串口）、
   **`Connection`** = 一条 SSH 连接。不要用 `Tab` / `Pane` / `View`，
   也不要用 `Workspace`（本仓库已指 Cargo workspace）。
-- 本节的切分以 **ADR-0001 为准**，其状态为**已接受**（2026-09-11）。
-  决策二已裁定：`akasha-vt` **维持延后**，若确有必要则建于
-  `crates/akasha-vt/`，**不在仓库根平铺**。见该 ADR §0 补记。
+- 本节的**分层与命名**以 **ADR-0001 为准**（已接受）；**workspace 的物理位置**
+  （root 在 `src-tauri/`、成员在其 `crates/` 下、仓库根不放 Rust 成员）以
+  [`docs/adr/0004`](./docs/adr/0004-rust-workspace-under-src-tauri.md) 为准 ——
+  它取代了 ADR-0001 的决策一。
+- ADR-0001 决策二仍有效：`akasha-vt` **维持延后**，若确有必要则建于
+  `src-tauri/crates/akasha-vt/`，**不在仓库根平铺**。
 
 ### 3.2 数据流与背压（终端应用的成败点）
 
@@ -223,10 +226,10 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | `no-bare-invoke` | 前端 `invoke("...")` 裸调用 |
 | `no-println` ✅ 已落地 | Rust `println!` / `eprintln!` |
 | `no-unwrap-in-commands` | command / 长驻任务中的 `unwrap()` |
-| `no-tauri-in-core-crates` ✅ 已落地 | `crates/**` 里 `use tauri::` |
+| `no-tauri-in-core-crates` ✅ 已落地 | `src-tauri/crates/**` 里 `use tauri::` |
 | `no-std-command-bypass` | 绕过 `akasha-pty` 直接用 `std::process::Command` |
 | `no-string-pty-channel` | PTY 字节流走 `Channel<String>` 而非 `Channel<Vec<u8>>` |
-| `no-ui-vocab-in-types` ✅ 已落地 | `crates/**` 与 `src-tauri/src/**` 类型名中的 `Tab`/`Pane`/`Window`/`View`（见 §3.1 命名规则） |
+| `no-ui-vocab-in-types` ✅ 已落地 | `src-tauri/crates/**` 与 `src-tauri/src/**` 类型名中的 `Tab`/`Pane`/`Window`/`View`（见 §3.1 命名规则） |
 
 > 现阶段这些规则尚**未全部创建** —— 每条规则应与它守护的代码一起落地，
 > 否则只是噪音。新增规则时同步更新上表。
@@ -244,7 +247,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 | 层 | 工具 | 范围 | 是否需要 app |
 |---|---|---|---|
-| 单元 / 属性 | `cargo-nextest`（+ `proptest` 按需） | `crates/*` 纯逻辑 | 否 |
+| 单元 / 属性 | `cargo-nextest`（+ `proptest` 按需） | `src-tauri/crates/*` 纯逻辑 | 否 |
 | 快照 | `insta` | VT 解析输出、屏幕状态 | 否 |
 | 性能基线 | `criterion` | 解析与写路径吞吐 | 否 |
 | 集成 / E2E | `victauri-test` + `VICTAURI_E2E=1` | IPC 契约、前后端一致性 | **是** |
@@ -252,7 +255,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 ### DoD：一条命令 + 两件机器查不了的事
 
 ```bash
-just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + deny-offline + docs-check
+just ready   # fmt-check + lint(clippy + ast-grep scan) + ci-check + test + deny-offline + docs-check
 ```
 
 `just ready` 就是**可执行的 DoD**。能在命令里表达的验收标准，不要写成散文 ——
@@ -340,7 +343,7 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 
 - 约定式提交：`feat|fix|refactor|perf|test|docs|chore|build(scope): 摘要`。
 - 一个提交一件事；**规范文件、CI、格式化等大范围改动单独提交**。
-- 提交前跑 `just ready`（fmt-check + lint + test + deny-offline + docs-check）—— 见 §7。
+- 提交前跑 `just ready`（fmt-check + lint + ci-check + test + deny-offline + docs-check）—— 见 §7。
 - 不要提交：`node_modules/`、`dist/`、`target/`、生成的 `gen/schemas`。
 - **要提交**：`Cargo.lock` / `pnpm-lock.yaml`（这是应用不是库，锁文件必须进仓库）。
 - 大文件（图标除外）不进 git。
@@ -382,7 +385,7 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
   manifest，**不需要任何 `--manifest-path`**
 - 根 `justfile` 对 crate 级命令**只做转发**，不复制命令体
 
-**完整命令清单（全部 19 个配方 + 用途 + 典型工作流 + 排错）见
+**完整命令清单（全部 20 个配方 + 用途 + 典型工作流 + 排错）见
 [`docs/just.md`](./docs/just.md) §2。** 新增或改名配方时必须同步那里 ——
 `just docs-check` 强制要求：**每个配方都必须在 `docs/just.md` 里出现**，
 且两份文档提到的命令都必须真实存在。该校验已纳入 `just ready` 与 CI。
