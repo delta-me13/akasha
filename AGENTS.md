@@ -309,47 +309,20 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 
 ---
 
-## 11. 命令表（justfile 是唯一入口）
+## 11. 命令入口
 
 **命令体只写一处**，按归属分两个文件：
 
-- **项目级**（dev / lint / ready / 环境检查）→ 根 `justfile`
+- **项目级**（dev / ready / lint / 环境检查）→ 根 `justfile`
 - **crate 级**（cargo / nextest / bacon / cargo-deny）→ `src-tauri/justfile`
   —— just 用 **justfile 所在目录**作为配方工作目录，所以那里 `cargo check` 天然找得到
   manifest，**不需要任何 `--manifest-path`**
 - 根 `justfile` 对 crate 级命令**只做转发**，不复制命令体
 
-> ⚠️ **本表由 `just docs-check` 校验，且已纳入 CI。** 任何新增或改名的配方若没同步到本表，
-> 门禁直接失败。设立它的原因很具体：agent 最容易犯的错就是照着一份**过期的规则**
+**完整命令清单（全部 19 个配方 + 用途 + 典型工作流 + 排错）见
+[`docs/just.md`](./docs/just.md) §2。** 新增或改名配方时必须同步那里 ——
+`just docs-check` 强制要求：**每个配方都必须在 `docs/just.md` 里出现**，
+且两份文档提到的命令都必须真实存在。该校验已纳入 `just ready` 与 CI。
+
+> 设这个校验的原因很具体：agent 最容易犯的错就是照着一份**过期的规则**
 > 去用一个已经不存在的旧命令，而这类错误在类型检查里看不出来。
-
-| 命令 | 作用 | 归属 |
-|---|---|---|
-| `just dev` | 常驻开发主控：前端 HMR + Rust 改动自动重编译并重启 app | 根 |
-| `just dev-web` | 只跑前端，配合 mockIPC 在浏览器里迭代 UI | 根 |
-| `just tools` | 按 `mise.toml` 装齐全局 CLI 工具 | 根 |
-| `just tools-ls` | 查看工具版本与来源 | 根 |
-| `just syscheck` | 系统库前置检查（缺 webkit2gtk 时提前报错，别等构建脚本） | 根 |
-| `just doctor` | 确认 Victauri 连到的是 akasha 而不是别的实例 | 根 |
-| `just check` | 类型检查（含 tests / benches） | 转发 |
-| `just clippy` | clippy，警告即错误 | 转发 |
-| `just fmt` | rustfmt 格式化 | 转发 |
-| `just fmt-check` | rustfmt 检查，不改文件 | 转发 |
-| `just watch` | bacon 秒级反馈循环，不启动 app | 转发 |
-| `just test` | 单元测试（cargo-nextest） | 转发 |
-| `just test-e2e` | E2E，需要 app 正在运行 | 转发 |
-| `just deny` | 许可证 + 漏洞 + 来源门禁（advisories 需联网） | 转发 |
-| `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |
-| `just gen-types` | Rust command/event → `src/ipc/bindings.ts`（待接入 tauri-specta） | 转发 |
-| `just lint` | clippy（crate 级）+ ast-grep scan（仓库级） | 根组合 |
-| `just ready` | **可执行的 DoD**（安静聚合，失败才倾倒）：fmt-check + lint + test + deny-offline + docs-check | 根组合 |
-| `just docs-check` | 校验本表与 justfile 未漂移 | 根 |
-
-在 `src-tauri/` 目录里直接跑 `just check` 同样可用（just 就近取 justfile）。
-
-> `just dev` / `just deny` 在受限环境下的失败属于**环境权限问题，不是项目 bug** ——
-> 处理方式（识别 → 直接提权重试）见 §1 末。
-
-**人类快速上手**（任务视角、典型工作流、排错）见 [`docs/just.md`](./docs/just.md)。
-本表与那份文档都由 `just docs-check` 校验：本表必须覆盖**全部**配方；
-`docs/just.md` 可以只提一部分，但它提到的每个命令都必须真实存在。
