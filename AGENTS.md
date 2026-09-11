@@ -86,6 +86,8 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 - 依赖方向**单向**：`src-tauri` → `crates/*`，反向依赖视为架构违规。
 - `crates/*` 不得 `use tauri::*`。这条用 ast-grep 规则强制（§6）。
+- ⚠️ **本节的切分（尤其 `akasha-vt` 是否必要）尚未定案**，见
+  `docs/adr/0001-crate-split-and-pty-abstraction.md`。ADR 接受前按现状执行。
 
 ### 3.2 数据流与背压（终端应用的成败点）
 
@@ -218,65 +220,38 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 - 一个提交一件事；**规范文件、CI、格式化等大范围改动单独提交**。
 - pre-commit：`fmt --check` + `clippy -D warnings` + `ast-grep scan`（装了 `just` 后走 `just lint`）。
 - 不要提交：`node_modules/`、`dist/`、`target/`、生成的 `gen/schemas`。
+- **要提交**：`Cargo.lock` / `pnpm-lock.yaml`（这是应用不是库，锁文件必须进仓库）。
 - 大文件（图标除外）不进 git。
 
 ---
 
-## 10. 待人工执行的安装清单
+## 10. 依赖状态与剩余待办
 
-> Agent 无权限执行安装；以下是**需要人类执行**的清单。
-> 装完后把 §1/§2 的命令入口即可全部生效。
+### 已就绪（已实测）
 
-### 10.1 Rust 工具链
+| 类别 | 已装 |
+|---|---|
+| Rust CLI | `just 1.58.0`、`bacon 3.25.0`、`cargo-nextest 0.9.144`、`sccache 0.17.0`、`cargo-deny 0.20.2` |
+| 前端 | `@xterm/xterm 6` + webgl/canvas/fit/search/serialize/unicode11、`vitest 5`、`@biomejs/biome 2.5` |
+| Rust 依赖 | `portable-pty 0.9`、`vte 0.15`、`thiserror 2`、`tracing`、`tauri-plugin-log`、`tauri-specta 2.0.0-rc.25` + `specta` + `specta-typescript`、`insta`、`criterion` |
+| 缓存 | `.cargo/config.toml` 已接 sccache（`just check` 后 `sccache --show-stats` 验证） |
 
-```bash
-# 建议先装 binstall（走预编译二进制，比源码编译快一个量级）
-cargo install --locked cargo-binstall
+### 剩余待办
 
-# 开发循环核心
-cargo binstall -y just bacon cargo-nextest sccache
-cargo binstall -y cargo-deny          # 许可证 + CVE 门禁
+1. 🔴 **阻塞构建 —— 缺 WebKit2GTK 系统库。**
+   本机是 **CachyOS（Arch 系，用 `pacman`）**，不是 Debian 系，**不要用 `apt-get`**：
 
-# 若 binstall 无预编译包，退回
-cargo install --locked just bacon cargo-nextest sccache cargo-deny
-```
+   ```bash
+   sudo pacman -S webkit2gtk-4.1
+   ```
 
-- `sccache` 启用：新建 `.cargo/config.toml`
-  ```toml
-  [build]
-  rustc-wrapper = "sccache"
-  ```
-- 验收：`just --list`、`bacon --version`、`cargo nextest --version`、
-  `ast-grep scan` 均可用。
-
-### 10.2 前端依赖
-
-```bash
-pnpm add @xterm/xterm @xterm/addon-webgl @xterm/addon-canvas \
-         @xterm/addon-fit @xterm/addon-search @xterm/addon-serialize \
-         @xterm/addon-unicode11
-pnpm add -D vitest @vitest/ui @biomejs/biome
-```
-
-### 10.3 Rust 依赖
-
-```bash
-cd src-tauri
-cargo add portable-pty vte thiserror tracing tracing-subscriber tauri-plugin-log
-cargo add tauri-specta specta specta-typescript
-cargo add --dev insta criterion
-```
-
-### 10.4 Linux 系统依赖（构建前置）
-
-```bash
-sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-                        librsvg2-dev libgtk-3-dev
-```
-
-### 10.5 安装完成后要同步调整的地方
-
-- `justfile`：`test` 从 `cargo test` 切到 `cargo nextest run`；
-  `gen-types` 去掉占位实现；`test-e2e` 接入 `victauri-test`。
-- CI：加 macOS / Windows 矩阵；加 `ast-grep scan`、`cargo deny check`、
-  `gen-types` diff 校验；`cargo build` 换 `cargo nextest`。
+   现状证据：`just check` 退出码 101，`javascriptcore-rs-sys` 的构建脚本报
+   `Package 'javascriptcoregtk-4.1' was not found`。验收标准 = `just check` 退出码 0。
+2. 🔴 **`.github/workflows/victauri.yml` 当前是坏的**：它在仓库根跑 `cargo build`
+   与 `cargo metadata`，但根目录没有 `Cargo.toml`。ADR-0001 若采纳根工作区会自动修好；
+   否则必须显式改成 `--manifest-path src-tauri/Cargo.toml` 并写死 bin 名。
+3. `cargo deny init` 同样因为根目录无 `Cargo.toml` 而失败（退出码 1），
+   `deny.toml` 未生成 → `just deny` 暂时无意义。同样依赖 ADR-0001 的结论。
+4. 工作区切分与 PTY 抽象待 `docs/adr/0001` 定案。定案后需同步：§3.1 的分层图、
+   `justfile` 的 `MANIFEST`、根 `.gitignore`（`target/` 位置）、CI。
+5. `tauri-specta` 目前是 `2.0.0-rc.25`（预发布）。接入时决定：锁 rc 还是等正式版。
