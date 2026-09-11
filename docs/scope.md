@@ -28,7 +28,13 @@
 |---|---|---|
 | P1 | **不依赖操作系统组件**（凭据由本程序自己保管） | `keyring` 类方案（GNOME Keyring / Keychain / Credential Manager）、任何"让 OS 帮我保管密钥"的设计 |
 | P2 | **便携**：数据与二进制同目录 | 把状态散落在 `$HOME` / `%APPDATA%` 的设计 |
-| P3 | **Windows 不向 C 盘写文件**（temp 与 webview 运行时可写目录除外） | 默认的 WebView2 用户数据目录、默认的 appdata 路径 |
+| P3 | **不向数据目录之外写入**，唯一白名单是临时目录 | 默认的 WebView2 用户数据目录、默认 appdata 路径、GTK/dconf、GPU shader cache…… |
+
+> **"webview 除外"太粗。** webview 连带触发六类写入（GTK/dconf、GPU shader cache、
+> fontconfig、macOS AppKit 窗口状态……），只有一类来自它自己，且其中 macOS 那类
+> **不在"webview 除外"里**。正确表述是：**webview 及其依赖栈的写入必须被重定向进
+> 我们的数据目录**，而不是"允许它们写别处"。
+> 逐项对照表与验证方法 → [`portable.md`](./portable.md)。
 
 > P2/P3 有**一个物理上限**，见 §7——webview 是你不控制的系统组件。
 > 这不是"实现得好不好"的问题，是必须显式处理和文档化的问题。
@@ -204,22 +210,22 @@ pub struct SshKey {
 
 这三条都是**在写代码前必须处理**的，不是实现细节。
 
-### 风险 1 — 便携 vs. webview：P2/P3 有物理上限
+### 风险 1 — "webview 除外"不够：它拖着一串东西
 
-webview 是你不控制的系统组件，它**自己要写可写目录**：
+**webview 不是一个组件。** 它连带触发**六类写入**，其中只有第 1 类来自它自己：
+① webview 数据目录 · ② GTK/GLib/dconf 设置 · ③ **GPU 驱动 shader cache**（`addon-webgl`
+是 §4.1 指定的渲染器，必踩）· ④ fontconfig 缓存 · ⑤ **macOS AppKit 窗口状态保存** ·
+⑥ 临时文件（P3 已豁免）。
 
-| 平台 | 组件 | 默认写哪 | 能否重定向 |
-|---|---|---|---|
-| Windows | WebView2 | `%LOCALAPPDATA%\<id>\EBWebView` | ✅ Tauri `WebviewWindowBuilder::data_directory()` |
-| Linux | WebKitGTK | `$XDG_DATA_HOME`、dconf | ⚠️ 只能靠 `XDG_*` / dconf 环境变量，且**必须在 GTK 初始化之前**设置 |
-| macOS | WKWebView | 系统容器 | ⚠️ `.app` 内**不可写**（破坏代码签名）→ 数据目录必须放在 `.app` **旁边**，不是里面 |
+其中 **⑤ 不在"webview 除外"里**，且没有可靠的关闭开关。
+Linux 侧是好消息：①③④ 全都落在 `XDG_*` 之下，**一个重定向杠杆收走大半**。
 
-**结论**：P2/P3 对**应用自身的数据**成立，对 webview 运行时只能做到"重定向到我指定的目录"。
-必须在启动早期（GTK/webview 初始化前）完成环境重定向，并把这四种情况写进文档。
-`%TEMP%` / `/tmp` 仍会被使用——这是 P3 里已经豁免的部分。
+**完整对照表、重定向变量、时序要求（必须早于 GTK/AppKit 初始化，否则静默失效）
+与验证方法 → [`portable.md`](./portable.md)。**
 
-> 本项目已经在受限环境里实测撞过这个坑（`just dev` 需要写 `$HOME/.local/share` 与
-> `/run/user/1000/dconf`），见 `AGENTS.md` §1 与 `docs/just.md` §6。
+> 本项目已实测撞过这个坑：受限环境里 `just dev` 需要写 `$HOME/.local/share` 与
+> `/run/user/1000/dconf`，表现为 `cargo build` 成功**之后**的
+> `Failed to setup app: 只读文件系统 (os error 30)` —— 极易误判成"编译过了但跑不起来"。
 
 ### 风险 2 — 便携 vs. 数据目录可写性
 
@@ -253,6 +259,23 @@ Linux 装到 `/usr/bin`、Windows 装到 `Program Files`。
 **实现前必须实测一次**（目前仍未验证）：`bw` 处理 `sshKey` 条目的具体行为 ——
 未解锁时的报错形态、`bw list items --raw` 的 JSON 形状、SSH key 条目是否稳定可见。
 这三件决定前置检查与导入逻辑怎么写。
+
+### 风险 4 — `ssh -G` 与"不依赖系统组件"冲突（**影响 SSH 的 ADR 选型**）
+
+`ssh -G <host>` 能输出**完全解析后**的 ssh config，白捡 `Include` / `Match` / `Host *`
+的正确优先级。**但它需要系统里有 `ssh` 二进制。**
+
+| 出路 | 依赖系统 `ssh` | ssh config 解析 |
+|---|---|---|
+| 声明 OpenSSH 为前置依赖 | ❌ 需要 | 白捡且完全正确。但 SSH 是**核心**功能（不像 `bw` 可选），押在外部二进制上风险更大 |
+| 纯 Rust，不支持导入系统 config | ✅ 不需要 | 范围最小，但体验明显受损 |
+| **纯 Rust 为默认，检测到 `ssh` 时才提供"导入"** | ⚠️ 可选 | 折中；须接受两条解析路径的差异 |
+
+**倾向第三条。** 它决定要不要实现一个 ssh config 解析器 ——
+**那是本项目最容易被低估的一块复杂度**，必须写进 ADR。
+
+> 另有一项待确认的独立系统库：`libudev`（`serialport` 在 Linux 上的端口枚举）。
+> 完整清单见 [`portable.md`](./portable.md) §4。
 
 ---
 
@@ -307,4 +330,5 @@ PTY/serial/ssh 的平台差异是**主体工作量**，把它留到最后等于�
 - 下一步做什么 → [`../ROADMAP.md`](../ROADMAP.md)
 - 现在到哪了 → [`STATUS.md`](./STATUS.md)
 - 为什么这样定 → [`adr/`](./adr/)
+- **便携性与"不写别处"怎么落地、怎么验证** → [`portable.md`](./portable.md)
 - 命令怎么用 → [`just.md`](./just.md)

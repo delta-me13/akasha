@@ -73,6 +73,12 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
         v1 只读导入 → P1 与便携不再冲突，体积代价转为"未装 `bw` 时功能不可用"
   - [ ] Bitwarden 实现前需实测：`bw` 对 `sshKey` 条目的非交互行为
         （未解锁报错形态 / `bw list items --raw` 的 JSON 形状 / 条目可见性）
+  - [ ] **便携性收尾**（详见 [`portable.md`](./portable.md)）：
+        - 启动最早期完成 `XDG_*` / webview data dir / AppKit 重定向（**晚一步静默失效**）
+        - 便携模式由标记触发；不可写时**启动即报错**，不静默退回 OS 目录
+        - 实现 `portable-check` 配方（当前只有方法，无实现）
+        - 确认 macOS `~/Library/Saved Application State` 能否抑制
+        - 确认 `libudev` 能否从 `serialport` 依赖中去掉
 
 ## 结构现状（容易找错地方）
 
