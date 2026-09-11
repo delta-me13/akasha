@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# 受限环境下运行 app 时的 XDG 重定向目录（见 docs/just.md）
+.devhome/
+# just ready 失败时落盘的完整输出
+.just-ready-fail.log

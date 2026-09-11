@@ -90,17 +90,59 @@ lint:
     ast-grep scan
 
 # 可执行的 DoD（AGENTS.md §7）：提交前跑这一个。
-# 含 docs-check —— 命令表一旦与 justfile 漂移就当场失败，避免 agent 用过期命令。
-ready: fmt-check lint test deny-offline docs-check
+#
+# 默认安静：每步一行 + 耗时；失败时把该步输出倒出来（超长则首尾各 40 行并落盘）。
+# 为什么需要这个壳：cargo deny 对 Tauri 这种依赖树会打 5000+ 行「重复版本」警告，
+# 而 multiple-versions 是 warn 级、永远不让门禁失败 —— 在成功的运行里那些纯粹是噪音。
+# 要看完整输出就直接跑单个配方（just deny-offline / just lint / just test ...）。
+ready:
+    @set -uo pipefail; \
+    steps="fmt-check lint test deny-offline docs-check"; \
+    total=0; ok=0; \
+    for s in $steps; do \
+      total=$((total + 1)); \
+      printf '→ %-13s' "$s"; \
+      start=$(date +%s); \
+      if out=$(just "$s" 2>&1); then \
+        ok=$((ok + 1)); \
+        printf ' ✅ %ss\n' "$(( $(date +%s) - start ))"; \
+      else \
+        printf ' ❌ %ss\n' "$(( $(date +%s) - start ))"; \
+        printf '%s\n' "$out" > .just-ready-fail.log; \
+        lines=$(wc -l < .just-ready-fail.log); \
+        if [ "$lines" -gt 80 ]; then \
+          head -n 40 .just-ready-fail.log; \
+          echo "   …（省略 $((lines - 80)) 行）…"; \
+          tail -n 40 .just-ready-fail.log; \
+        else \
+          cat .just-ready-fail.log; \
+        fi; \
+        echo; \
+        echo "❌ just ready 失败于: just $s"; \
+        echo "   完整输出: .just-ready-fail.log（或直接单跑 just $s）"; \
+        exit 1; \
+      fi; \
+    done; \
+    echo "✅ just ready 全绿（$ok/$total）"
 
-# 校验 AGENTS.md §11 的命令表没有与 justfile 漂移 ——
-# 防止 agent 照着一份过期的规则去用已经不存在的旧命令。
+# 校验文档里的命令与实际 justfile 未漂移，防止照着一份过期规则去用已不存在的旧命令。
+#   * AGENTS.md §11 必须覆盖**全部**配方（正向 —— 新增配方不能不记录）
+#   * docs/just.md 可以只提一部分，但它提到的每个命令必须真实存在（反向 —— 防过期）
+#
+# 坑：这里刻意不用反引号做锚点。grep -E 里写反斜杠转义的反引号时，匹配结果里
+# 反引号本身会被吞掉，于是后续 sed 剥不掉 "just " 前缀，提取出的名字全带前缀。
+# 用「just <名> + 右侧边界」来判定，既躲开这个坑，也不依赖 markdown 写法。
 docs-check:
     @miss=0; \
     recipes=$( { just --summary; just --justfile {{SRC}}/justfile --summary; } | tr ' ' '\n' | sort -u ); \
     for r in $recipes; do \
       if [ "$r" = "default" ]; then continue; fi; \
-      if ! grep -qF "\`just $r\`" AGENTS.md; then echo "❌ AGENTS.md §11 未记录: just $r"; miss=1; fi; \
+      grep -qE "just $r([^a-z0-9-]|$)" AGENTS.md || { echo "❌ AGENTS.md §11 未记录: just $r"; miss=1; }; \
     done; \
-    if [ "$miss" = "1" ]; then echo "→ 请更新 AGENTS.md §11 的命令表"; exit 1; fi; \
-    echo "✅ AGENTS.md §11 命令表与 justfile 同步"
+    if [ -f docs/just.md ]; then \
+      for m in $(grep -oE "just [a-z][a-z0-9-]*" docs/just.md | sed 's/^just //' | sort -u); do \
+        printf '%s\n' "$recipes" | grep -qx "$m" || { echo "❌ docs/just.md 提到了不存在的配方: just $m"; miss=1; }; \
+      done; \
+    fi; \
+    if [ "$miss" = "1" ]; then echo "→ 请更新 AGENTS.md §11 与 docs/just.md"; exit 1; fi; \
+    echo "✅ 文档命令与 justfile 同步（AGENTS.md §11 + docs/just.md）"
