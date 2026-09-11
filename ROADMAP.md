@@ -32,38 +32,34 @@
 
 ## 阶段 1 — 根 workspace、分层与平台矩阵
 
-目标：多 crate 布局落地，且**跨平台差异从第一天就被验证**，而不是留到收尾。
+目标：多 crate 布局落地，且跨平台差异从第一天就被验证。
 
 - [ ] **落地 ADR-0001 决策一**（根 workspace）
-      验收：仓库根 `cargo metadata --no-deps` 列出 ≥2 个包，且 `just ready` 仍全绿
+      验收：仓库根成为 workspace、`src-tauri` 降为成员之一，且门禁仍全绿
       见 [`docs/plans/0001`](./docs/plans/0001-root-workspace.md)
 - [ ] **迁移后复测开发循环**：确认改 `crates/` 下的文件**仍触发重编译与重启**
-      验收：CLI 打印的监听范围覆盖 `crates/`；改一个 `crates/` 文件后 app 自动重启
-      （这是迁移最容易静默破坏的地方，`cargo check` 看不出来）
+      验收：改一个 `crates/` 文件后 app 自动重启
 - [ ] **CI 平台矩阵**（Linux + Windows + macOS）
-      验收：三平台各跑一遍 `cargo check`；Linux 跑完整 `just ready`
-      —— **不能推到阶段 9**，PTY/serial/ssh 的平台差异是主体工作量
-- [ ] `crates/akasha-core` 骨架：**`Session` 模型先立起来**
+      验收：三平台都能通过类型检查；Linux 另跑完整门禁
+- [ ] `crates/akasha-core` 骨架：**`Session` 模型**（**必须先于任何后端**）
       验收：单测覆盖 `SessionId` 分配、关闭一个 `Session` 不影响另一个
-      —— 必须先于任何后端，否则"终端 = 应用"的假设会被写进架构
 - [ ] `crates/akasha-pty`：通用 `Transport` trait + `portable-pty` 实现
-      验收：`FakeTransport` 覆盖 spawn / write / shutdown 的单元测试通过
+      验收：用假实现覆盖 spawn / write / shutdown 的单测通过
 
 ---
 
 ## 阶段 2 — 端到端最小终端
 
-目标：能开一个 shell、敲命令、看到输出、关窗口不残留进程。
+目标：能开一个 shell、敲命令、看到输出，且**退出后**不残留进程。
 
 - [ ] `Transport` 输出合批（≥16ms 或 ≥64KiB）
-      验收：单元测试断言 chunk 边界；`criterion` 基准给出吞吐数字
+      验收：合批边界有单测断言；有吞吐基线数字
 - [ ] IPC 二进制通道（`tauri::ipc::Channel<Vec<u8>>`）
-      验收：ast-grep 规则 `no-string-pty-channel` 生效；大输出不掉帧
+      验收：大输出不掉帧，且这条路径被结构性规则守住
 - [ ] 前端 xterm + WebGL 渲染，字节流不进 React state
-      验收：Victauri `dom_snapshot` 确认 canvas 存在；无 per-chunk 组件重渲染
-- [ ] **进程生命周期按 `AGENTS.md` §3.3 的三态实现**（窗口关闭 / 配置为直接退出 / 真正退出）
-      验收：Victauri `introspect { action: "processes" }` 在**真正退出后**零残留；
-      并且**收托盘状态下子进程仍在**（这不是泄漏，见 §3.3）
+      验收：终端由 canvas 渲染；无 per-chunk 组件重渲染
+- [ ] **进程生命周期三态**（窗口关闭 / 配置为直接退出 / 真正退出，见 `AGENTS.md` §3.3）
+      验收：**真正退出后**零残留子进程；且**收托盘时子进程仍在**
 
 ---
 
@@ -89,7 +85,7 @@
 - [ ] `rusqlite` + **SQLCipher**（`bundled-sqlcipher-vendored-openssl`）
       验收：用错误口令打不开库；`.db` 文件里搜不到明文密钥
 - [ ] 口令 → KDF → 库密钥（**不依赖 OS keychain**，见 `scope.md` §1）
-      验收：无任何 `keyring` 类依赖（`cargo tree` 可证）
+      验收：无任何 `keyring` 类依赖
 - [ ] 四套池的 CRUD：密钥 / ssh 配置 / serial 配置 / 端口转发规则
       验收：各自的 round-trip 单测通过；**库里不存绝对路径**（P2）
 - [ ] dump 与导出（可选加密；明文导出必须二次确认）
@@ -105,7 +101,7 @@
 
 - [ ] `crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存）
       验收：同主机开三个 Session **只问一次**凭据（`scope.md` §2.2）
-- [ ] **`direct-tcpip` 原语**（先做跳板，等于拿到另外两处的地基）
+- [ ] **`direct-tcpip` 原语**（本阶段先用于跳板）
       验收：ProxyJump 可连通只对跳板机可见的目标
 - [ ] `~/.ssh/config` **受限子集**导入（`Match`/`Include` 显式报错）
       验收：含 `Match` 的配置产生**明确报错**，不是静默误解析
@@ -143,14 +139,14 @@
 - [ ] host ↔ host：**优先 B 档（`direct-tcpip`），失败回退 A 档（内存 relay）**
       验收：A 无法直连 B 时自动走 A 档；两档均不落盘
 - [ ] 并发 in-flight 请求（pipelining）
-      验收：大量小文件的吞吐显著优于串行（给出基准数字）
+      验收：大量小文件的吞吐显著优于串行请求
 
 ---
 
 ## 阶段 8 — serial
 
 - [ ] `crates/akasha-serial`，`libudev` 走 **Linux-only cargo feature**
-      验收：Windows / macOS 构建不链接 libudev（`cargo tree` 可证）
+      验收：Windows / macOS 构建不链接 libudev
 - [ ] 端口枚举与连接参数（波特率/数据位/停止位/校验/流控）
       验收：枚举在本机列出真实端口；参数错误时给出可读报错
 

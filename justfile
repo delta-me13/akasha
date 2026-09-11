@@ -125,15 +125,21 @@ ready:
     done; \
     echo "✅ just ready 全绿（$ok/$total）"
 
-# 校验文档里的命令与实际 justfile 未漂移，防止照着一份过期规则去用已不存在的旧命令。
-#   * docs/just.md §2 是**权威清单**：必须覆盖**全部**配方（正向，且**只认 §2 表格内的记录**）
-#   * 顶层文档与 docs/**/*.md 可以只提一部分，但提到的每个命令必须真实存在（反向）
+# 文档纪律（两部分，规则见 AGENTS.md §8 与 §8.1）。
 #
-# 两个坑都踩过，写在这里免得重蹈：
+# A. 命令未漂移 —— 防止照着一份过期规则去用已不存在的旧命令
+#    * docs/just.md §2 是**权威清单**：必须覆盖**全部**配方（正向，且**只认 §2 表格内的记录**）
+#    * 顶层文档与 docs/**/*.md 可以只提一部分，但提到的每个命令必须真实存在（反向）
+# B. 汇总类文档没长细节 —— ROADMAP 放"判据"，不放"手段"
+#    * 每条 ≤3 行、无代码块、反引号里不出现命令调用（--flag / {...}）
+#    * 只拦"细节泄漏"，**不拦能力条目本身的增长**：条目数该随能力涨，行数不该随细节涨
+#
+# 踩过的坑，写在这里免得重蹈：
 #   1. 反斜杠转义的反引号在 grep -E 里会把反引号本身吞掉，于是 sed 剥不掉 "just " 前缀。
 #      改用「just <名> + 右侧边界」判定，不依赖 markdown 写法。
 #   2. 正向检查若不限定在 §2 表格内就形同虚设 —— 某条命令可能只在排错段落里被顺带提及，
 #      而表格里其实已经删掉了。所以用 awk 取出 §2 段落，只在那里面找。
+#   3. 含反引号的 grep 模式必须整体放进**单引号**里，否则会被 bash 当命令替换执行。
 docs-check:
     @miss=0; \
     recipes=$( { just --summary; just --justfile {{SRC}}/justfile --summary; } | tr ' ' '\n' | sort -u ); \
@@ -147,5 +153,10 @@ docs-check:
         printf '%s\n' "$recipes" | grep -qx "$m" || { echo "❌ $f 提到了不存在的配方: just $m"; miss=1; }; \
       done; \
     done; \
-    if [ "$miss" = "1" ]; then echo "→ 请同步 docs/just.md §2，或修正文档里写错的命令名"; exit 1; fi; \
-    echo "✅ 文档命令与 justfile 同步（权威清单 docs/just.md §2）"
+    grep -q '```' ROADMAP.md && { echo "❌ ROADMAP.md 出现代码块 —— 步骤与命令属于 docs/plans/"; miss=1; }; \
+    hits=$(grep -nE '`[^`]*(--[a-zA-Z]|\{[^`]*\})[^`]*`' ROADMAP.md || true); \
+    if [ -n "$hits" ]; then echo "❌ ROADMAP.md 粘进了命令调用 —— 验证手段属于 plan 的「验收命令」:"; echo "$hits"; miss=1; fi; \
+    over=$(awk '/^- \[[ x~!]\]/{if(n>3)print st; st=NR;n=1;next} /^[[:space:]]/{if(n>0){n++;next}} {if(n>0&&n>3)print st; n=0} END{if(n>0&&n>3)print st}' ROADMAP.md); \
+    if [ -n "$over" ]; then echo "❌ ROADMAP.md 条目超过 3 行上限（起始行号）: $over"; miss=1; fi; \
+    if [ "$miss" = "1" ]; then echo "→ 命令类问题同步 docs/just.md §2；纪律类问题见 AGENTS.md §8.1（条目只放判据 + 可选 plan 指针）"; exit 1; fi; \
+    echo "✅ 文档纪律通过（命令与 justfile 同步；ROADMAP $(grep -cE '^- \[[ x~!]\]' ROADMAP.md) 个条目均在 3 行内、无代码块与命令调用）"
