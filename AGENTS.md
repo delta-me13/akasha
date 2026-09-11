@@ -129,6 +129,12 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 - `crates/*` 不得 `use tauri::*`。这条用 ast-grep 规则强制（§6）。
 - 范围扩大后还会引入更多 crate（ssh / serial / sftp / store / 托盘与隧道），
   能力与切分见 `docs/scope.md`；**依赖方向规则同上，对新 crate 一律适用**。
+- **命名：后端类型名不得编码 UI 呈现方式。** 前端把 `Session` 渲染成标签页 / 面板 /
+  分屏 / 独立窗口都行，后端只按语义命名。词汇表与理由见 `docs/scope.md` §1.2 ——
+  要点：**`Session`** = 资源的归属单位（用户打开的一个工作单元）、
+  **`Transport`** = 字节载体（PTY / SSH shell 通道 / 串口）、
+  **`Connection`** = 一条 SSH 连接。不要用 `Tab` / `Pane` / `View`，
+  也不要用 `Workspace`（本仓库已指 Cargo workspace）。
 - ⚠️ **本节的切分（尤其 `akasha-vt` 是否必要）尚未定案**，见
   `docs/adr/0001-crate-split-and-pty-abstraction.md`。ADR 接受前按现状执行。
 
@@ -219,6 +225,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | `no-tauri-in-core-crates` | `crates/**` 里 `use tauri::` |
 | `no-std-command-bypass` | 绕过 `akasha-pty` 直接用 `std::process::Command` |
 | `no-string-pty-channel` | PTY 字节流走 `Channel<String>` 而非 `Channel<Vec<u8>>` |
+| `no-ui-vocab-in-types` | `crates/**` 与 `src-tauri/src/**` 类型名中的 `Tab`/`Pane`/`Window`/`View`（见 §3.1 命名规则） |
 
 > 现阶段这些规则尚**未全部创建** —— 每条规则应与它守护的代码一起落地，
 > 否则只是噪音。新增规则时同步更新上表。
@@ -272,6 +279,8 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 |---|---|---|
 | `AGENTS.md`（本文件） | 规则 | 几乎不变；**只放规则**，状态/进度/细节一律在别处 |
 | `ROADMAP.md` | 去哪 | 偶尔变，**只勾复选框** |
+| `docs/scope.md` | **产品预备有什么**：能力清单、非目标、已识别风险、**命名约定** | 偶尔变（只增删能力条目） |
+| `docs/portable.md` | **可搬迁性怎么落地**：要求、数据目录、验证方法 | 随实测变 |
 | `docs/STATUS.md` | 现在在哪 | **每次会话覆盖写，不追加** |
 | `docs/adr/NNNN-*.md` | 为什么这样定 | **不可变**，只追加"被 NNNN 取代" |
 | `docs/plans/NNNN-*.md` | 这次怎么做 | 随实现更新，就地修改 |
