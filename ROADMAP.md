@@ -156,7 +156,7 @@
 
 - [ ] 前置检查：探测 `bw` **及其变体**
       验收：未安装 → 明确报"需安装 Bitwarden CLI **及该装哪个变体**"；
-      专有变体 → 给出提示（见 `scope.md` §7.0 的许可证约束）
+      专有变体 → 给出提示（许可证约束见 [`docs/bitwarden.md`](./docs/bitwarden.md) §2）
 - [ ] 只读导入 SSH key 条目（`sshKey.privateKey`）
       验收：导入后可用该密钥建立 SSH 连接
 - [ ] 离线缓存：**私钥离线自检用 `fingerprint`**，联网刷新用 `revisionDate`
@@ -175,11 +175,13 @@
 
 ## 明确的非目标
 
-完整清单与理由见 [`docs/scope.md`](./docs/scope.md) §10。当前要点：
+**理由不在这里**（按 §8.1，理由属于 `scope.md`）—— 只列条目：
 
-- 不在 Rust 侧实现屏幕模型（除非 `docs/adr/0001` §3 的触发条件满足）
+- 不在 Rust 侧实现屏幕模型
 - 不做插件系统
-- 不自实现 Bitwarden vault 密码学；**不打包 `bw`**（许可证，见 §7.0）
+- 不自实现 Bitwarden vault 密码学；**不打包 `bw`**
 - 不调用系统 `ssh` 二进制
 - 不为 webview 依赖栈做环境重定向
 - 不做 host↔host"真不中转"
+
+**每条的理由与完整清单见 [`docs/scope.md`](./docs/scope.md) §10。**

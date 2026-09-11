@@ -93,6 +93,10 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
       已用三个负例分别验证（粘命令 / 条目 4 行 / 塞代码块 → 都如实报错）
 - [x] `ROADMAP.md` 按新纪律**清掉 17 处细节泄漏**（验证手段与理由移出：
       `cargo metadata`、`introspect {...}`、`cargo tree 可证` 等 → 归 plan 的验收命令）
+- [x] **`docs/scope.md` §7 下沉为 [`bitwarden.md`](./bitwarden.md)**（626 → **534 行**）：
+      许可证条款原文、四条技术路的核实结果、条目字段结构与指纹推导搬走；
+      `scope.md` 只留结论表 + 指针。这是 §8.1 那条"某一节超过约一屏就下沉"的首次应用
+      （此前的 `scope.md` → `portable.md` 是同类，但那时还没成文）
 
 ### 已定案（cyrene 裁定，2026-09-11）
 
@@ -163,6 +167,16 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
 14. **`docs-check` 的反向检查原本只扫 `AGENTS.md` + `docs/just.md`** —— 新加的文档
     （如 `docs/scope.md`）里的过期命令完全不被覆盖。已扩到
     `AGENTS.md` / `ROADMAP.md` / `docs/**/*.md`（扩展后实测零过期引用，纯增益）。
+15. **后台遗留的 `just dev` 会在仓库根重跑 cargo** ——
+    `error: could not find Cargo.toml in /home/lycurgus/akasha`（即坑 #8）。
+    重建失败后 **app 不再启动，但 Vite dev server 仍在监听 1420**。
+    现象很有迷惑性：**端口在听、HTTP 200，但 Victauri 说 app 没在运行**。
+    判别方法：`just doctor`（它直接问 app，而不是问端口）。
+    ⚠️ 工作区切分迁移（plan-0001）后**必须停掉旧进程再重起**，
+    否则旧进程的监听范围还是老的 `src-tauri`，会让迁移后的验收项失真。
+16. **含反引号的 grep 模式在 justfile 配方里必须整体放进单引号** ——
+    配方体由 bash 执行，裸反引号会被当**命令替换**跑掉。
+    `docs-check` 的 ROADMAP 纪律检查踩过这一点。
 
 ## 环境
 
