@@ -69,7 +69,10 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
   - [ ] `ROADMAP.md` 阶段 1–4 重构（平台矩阵从阶段 4 提前到阶段 1）
   - [ ] 6 份 ADR 排队：SSH 实现路径 / 私钥落盘位置 / SQLCipher+导出 / SFTP 拓扑 /
         Bitwarden 接入 / 平台矩阵与 Android 形态
-  - [!] **阻塞**：`docs/scope.md` §7 风险 3（Bitwarden 接入方式）未定案，ADR-0006 无法写
+  - [x] `scope.md` §7 风险 3 已定案：`bw` CLI 作**用户自备系统前置**（不打包）+
+        v1 只读导入 → P1 与便携不再冲突，体积代价转为"未装 `bw` 时功能不可用"
+  - [ ] Bitwarden 实现前需实测：`bw` 对 `sshKey` 条目的非交互行为
+        （未解锁报错形态 / `bw list items --raw` 的 JSON 形状 / 条目可见性）
 
 ## 结构现状（容易找错地方）
 
