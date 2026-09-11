@@ -10,8 +10,11 @@
 
 地基阶段收尾：项目可编译、`just ready` 全绿、CI 已重写完成；**CI 的真实验证要等首次推送**；
 ADR-0001 待拍板。
-**产品范围已扩大**（多后端 + SFTP + 凭据池 + Bitwarden，见 [`docs/scope.md`](./scope.md)）——
-范围已记录，阶段划分与 6 份 ADR **尚未动**，实现上仍按 plan-0001 推进。
+**产品范围已扩大且仍在明确期** —— 三后端（local/ssh/serial）+ SFTP + 四套配置池 +
+Bitwarden + **SSH 端口转发 + 常驻系统托盘**，见 [`docs/scope.md`](./scope.md)。
+范围已记录，阶段划分与 ADR **尚未动**，实现上仍按 plan-0001 推进。
+两条定位性约束：**可搬迁**（搬走 bin 文件夹仍能开）与**不依赖 OS 组件**
+（webview 及依赖栈的写入已由用户豁免，见 `scope.md` §1.1）。
 
 ## 已验证为绿（命令 + 实际结果）
 
@@ -64,21 +67,30 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
 
 - [ ] **ADR-0001 定案**：待 cyrene 拍板 §3 决策二（v1 是否建 `akasha-vt`）与 §6 的未决项
 - [ ] **落地决策一**（根 workspace）：步骤与验收见 [`docs/plans/0001`](./plans/0001-root-workspace.md)
-- [ ] **扩范围后的文档收尾**（已记录 `docs/scope.md`，但下面这些还没做）：
-  - [ ] `AGENTS.md` §8 的文档体系表加入 `docs/scope.md`（属规范改动，**必须单独提交**）
+- [ ] **扩范围后的文档收尾**（能力已记录在 `docs/scope.md`，下面这些还没做）：
+  - [ ] `AGENTS.md` §8 的文档体系表加入 `docs/scope.md` 与 `docs/portable.md`
+        （属规范改动，**必须单独提交**）
   - [ ] `ROADMAP.md` 阶段 1–4 重构（平台矩阵从阶段 4 提前到阶段 1）
-  - [ ] 6 份 ADR 排队：SSH 实现路径 / 私钥落盘位置 / SQLCipher+导出 / SFTP 拓扑 /
-        Bitwarden 接入 / 平台矩阵与 Android 形态
-  - [x] `scope.md` §7 风险 3 已定案：`bw` CLI 作**用户自备系统前置**（不打包）+
-        v1 只读导入 → P1 与便携不再冲突，体积代价转为"未装 `bw` 时功能不可用"
+  - [ ] ADR 排队（不再限制在 6 份，范围扩大后至少要覆盖）：
+        SSH 实现（`russh`）/ 私钥落盘位置 / SQLCipher+导出 / SFTP 拓扑 /
+        Bitwarden 接入 / **应用生命周期与托盘** / **端口转发与隧道模型** / 平台矩阵
+  - [x] Bitwarden 定案：`bw` CLI 作**用户自备系统前置**（不打包）+ v1 只读导入
+  - [x] SSH 定案：**纯 Rust `russh`**，不调系统 `ssh`（→ 原 `ssh -G` 捷径作废，
+        见 `scope.md` §8 风险 4）
+  - [x] **P3 撤销**：用户豁免 webview 及其依赖栈的一切写入 → 判据从"零外部写入"
+        简化为"搬走文件夹后还能开"，`portable.md` 因此大幅缩减
   - [ ] Bitwarden 实现前需实测：`bw` 对 `sshKey` 条目的非交互行为
         （未解锁报错形态 / `bw list items --raw` 的 JSON 形状 / 条目可见性）
-  - [ ] **便携性收尾**（详见 [`portable.md`](./portable.md)）：
-        - 启动最早期完成 `XDG_*` / webview data dir / AppKit 重定向（**晚一步静默失效**）
+  - [ ] **可搬迁性收尾**（详见 [`portable.md`](./portable.md)，只剩三件事）：
+        - 数据目录相对可执行文件推导；**库里不存绝对路径**
         - 便携模式由标记触发；不可写时**启动即报错**，不静默退回 OS 目录
-        - 实现 `portable-check` 配方（当前只有方法，无实现）
-        - 确认 macOS `~/Library/Saved Application State` 能否抑制
-        - 确认 `libudev` 能否从 `serialport` 依赖中去掉
+        - 实现"搬家后仍可用"的验证配方（当前只有方法，无实现）
+  - [ ] 确认 `libudev` 能否从 `serialport` 依赖中去掉（唯一剩下的系统库疑问）
+  - [ ] **新增能力尚未细化的部分**：
+        - 托盘的 Linux 依赖 `libayatana-appindicator3` 已在 CI apt 列表里，需实测
+        - 单实例处理（第二个实例应唤起已有窗口，而不是各跑一套隧道）
+        - 端口转发的断线自动重连策略（退避参数未定）
+        - 动态转发（`-D`）需要自己实现 SOCKS5 服务端
 
 ## 结构现状（容易找错地方）
 
