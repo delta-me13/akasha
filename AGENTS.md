@@ -135,8 +135,9 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
   **`Transport`** = 字节载体（PTY / SSH shell 通道 / 串口）、
   **`Connection`** = 一条 SSH 连接。不要用 `Tab` / `Pane` / `View`，
   也不要用 `Workspace`（本仓库已指 Cargo workspace）。
-- ⚠️ **本节的切分（尤其 `akasha-vt` 是否必要）尚未定案**，见
-  `docs/adr/0001-crate-split-and-pty-abstraction.md`。ADR 接受前按现状执行。
+- 本节的切分以 **ADR-0001 为准**，其状态为**已接受**（2026-09-11）。
+  决策二已裁定：`akasha-vt` **维持延后**，若确有必要则建于
+  `crates/akasha-vt/`，**不在仓库根平铺**。见该 ADR §0 补记。
 
 ### 3.2 数据流与背压（终端应用的成败点）
 
