@@ -2,7 +2,7 @@
 
 - **关联**：ROADMAP 阶段 1 ·「CI 平台矩阵」
 - **前置**：plan 0101（根 workspace 落地 —— 矩阵里三条都跑 workspace 级检查）
-- **状态**：未开始
+- **状态**：进行中（本地部分已完成 2026-09-11；**最终判据待 CI 实跑**，见「实施记录」）
 - **影响面**：`.github/workflows/ci.yml`；若新增配方，同步 `docs/just.md` §2
 
 ## 目标
@@ -63,4 +63,38 @@ CI 配置改动只影响门禁，不影响产物与用户数据。
 
 ## 实施记录
 
-（边做边追加；特别记录三个平台各自的**实际**失败原因与处置，这是后续阶段的参考。）
+### 本地部分（2026-09-11 完成）
+
+验收命令的实际输出：
+
+1. YAML 解析（`js-yaml` 4.1.0，临时取到 `/tmp`，**未进仓库**）→
+   `jobs: checks, e2e`；矩阵 `ubuntu-latest / macos-latest / windows-latest`；
+   `e2e.needs = "checks"`；`fail-fast = false`
+2. `grep -cE 'ubuntu-latest|windows-latest|macos-latest'` → **4**（矩阵 3 项 + e2e 的 ubuntu）
+3. `just ready` → `✅ 全绿（5/5）`
+4. 顺带实测：四个 just 资产 URL 全部 **HTTP 200**
+   （Linux musl / macOS aarch64 / macOS x86_64 / Windows msvc）
+
+### 与初稿不同的三处（都有理由）
+
+- **资产按 `runner.arch` 在步骤内选，不硬编码 x86_64**：`macos-latest` 已是 **arm64**，
+  装 `x86_64-apple-darwin` 会以 `bad CPU type in executable` 失败 —— 而那个报错里
+  根本不提架构。未覆盖的 `runner.os-runner.arch` 组合**直接 exit 1**，
+  不退回一个"大概能用"的二进制。
+- **完整门禁只在 Linux 跑一次**：fmt-check / clippy / docs-check 的结论与平台无关，
+  跑三遍只是把 CI 时长乘三。相应地 Linux 不单跑类型检查（`just ready` 里的 clippy 已覆盖），
+  所以那一步是 `if: runner.os != 'Linux'`。
+- **删掉原先单列的 `just docs-check` 步骤**：`just ready` 本来就包含它 ——
+  同一件事只定义一处，否则将来必漂移。缓存交给 `Swatinem/rust-cache`
+  （键自动含 runner.os 与 rustc 版本，天然按平台分键）；
+  `checks` 的超时 30 → **45 分钟**（Windows / macOS 冷构建慢得多）。
+
+### 最终判据仍未达成 —— 所以状态是「进行中」
+
+plan 写明的最终判据是"推送后 CI 上三个矩阵 job 与 e2e job 全绿"，本地证明不了。
+**而且当前仓库没有配置任何 git remote**（`git remote -v` 为空）：这不是"等一次推送"，
+而是**等仓库托管到位**。在那之前本 plan 不算完成 —— 三个 runner 环境的差异
+（apt 包、macOS SDK、Windows 上 Tauri 构建脚本能否过类型检查、Windows runner 的 Git Bash
+是否足以跑 `set shell := ["bash", "-uc"]` 的配方）只有在那里才见分晓。
+阶段 0 的「CI 变绿」条目（`ROADMAP.md` 里标 `[~]`）挂的是同一条。
+

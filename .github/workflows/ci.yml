@@ -1,8 +1,12 @@
-# akasha CI —— 两个 job，共用同一份依赖列表。
+# akasha CI —— 两个 job：`checks`（三平台矩阵）+ `e2e`（Linux，真起 app）。
 #
 # 历史说明：本文件取代了 `victauri init` 生成的 `.github/workflows/victauri.yml`。
 # 原文件在仓库根执行 `cargo build` / `cargo metadata`，但根目录没有 Cargo.toml，
 # 必然失败；而且两个 job 分在两个文件里无法用 `needs` 串联。现在合并为一个文件。
+#
+# **为什么要有平台矩阵**（`docs/scope.md` §9）：PTY / serial / ssh 的平台差异是
+# **主体工作量**，留到收尾再暴露等于把最大的坑留在最晚。这里只做**类型检查**：
+# 出包需要真实主机（WiX / NSIS / WebView2 bootstrapper 都不行），不在本文件的目标内。
 
 name: CI
 
@@ -14,6 +18,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  JUST_VERSION: 1.58.0
   # 唯一一份系统依赖列表。Tauri 官方 Debian/Ubuntu 列表：
   # https://v2.tauri.app/start/prerequisites/
   # 注意是 libayatana-appindicator3-dev —— 旧名 libappindicator3-dev 在
@@ -23,16 +28,23 @@ env:
     libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
 jobs:
-  # ── 静态门禁：不需要启动 app ───────────────────────────────────────────────
-  # 跑的就是本地那一条 `just ready` —— 门禁只有一处定义，避免 CI 与本地漂移。
+  # ── 静态门禁 ───────────────────────────────────────────────────────────────
+  # 三个平台都做类型检查；**完整门禁只在 Linux 跑一次** ——
+  # fmt-check / clippy / docs-check 的结论与平台无关，跑三遍只会把 CI 时长乘三。
   checks:
-    name: 格式 / lint / 依赖门禁
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    name: 检查（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      # 一个平台红了不必掐掉另外两个：平台差异要一次看全，而不是修一个等一轮。
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: 系统依赖
+      - name: 系统依赖（仅 Linux）
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends $APT_DEPS
@@ -42,41 +54,73 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
 
+      # 缓存 ~/.cargo 与 target。rust-cache 的键**自动含 runner.os 与 rustc 版本**，
+      # 所以平台之间天然分键，不需要手写 key。
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
-      # just 不在 taiki-e/install-action 的工具列表里，用官方固定版本资产
-      # （URL 已实测可下载）。装到 ~/.local，避免写系统目录。
+      # just 不在 taiki-e/install-action 的工具列表里，用官方固定版本资产。
+      # **按 runner.arch 选资产，不硬编码 x86_64**：`macos-latest` 已是 arm64，
+      # 装错架构会以 "bad CPU type in executable" 失败，而那个报错完全不提架构。
+      # 未覆盖的组合**直接失败**，不退回一个"大概能用"的二进制。
+      # 步骤一律 `shell: bash`：Windows runner 自带 Git Bash。
       - name: 安装 just
+        shell: bash
         run: |
-          mkdir -p "$HOME/.local/bin"
-          curl --proto '=https' --tlsv1.2 -sSfL \
-            https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz \
-            | tar xz -C "$HOME/.local/bin" just
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin="$HOME/.local/bin"
+          mkdir -p "$bin"
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Linux-X64)   target=x86_64-unknown-linux-musl ;;
+            macOS-ARM64) target=aarch64-apple-darwin ;;
+            macOS-X64)   target=x86_64-apple-darwin ;;
+            Windows-X64) target=x86_64-pc-windows-msvc ;;
+            *) echo "::error::未覆盖的 runner 组合：${{ runner.os }}-${{ runner.arch }}"; exit 1 ;;
+          esac
+          asset="just-${JUST_VERSION}-${target}"
+          url="https://github.com/casey/just/releases/download/${JUST_VERSION}/${asset}"
+          case "$target" in
+            *windows*)
+              curl --proto '=https' --tlsv1.2 -sSfL "$url" -o "$RUNNER_TEMP/just.zip"
+              unzip -oq "$RUNNER_TEMP/just.zip" -d "$bin"
+              ;;
+            *)
+              curl --proto '=https' --tlsv1.2 -sSfL "$url" | tar xz -C "$bin"
+              ;;
+          esac
+          echo "$bin" >> "$GITHUB_PATH"
+
+      # 类型检查（含 tests / benches）走 crate 级配方的转发，不在这里另写一套 cargo 命令。
+      # Linux 上不重复跑：下面的 `just ready` 里 clippy 蕴含 check。
+      - name: 类型检查（含 tests / benches）
+        if: runner.os != 'Linux'
+        shell: bash
+        run: just check
 
       # cargo-nextest / cargo-deny 在支持列表里，走预编译 GitHub Releases
-      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
+      - name: 安装 cargo-nextest / cargo-deny（仅 Linux）
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
         with:
           tool: cargo-nextest,cargo-deny
 
       # 结构护栏（ast-grep）用官方 npm 包，自带预编译二进制。
       # --prefix 装到 ~/.local，避免全局写权限问题。
-      - name: 安装 ast-grep
+      - name: 安装 ast-grep（仅 Linux）
+        if: runner.os == 'Linux'
         run: npm install -g --prefix "$HOME/.local" @ast-grep/cli
 
-      # 与本地完全相同的门禁：fmt-check + clippy + ast-grep scan + test + deny-offline
-      - name: just ready
+      # 与本地完全相同的门禁，且**只有这一处定义**：
+      # fmt-check + clippy(--workspace) + ast-grep scan + nextest(--workspace) + deny-offline + docs-check。
+      # docs-check 已在 ready 内，不再单列一步。
+      - name: just ready（完整门禁，仅 Linux）
+        if: runner.os == 'Linux'
         run: just ready
 
-      # 防止 AGENTS.md §11 的命令表与实际 justfile 漂移
-      - name: 命令表未漂移
-        run: just docs-check
-
   # ── E2E：需要真实运行的 app ────────────────────────────────────────────────
+  # 保持 Linux-only：xvfb + 启动真实 app 这套只有 Linux runner 上有意义（且要烧 45 分钟）。
   e2e:
     name: E2E（真实 app + Victauri）
     runs-on: ubuntu-latest
-    needs: checks # 静态门禁不过就不必烧 CI 时间起 app
+    needs: checks # 三个平台的静态门禁都没过就不必烧 CI 时间起 app
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -92,20 +136,20 @@ jobs:
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
-      # 显式给 --manifest-path：这样无论将来是否采纳 ADR-0001 的根 workspace，
-      # 本步骤都成立（选项 B 与选项 A 都能跑）。
+      # 显式给 --manifest-path：根 workspace 之后 manifest 依然在 src-tauri/，
+      # 这样写不依赖 `just`，也不受将来成员增减影响。
       - name: 构建
         run: cargo build --manifest-path src-tauri/Cargo.toml
 
       # 用 cargo metadata 询问 target 目录，而不是猜路径。
-      # 单 crate 时是 src-tauri/target，采纳根 workspace 后是 ./target —— 两者都正确。
+      # 根 workspace 下是 ./target（迁移前是 src-tauri/target）—— 问它就不会猜错。
       - name: 解析产物路径
         run: |
           echo "TARGET_DIR=$(cargo metadata --manifest-path src-tauri/Cargo.toml \
             --format-version 1 --no-deps | jq -r '.target_directory')" >> "$GITHUB_ENV"
 
       # 不要再写 `$(cargo metadata | jq '.packages[0].name')`：采纳根 workspace 后
-      # packages[0] 不再必然是 app crate，而且 crate 名不一定等于 bin 名。
+      # packages[0] 不再必然是 app crate（第一个成员是 akasha-core），而且 crate 名不一定等于 bin 名。
       - name: 在 xvfb 下启动 app
         run: |
           xvfb-run -a "$TARGET_DIR/debug/akasha" &
