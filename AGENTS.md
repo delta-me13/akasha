@@ -285,7 +285,7 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 | `docs/bitwarden.md` | **Bitwarden 集成的展开**：许可证、条目字段、指纹语义 | 随上游版本与实测变 |
 | `docs/STATUS.md` | 现在在哪 | **每次会话覆盖写，不追加** |
 | `docs/adr/NNNN-*.md` | 为什么这样定 | **不可变**，只追加"被 NNNN 取代" |
-| `docs/plans/NNNN-*.md` | 这次怎么做 | 随实现更新，就地修改 |
+| `docs/plans/TTxx-*.md` | 这次怎么做（一个工作项一个文件） | 进行中就地修改；**完成后整份移入 `docs/plans/archive/`** |
 
 - **不要把状态、进度、待办写进本文件** —— 那会让本文件每天都要改，
   而后人无法分辨哪条还是现行规则。
@@ -294,7 +294,12 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 - 终端领域选型（PTY 库、VT 解析器、渲染器、序列化协议）**必须**有 ADR：
   这类决定日后被反复推翻的成本最高。
 - plan 与 ADR 各自独立编号，用 plan 头部的 `关联：ADR-XXXX` 建立关系。
-- 索引、plan 骨架、为什么暂时不建 `specs/` —— 见 `docs/README.md`。
+- **plan 的生命周期有硬预算**（详见 [`docs/plans/README.md`](./docs/plans/README.md)）：
+  一个工作项一个文件，**单文件 ≤ 200 行**，超了要**拆成两份**；
+  完成后**整份移入 `docs/plans/archive/`**，索引保留一行 ——
+  **永不把多份 plan 拼接成一份汇总**（那正是"一个文件太大"的来源）；
+  没有「验收命令」的骨架 plan **不许开工**。以上由 `just docs-check` 强制。
+- 索引、plan 骨架、为什么暂时不建 `specs/` —— 见 `docs/README.md` 与 `docs/plans/README.md`。
 
 ### 8.1 汇总类文档的纪律（防止实现细节泄漏）
 
@@ -303,7 +308,7 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 
 | 想写的 | 它其实是 | 该去哪 |
 |---|---|---|
-| 步骤、编号子步骤、代码块 | 怎么做 | `docs/plans/NNNN-*` |
+| 步骤、编号子步骤、代码块 | 怎么做 | `docs/plans/TTxx-*` |
 | "因为…"、"否则会…"、"之所以" | 为什么 | ADR；或 `scope.md` 能力条目的理由列 |
 | "用 `cargo tree` 可证"、具体 flag、测试内部结构 | 验证手段 | plan 的「验收命令」 |
 | 踩过的坑、排错步骤 | 参考资料 | `STATUS.md` 的坑；或专门文档（如 `portable.md`） |
