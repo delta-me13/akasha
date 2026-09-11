@@ -225,33 +225,55 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 ---
 
-## 10. 依赖状态与剩余待办
+## 10. 依赖与工具状态
 
-### 已就绪（已实测）
+### 10.1 清单放在哪个文件（不要放错地方）
 
-| 类别 | 已装 |
+| 类别 | 文件 | 安装方式 |
+|---|---|---|
+| 编译进产物的 Rust 依赖 | `src-tauri/Cargo.toml` | `cargo add` |
+| 前端依赖 | `package.json` | `pnpm add` |
+| **全局 CLI 工具**（不进产物） | **`mise.toml`** | **`just tools`** |
+| Rust 工具链本身（rustc/cargo/clippy/rustfmt） | 暂无固定 —— 跟随 rustup `stable` | `rustup` |
+| 系统库（webkit2gtk 等） | 无（发行版包管理器） | `pacman -S`，**cargo/mise 都管不了** |
+
+`mise.toml` 是"不属于 Cargo.toml 的工具"的唯一来源。里面只有 `just`、`sccache`
+有 aqua 预编译配方，`bacon` / `cargo-nextest` / `cargo-deny` 必须显式写
+`"cargo:xxx"` 后端，首次安装会从源码编译（较慢）。
+
+> 注意：这些工具目前已通过 `cargo install` 装在 `~/.cargo/bin`。`just tools`
+> 会用 mise 再装一份并让 shim 优先。若不想装两份，删掉 `mise.toml` 即可 ——
+> 它退化为一份文档，不影响现有工具可用性。
+
+### 10.2 已就绪（已实测，非推测）
+
+| 项 | 验证方式 |
 |---|---|
-| Rust CLI | `just 1.58.0`、`bacon 3.25.0`、`cargo-nextest 0.9.144`、`sccache 0.17.0`、`cargo-deny 0.20.2` |
-| 前端 | `@xterm/xterm 6` + webgl/canvas/fit/search/serialize/unicode11、`vitest 5`、`@biomejs/biome 2.5` |
-| Rust 依赖 | `portable-pty 0.9`、`vte 0.15`、`thiserror 2`、`tracing`、`tauri-plugin-log`、`tauri-specta 2.0.0-rc.25` + `specta` + `specta-typescript`、`insta`、`criterion` |
-| 缓存 | `.cargo/config.toml` 已接 sccache（`just check` 后 `sccache --show-stats` 验证） |
+| Rust CLI（just 1.58.0 / bacon 3.25.0 / nextest 0.9.144 / sccache 0.17.0 / deny 0.20.2） | `<tool> --version` |
+| 前端依赖（xterm 6 + 各 addon、vitest 5、biome 2.5） | `package.json` |
+| Rust 依赖（portable-pty / vte / thiserror / tracing / tauri-plugin-log / tauri-specta / insta / criterion） | `src-tauri/Cargo.toml` |
+| **系统库 webkit2gtk-4.1 2.52.6** | `just syscheck` 全绿 |
+| **`just check`** | 退出码 **0** |
+| **`just lint`**（clippy `-D warnings` + ast-grep scan） | 退出码 **0** |
 
-### 剩余待办
+### 10.3 本轮修掉的坑（都是"构建脚本阶段才暴露"的类型）
 
-1. 🔴 **阻塞构建 —— 缺 WebKit2GTK 系统库。**
-   本机是 **CachyOS（Arch 系，用 `pacman`）**，不是 Debian 系，**不要用 `apt-get`**：
+1. **缺 `tokio` dev-dependency**：`victauri-test` 生成的 `tests/*.rs` 用
+   `#[tokio::test]`，但 tokio 不会由它传递给你 —— 其 README 明确要求消费方自己加。
+   已加：`tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }`。
+2. **生成脚手架有过时导入**：`tests/integration.rs` 里的 `serde_json::json` 与
+   `e2e_test` 从未使用，会让 `clippy -D warnings` 失败（即 `just lint` 红）。
+   已删除这两个导入。
 
-   ```bash
-   sudo pacman -S webkit2gtk-4.1
-   ```
+### 10.4 剩余待办
 
-   现状证据：`just check` 退出码 101，`javascriptcore-rs-sys` 的构建脚本报
-   `Package 'javascriptcoregtk-4.1' was not found`。验收标准 = `just check` 退出码 0。
-2. 🔴 **`.github/workflows/victauri.yml` 当前是坏的**：它在仓库根跑 `cargo build`
+1. 🔴 **`.github/workflows/victauri.yml` 当前是坏的**：它在仓库根跑 `cargo build`
    与 `cargo metadata`，但根目录没有 `Cargo.toml`。ADR-0001 若采纳根工作区会自动修好；
-   否则必须显式改成 `--manifest-path src-tauri/Cargo.toml` 并写死 bin 名。
-3. `cargo deny init` 同样因为根目录无 `Cargo.toml` 而失败（退出码 1），
-   `deny.toml` 未生成 → `just deny` 暂时无意义。同样依赖 ADR-0001 的结论。
-4. 工作区切分与 PTY 抽象待 `docs/adr/0001` 定案。定案后需同步：§3.1 的分层图、
+   否则必须改成 `--manifest-path src-tauri/Cargo.toml` 并写死 bin 名 `akasha`。
+2. `cargo deny init` 被同一原因阻塞（退出码 1）→ `deny.toml` 未生成，
+   `just deny` 暂时无效。同样依赖 ADR-0001 的结论。
+3. 工作区切分与 PTY 抽象待 `docs/adr/0001` 定案。定案后需同步：§3.1 的分层图、
    `justfile` 的 `MANIFEST`、根 `.gitignore`（`target/` 位置）、CI。
-5. `tauri-specta` 目前是 `2.0.0-rc.25`（预发布）。接入时决定：锁 rc 还是等正式版。
+4. `tauri-specta` 是 `2.0.0-rc.25`（预发布）：接入 §5 前决定锁 rc 还是等正式版。
+5. （可选）固定 Rust 工具链：加 `rust-toolchain.toml`（`channel = "1.98.1"`）。
+   代价是 rustup 会把它当独立 toolchain 再下载一份（与现有 `stable` 同版本但不同目录）。
