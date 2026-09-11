@@ -1,0 +1,4 @@
+# ast-grep 配置 —— 双重身份：结构搜索入口 + 项目约束执行器（AGENTS.md §6）
+# `sg scan` 是本项目 lint 的一部分（just lint）。
+ruleDirs:
+  - .ast-grep/rules
