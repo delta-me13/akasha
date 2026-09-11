@@ -10,13 +10,15 @@
 
 地基阶段收尾：项目可编译、`just ready` 全绿、CI 已重写完成；**CI 的真实验证要等首次推送**；
 ADR-0001 待拍板。
+**产品范围已扩大**（多后端 + SFTP + 凭据池 + Bitwarden，见 [`docs/scope.md`](./scope.md)）——
+范围已记录，阶段划分与 6 份 ADR **尚未动**，实现上仍按 plan-0001 推进。
 
 ## 已验证为绿（命令 + 实际结果）
 
 | 命令 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + docs-check） | 退出码 **0** |
-| `just docs-check` | `✅ AGENTS.md §11 命令表与 justfile 同步` |
+| `just docs-check` | `✅ 文档命令与 justfile 同步（权威清单 docs/just.md §2）` |
 | `just check` | 退出码 **0** |
 | `just lint`（clippy `-D warnings` + ast-grep scan） | 退出码 **0** |
 | `just deny-offline`（licenses / bans / sources） | `bans ok, licenses ok, sources ok` |
@@ -62,11 +64,17 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
 
 - [ ] **ADR-0001 定案**：待 cyrene 拍板 §3 决策二（v1 是否建 `akasha-vt`）与 §6 的未决项
 - [ ] **落地决策一**（根 workspace）：步骤与验收见 [`docs/plans/0001`](./plans/0001-root-workspace.md)
+- [ ] **扩范围后的文档收尾**（已记录 `docs/scope.md`，但下面这些还没做）：
+  - [ ] `AGENTS.md` §8 的文档体系表加入 `docs/scope.md`（属规范改动，**必须单独提交**）
+  - [ ] `ROADMAP.md` 阶段 1–4 重构（平台矩阵从阶段 4 提前到阶段 1）
+  - [ ] 6 份 ADR 排队：SSH 实现路径 / 私钥落盘位置 / SQLCipher+导出 / SFTP 拓扑 /
+        Bitwarden 接入 / 平台矩阵与 Android 形态
+  - [!] **阻塞**：`docs/scope.md` §7 风险 3（Bitwarden 接入方式）未定案，ADR-0006 无法写
 
 ## 结构现状（容易找错地方）
 
 - 命令入口分两处：项目级在根 `justfile`，crate 级在 `src-tauri/justfile`。
-  根只**转发**，命令体只有一处。对照表见 `AGENTS.md` §11，由 `just docs-check` 强制同步。
+  根只**转发**，命令体只有一处。**权威清单在 `docs/just.md` §2**，由 `just docs-check` 强制同步。
 - CI 只有一个文件 `.github/workflows/ci.yml`（原 `victauri.yml` 已删除并合并进来）。
 
 ## 踩过的坑（避免重复踩）
@@ -93,6 +101,15 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
 11. **受限环境下"写工作区之外被拒"看起来像工具/代码故障**（`just dev` 的 `os error 30`、
     `just deny` 的 advisory lock 失败）。已写成规则：识别 → **直接提权重试**，
     见 `AGENTS.md` §1 末。**不要把它当成项目 bug 去翻代码。**
+12. **`git checkout <file>` 会静默丢弃未提交的改动** —— 做负例自检时用它"还原"过一次，
+    结果整段文档被回滚，靠提交前核对才发现。对未提交的工作区改动，`git checkout`
+    是**破坏性操作**，不是"还原"。负例自检请用 `cp` 备份 + `cp` 还原。
+13. **正向校验若不限定到目标段落就形同虚设** —— `docs-check` 曾只检查"全文提到过某命令"，
+    于是删掉 §2 表格里的一行后**仍然通过**（排错段落里顺带提及了同一条命令）。
+    改用 `awk` 取 §2 段落再匹配，负例才如实报错。
+14. **`docs-check` 的反向检查原本只扫 `AGENTS.md` + `docs/just.md`** —— 新加的文档
+    （如 `docs/scope.md`）里的过期命令完全不被覆盖。已扩到
+    `AGENTS.md` / `ROADMAP.md` / `docs/**/*.md`（扩展后实测零过期引用，纯增益）。
 
 ## 环境
 

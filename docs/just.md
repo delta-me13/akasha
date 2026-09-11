@@ -2,8 +2,8 @@
 
 > **30 秒版**：忘了有啥命令就 `just --list`；改完代码提交前跑 `just ready`。
 >
-> 本文件是「我想做什么 → 跑什么」的任务视角。
-> **命令的权威清单与归属在 [`AGENTS.md` §11](../AGENTS.md)** —— 两份由 `just docs-check` 保证不漂移。
+> 本文件是「我想做什么 → 跑什么」的任务视角，**并且就是命令的权威清单**（见下面 §2）。
+> `AGENTS.md` §11 只讲归属原则，不重复这张表。
 
 ## 1. 最常用的五条
 
@@ -18,8 +18,8 @@
 ## 2. 全部命令（权威清单）
 
 > **这是全部配方的权威清单。** 由 `just docs-check` 强制保证：**每个配方都必须出现在下面这张表里**
-> （只认这张表，不认别处的顺带提及），且本文与 `AGENTS.md` 提到的每个命令都必须真实存在。
-> `AGENTS.md` §11 只讲归属原则，不再重复这张表。
+> （只认这张表，不认别处的顺带提及），且 `AGENTS.md` / `ROADMAP.md` / `docs/**/*.md`
+> 里提到的每个命令都必须真实存在。`AGENTS.md` §11 只讲归属原则，不再重复这张表。
 
 「归属」列的含义：**根** = 直接实现在根 `justfile`；**转发** = 实现在 `src-tauri/justfile`、
 根只转发；**根组合** = 跨根与 crate 的组合，只能在根定义。
@@ -44,7 +44,7 @@
 | `just syscheck` | 检查系统库是否齐（缺 webkit2gtk 会提前报错） | 根 |
 | `just tools` | 按 `mise.toml` 装齐全局 CLI 工具 | 根 |
 | `just tools-ls` | 看工具版本与来源 | 根 |
-| `just docs-check` | 校验本文与 `AGENTS.md` 的命令没和 justfile 漂移 | 根 |
+| `just docs-check` | 校验 §2 表格覆盖全部配方，且各文档提到的命令都真实存在 | 根 |
 
 ## 3. 两个 justfile 是什么关系
 
@@ -155,7 +155,7 @@ just dev
 1. **先判断归属**：碰 cargo / Rust → 写进 `src-tauri/justfile`；
    前端、环境、跨仓库的组合 → 写进根 `justfile`。
 2. 根 justfile 里给 crate 级命令写**转发**，别复制命令体。
-3. **同步 `AGENTS.md` §11 的命令表**。
+3. **在本文 §2 的表格里加/改一行** —— 那是唯一权威清单，`AGENTS.md` §11 不放表。
 4. 跑 `just docs-check` 验证（它已纳入 `just ready` 和 CI，不同步会直接红）。
 
 ## 8. 和 CI 的关系
