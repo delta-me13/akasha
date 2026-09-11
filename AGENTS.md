@@ -127,6 +127,8 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 - 依赖方向**单向**：`src-tauri` → `crates/*`，反向依赖视为架构违规。
 - `crates/*` 不得 `use tauri::*`。这条用 ast-grep 规则强制（§6）。
+- 范围扩大后还会引入更多 crate（ssh / serial / sftp / store / 托盘与隧道），
+  能力与切分见 `docs/scope.md`；**依赖方向规则同上，对新 crate 一律适用**。
 - ⚠️ **本节的切分（尤其 `akasha-vt` 是否必要）尚未定案**，见
   `docs/adr/0001-crate-split-and-pty-abstraction.md`。ADR 接受前按现状执行。
 
@@ -141,9 +143,20 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 ### 3.3 进程生命周期
 
-- 每个 PTY 子进程必须**显式 kill + wait 收尸**；drop 不能代替。
-- 三条路径都要覆盖：**窗口关闭 / app 重载 / panic**。
-- 验收方式：用 Victauri `introspect { action: "processes" }` 确认无残留子进程（§7）。
+⚠️ **窗口关闭 ≠ 进程退出。** 默认行为是**收到系统托盘**（见 `docs/scope.md` §5），
+因此"窗口关闭"**不是**回收时机 —— PTY 与 SSH 隧道必须存活，否则托盘就没有意义。
+
+| 事件 | PTY / 隧道 | 何时回收 |
+|---|---|---|
+| 窗口关闭（默认：收托盘） | **必须存活** | 不回收 |
+| 窗口关闭（配置为"直接退出"） | 回收 | 立即 |
+| **真正退出**（托盘退出 / app 重载 / panic） | 回收 | **零残留** |
+
+- 每个 PTY / SSH 子进程与隧道必须在上述回收路径上**显式 kill + wait 收尸**；
+  drop 不能代替。**窗口关闭默认不在其中。**
+- 验收方式：用 Victauri `introspect { action: "processes" }` 在**真正退出之后**确认零残留。
+  在"收托盘"状态下**存在子进程是预期行为，不是泄漏** —— 不要把存活误报成 bug。
+- 托盘行为**可配置**，所以回收逻辑必须**读配置**，不能硬编码"关窗即杀"。
 - 默认不继承不必要的 fd / 环境变量；shell 启动参数集中管理，不散落。
 
 ### 3.4 错误、日志、unsafe
@@ -234,7 +247,8 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 
 - [ ] **真实路径走通**：Victauri `invoke_command`（或 UI 交互）触发 → `wait_for` 等到
       **真正结束** → `verify_state` 确认前后端状态一致。**禁止用 sleep 代替**。
-- [ ] **涉 PTY / 子进程**：`introspect { action: "processes" }` 确认关闭后无残留。
+- [ ] **涉 PTY / 子进程**：`introspect { action: "processes" }` 在**真正退出之后**确认无残留。
+      ⚠️ "收托盘"状态下**存在子进程是预期行为**（见 §3.3），不是泄漏。
 
 改过 command/event 时额外一条：新 command 应在 `get_registry` 中可见，
 `detect_ghost_commands` 无新增 `confirmed_ghosts`；`just gen-types` 后 `git diff` 为空
