@@ -1,12 +1,35 @@
-# akasha CI —— 两个 job：`checks`（三平台矩阵）+ `e2e`（Linux，真起 app）。
+# akasha CI —— **一份工作流，两个 forge 都跑**（Gitea 先验，GitHub 后推）。
 #
-# 历史说明：本文件取代了 `victauri init` 生成的 `.github/workflows/victauri.yml`。
-# 原文件在仓库根执行 `cargo build` / `cargo metadata`，但根目录没有 Cargo.toml，
-# 必然失败；而且两个 job 分在两个文件里无法用 `needs` 串联。现在合并为一个文件。
+# ## 为什么是一份而不是两份
 #
-# **为什么要有平台矩阵**（`docs/scope.md` §9）：PTY / serial / ssh 的平台差异是
-# **主体工作量**，留到收尾再暴露等于把最大的坑留在最晚。这里只做**类型检查**：
-# 出包需要真实主机（WiX / NSIS / WebView2 bootstrapper 都不行），不在本文件的目标内。
+# Gitea Actions 与 GitHub Actions 高度兼容，但"兼容"有边界（见下面四条硬约束）。
+# 两份文件必然漂移，所以这里只留一份，并用 `just ci-check` 把边界变成机器检查。
+#
+# ## 四条硬约束（违反任何一条，Gitea 上就会坏）
+#
+# 1. **不能出现 `${{ runner.* }}` 上下文**。Gitea 的上下文表里只有 `github.*` / `gitea.*`
+#    （其 Quickstart 用过 `runner.os`，但那是未文档化的行为）—— 本文件改用矩阵值、
+#    `uname` 与 `GITHUB_*` 环境变量，全部有文档背书。
+# 2. **`runs-on` 只用简单形式**（`xyz`）。Gitea 明确不支持复杂 `runs-on`。
+# 3. **表达式函数只有 `always()`** 可用 —— 不要用 `contains()` / `format()` / `fromJSON()`。
+# 4. **不要创建 `.gitea/workflows/`**。Gitea 的 `[actions] WORKFLOW_DIRS` 默认是
+#    `.gitea/workflows,.github/workflows`，且**只读第一个存在的目录**；一旦建了
+#    `.gitea/workflows/`，它就会忽略本文件，CI 静默不跑。这条也由 `just ci-check` 守住。
+#
+# ## Windows / macOS 只在 GitHub 上跑
+#
+# Gitea runner 是 Linux 容器，**没有 Windows/macOS runner**。若把这两个平台放进常规矩阵，
+# 在 Gitea 上会一直排队等一个永远不来的 runner。所以它们在独立 job 里，用
+# `github.server_url == 'https://github.com'` 整条 job 门住 —— Gitea 上连调度都不会发生。
+#
+# 已知限制：GitHub Enterprise Server 的 `server_url` 不是 github.com，也会被门掉；
+# 那时把这一行的字面量改成自己的实例地址即可（**只有这一处**）。
+#
+# ## 出处（改本文件前先读）
+#
+# - 比较与限制：https://docs.gitea.com/usage/actions/comparison
+# - 上下文与环境变量：https://docs.gitea.com/usage/actions/actions-variables
+# - 工作流目录默认值：go-gitea/gitea PR #36619（`WORKFLOW_DIRS = .gitea/workflows,.github/workflows`）
 
 name: CI
 
@@ -28,107 +51,92 @@ env:
     libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
 jobs:
-  # ── 静态门禁 ───────────────────────────────────────────────────────────────
-  # 三个平台都做类型检查；**完整门禁只在 Linux 跑一次** ——
-  # fmt-check / clippy / docs-check 的结论与平台无关，跑三遍只会把 CI 时长乘三。
-  checks:
-    name: 检查（${{ matrix.os }}）
-    runs-on: ${{ matrix.os }}
+  # ── ① 静态门禁：两个 forge 都跑 ──────────────────────────────────────────────
+  # 完整门禁只在 Linux 跑一次（fmt / clippy / docs-check 的结论与平台无关），
+  # 而且跑的**就是本地那一条 `just ready`** —— 门禁只有一处定义，避免 CI 与本地漂移。
+  checks-linux:
+    name: 检查（Linux）
+    runs-on: ubuntu-latest
     timeout-minutes: 45
-    strategy:
-      # 一个平台红了不必掐掉另外两个：平台差异要一次看全，而不是修一个等一轮。
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: 系统依赖（仅 Linux）
-        if: runner.os == 'Linux'
+      # sudo 可能不存在（Gitea 的 job 容器常以 root 直接跑），所以不硬写 sudo。
+      - name: 系统依赖
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends $APT_DEPS
+          SUDO=""
+          command -v sudo >/dev/null 2>&1 && SUDO=sudo
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends $APT_DEPS
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-06)
         with:
           toolchain: stable
           components: clippy, rustfmt
 
-      # 缓存 ~/.cargo 与 target。rust-cache 的键**自动含 runner.os 与 rustc 版本**，
+      # 缓存 ~/.cargo 与 target。rust-cache 的键自动含操作系统与 rustc 版本，
       # 所以平台之间天然分键，不需要手写 key。
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
       # just 不在 taiki-e/install-action 的工具列表里，用官方固定版本资产。
-      # **按 runner.arch 选资产，不硬编码 x86_64**：`macos-latest` 已是 arm64，
+      # **按 uname 选资产，不用 `${{ runner.arch }}`**（约束 1）：macos-latest 已是 arm64，
       # 装错架构会以 "bad CPU type in executable" 失败，而那个报错完全不提架构。
-      # 未覆盖的组合**直接失败**，不退回一个"大概能用"的二进制。
-      # 步骤一律 `shell: bash`：Windows runner 自带 Git Bash。
+      # 未覆盖的组合直接失败，不退回一个"大概能用"的二进制。
       - name: 安装 just
         shell: bash
         run: |
           bin="$HOME/.local/bin"
           mkdir -p "$bin"
-          case "${{ runner.os }}-${{ runner.arch }}" in
-            Linux-X64)   target=x86_64-unknown-linux-musl ;;
-            macOS-ARM64) target=aarch64-apple-darwin ;;
-            macOS-X64)   target=x86_64-apple-darwin ;;
-            Windows-X64) target=x86_64-pc-windows-msvc ;;
-            *) echo "::error::未覆盖的 runner 组合：${{ runner.os }}-${{ runner.arch }}"; exit 1 ;;
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64)        target=x86_64-unknown-linux-musl ;;
+            Darwin-arm64)        target=aarch64-apple-darwin ;;
+            Darwin-x86_64)       target=x86_64-apple-darwin ;;
+            MINGW*|MSYS*|CYGWIN*) target=x86_64-pc-windows-msvc ;;
+            *) echo "::error::未覆盖的平台组合：$(uname -s)-$(uname -m)"; exit 1 ;;
           esac
-          asset="just-${JUST_VERSION}-${target}"
-          url="https://github.com/casey/just/releases/download/${JUST_VERSION}/${asset}"
+          url="https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-${target}"
           case "$target" in
             *windows*)
-              curl --proto '=https' --tlsv1.2 -sSfL "$url" -o "$RUNNER_TEMP/just.zip"
-              unzip -oq "$RUNNER_TEMP/just.zip" -d "$bin"
+              curl --proto '=https' --tlsv1.2 -sSfL "$url.zip" -o "$bin/just.zip"
+              unzip -oq "$bin/just.zip" -d "$bin"
+              rm -f "$bin/just.zip"
               ;;
             *)
-              curl --proto '=https' --tlsv1.2 -sSfL "$url" | tar xz -C "$bin"
+              curl --proto '=https' --tlsv1.2 -sSfL "$url.tar.gz" | tar xz -C "$bin"
               ;;
           esac
           echo "$bin" >> "$GITHUB_PATH"
 
-      # 类型检查（含 tests / benches）走 crate 级配方的转发，不在这里另写一套 cargo 命令。
-      # Linux 上不重复跑：下面的 `just ready` 里 clippy 蕴含 check。
-      - name: 类型检查（含 tests / benches）
-        if: runner.os != 'Linux'
-        shell: bash
-        run: just check
-
-      # cargo-nextest / cargo-deny 在支持列表里，走预编译 GitHub Releases
-      - name: 安装 cargo-nextest / cargo-deny（仅 Linux）
-        if: runner.os == 'Linux'
-        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
+      # cargo-nextest / cargo-deny 走预编译 GitHub Releases
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
         with:
           tool: cargo-nextest,cargo-deny
 
       # 结构护栏（ast-grep）用官方 npm 包，自带预编译二进制。
       # --prefix 装到 ~/.local，避免全局写权限问题。
-      - name: 安装 ast-grep（仅 Linux）
-        if: runner.os == 'Linux'
+      - name: 安装 ast-grep
         run: npm install -g --prefix "$HOME/.local" @ast-grep/cli
 
-      # 与本地完全相同的门禁，且**只有这一处定义**：
-      # fmt-check + clippy(--workspace) + ast-grep scan + nextest(--workspace) + deny-offline + docs-check。
-      # docs-check 已在 ready 内，不再单列一步。
-      - name: just ready（完整门禁，仅 Linux）
-        if: runner.os == 'Linux'
+      # 门禁只有这一处定义：fmt-check + lint(clippy + ast-grep) + ci-check + test + deny-offline + docs-check
+      - name: just ready
         run: just ready
 
-  # ── E2E：需要真实运行的 app ────────────────────────────────────────────────
-  # 保持 Linux-only：xvfb + 启动真实 app 这套只有 Linux runner 上有意义（且要烧 45 分钟）。
-  e2e:
-    name: E2E（真实 app + Victauri）
-    runs-on: ubuntu-latest
-    needs: checks # 三个平台的静态门禁都没过就不必烧 CI 时间起 app
+  # ── ② 其余平台：**仅 GitHub** ───────────────────────────────────────────────
+  # 只做类型检查（含 tests / benches），走 crate 级 `check` 的转发配方，不另写 cargo 命令。
+  # 出包需要真实主机（WiX / NSIS / WebView2 bootstrapper 都不行），不在本文件的目标内。
+  checks-other:
+    name: 检查（${{ matrix.os }}）
+    # 见文件头「Windows / macOS 只在 GitHub 上跑」。
+    if: github.server_url == 'https://github.com'
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    strategy:
+      # 一个平台红了不必掐掉另一个：平台差异要一次看全，而不是修一个等一轮。
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: 系统依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends $APT_DEPS xvfb
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-06)
         with:
@@ -136,20 +144,72 @@ jobs:
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
-      # 显式给 --manifest-path：根 workspace 之后 manifest 依然在 src-tauri/，
-      # 这样写不依赖 `just`，也不受将来成员增减影响。
+      - name: 安装 just
+        shell: bash
+        run: |
+          bin="$HOME/.local/bin"
+          mkdir -p "$bin"
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64)        target=x86_64-unknown-linux-musl ;;
+            Darwin-arm64)        target=aarch64-apple-darwin ;;
+            Darwin-x86_64)       target=x86_64-apple-darwin ;;
+            MINGW*|MSYS*|CYGWIN*) target=x86_64-pc-windows-msvc ;;
+            *) echo "::error::未覆盖的平台组合：$(uname -s)-$(uname -m)"; exit 1 ;;
+          esac
+          url="https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-${target}"
+          case "$target" in
+            *windows*)
+              curl --proto '=https' --tlsv1.2 -sSfL "$url.zip" -o "$bin/just.zip"
+              unzip -oq "$bin/just.zip" -d "$bin"
+              rm -f "$bin/just.zip"
+              ;;
+            *)
+              curl --proto '=https' --tlsv1.2 -sSfL "$url.tar.gz" | tar xz -C "$bin"
+              ;;
+          esac
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: 类型检查（含 tests / benches）
+        shell: bash
+        run: just check
+
+  # ── ③ E2E：需要真实运行的 app，只做 Linux ───────────────────────────────────
+  # 两个 forge 都跑。依赖 ①（静态门禁不过就不必烧 CI 时间起 app）；
+  # **不依赖 ②**：② 在 Gitea 上会被跳过，而"被跳过的依赖"会让下游 job 一并被跳过。
+  e2e:
+    name: E2E（真实 app + Victauri）
+    runs-on: ubuntu-latest
+    needs: checks-linux
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: 系统依赖
+        run: |
+          SUDO=""
+          command -v sudo >/dev/null 2>&1 && SUDO=sudo
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends $APT_DEPS xvfb
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-06)
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+      # 显式给 --manifest-path：workspace root 在 src-tauri/（ADR-0004），
+      # 这样写不依赖当前目录，也不依赖 job 的 WORKDIR。
       - name: 构建
         run: cargo build --manifest-path src-tauri/Cargo.toml
 
-      # 用 cargo metadata 询问 target 目录，而不是猜路径。
-      # 根 workspace 下是 ./target（迁移前是 src-tauri/target）—— 问它就不会猜错。
+      # 用 cargo metadata 询问产物路径，而不是猜。
       - name: 解析产物路径
         run: |
           echo "TARGET_DIR=$(cargo metadata --manifest-path src-tauri/Cargo.toml \
             --format-version 1 --no-deps | jq -r '.target_directory')" >> "$GITHUB_ENV"
 
-      # 不要再写 `$(cargo metadata | jq '.packages[0].name')`：采纳根 workspace 后
-      # packages[0] 不再必然是 app crate（第一个成员是 akasha-core），而且 crate 名不一定等于 bin 名。
+      # 不要再写 `$(cargo metadata | jq '.packages[0].name')`：workspace 里第一个成员
+      # 是 akasha-core，不是 app crate；而且 crate 名不一定等于 bin 名。
       - name: 在 xvfb 下启动 app
         run: |
           xvfb-run -a "$TARGET_DIR/debug/akasha" &
@@ -166,6 +226,7 @@ jobs:
         env:
           VICTAURI_E2E: "1"
 
+      # 只能用 always()：Gitea 的表达式函数只支持它（约束 3）。
       - name: 清理
         if: always()
         run: |
