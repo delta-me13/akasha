@@ -71,6 +71,31 @@
 - **`.taurignore`** 排除不该触发 Rust 重建的路径（日志、fixtures、临时产物）。
 - 跨平台差异交给 CI 矩阵，本地不必反复跑全平台。
 
+### ⚠️ 一类会被误判成 bug 的失败：写工作区之外被沙箱拒绝
+
+在受限环境（agent 沙箱 / 容器 / 只读家目录）里，**需要写工作区之外**的命令会失败，
+而且失败信息看起来像工具或代码故障。已知两例：
+
+| 命令 | 症状 | 想写的路径 |
+|---|---|---|
+| `just dev` | dconf 警告后 panic：`Failed to setup app: 只读文件系统 (os error 30)`。**发生在 `cargo build` 成功之后**，极易被误判成"编译过了但跑不起来" | `$HOME/.local/share/...`、`/run/user/1000/dconf` |
+| `just deny` | `failed to acquire advisory database lock: ... failed to create parent directories` | `~/.cargo/advisory-dbs` |
+
+**这些是环境权限，不是项目 bug** —— 同一份代码在完整权限下实测正常启动、正常检查
+（基线见 `docs/STATUS.md`）。
+
+**遇到时的正确动作（按顺序）**：
+
+1. 先判断是否属于这一类：错误里出现「只读文件系统 / 无法创建目录 / 无法获取 lock」，
+   且目标路径在**工作区之外**。
+2. 确认属于这一类后，**直接对同一条命令申请提权重试**。不要当成项目 bug 去翻代码，
+   不要只报错一次就收工，也不要换一条命令绕开。
+3. **只在提权不可用**（被拒绝 / 无人审批）时，才退到替代方案（例如 `just dev` 的
+   XDG 重定向 —— 它有副作用，见 `docs/just.md` §6）。
+
+> 只在这条命令**确实被拒之后**才申请提权，不要预先提权：无差别的提权请求会被拒绝，
+> 也会让「权限被拒」这个信号本身失去意义。
+
 ---
 
 ## 2. 工具分工（何时用哪个）
@@ -231,7 +256,7 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 
 | 文件 | 回答什么 | 时效 |
 |---|---|---|
-| `AGENTS.md`（本文件） | 规则 | 几乎不变，保持 <200 行 |
+| `AGENTS.md`（本文件） | 规则 | 几乎不变；**只放规则**，状态/进度/细节一律在别处 |
 | `ROADMAP.md` | 去哪 | 偶尔变，**只勾复选框** |
 | `docs/STATUS.md` | 现在在哪 | **每次会话覆盖写，不追加** |
 | `docs/adr/NNNN-*.md` | 为什么这样定 | **不可变**，只追加"被 NNNN 取代" |
@@ -239,6 +264,8 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 
 - **不要把状态、进度、待办写进本文件** —— 那会让本文件每天都要改，
   而后人无法分辨哪条还是现行规则。
+- **本文件已经偏长**（超过 300 行）。再要往里加东西时，先问："这是规则，还是参考资料？"
+  参考资料（如命令的详细用法、排错步骤）应下沉到 `docs/` 并在本文件留一句指针。
 - 终端领域选型（PTY 库、VT 解析器、渲染器、序列化协议）**必须**有 ADR：
   这类决定日后被反复推翻的成本最高。
 - plan 与 ADR 各自独立编号，用 plan 头部的 `关联：ADR-XXXX` 建立关系。
@@ -319,6 +346,9 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 | `just docs-check` | 校验本表与 justfile 未漂移 | 根 |
 
 在 `src-tauri/` 目录里直接跑 `just check` 同样可用（just 就近取 justfile）。
+
+> `just dev` / `just deny` 在受限环境下的失败属于**环境权限问题，不是项目 bug** ——
+> 处理方式（识别 → 直接提权重试）见 §1 末。
 
 **人类快速上手**（任务视角、典型工作流、排错）见 [`docs/just.md`](./docs/just.md)。
 本表与那份文档都由 `just docs-check` 校验：本表必须覆盖**全部**配方；
