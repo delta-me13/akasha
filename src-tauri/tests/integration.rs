@@ -2,8 +2,7 @@
 //!
 //! Run with: VICTAURI_E2E=1 cargo test --test integration
 
-use serde_json::json;
-use victauri_test::{e2e_test, VictauriClient};
+use victauri_test::VictauriClient;
 
 fn skip_unless_e2e() -> bool {
     if !victauri_test::is_e2e() {

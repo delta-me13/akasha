@@ -45,4 +45,5 @@ strip = true
 [dev-dependencies]
 criterion = "0.8.2"
 insta = "1.48.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 victauri-test = "0.8.8"
