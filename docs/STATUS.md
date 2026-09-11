@@ -61,8 +61,9 @@ ADR-0001 决策一（根 workspace 迁移）**迁移前**的实测记录 —— 
 | 前端渲染 | `dom_snapshot` 拿到完整模板 UI（heading / link / form / textbox / button） |
 | 前提条件 | **需要能写 `$HOME`**；受限环境下会在 `Failed to setup app: 只读文件系统 (os error 30)` panic |
 
-> 当前有一个 `just dev` 正在运行（我以完整权限启动的）。停止：结束该后台作业即可；
-> 注意它占用 1420 端口，另起一个 `tauri dev` 前先停掉它。
+> **当前没有任何 `just dev` 在运行**（2026-09-11 已停掉遗留的那个；它当时已半死 ——
+> app 未运行、仅 Vite 占着 1420，详见下面「踩过的坑」#15）。
+> 1420 端口已释放，开工时从根目录**重新**起一个。
 
 **预跑得出的、迁移后必须复测的点**（已写入 `docs/plans/0001`）：
 CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` 落在 `src-tauri` 之外，
