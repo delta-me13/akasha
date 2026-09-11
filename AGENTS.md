@@ -282,6 +282,7 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 | `ROADMAP.md` | 去哪 | 偶尔变，**只勾复选框** |
 | `docs/scope.md` | **产品预备有什么**：能力清单、非目标、已识别风险、**命名约定** | 偶尔变（只增删能力条目） |
 | `docs/portable.md` | **可搬迁性怎么落地**：要求、数据目录、验证方法 | 随实测变 |
+| `docs/bitwarden.md` | **Bitwarden 集成的展开**：许可证、条目字段、指纹语义 | 随上游版本与实测变 |
 | `docs/STATUS.md` | 现在在哪 | **每次会话覆盖写，不追加** |
 | `docs/adr/NNNN-*.md` | 为什么这样定 | **不可变**，只追加"被 NNNN 取代" |
 | `docs/plans/NNNN-*.md` | 这次怎么做 | 随实现更新，就地修改 |
@@ -306,6 +307,7 @@ just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + den
 | "因为…"、"否则会…"、"之所以" | 为什么 | ADR；或 `scope.md` 能力条目的理由列 |
 | "用 `cargo tree` 可证"、具体 flag、测试内部结构 | 验证手段 | plan 的「验收命令」 |
 | 踩过的坑、排错步骤 | 参考资料 | `STATUS.md` 的坑；或专门文档（如 `portable.md`） |
+| `scope.md` 里**某一节越写越长**（超过约一屏） | 参考资料 | 拆成专门文档（`portable.md` / `bitwarden.md` 就是这么来的），原处只留结论 + 指针 |
 
 **`ROADMAP.md` 的硬预算**（由 `just docs-check` 强制）：
 
