@@ -258,7 +258,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 ### DoD：一条命令 + 两件机器查不了的事
 
 ```bash
-just ready   # fmt-check + lint(clippy + ast-grep scan) + ci-check + test + deny-offline + docs-check
+just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline + docs-check
 ```
 
 `just ready` 就是**可执行的 DoD**。能在命令里表达的验收标准，不要写成散文 ——
@@ -346,7 +346,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + ci-check + test + deny
 
 - 约定式提交：`feat|fix|refactor|perf|test|docs|chore|build(scope): 摘要`。
 - 一个提交一件事；**规范文件、CI、格式化等大范围改动单独提交**。
-- 提交前跑 `just ready`（fmt-check + lint + ci-check + test + deny-offline + docs-check）—— 见 §7。
+- 提交前跑 `just ready`（fmt-check + lint + test + deny-offline + docs-check）—— 见 §7。
 - 不要提交：`node_modules/`、`dist/`、`target/`、生成的 `gen/schemas`。
 - **要提交**：`Cargo.lock` / `pnpm-lock.yaml`（这是应用不是库，锁文件必须进仓库）。
 - 大文件（图标除外）不进 git。
@@ -394,7 +394,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + ci-check + test + deny
   漏了会让 `crates/*` 的 check / clippy / test **完全不被执行**，而 `just ready` 照样全绿
   （坑 #20）。`cargo fmt --all` 是例外（`--all` 本来就指全 workspace）。
 
-**完整命令清单（全部 20 个配方 + 用途 + 典型工作流 + 排错）见
+**完整命令清单（全部 19 个配方 + 用途 + 典型工作流 + 排错）见
 [`docs/just.md`](./docs/just.md) §2。** 新增或改名配方时必须同步那里 ——
 `just docs-check` 强制要求：**每个配方都必须在 `docs/just.md` 里出现**，
 且两份文档提到的命令都必须真实存在。该校验已纳入 `just ready` 与 CI。
@@ -404,21 +404,23 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + ci-check + test + deny
 
 ---
 
-## 12. CI：一份工作流，两个 forge
+## 12. CI：只维护 GitHub Actions 一份
 
-**Gitea 先验、GitHub 后推**（cyrene 2026-09-11 指示）。因此 `.github/workflows/ci.yml`
-必须**同时**能在两边跑。下面只列规则；每条约束的出处、边界与实测都写在那个文件的头部注释里
-（改它之前先读那一段）。
+`.github/workflows/ci.yml` 是**唯一**的工作流文件（三个 job：Linux 完整门禁 /
+Windows + macOS 类型检查 / Linux E2E）。**不要为别的 forge 加兼容层** ——
+曾做过"一份工作流同时喂 Gitea 与 GitHub"，代价是整份工作流被压在两边**共有的子集**里；
+2026-09-11 评估后放弃，那份约束清单与放弃理由见
+[`docs/plans/0102`](./docs/plans/0102-ci-platform-matrix.md)。
 
-- **只维护一份工作流文件**，且**不要创建 `.gitea/workflows/`**：Gitea 的
-  `[actions] WORKFLOW_DIRS` 默认是 `.gitea/workflows,.github/workflows`，**只读第一个存在的目录**
-  —— 建了它反而让 Gitea 忽略 GitHub 目录，CI **静默不跑**。
-- **不用 `${{ runner.* }}` 上下文**（Gitea 的上下文表里只有 `github.*` / `gitea.*`）：
-  OS 与架构改用矩阵值、`uname`、`GITHUB_*` 环境变量。
-- **`runs-on` 只用简单形式**（`xyz` / `[xyz]`）；**表达式函数只用 `always()`**。
-- **Windows / macOS 整条 job 用 `github.server_url` 门在 GitHub**：Gitea runner 是 Linux 容器，
-  放常规矩阵会一直排队等一个不存在的 runner，而**步骤级 `if` 拦不住排队**。
-  被门住的 job 会连带跳过依赖它的 job —— 所以 `e2e` 只 `needs` Linux 那条。
-- 前四条由 **`just ci-check`**（已并入 `ready`）强制：破了约束那天本地不会有任何门禁变红，
-  那正是"CI 跑不起来但没人知道"的形态。它只覆盖文本层能确定的部分，
-  **真实行为以 Gitea 上的实跑为准**。
+- **门禁只有一处定义**：CI 里跑的必须**就是**本地那一条 `just ready`，不要在 workflow 里
+  另写 cargo 命令 —— 两处必然分叉，而分叉的方向总是"CI 比本地松"。
+- **完整门禁只在 Linux 跑一次**（fmt / clippy / docs-check 的结论与平台无关）：
+  矩阵跑三遍只是把时间乘三。Windows / macOS 只做类型检查，用来挡 cfg 分支错误。
+  **出包不在 CI 的目标内**（需要真实主机：WiX / NSIS / WebView2 bootstrapper 都不行）。
+- **E2E 只 `needs` Linux 那条 job**：平台类型检查与 E2E 是**互相独立**的信号，
+  串成一条链只会让"Windows 红了"顺带吃掉 E2E 的结论。
+- **系统依赖列表只有 `env.APT_DEPS` 一处**（Tauri 官方列表；注意是
+  `libayatana-appindicator3-dev`，不是已消失的旧名 `libappindicator3-dev`）。
+
+> 改了 workflow 先在本机跑 `just ready` —— 但它只证明"命令链是通的"：
+> **CI 的真实行为以 runner 上的实跑为准**（状态见 `docs/STATUS.md`）。
