@@ -26,8 +26,8 @@
 - [x] **文档体系随范围扩大同步**（`docs/scope.md` 与 `docs/portable.md` 已登记进
       `AGENTS.md` §8；命名约定已写入 §3.1）
 - [x] **ADR 队列收敛为 3 份**（见 [`docs/adr/README.md`](./docs/adr/README.md)）
-- [~] **CI 变绿** —— 工作流已重写并合并（`checks` + `e2e` 两个 job）
-      验收：CI 上两个 job 变绿 —— **待首次推送确认**
+- [~] **CI 变绿** —— 工作流已重写（`checks-linux` / `checks-other` / `e2e` 三个 job）
+      验收：CI 上三个 job 变绿 —— **待首次推送确认**
 - [x] **ADR-0001 定案** —— 已接受（2026-09-11），决策二裁定见其 §0.3
       验收：`docs/adr/0001` 状态已改为"已接受" ✓
 
@@ -43,7 +43,7 @@
 - [x] **Rust 成员收进 `src-tauri/`**（取代上面 0101 的根 workspace 布局，见 ADR-0004）
       验收：根目录无 manifest / 成员 / target，门禁全绿，改成员仍触发重编译
       → [plan 0106](./docs/plans/archive/0106-workspace-under-src-tauri.md)
-- [~] **CI 平台矩阵**（Linux + Windows + macOS）
+- [~] **CI 平台矩阵**（Linux + Windows + macOS，GitHub Actions 一份）
       验收：三平台都能通过类型检查；Linux 另跑完整门禁与 E2E
       → [plan 0102](./docs/plans/0102-ci-platform-matrix.md)
 - [x] `src-tauri/crates/akasha-core` 骨架：**`Session` 模型**（**必须先于任何后端**）

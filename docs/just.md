@@ -45,7 +45,6 @@
 | `just tools` | 按 `mise.toml` 装齐全局 CLI 工具 | 根 |
 | `just tools-ls` | 看工具版本与来源 | 根 |
 | `just docs-check` | 文档纪律：① 命令未漂移 ② ROADMAP 没长细节（每条 ≤3 行、无代码块、无命令调用）③ plan 预算（≤200 行）+ 索引一致 + 骨架不许开工 | 根 |
-| `just ci-check` | CI 双 forge（Gitea + GitHub）可移植性：无 `runner` 上下文 / 非 Linux 分支有 `github.server_url` 门 / 三平台齐全 / 无 `.gitea/workflows/` 抢占目录（规则见 `AGENTS.md` §12） | 根 |
 
 ## 3. 两个 justfile 是什么关系
 
@@ -124,7 +123,7 @@ just deny-offline                       # 新依赖的许可证要过门禁
 | `just ready` 有一步红了 | 看结尾提示的那一步，或 `.just-ready-fail.log` |
 | 改了配方但 `just --list` 没显示 | 检查缩进（配方体必须是 tab 或统一缩进），以及是否写在了对的 justfile 里 |
 | 改了 `src-tauri/crates/` 下的文件，app 却不重编译 | 先确认它**确实在 `src-tauri/` 里面**（tauri CLI 默认只监听 `src-tauri`）。成员若被放到它外面（例如仓库根的 `src-tauri/crates/`），必须另配监听范围，否则开发循环**静默失效** —— 见 `STATUS.md` 坑 #21 |
-| Gitea 上 CI 不跑 / 一直排队 | 三个已知原因：存在 `.gitea/workflows/`（它只读第一个存在的目录）、用了 `runner` 上下文、非 Linux 分支没有 `github.server_url` 门。跑 `just ci-check` 一次全查（规则见 `AGENTS.md` §12） |
+| CI 上红了但本地全绿 | 先看是哪条 job：Linux 跑的就是本地这条完整门禁，Windows / macOS 只做类型检查 —— 那两条红多半是 cfg 分支或平台 API。构造与边界见 `AGENTS.md` §12 与 `docs/plans/0102` |
 
 **受限环境里跑 app**（容器 / agent 沙箱 / 无写权限的家目录）：
 Tauri 启动时要写 `$HOME` 下的数据目录，被拒时会 panic 在
@@ -163,15 +162,16 @@ just dev
 
 ## 8. 和 CI 的关系
 
-CI（`.github/workflows/ci.yml`）跑的就是这两条：
+CI（`.github/workflows/ci.yml`，GitHub Actions 一份）三个 job：
 
-```bash
-just ready
-just docs-check
-```
+| job | 跑什么 |
+|---|---|
+| `checks-linux` | **就是本地那一条 `just ready`** —— 门禁只有一处定义 |
+| `checks-other` | Windows / macOS 上只跑 `just check`（挡 cfg 分支错误） |
+| `e2e` | Ubuntu + xvfb 起真实 app，跑 Victauri 冒烟与集成测试 |
 
-**所以本地绿 ≈ CI 绿** —— 门禁只有一处定义，不存在"本地过了 CI 挂"的两套标准。
-另有一个独立的 E2E job 会在 xvfb 下真的把 app 跑起来。
+**所以本地绿 ≈ CI 绿** —— 不存在"本地过了 CI 挂"的两套标准。
+规则见 `AGENTS.md` §12；为什么不做别的 forge 的兼容层，见 `docs/plans/0102`。
 
 ## 9. 关于 `mise.toml`
 

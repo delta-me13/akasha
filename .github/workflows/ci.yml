@@ -1,35 +1,26 @@
-# akasha CI —— **一份工作流，两个 forge 都跑**（Gitea 先验，GitHub 后推）。
+# akasha CI —— **只维护 GitHub Actions 这一份**。
 #
-# ## 为什么是一份而不是两份
+# 三个 job：
+#   ① `checks-linux`  —— 完整门禁，跑的**就是本地那一条 `just ready`**
+#   ② `checks-other`  —— Windows / macOS 只做类型检查
+#   ③ `e2e`           —— Ubuntu + xvfb，起真实 app 跑 Victauri 冒烟与集成测试
 #
-# Gitea Actions 与 GitHub Actions 高度兼容，但"兼容"有边界（见下面四条硬约束）。
-# 两份文件必然漂移，所以这里只留一份，并用 `just ci-check` 把边界变成机器检查。
+# ## 为什么完整门禁只在 Linux 跑一次
 #
-# ## 四条硬约束（违反任何一条，Gitea 上就会坏）
+# fmt / clippy / docs-check 的结论与平台无关，放进矩阵只是把时间乘三。
+# 平台差异（PTY / serial / ssh 的 cfg 分支）由 ② 的 `just check` 拦住 ——
+# 目标是"挡 cfg 错误"，不是"三平台各跑一遍全套"。
 #
-# 1. **不能出现 `${{ runner.* }}` 上下文**。Gitea 的上下文表里只有 `github.*` / `gitea.*`
-#    （其 Quickstart 用过 `runner.os`，但那是未文档化的行为）—— 本文件改用矩阵值、
-#    `uname` 与 `GITHUB_*` 环境变量，全部有文档背书。
-# 2. **`runs-on` 只用简单形式**（`xyz`）。Gitea 明确不支持复杂 `runs-on`。
-# 3. **表达式函数只有 `always()`** 可用 —— 不要用 `contains()` / `format()` / `fromJSON()`。
-# 4. **不要创建 `.gitea/workflows/`**。Gitea 的 `[actions] WORKFLOW_DIRS` 默认是
-#    `.gitea/workflows,.github/workflows`，且**只读第一个存在的目录**；一旦建了
-#    `.gitea/workflows/`，它就会忽略本文件，CI 静默不跑。这条也由 `just ci-check` 守住。
+# **出包不在本文件的目标内**：打包需要真实主机（WiX / NSIS / WebView2 bootstrapper 都不行），
+# 那是发布流程的事。
 #
-# ## Windows / macOS 只在 GitHub 上跑
+# ## 曾经的双 forge 兼容层（已放弃）
 #
-# Gitea runner 是 Linux 容器，**没有 Windows/macOS runner**。若把这两个平台放进常规矩阵，
-# 在 Gitea 上会一直排队等一个永远不来的 runner。所以它们在独立 job 里，用
-# `github.server_url == 'https://github.com'` 整条 job 门住 —— Gitea 上连调度都不会发生。
-#
-# 已知限制：GitHub Enterprise Server 的 `server_url` 不是 github.com，也会被门掉；
-# 那时把这一行的字面量改成自己的实例地址即可（**只有这一处**）。
-#
-# ## 出处（改本文件前先读）
-#
-# - 比较与限制：https://docs.gitea.com/usage/actions/comparison
-# - 上下文与环境变量：https://docs.gitea.com/usage/actions/actions-variables
-# - 工作流目录默认值：go-gitea/gitea PR #36619（`WORKFLOW_DIRS = .gitea/workflows,.github/workflows`）
+# 本文件一度要同时喂 Gitea Actions 与 GitHub Actions，代价是整份工作流被压在
+# 两边**共有的子集**里（无 `runner.*` 上下文、`runs-on` 只能简单形式、表达式只有
+# `always()`、只能有 Linux runner）。2026-09-11 评估后放弃，**理由与那份约束清单
+# 留在 [`docs/plans/0102`](../../docs/plans/0102-ci-platform-matrix.md) 的「放弃记录」**。
+# 所以：不要为了别的 forge 再加兼容层；若哪天真的要在别处跑，先读那段记录。
 
 name: CI
 
@@ -45,15 +36,15 @@ env:
   # 唯一一份系统依赖列表。Tauri 官方 Debian/Ubuntu 列表：
   # https://v2.tauri.app/start/prerequisites/
   # 注意是 libayatana-appindicator3-dev —— 旧名 libappindicator3-dev 在
-  # ubuntu-latest 上已经不存在。
+  # ubuntu-latest 上已经不存在（STATUS 坑 #10）。
   APT_DEPS: >-
     libwebkit2gtk-4.1-dev build-essential curl wget file
     libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
 jobs:
-  # ── ① 静态门禁：两个 forge 都跑 ──────────────────────────────────────────────
-  # 完整门禁只在 Linux 跑一次（fmt / clippy / docs-check 的结论与平台无关），
-  # 而且跑的**就是本地那一条 `just ready`** —— 门禁只有一处定义，避免 CI 与本地漂移。
+  # ── ① 静态门禁 ──────────────────────────────────────────────────────────────
+  # 跑的**就是本地那一条 `just ready`** —— 门禁只有一处定义，避免 CI 与本地漂移。
+  # 不要在这里另写 cargo 命令：那样两处必然分叉，而分叉的方向总是"CI 比本地松"。
   checks-linux:
     name: 检查（Linux）
     runs-on: ubuntu-latest
@@ -61,13 +52,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      # sudo 可能不存在（Gitea 的 job 容器常以 root 直接跑），所以不硬写 sudo。
       - name: 系统依赖
         run: |
-          SUDO=""
-          command -v sudo >/dev/null 2>&1 && SUDO=sudo
-          $SUDO apt-get update
-          $SUDO apt-get install -y --no-install-recommends $APT_DEPS
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_DEPS
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-06)
         with:
@@ -79,7 +67,7 @@ jobs:
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
       # just 不在 taiki-e/install-action 的工具列表里，用官方固定版本资产。
-      # **按 uname 选资产，不用 `${{ runner.arch }}`**（约束 1）：macos-latest 已是 arm64，
+      # **按 uname 选资产，而不是 `${{ runner.arch }}`**：macos-latest 已是 arm64，
       # 装错架构会以 "bad CPU type in executable" 失败，而那个报错完全不提架构。
       # 未覆盖的组合直接失败，不退回一个"大概能用"的二进制。
       - name: 安装 just
@@ -117,17 +105,14 @@ jobs:
       - name: 安装 ast-grep
         run: npm install -g --prefix "$HOME/.local" @ast-grep/cli
 
-      # 门禁只有这一处定义：fmt-check + lint(clippy + ast-grep) + ci-check + test + deny-offline + docs-check
+      # 门禁只有这一处定义：fmt-check + lint(clippy + ast-grep) + test + deny-offline + docs-check
       - name: just ready
         run: just ready
 
-  # ── ② 其余平台：**仅 GitHub** ───────────────────────────────────────────────
+  # ── ② 其余平台 ──────────────────────────────────────────────────────────────
   # 只做类型检查（含 tests / benches），走 crate 级 `check` 的转发配方，不另写 cargo 命令。
-  # 出包需要真实主机（WiX / NSIS / WebView2 bootstrapper 都不行），不在本文件的目标内。
   checks-other:
     name: 检查（${{ matrix.os }}）
-    # 见文件头「Windows / macOS 只在 GitHub 上跑」。
-    if: github.server_url == 'https://github.com'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -174,8 +159,9 @@ jobs:
         run: just check
 
   # ── ③ E2E：需要真实运行的 app，只做 Linux ───────────────────────────────────
-  # 两个 forge 都跑。依赖 ①（静态门禁不过就不必烧 CI 时间起 app）；
-  # **不依赖 ②**：② 在 Gitea 上会被跳过，而"被跳过的依赖"会让下游 job 一并被跳过。
+  # 只依赖 ①：静态门禁不过就不必烧 CI 时间起 app。
+  # **不依赖 ②**：平台类型检查与 E2E 是**互相独立的信号**，串成一条链只会让
+  # "Windows 红了"顺带吃掉 E2E 的结论。
   e2e:
     name: E2E（真实 app + Victauri）
     runs-on: ubuntu-latest
@@ -186,10 +172,8 @@ jobs:
 
       - name: 系统依赖
         run: |
-          SUDO=""
-          command -v sudo >/dev/null 2>&1 && SUDO=sudo
-          $SUDO apt-get update
-          $SUDO apt-get install -y --no-install-recommends $APT_DEPS xvfb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_DEPS xvfb
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-06)
         with:
@@ -226,7 +210,7 @@ jobs:
         env:
           VICTAURI_E2E: "1"
 
-      # 只能用 always()：Gitea 的表达式函数只支持它（约束 3）。
+      # always()：前面任何一步失败，也要把这个后台 app 收掉。
       - name: 清理
         if: always()
         run: |
