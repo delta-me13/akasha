@@ -30,12 +30,12 @@
 | `just dev-web` | 只跑前端，不启动 app（浏览器里迭代界面） | 根 |
 | `just watch` | bacon 秒级反馈循环，不启动 app —— 改纯逻辑时最快 | 转发 |
 | `just ready` | **提交前跑这一个**：全部门禁（安静聚合，失败才倾倒） | 根组合 |
-| `just check` | 类型检查（含 tests / benches） | 转发 |
-| `just clippy` | clippy，警告即错误 | 转发 |
+| `just check` | 类型检查（含 tests / benches），**workspace 全成员** | 转发 |
+| `just clippy` | clippy，警告即错误，**workspace 全成员** | 转发 |
 | `just lint` | clippy + `ast-grep scan`（结构性护栏） | 根组合 |
-| `just fmt` | rustfmt 格式化 | 转发 |
+| `just fmt` | rustfmt 格式化（`--all` = workspace 全成员） | 转发 |
 | `just fmt-check` | 只检查格式，不改文件 | 转发 |
-| `just test` | 单元测试（cargo-nextest） | 转发 |
+| `just test` | 单元测试（cargo-nextest），**workspace 全成员** | 转发 |
 | `just test-e2e` | E2E，需要 app 正在运行（先 `just dev`） | 转发 |
 | `just deny` | 依赖门禁：许可证 / 漏洞 / 来源（需联网） | 转发 |
 | `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |

@@ -14,14 +14,19 @@ default:
     @just --list
 
 # ── 编译与检查 ──────────────────────────────────────────────────────────────
+#
+# ⚠️ 必须显式带 `--workspace`：just 的 cwd 是 `src-tauri/`，而 **cargo 默认只选当前目录所在的包**。
+# 少了它，`crates/*` 的类型检查、lint 与单测会被**静默漏掉** —— `just ready` 照样全绿，
+# 但那些 crate 根本没被编译过（见 docs/STATUS.md 坑 #20）。
+# `cargo fmt --all` 是例外：`--all` 本来就指 workspace 全部成员。
 
-# 类型检查（含 tests / benches）
+# 类型检查（含 tests / benches），覆盖 workspace 全部成员
 check:
-    cargo check --all-targets
+    cargo check --workspace --all-targets
 
-# clippy，警告即错误
+# clippy，警告即错误，覆盖 workspace 全部成员
 clippy:
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
 
 fmt:
     cargo fmt --all
@@ -35,9 +40,9 @@ watch:
 
 # ── 测试 ────────────────────────────────────────────────────────────────────
 
-# 单元测试。smoke / integration 在没有 VICTAURI_E2E 时会自行跳过
+# 单元测试，覆盖 workspace 全部成员。smoke / integration 在没有 VICTAURI_E2E 时会自行跳过
 test:
-    cargo nextest run
+    cargo nextest run --workspace
 
 # E2E：需要 app 正在运行（根目录 `just dev`）。
 # 用 cargo test 而非 nextest —— 这些用例要求串行且依赖真实 app 进程。
