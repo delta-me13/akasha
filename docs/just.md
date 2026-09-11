@@ -44,7 +44,7 @@
 | `just syscheck` | 检查系统库是否齐（缺 webkit2gtk 会提前报错） | 根 |
 | `just tools` | 按 `mise.toml` 装齐全局 CLI 工具 | 根 |
 | `just tools-ls` | 看工具版本与来源 | 根 |
-| `just docs-check` | 文档纪律：① 命令未漂移 ② ROADMAP 没长细节（每条 ≤3 行、无代码块、无命令调用） | 根 |
+| `just docs-check` | 文档纪律：① 命令未漂移 ② ROADMAP 没长细节（每条 ≤3 行、无代码块、无命令调用）③ plan 预算（≤200 行）+ 索引一致 + 骨架不许开工 | 根 |
 
 ## 3. 两个 justfile 是什么关系
 

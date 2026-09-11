@@ -7,6 +7,8 @@
 > 每个条目必须有**可执行的验收标准**。写不出验收标准的条目不许进入本文件。
 >
 > **能力清单在 [`docs/scope.md`](./docs/scope.md)** —— 本文件的阶段从它派生。
+> **每个条目末尾挂一个 plan 指针**：怎么做、可粘贴的验收命令都在那里；
+> plan 用阶段块号（`TTxx`），完整索引见 [`docs/plans/README.md`](./docs/plans/README.md)。
 
 图例：`[x]` 已完成 · `[ ]` 未开始 · `[~]` 进行中 · `[!]` 被阻塞
 
@@ -16,14 +18,15 @@
 
 目标：任何时刻 `just ready` 是绿的，规范/现状/进度各有唯一来源。
 
+**已完成 —— 按约定不回填 plan**（记录在提交历史与 `STATUS.md`）。
+
 - [x] 工具链与依赖就位（`just check` / `just lint` 退出码 0）
 - [x] 依赖门禁（`just deny-offline` → bans / licenses / sources all ok）
 - [x] 规范与文档体系（`AGENTS.md` + `ROADMAP.md` + `docs/`）
 - [x] **文档体系随范围扩大同步**（`docs/scope.md` 与 `docs/portable.md` 已登记进
       `AGENTS.md` §8；命名约定已写入 §3.1）
 - [x] **ADR 队列收敛为 3 份**（见 [`docs/adr/README.md`](./docs/adr/README.md)）
-- [~] **修好 CI** —— 已合并为 `.github/workflows/ci.yml`（`checks` 跑 `just ready`，
-      `e2e` 依赖 `checks`）
+- [~] **CI 变绿** —— 工作流已重写并合并（`checks` + `e2e` 两个 job）
       验收：CI 上两个 job 变绿 —— **待首次推送确认**
 - [x] **ADR-0001 定案** —— 已接受（2026-09-11），决策二裁定见其 §0.3
       验收：`docs/adr/0001` 状态已改为"已接受" ✓
@@ -34,32 +37,40 @@
 
 目标：多 crate 布局落地，且跨平台差异从第一天就被验证。
 
-- [ ] **落地 ADR-0001 决策一**（根 workspace）
+- [ ] **落地 ADR-0001 决策一：根 workspace**
       验收：仓库根成为 workspace、`src-tauri` 降为成员之一，且门禁仍全绿
-      见 [`docs/plans/0001`](./docs/plans/0001-root-workspace.md)
-- [ ] **迁移后复测开发循环**：确认改 `crates/` 下的文件**仍触发重编译与重启**
-      验收：改一个 `crates/` 文件后 app 自动重启
+      → [plan 0101](./docs/plans/0101-root-workspace.md)
 - [ ] **CI 平台矩阵**（Linux + Windows + macOS）
-      验收：三平台都能通过类型检查；Linux 另跑完整门禁
+      验收：三平台都能通过类型检查；Linux 另跑完整门禁与 E2E
+      → [plan 0102](./docs/plans/0102-ci-platform-matrix.md)
 - [ ] `crates/akasha-core` 骨架：**`Session` 模型**（**必须先于任何后端**）
       验收：单测覆盖 `SessionId` 分配、关闭一个 `Session` 不影响另一个
+      → [plan 0103](./docs/plans/0103-core-session-model.md)
+- [ ] **迁移后复测开发循环**：改 `crates/` 下的文件仍触发重编译与重启
+      验收：改一个 `crates/` 文件后 app 自动重启（否则开发循环静默失效）
+      → [plan 0104](./docs/plans/0104-dev-loop-retest.md)
 - [ ] `crates/akasha-pty`：通用 `Transport` trait + `portable-pty` 实现
       验收：用假实现覆盖 spawn / write / shutdown 的单测通过
+      → [plan 0105](./docs/plans/0105-pty-transport-trait.md)
 
 ---
 
 ## 阶段 2 — 端到端最小终端
 
-目标：能开一个 shell、敲命令、看到输出，且**退出后**不残留进程。
+目标：能开一个 shell、敲命令、看到输出，且**真正退出后**不残留进程。
 
 - [ ] `Transport` 输出合批（≥16ms 或 ≥64KiB）
       验收：合批边界有单测断言；有吞吐基线数字
+      → [plan 0201](./docs/plans/0201-output-batching.md)
 - [ ] IPC 二进制通道（`tauri::ipc::Channel<Vec<u8>>`）
       验收：大输出不掉帧，且这条路径被结构性规则守住
+      → [plan 0202](./docs/plans/0202-ipc-binary-channel.md)
 - [ ] 前端 xterm + WebGL 渲染，字节流不进 React state
       验收：终端由 canvas 渲染；无 per-chunk 组件重渲染
-- [ ] **进程生命周期三态**（窗口关闭 / 配置为直接退出 / 真正退出，见 `AGENTS.md` §3.3）
-      验收：**真正退出后**零残留子进程；且**收托盘时子进程仍在**
+      → [plan 0203](./docs/plans/0203-xterm-webgl-render.md)
+- [ ] **真正退出零残留**（窗口关闭退出 / app 重载 / panic 三条路径）
+      验收：三条路径退出后都没有残留子进程（托盘语义见阶段 3）
+      → [plan 0204](./docs/plans/0204-exit-zero-residue.md)
 
 ---
 
@@ -67,14 +78,18 @@
 
 目标：点叉不退出；隧道与终端在窗口隐藏期间存活。
 
-- [ ] 托盘图标 + 菜单（显示/隐藏、退出）；Linux 依赖 `libayatana-appindicator3`
+- [ ] 托盘图标 + 菜单（显示/隐藏、隧道列表与状态、退出）
       验收：点叉后进程仍在、托盘可见；从托盘退出后零残留
+      → [plan 0301](./docs/plans/0301-tray-icon-menu.md)
 - [ ] **隐藏而非销毁**窗口
-      验收：隐藏再显示后，终端回滚缓冲仍在（证明窗口没被销毁）
+      验收：隐藏再显示后终端回滚缓冲仍在，且子进程仍在（**这是预期**，不是泄漏）
+      → [plan 0302](./docs/plans/0302-hide-not-destroy.md)
 - [ ] 关闭行为可配置（收托盘 / 直接退出）
-      验收：切成"直接退出"后点叉即退出，且零残留
+      验收：切成"直接退出"后点叉即退出且零残留；切回收托盘后点叉不退出
+      → [plan 0303](./docs/plans/0303-close-behavior-config.md)
 - [ ] 单实例（第二个实例唤起已有窗口，而不是各跑一套）
       验收：连续启动两次只有一个进程、一条隧道
+      → [plan 0304](./docs/plans/0304-single-instance.md)
 
 ---
 
@@ -82,16 +97,24 @@
 
 目标：四套池可增删改查；库加密；可导出。
 
+- [ ] **ADR-0002 定案**（动存储代码之前；同时收编 Bitwarden 的机密来源）
+      验收：ADR 状态为已接受，且补齐了 `scope.md` 里"还没有值"的那几项
+      → [plan 0400](./docs/plans/0400-adr-0002-secret-storage.md)
 - [ ] `rusqlite` + **SQLCipher**（`bundled-sqlcipher-vendored-openssl`）
       验收：用错误口令打不开库；`.db` 文件里搜不到明文密钥
+      → [plan 0401](./docs/plans/0401-sqlcipher-open.md)
 - [ ] 口令 → KDF → 库密钥（**不依赖 OS keychain**，见 `scope.md` §1）
       验收：无任何 `keyring` 类依赖
+      → [plan 0402](./docs/plans/0402-passphrase-kdf.md)
 - [ ] 四套池的 CRUD：密钥 / ssh 配置 / serial 配置 / 端口转发规则
       验收：各自的 round-trip 单测通过；**库里不存绝对路径**（P2）
+      → [plan 0403](./docs/plans/0403-pools-crud.md)
 - [ ] dump 与导出（可选加密；明文导出必须二次确认）
       验收：加密导出可在另一目录导入还原；明文导出路径有显式确认门槛
+      → [plan 0404](./docs/plans/0404-dump-export.md)
 - [ ] **可搬迁性验证**（见 [`docs/portable.md`](./portable.md)）
       验收：移动整个文件夹后重启，**原有主机/密钥/规则都在**（只验证"能开"不算过）
+      → [plan 0405](./docs/plans/0405-portability-verify.md)
 
 ---
 
@@ -99,15 +122,21 @@
 
 目标：纯 Rust SSH，不调系统 `ssh`。
 
+- [ ] **ADR-0003 定案**（动 `akasha-ssh` 之前；含线协议与资源模型）
+      验收：ADR 状态为已接受，且有可核对的 `russh` 版本结论
+      → [plan 0501](./docs/plans/0501-adr-0003-ssh-stack.md)
 - [ ] `crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存）
       验收：同主机开三个 Session **只问一次**凭据（`scope.md` §2.2）
-- [ ] **`direct-tcpip` 原语**（本阶段先用于跳板）
+      → [plan 0502](./docs/plans/0502-ssh-connect-auth.md)
+- [ ] **`direct-tcpip` 原语**（本阶段先用于跳板，之后三处复用）
       验收：ProxyJump 可连通只对跳板机可见的目标
-- [ ] `~/.ssh/config` **受限子集**导入（`Match`/`Include` 显式报错）
+      → [plan 0503](./docs/plans/0503-direct-tcpip-primitive.md)
+- [ ] `~/.ssh/config` **受限子集**导入（`Match` / `Include` 显式报错）
       验收：含 `Match` 的配置产生**明确报错**，不是静默误解析
+      → [plan 0504](./docs/plans/0504-ssh-config-subset-import.md)
 - [ ] known_hosts 校验与缓存
       验收：host key 变化时拒绝连接并提示（不静默接受）
-- [ ] ADR-0002 / ADR-0003 落地（写于本阶段开工前，见 `docs/adr/README.md`）
+      → [plan 0505](./docs/plans/0505-known-hosts.md)
 
 ---
 
@@ -116,60 +145,87 @@
 目标：本地/远程/动态三类转发，独立 Session，失败可见。
 
 - [ ] 隧道实体（独立于终端 `Session`）+ 状态机
-      验收：`连接中/已连接/重连中/失败/已停止` 五态可观测；状态变化发事件
+      验收：五态可观测；状态变化发事件
+      → [plan 0601](./docs/plans/0601-tunnel-entity-state-machine.md)
 - [ ] 本地转发 `-L`（复用阶段 5 的 `direct-tcpip`）
       验收：转发端口可访问远端服务
+      → [plan 0602](./docs/plans/0602-local-forward.md)
 - [ ] 动态转发 `-D`（本地 SOCKS5 服务端）
       验收：配置 SOCKS5 代理后能访问远端网络
+      → [plan 0603](./docs/plans/0603-dynamic-forward-socks5.md)
 - [ ] 远程转发 `-R`（`tcpip-forward` + `forwarded-tcpip`，**另一套机制**）
       验收：远端监听端口可回连到本机服务
+      → [plan 0604](./docs/plans/0604-remote-forward.md)
 - [ ] 断线重连：**3 次 + 指数退避**，然后标记失败
       验收：拔网线后进入"重连中"，耗尽次数后变"失败"**且托盘可见**；可手动重试
+      → [plan 0605](./docs/plans/0605-reconnect-backoff.md)
 - [ ] 关闭 `Session` 立刻断连，并中止该 `Session` 的重连循环
       验收：关闭转发 Session 后连接数与重连任务数都归零
+      → [plan 0606](./docs/plans/0606-close-session-teardown.md)
 
 ---
 
 ## 阶段 7 — SFTP
 
+目标：双栏传输可用，且**任何时刻都不留下冒充完整的半截文件**。
+
 - [ ] 双栏界面骨架 + 两侧独立选主机（**不需要先开终端 Session**）
       验收：直接打开 SFTP 即可用，无终端依赖
+      → [plan 0701](./docs/plans/0701-sftp-dual-pane.md)
 - [ ] local ↔ host 双向；**临时名 + 原子重命名**落盘
       验收：中断传输后目标目录里**没有**冒充完整的文件
+      → [plan 0702](./docs/plans/0702-transfer-atomic-rename.md)
 - [ ] host ↔ host：**优先 B 档（`direct-tcpip`），失败回退 A 档（内存 relay）**
       验收：A 无法直连 B 时自动走 A 档；两档均不落盘
+      → [plan 0703](./docs/plans/0703-host-to-host-topology.md)
 - [ ] 并发 in-flight 请求（pipelining）
       验收：大量小文件的吞吐显著优于串行请求
+      → [plan 0704](./docs/plans/0704-pipelining.md)
 
 ---
 
 ## 阶段 8 — serial
 
+目标：串口能枚举、能按参数打开，且不把 libudev 带进别的平台。
+
 - [ ] `crates/akasha-serial`，`libudev` 走 **Linux-only cargo feature**
       验收：Windows / macOS 构建不链接 libudev
+      → [plan 0801](./docs/plans/0801-serial-crate-libudev.md)
 - [ ] 端口枚举与连接参数（波特率/数据位/停止位/校验/流控）
       验收：枚举在本机列出真实端口；参数错误时给出可读报错
+      → [plan 0802](./docs/plans/0802-serial-enumeration-params.md)
 
 ---
 
 ## 阶段 9 — Bitwarden 导入
 
+目标：`bw` 前置换算清楚，只读导入可用，离线缓存强度与本地池同级。
+
+- [ ] **实测 `bw` 对 `sshKey` 条目的非交互行为**（实现前；需要真实 vault，可提前做）
+      验收：四项实测各有结论与可复现命令，写回 [`docs/bitwarden.md`](./bitwarden.md)
+      → [plan 0901](./docs/plans/0901-bw-noninteractive-probe.md)
 - [ ] 前置检查：探测 `bw` **及其变体**
-      验收：未安装 → 明确报"需安装 Bitwarden CLI **及该装哪个变体**"；
-      专有变体 → 给出提示（许可证约束见 [`docs/bitwarden.md`](./docs/bitwarden.md) §2）
+      验收：未安装 → 明确报"需安装 Bitwarden CLI **及该装哪个变体**"；专有变体 → 给出提示
+      → [plan 0902](./docs/plans/0902-bw-preflight-check.md)
 - [ ] 只读导入 SSH key 条目（`sshKey.privateKey`）
       验收：导入后可用该密钥建立 SSH 连接
+      → [plan 0903](./docs/plans/0903-bw-readonly-import.md)
 - [ ] 离线缓存：**私钥离线自检用 `fingerprint`**，联网刷新用 `revisionDate`
       验收：断网时能校验缓存完整性；联网且 `revisionDate` 变化时提示刷新
-- [ ] **实现前先实测** `bw` 对 `sshKey` 条目的非交互行为（`STATUS.md` 待办）
+      → [plan 0904](./docs/plans/0904-bw-offline-cache.md)
 
 ---
 
 ## 阶段 10 — Android（延迟）
 
+目标：**显式**决定 Android 的形态，并把它写进 `scope.md`。
+
 - [ ] 评估 Android 上的托盘与端口转发形态
+      验收：结论写进 `scope.md` §9 / §10，且有可核对的出处
+      → [plan 1001](./docs/plans/1001-android-form-factor.md)
 - [ ] 只做 ssh/sftp，还是接 Termux（local）/ USB Host（serial）
       验收：这个决定必须**显式**做出并记录，不能是意外结果
+      → [plan 1002](./docs/plans/1002-android-scope-decision.md)
 
 ---
 
@@ -184,4 +240,4 @@
 - 不为 webview 依赖栈做环境重定向
 - 不做 host↔host"真不中转"
 
-**每条的理由与完整清单见 [`docs/scope.md`](./docs/scope.md) §10。**
+**每条的理由与完整清单见 [`docs/scope.md`](./scope.md) §10。**

@@ -8,15 +8,16 @@
 
 ## 一句话
 
-地基阶段收尾：项目可编译、`just ready` 全绿、CI 已重写完成；**CI 的真实验证要等首次推送**。
+**路线图已细分为逐工作项 plan**（42 份，阶段块号 `TTxx`）：下一步仍是落地根 workspace。
+项目可编译、`just ready` 全绿；**CI 的真实验证要等首次推送**。
 
-**范围与文档已同步完毕，可以开工。** 产品范围为三后端（local/ssh/serial）+ SFTP +
-四套配置池 + Bitwarden + SSH 端口转发（L/R/D）+ 常驻托盘，见
-[`docs/scope.md`](./scope.md)。阶段划分已按新范围重写（[`ROADMAP.md`](../ROADMAP.md)，
-10 个阶段，**CI 平台矩阵已提前到阶段 1**），ADR 收敛为 3 份
-（[`docs/adr/README.md`](./adr/README.md)）。
+产品范围为三后端（local/ssh/serial）+ SFTP + 四套配置池 + Bitwarden +
+SSH 端口转发（L/R/D）+ 常驻托盘，见
+[`docs/scope.md`](./scope.md)。[`ROADMAP.md`](../ROADMAP.md) 10 个阶段、42 个条目，
+**每个条目都挂 plan 指针**；索引与归档规则见 [`docs/plans/README.md`](./plans/README.md)。
+ADR 收敛为 3 份（[`docs/adr/README.md`](./adr/README.md)）。
 
-**下一步**：[`docs/plans/0001`](./plans/0001-root-workspace.md)（根 workspace）——
+**下一步**：[`docs/plans/0101`](./plans/0101-root-workspace.md)（根 workspace）——
 ADR-0001 决策二已裁定，不再阻塞。
 
 两条定位性约束：**可搬迁**（搬走 bin 文件夹后仍能开且数据还在）与**不依赖 OS 组件**
@@ -27,7 +28,7 @@ ADR-0001 决策二已裁定，不再阻塞。
 | 命令 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + docs-check） | 退出码 **0** |
-| `just docs-check` | `✅ 文档命令与 justfile 同步（权威清单 docs/just.md §2）` |
+| `just docs-check` | 三部分全过：命令未漂移 / ROADMAP 49 条目在 3 行内 / **plan 42 份 ≤200 行且索引一致** |
 | `just check` | 退出码 **0** |
 | `just lint`（clippy `-D warnings` + ast-grep scan） | 退出码 **0** |
 | `just deny-offline`（licenses / bans / sources） | `bans ok, licenses ok, sources ok` |
@@ -76,28 +77,24 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
       —— ADR-0001 **已接受**（决策二裁定见其 §0.3），前置条件已满足，**可以开工**
       注意其中"迁移后必须复测"的一项：改 `crates/` 下的文件仍要能触发重编译与重启
 
-### 文档同步（本轮已完成）
+### 路线图细分（本轮已完成）
 
-- [x] `AGENTS.md` §8 文档体系表加入 `docs/scope.md` 与 `docs/portable.md`；
-      §3.1 加入**命名约定**；§6 加入计划规则 `no-ui-vocab-in-types`
-- [x] `ROADMAP.md` **按新范围重写**（4 阶段 → 10 阶段；CI 平台矩阵提前到阶段 1；
-      每个条目都带可执行验收标准）
-- [x] **ADR 队列收敛为 3 份**：0001（切分与后端抽象）/ 0002（机密存储与可搬迁）/
-      0003（SSH 栈与资源模型）。原 7~8 份的合并去向见 [`docs/adr/README.md`](./adr/README.md)。
-      0002 / 0003 **不在现在写** —— 等真正要动那块代码之前再写，
-      避免塞满"还没被代码验证过的细节"
-- [x] `docs/scope.md` 全文 `tab` → `Session` 统一（40 处），并新增 §1.2 命名约定
-- [x] **汇总类文档的纪律成文并做成检查**（起因：ROADMAP 会慢慢长实现细节）：
-      `AGENTS.md` 新增 **§8.1**（三类不许出现的内容 + 搬运去向 + ROADMAP 硬预算）；
-      搬运表与"三级粒度"进 [`docs/README.md`](./README.md)；
-      **`just docs-check` 增加三个检查**：条目 ≤3 行、无代码块、反引号里无命令调用。
-      已用三个负例分别验证（粘命令 / 条目 4 行 / 塞代码块 → 都如实报错）
-- [x] `ROADMAP.md` 按新纪律**清掉 17 处细节泄漏**（验证手段与理由移出：
-      `cargo metadata`、`introspect {...}`、`cargo tree 可证` 等 → 归 plan 的验收命令）
-- [x] **`docs/scope.md` §7 下沉为 [`bitwarden.md`](./bitwarden.md)**（626 → **534 行**）：
-      许可证条款原文、四条技术路的核实结果、条目字段结构与指纹推导搬走；
-      `scope.md` 只留结论表 + 指针。这是 §8.1 那条"某一节超过约一屏就下沉"的首次应用
-      （此前的 `scope.md` → `portable.md` 是同类，但那时还没成文）
+- [x] **`ROADMAP.md` 按工作项细分**：42 个条目各自挂一个 plan 指针；编号改用
+      **阶段块号 `TTxx`**（阶段 1 = `01xx`），原 `0001` 已 `git mv` 为 `0101`
+- [x] **一工作项一 plan 文件**：阶段 1–3 与两份 ADR 前置共 **15 份完整 plan**
+      （步骤 + 可粘贴的验收命令）；阶段 4–10 共 **27 份骨架**（只有目标/非目标/前置/判据，
+      **不写推测性步骤**）—— 分界就是"现在能不能写出可执行的验收命令"
+- [x] **归档机制成文**：[`docs/plans/README.md`](./plans/README.md) 定义编号、索引、
+      **单文件 ≤200 行**预算与归档规则（完成后整份 `git mv` 进 `archive/`，索引保留一行，
+      **永不把多份 plan 拼接成汇总**）；[`archive/README.md`](./plans/archive/README.md) 占位
+- [x] **修正四处结构性错位**：ADR-0002 从阶段 5 归位阶段 4（存储动工前必须先定案）；
+      ADR-0003 提到阶段 5 之首；阶段 2 的"生命周期三态"只保留**真正退出**的路径
+      （托盘语义归阶段 3，避免在托盘不存在时就要求"收托盘时子进程仍在"）；
+      阶段 9 的"实测 `bw`"提到最前（它是实现的前置）
+- [x] **`just docs-check` 增加第三部分**：plan ≤200 行 / 索引双向一致 / 骨架不许标"进行中"。
+      三个负例分别验证（286 行超预算、改号造成索引缺行 + 孤儿文件、骨架标"进行中"）
+      → 都如实报红，还原后转绿
+- [x] `AGENTS.md` §8 登记 plan 生命周期与预算（**宪法改动，单独提交**）
 
 ### 已定案（cyrene 裁定，2026-09-11）
 
@@ -131,6 +128,9 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
 
 ## 结构现状（容易找错地方）
 
+- **文档三级粒度**：`ROADMAP.md`（判据）→ `docs/plans/TTxx-*`（手段）→ 本文件的坑（痕迹）。
+  plan 索引与归档规则在 [`docs/plans/README.md`](./plans/README.md)；
+  **完成的 plan 整份移入 `docs/plans/archive/`**（不拼接、不追加，见 `AGENTS.md` §8）。
 - 命令入口分两处：项目级在根 `justfile`，crate 级在 `src-tauri/justfile`。
   根只**转发**，命令体只有一处。**权威清单在 `docs/just.md` §2**，由 `just docs-check` 强制同步。
 - CI 只有一个文件 `.github/workflows/ci.yml`（原 `victauri.yml` 已删除并合并进来）。
@@ -178,6 +178,9 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
 16. **含反引号的 grep 模式在 justfile 配方里必须整体放进单引号** ——
     配方体由 bash 执行，裸反引号会被当**命令替换**跑掉。
     `docs-check` 的 ROADMAP 纪律检查踩过这一点。
+17. **多文件行数检查要逐文件取（`wc -l < 单文件`，或 awk 的 `FNR`）** ——
+    awk 的 `NR` 会**跨文件累加**：42 份小 plan 会被报成"某一份 1813 行"。
+    `docs-check` 的 plan 预算检查因此对每个文件单独 `wc -l`，不要图省事用一次 awk。
 
 ## 环境
 

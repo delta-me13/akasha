@@ -125,7 +125,7 @@ ready:
     done; \
     echo "✅ just ready 全绿（$ok/$total）"
 
-# 文档纪律（两部分，规则见 AGENTS.md §8 与 §8.1）。
+# 文档纪律（三部分，规则见 AGENTS.md §8 与 §8.1，plan 规则见 docs/plans/README.md）。
 #
 # A. 命令未漂移 —— 防止照着一份过期规则去用已不存在的旧命令
 #    * docs/just.md §2 是**权威清单**：必须覆盖**全部**配方（正向，且**只认 §2 表格内的记录**）
@@ -133,6 +133,10 @@ ready:
 # B. 汇总类文档没长细节 —— ROADMAP 放"判据"，不放"手段"
 #    * 每条 ≤3 行、无代码块、反引号里不出现命令调用（--flag / {...}）
 #    * 只拦"细节泄漏"，**不拦能力条目本身的增长**：条目数该随能力涨，行数不该随细节涨
+# C. plan 的预算与索引 —— 防止归档机制把细节堆进一个大文件
+#    * 每份 plan（含 archive/）≤200 行；超了要拆成两份，不是继续加
+#    * 索引 docs/plans/README.md 双向一致：有文件必有索引行，有索引行必有文件
+#    * 标「进行中」却没有「## 验收命令」的 plan 直接红 —— 骨架 plan 不许开工
 #
 # 踩过的坑，写在这里免得重蹈：
 #   1. 反斜杠转义的反引号在 grep -E 里会把反引号本身吞掉，于是 sed 剥不掉 "just " 前缀。
@@ -158,5 +162,18 @@ docs-check:
     if [ -n "$hits" ]; then echo "❌ ROADMAP.md 粘进了命令调用 —— 验证手段属于 plan 的「验收命令」:"; echo "$hits"; miss=1; fi; \
     over=$(awk '/^- \[[ x~!]\]/{if(n>3)print st; st=NR;n=1;next} /^[[:space:]]/{if(n>0){n++;next}} {if(n>0&&n>3)print st; n=0} END{if(n>0&&n>3)print st}' ROADMAP.md); \
     if [ -n "$over" ]; then echo "❌ ROADMAP.md 条目超过 3 行上限（起始行号）: $over"; miss=1; fi; \
-    if [ "$miss" = "1" ]; then echo "→ 命令类问题同步 docs/just.md §2；纪律类问题见 AGENTS.md §8.1（条目只放判据 + 可选 plan 指针）"; exit 1; fi; \
-    echo "✅ 文档纪律通过（命令与 justfile 同步；ROADMAP $(grep -cE '^- \[[ x~!]\]' ROADMAP.md) 个条目均在 3 行内、无代码块与命令调用）"
+    plans=$(find docs/plans -name '[0-9][0-9][0-9][0-9]-*.md' | sort); \
+    for f in $plans; do \
+      n=$(wc -l < "$f"); \
+      if [ "$n" -gt 200 ]; then echo "❌ plan 超过 200 行预算（$n 行）: $f —— 拆成两份，别把细节堆进一个文件"; miss=1; fi; \
+      id=$(basename "$f" | cut -c1-4); \
+      grep -qE "^\| $id " docs/plans/README.md || { echo "❌ docs/plans/README.md 索引缺行: $id ($f)"; miss=1; }; \
+      if grep -qE '\*\*状态\*\*：进行中' "$f" && ! grep -q '^## 验收命令' "$f"; then \
+        echo "❌ 标为「进行中」却没有「## 验收命令」—— 骨架 plan 不许开工: $f"; miss=1; \
+      fi; \
+    done; \
+    for id in $(grep -oE '^\| [0-9]{4} ' docs/plans/README.md | grep -oE '[0-9]{4}'); do \
+      find docs/plans -name "$id-*.md" | grep -q . || { echo "❌ docs/plans/README.md 索引里的 plan 没有文件: $id"; miss=1; }; \
+    done; \
+    if [ "$miss" = "1" ]; then echo "→ 命令类问题同步 docs/just.md §2；纪律类问题见 AGENTS.md §8.1；plan 类问题见 docs/plans/README.md"; exit 1; fi; \
+    echo "✅ 文档纪律通过（命令与 justfile 同步；ROADMAP $(grep -cE '^- \[[ x~!]\]' ROADMAP.md) 个条目均在 3 行内、无代码块与命令调用；plan $(printf '%s\n' "$plans" | grep -c . ) 份 ≤200 行且索引一致）"
