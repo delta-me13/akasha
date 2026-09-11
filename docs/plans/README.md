@@ -64,10 +64,11 @@
 | 编号 | 标题 | 状态 | 前置 | 文件 |
 |---|---|---|---|---|
 | 0101 | 落地根 workspace | 已完成 | ADR-0001 已接受 | [0101](./archive/0101-root-workspace.md) |
+| 0106 | Rust 成员收进 `src-tauri/`（**取代 0101 的布局**） | 已完成 | plan 0101 / 0104 | [0106](./archive/0106-workspace-under-src-tauri.md) |
 | 0102 | CI 平台矩阵（Linux + Windows + macOS） | 进行中（本地已完成，待 CI 实跑） | plan 0101 | [0102](./0102-ci-platform-matrix.md) |
-| 0103 | `crates/akasha-core`：`Session` 模型骨架 | 已完成 | plan 0101 | [0103](./archive/0103-core-session-model.md) |
-| 0104 | 迁移后复测开发循环 | 已完成（监听范围曾失效，已修） | plan 0103（要有 `crates/` 成员才测得了） | [0104](./archive/0104-dev-loop-retest.md) |
-| 0105 | `crates/akasha-pty`：通用 `Transport` trait | 已完成 | plan 0103（命名与规则先立） | [0105](./archive/0105-pty-transport-trait.md) |
+| 0103 | `src-tauri/crates/akasha-core`：`Session` 模型骨架 | 已完成 | plan 0101 | [0103](./archive/0103-core-session-model.md) |
+| 0104 | 迁移后复测开发循环 | 已完成（监听范围曾失效，已修） | plan 0103（要有 `src-tauri/crates/` 成员才测得了） | [0104](./archive/0104-dev-loop-retest.md) |
+| 0105 | `src-tauri/crates/akasha-pty`：通用 `Transport` trait | 已完成 | plan 0103（命名与规则先立） | [0105](./archive/0105-pty-transport-trait.md) |
 
 ### 阶段 2 — 端到端最小终端
 
@@ -103,7 +104,7 @@
 | 编号 | 标题 | 状态 | 前置 / 展开时机 | 文件 |
 |---|---|---|---|---|
 | 0501 | 写 ADR-0003（SSH 栈与资源模型） | 未开始 | 阶段 5 开工前 | [0501](./0501-adr-0003-ssh-stack.md) |
-| 0502 | `crates/akasha-ssh`：连接 + 认证 | 未规划（骨架） | 展开时机：plan 0501 定案后 | [0502](./0502-ssh-connect-auth.md) |
+| 0502 | `src-tauri/crates/akasha-ssh`：连接 + 认证 | 未规划（骨架） | 展开时机：plan 0501 定案后 | [0502](./0502-ssh-connect-auth.md) |
 | 0503 | `direct-tcpip` 原语 | 未规划（骨架） | 展开时机：plan 0502 之后 | [0503](./0503-direct-tcpip-primitive.md) |
 | 0504 | `~/.ssh/config` 受限子集导入 | 未规划（骨架） | 展开时机：plan 0502 之后 | [0504](./0504-ssh-config-subset-import.md) |
 | 0505 | known_hosts 校验与缓存 | 未规划（骨架） | 展开时机：plan 0502 之后 | [0505](./0505-known-hosts.md) |
@@ -132,7 +133,7 @@
 
 | 编号 | 标题 | 状态 | 前置 / 展开时机 | 文件 |
 |---|---|---|---|---|
-| 0801 | `crates/akasha-serial`：`libudev` 走 Linux-only feature | 未规划（骨架） | 展开时机：阶段 8 开工时 | [0801](./0801-serial-crate-libudev.md) |
+| 0801 | `src-tauri/crates/akasha-serial`：`libudev` 走 Linux-only feature | 未规划（骨架） | 展开时机：阶段 8 开工时 | [0801](./0801-serial-crate-libudev.md) |
 | 0802 | 端口枚举与连接参数 | 未规划（骨架） | 展开时机：plan 0801 之后 | [0802](./0802-serial-enumeration-params.md) |
 
 ### 阶段 9 — Bitwarden 导入

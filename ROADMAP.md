@@ -40,16 +40,19 @@
 - [x] **落地 ADR-0001 决策一：根 workspace**
       验收：仓库根成为 workspace、`src-tauri` 降为成员之一，且门禁仍全绿
       → [plan 0101](./docs/plans/archive/0101-root-workspace.md)
+- [x] **Rust 成员收进 `src-tauri/`**（取代上面 0101 的根 workspace 布局，见 ADR-0004）
+      验收：根目录无 manifest / 成员 / target，门禁全绿，改成员仍触发重编译
+      → [plan 0106](./docs/plans/archive/0106-workspace-under-src-tauri.md)
 - [~] **CI 平台矩阵**（Linux + Windows + macOS）
       验收：三平台都能通过类型检查；Linux 另跑完整门禁与 E2E
       → [plan 0102](./docs/plans/0102-ci-platform-matrix.md)
-- [x] `crates/akasha-core` 骨架：**`Session` 模型**（**必须先于任何后端**）
+- [x] `src-tauri/crates/akasha-core` 骨架：**`Session` 模型**（**必须先于任何后端**）
       验收：单测覆盖 `SessionId` 分配、关闭一个 `Session` 不影响另一个
       → [plan 0103](./docs/plans/archive/0103-core-session-model.md)
-- [x] **迁移后复测开发循环**：改 `crates/` 下的文件仍触发重编译与重启
-      验收：改一个 `crates/` 文件后 app 自动重启（否则开发循环静默失效）
+- [x] **迁移后复测开发循环**：改 `src-tauri/crates/` 下的文件仍触发重编译与重启
+      验收：改一个 `src-tauri/crates/` 文件后 app 自动重启（否则开发循环静默失效）
       → [plan 0104](./docs/plans/archive/0104-dev-loop-retest.md)
-- [x] `crates/akasha-pty`：通用 `Transport` trait + `portable-pty` 实现
+- [x] `src-tauri/crates/akasha-pty`：通用 `Transport` trait + `portable-pty` 实现
       验收：用假实现覆盖 spawn / write / shutdown 的单测通过
       → [plan 0105](./docs/plans/archive/0105-pty-transport-trait.md)
 
@@ -125,7 +128,7 @@
 - [ ] **ADR-0003 定案**（动 `akasha-ssh` 之前；含线协议与资源模型）
       验收：ADR 状态为已接受，且有可核对的 `russh` 版本结论
       → [plan 0501](./docs/plans/0501-adr-0003-ssh-stack.md)
-- [ ] `crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存）
+- [ ] `src-tauri/crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存）
       验收：同主机开三个 Session **只问一次**凭据（`scope.md` §2.2）
       → [plan 0502](./docs/plans/0502-ssh-connect-auth.md)
 - [ ] **`direct-tcpip` 原语**（本阶段先用于跳板，之后三处复用）
@@ -188,7 +191,7 @@
 
 目标：串口能枚举、能按参数打开，且不把 libudev 带进别的平台。
 
-- [ ] `crates/akasha-serial`，`libudev` 走 **Linux-only cargo feature**
+- [ ] `src-tauri/crates/akasha-serial`，`libudev` 走 **Linux-only cargo feature**
       验收：Windows / macOS 构建不链接 libudev
       → [plan 0801](./docs/plans/0801-serial-crate-libudev.md)
 - [ ] 端口枚举与连接参数（波特率/数据位/停止位/校验/流控）

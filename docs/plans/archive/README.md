@@ -11,3 +11,10 @@
 3. 每份 plan 同样受 **≤ 200 行**预算约束（由 `just docs-check` 检查）。
 
 当前为空（还没有已完成的 plan）。
+
+## 归档 plan 里的路径按**当时**的布局书写
+
+`0106` 之后，Rust 成员从仓库根 `crates/` 挪到了 `src-tauri/crates/`（见
+[ADR-0004](../adr/0004-rust-workspace-under-src-tauri.md)）。更早的归档 plan
+（`0101` / `0103` / `0104` / `0105`）里出现的 `crates/…` 是**历史事实，不回改** ——
+今天要跑它们的验收命令，把路径读作 `src-tauri/crates/…`。

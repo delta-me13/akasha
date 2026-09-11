@@ -17,7 +17,7 @@ IPC 类型边界、ast-grep 结构护栏、测试与 DoD、依赖清单归属）
 需要立刻记住的少数几条：
 
 - 常驻一个 `just dev`，不要每次手动 `cargo tauri dev`（Tauri 无 Rust 热重载）。
-- 前端禁止裸 `invoke("...")`；Rust 侧业务逻辑放 `crates/`，`src-tauri` 只做 IPC 薄壳。
+- 前端禁止裸 `invoke("...")`；Rust 侧业务逻辑放 `src-tauri/crates/`，`src-tauri` 只做 IPC 薄壳。
 - 异步后端操作用 Victauri `wait_for` 等待，禁止 `sleep` 猜测。
 - **提交前跑 `just ready`**（可执行的 DoD），外加 `AGENTS.md` §7 里机器查不了的两件事。
 

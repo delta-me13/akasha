@@ -1,6 +1,6 @@
-# Plan 0801: `crates/akasha-serial`（`libudev` 走 Linux-only feature）
+# Plan 0801: `src-tauri/crates/akasha-serial`（`libudev` 走 Linux-only feature）
 
-- **关联**：ROADMAP 阶段 8 ·「`crates/akasha-serial`，`libudev` 走 **Linux-only cargo feature**」
+- **关联**：ROADMAP 阶段 8 ·「`src-tauri/crates/akasha-serial`，`libudev` 走 **Linux-only cargo feature**」
 - **前置**：plan 0105（`Transport` trait 已定形态）
 - **状态**：未规划（骨架）
 - **展开时机**：阶段 8 开工时

@@ -1,3 +1,17 @@
+# akasha —— **workspace root 就在这里**（`src-tauri/`）。
+#
+# 布局决定见 [`docs/adr/0004`](../docs/adr/0004-rust-workspace-under-src-tauri.md)：
+# Rust 成员全部收在 `src-tauri/` 下（`src-tauri/crates/*`），**仓库根不放任何 Rust 成员**。
+# 其中一条理由很具体：tauri CLI 默认只监听 `src-tauri`，成员在它**里面**就自动被监听，
+# 不需要 `additionalWatchFolders` 那类额外配置（曾因缺它静默失效，见 docs/STATUS.md 坑 #21）。
+#
+# 代价照实记下：仓库根没有 manifest，在**根目录直接跑 `cargo …` 会失败**（坑 #8）。
+# 一律用根 `justfile` 的转发配方（`just check` / `just test` / …），它们以 `src-tauri/` 为 cwd。
+#
+# 依赖方向**单向**：`akasha`（本包）→ `crates/*`。反向依赖视为架构违规。
+# `crates/*` 不得 `use tauri::`（AGENTS.md §3.1），由
+# `.ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
+
 [package]
 name = "akasha"
 version = "0.1.0"
@@ -16,6 +30,38 @@ publish = false
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "akasha_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# ── workspace 定义（本包即 workspace root）────────────────────────────────────
+
+[workspace]
+resolver = "2"
+# ⚠️ 空 glob 是**硬错误**，不是空匹配：`crates/` 不存在时 cargo 直接报
+# `failed to load manifest for workspace member .../crates/*`（坑 #22）。
+# 新增 crate 用 `cargo new --lib src-tauri/crates/<name>`，它会自动落进这个 glob。
+members = ["crates/*"]
+
+# 全 workspace 的 lint 基线。成员（`crates/*`）必须各自写 `[lints] workspace = true`
+# 才继承 —— 少了那一行，本节对它们形同虚设。
+[workspace.lints.rust]
+# AGENTS.md §3.4：unsafe 默认禁止；确有必要时单点 `#[allow(unsafe_code)]` + `// SAFETY:` 注释。
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# AGENTS.md §0 禁止 unwrap 出现在 command 边界与长驻任务中。这里设 warn 而非 deny：
+# `just clippy` 带 `-D warnings`，所以生产代码里它实际就是错误；测试里的 unwrap 是断言手段，
+# 由测试目标自己 `#![allow(clippy::unwrap_used)]` 显式豁免。
+unwrap_used = "warn"
+
+# release profile **必须**放在 workspace root：成员里的 `[profile.*]` 会被静默忽略
+# （坑 #18）。本文件就是 root，所以它在这里是对的。
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+# ── 本包 ────────────────────────────────────────────────────────────────────
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -36,17 +82,12 @@ tauri-specta = "2.0.0-rc.25"
 specta = "2.0.0-rc.25"
 specta-typescript = "0.0.12"
 
-
-# 继承根 Cargo.toml 的 [workspace.lints]（unsafe_code = forbid、clippy::unwrap_used = warn）。
-# 少了这一行，workspace lints 对本 crate 完全不生效。
-[lints]
-workspace = true
-
-# release profile 已上移到根 Cargo.toml —— 成员里的 [profile.*] 会被**静默忽略**
-# （cargo 每个 workspace 只认 root 的那个，见 docs/STATUS.md 坑 #18）。
-
 [dev-dependencies]
 criterion = "0.8.2"
 insta = "1.48.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 victauri-test = "0.8.8"
+
+# 继承上面的 [workspace.lints]（unsafe_code = forbid、clippy::unwrap_used = warn）。
+[lints]
+workspace = true

@@ -12,7 +12,7 @@ note: |
   只拦**类型声明**（struct / enum / union / trait / type 别名），不拦对第三方类型的**引用**：
   `use tauri::Window;` 在 src-tauri/src/ 里是正当用法，本规则不会命中它。
 files:
-  - "crates/**/*.rs"
+  - "src-tauri/crates/**/*.rs"
   - "src-tauri/src/**/*.rs"
 rule:
   any:

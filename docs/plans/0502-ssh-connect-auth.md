@@ -1,6 +1,6 @@
-# Plan 0502: `crates/akasha-ssh` —— 连接 + 认证
+# Plan 0502: `src-tauri/crates/akasha-ssh` —— 连接 + 认证
 
-- **关联**：ROADMAP 阶段 5 ·「`crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存）」
+- **关联**：ROADMAP 阶段 5 ·「`src-tauri/crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存）」
 - **前置**：plan 0501（ADR-0003 定案）· 阶段 4（密钥池可取用）
 - **状态**：未规划（骨架）
 - **展开时机**：ADR-0003 定案后

@@ -53,11 +53,11 @@ test-e2e:
 
 # 许可证 + 漏洞 + 来源。advisories 需要联网拉 RustSec 数据库
 deny:
-    cargo deny --config ../deny.toml check
+    cargo deny --config deny.toml check
 
 # 同上但跳过需要联网的 advisories，离线可用
 deny-offline:
-    cargo deny --config ../deny.toml check licenses bans sources
+    cargo deny --config deny.toml check licenses bans sources
 
 # ── 类型边界 ────────────────────────────────────────────────────────────────
 

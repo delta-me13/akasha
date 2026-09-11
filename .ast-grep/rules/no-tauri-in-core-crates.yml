@@ -1,18 +1,18 @@
 id: no-tauri-in-core-crates
 language: Rust
 severity: error
-message: crates/* 不得依赖 Tauri —— 纯逻辑必须能脱离 app 单测（AGENTS.md §3.1）
+message: src-tauri/crates/* 不得依赖 Tauri —— 纯逻辑必须能脱离 app 单测（AGENTS.md §3.1）
 note: |
-  依赖方向是**单向**的：src-tauri → crates/*，反向即为架构违规。
+  依赖方向是**单向**的：src-tauri → src-tauri/crates/*，反向即为架构违规。
 
   命中这条规则通常意味着"这段逻辑需要 app 环境"（窗口、托盘、IPC、AppHandle）。
   两种处置都行，但不要就地 `#[allow]`：
     * 该逻辑本就属于薄壳 → 留在 src-tauri/src/；
-    * 逻辑本身是可复用的纯逻辑 → 把 Tauri 相关部分留在壳里，纯逻辑下沉到 crates/。
+    * 逻辑本身是可复用的纯逻辑 → 把 Tauri 相关部分留在壳里，纯逻辑下沉到 src-tauri/crates/。
 
   没有例外：需要 Tauri 类型的 crate 不是 core crate。
 files:
-  - "crates/**/*.rs"
+  - "src-tauri/crates/**/*.rs"
 rule:
   any:
     # `use tauri::X` 与内联的 `tauri::X`（两者都是 scoped_identifier，一次报一条）。

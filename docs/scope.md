@@ -56,7 +56,7 @@
 | **`Session`** | 后端 | 用户打开的**一个工作单元**：终端 / SFTP / 端口转发 / 凭据库。**它是资源的归属单位**，生命周期约束它拥有的连接 | ~~`Tab`~~ ~~`Pane`~~ ~~`View`~~ —— 呈现方式，不是语义 |
 | **`Transport`** | 后端 | **字节载体**：本地 PTY / SSH shell 通道 / 串口 | ~~`PtySession`~~ —— PTY 专属，容不下第二个后端。**原方案里这个词叫 `Session`，已改名** |
 | **`Connection`** | 后端 | 一条 SSH 连接。因不做复用，一个 `Session` 可能对应一条或多条 | ~~`SshSession`~~ —— 与上层 `Session` 撞名 |
-| `Tab` / 面板 / 分屏 | **前端** | 至多是前端对 `Session` 的一种呈现 | 不得出现在 `crates/` 的类型名里 |
+| `Tab` / 面板 / 分屏 | **前端** | 至多是前端对 `Session` 的一种呈现 | 不得出现在 `src-tauri/crates/` 的类型名里 |
 
 配套的类型后缀：`SessionId`、`SessionKind`、`SessionRegistry`、`SessionEvent`。
 
@@ -69,7 +69,7 @@
 
 | 规则 | 拦截 |
 |---|---|
-| `no-ui-vocab-in-types` | `crates/**` 与 `src-tauri/src/**` 的类型名中出现 `Tab` / `Pane` / `Window` / `View` |
+| `no-ui-vocab-in-types` | `src-tauri/crates/**` 与 `src-tauri/src/**` 的类型名中出现 `Tab` / `Pane` / `Window` / `View` |
 
 ---
 
@@ -90,7 +90,7 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
 
 - 能力差异**用 capability flag 表达**，不要用"多几个方法都得实现一遍"。
   serial 没有窗口尺寸、没有信号、没有退出码；SSH 没有本地进程语义。
-- 这个抽象必须在 `crates/akasha-pty` 落成**通用**形态，否则第二个后端到来时要重构。
+- 这个抽象必须在 `src-tauri/crates/akasha-pty` 落成**通用**形态，否则第二个后端到来时要重构。
 
 **平台差异（不是"编译一下就有"）**：
 
@@ -133,7 +133,7 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
 2. **SFTP host↔host 的 B 档**（§4.1）
 3. **SSH 本地转发**（本节）
 
-因此它应当**只实现一次**，落在 `crates/akasha-ssh` 里，三处复用。
+因此它应当**只实现一次**，落在 `src-tauri/crates/akasha-ssh` 里，三处复用。
 先实现跳板，等于顺手拿到另外两处的地基。
 
 > 例外：**远程转发（`-R`）是另一套机制** —— 它由服务端发起连接

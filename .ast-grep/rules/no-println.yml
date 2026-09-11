@@ -4,7 +4,7 @@ severity: error
 message: 禁止 println!/eprintln! —— 用 tracing 结构化日志（AGENTS.md §3.4）
 note: |
   改为 tracing::{trace,debug,info,warn,error}! 。
-  库代码（crates/*）不要直接输出，把事件返回给调用方；
+  库代码（src-tauri/crates/*）不要直接输出，把事件返回给调用方；
   app 层由 tauri-plugin-log 落盘并轮转。
 
   豁免：tests/ 目录。测试用 eprintln! 输出诊断信息是正当用法，

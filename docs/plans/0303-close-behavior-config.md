@@ -3,7 +3,7 @@
 - **关联**：ROADMAP 阶段 3 ·「关闭行为可配置」
 - **前置**：plan 0302（隐藏语义已成立，本步把它变成可选项）
 - **状态**：未开始
-- **影响面**：配置读取层（新增最小配置载体）、`src-tauri/src/**`、`crates/akasha-core`（配置类型）
+- **影响面**：配置读取层（新增最小配置载体）、`src-tauri/src/**`、`src-tauri/crates/akasha-core`（配置类型）
 
 ## 目标
 
@@ -28,7 +28,7 @@ ls docs/portable.md && sed -n '1,40p' docs/portable.md            # 数据目录
 
 ## 步骤
 
-1. 在 `crates/akasha-core` 定义配置类型与默认值（**可单测，零 Tauri 依赖**）。
+1. 在 `src-tauri/crates/akasha-core` 定义配置类型与默认值（**可单测，零 Tauri 依赖**）。
 2. 加最小配置载体：数据目录下的一个文件；读写集中在**一个模块**，不散落。
    - 路径推导遵循可搬迁要求（`docs/portable.md` §2：相对可执行文件，不存绝对路径）
 3. 窗口事件按配置分支：

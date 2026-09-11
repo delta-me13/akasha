@@ -3,7 +3,7 @@
 - **关联**：ROADMAP 阶段 2 ·「真正退出零残留（窗口关闭退出 / app 重载 / panic 三条路径）」
 - **前置**：plan 0203（已能开 shell 并看到输出）
 - **状态**：未开始
-- **影响面**：`src-tauri/src/**`（退出钩子、registry 的 shutdown-all）、`crates/akasha-pty`
+- **影响面**：`src-tauri/src/**`（退出钩子、registry 的 shutdown-all）、`src-tauri/crates/akasha-pty`
 
 ## 目标
 
@@ -24,7 +24,7 @@
 
 ```bash
 pgrep -af 'target/debug/akasha' || echo "当前无 app 在跑（预期）"
-grep -rn 'kill\|wait' crates/akasha-pty/src | head    # 看 shutdown 路径现状
+grep -rn 'kill\|wait' src-tauri/crates/akasha-pty/src | head    # 看 shutdown 路径现状
 ```
 
 ## 步骤

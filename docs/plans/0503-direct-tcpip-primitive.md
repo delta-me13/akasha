@@ -7,7 +7,7 @@
 
 ## 目标
 
-实现一次 `direct-tcpip` channel 链式串接，落在 `crates/akasha-ssh`，**供三处复用**：
+实现一次 `direct-tcpip` channel 链式串接，落在 `src-tauri/crates/akasha-ssh`，**供三处复用**：
 
 1. **跳板 / ProxyJump**（本阶段）
 2. SFTP host↔host 的 **B 档**（阶段 7）

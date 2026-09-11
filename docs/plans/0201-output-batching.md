@@ -3,7 +3,7 @@
 - **关联**：ROADMAP 阶段 2 ·「`Transport` 输出合批」
 - **前置**：plan 0105（`Transport` trait 与假实现）
 - **状态**：未开始
-- **影响面**：`crates/akasha-pty`（或 `crates/akasha-core`）中的合批器；`benches/`
+- **影响面**：`src-tauri/crates/akasha-pty`（或 `src-tauri/crates/akasha-core`）中的合批器；`benches/`
 
 ## 目标
 
@@ -43,7 +43,7 @@ grep -rn '16ms\|64KiB\|64 \* 1024' docs/ AGENTS.md | head
 ```bash
 cargo nextest run -p akasha-pty batching      # 期望全绿（合批边界单测）
 cargo bench -p akasha-pty                     # 期望跑出吞吐基线数字
-grep -rn 'emit\|write_all' crates/akasha-pty/src | grep -v batcher   # 目视：确认没有逐字节路径
+grep -rn 'emit\|write_all' src-tauri/crates/akasha-pty/src | grep -v batcher   # 目视：确认没有逐字节路径
 ```
 
 **判据**：合批边界有单测断言，且**有吞吐基线数字**（ROADMAP）。数字记进本文与 `docs/STATUS.md`。
