@@ -35,6 +35,11 @@ doctor:
 # ── 开发循环 ────────────────────────────────────────────────────────────────
 
 # 常驻开发主控：前端 HMR；Rust 改动自动增量重编译 + 重启 app。只需启动一次
+#
+# 监听范围（含 `crates/`）配在 `src-tauri/tauri.conf.json` 的 `build.additionalWatchFolders`，
+# **不在本配方里** —— 那样直接跑 `pnpm tauri dev` 也有效。tauri CLI 默认只监听 `src-tauri`，
+# 少了那个配置，改 `crates/` 不会触发任何重编译：**开发循环会静默失效**
+# （门禁全绿，但改了代码看不到效果）。实测见 docs/STATUS.md 坑 #21。
 dev:
     pnpm tauri dev
 

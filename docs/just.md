@@ -26,7 +26,7 @@
 
 | 命令 | 作用 | 归属 |
 |---|---|---|
-| `just dev` | 起 app：前端 HMR + Rust 改动自动重编译并重启。**起一次就别关** | 根 |
+| `just dev` | 起 app：前端 HMR + Rust 改动自动重编译并重启（`src-tauri/` 与 `crates/` 都在监听范围）。**起一次就别关** | 根 |
 | `just dev-web` | 只跑前端，不启动 app（浏览器里迭代界面） | 根 |
 | `just watch` | bacon 秒级反馈循环，不启动 app —— 改纯逻辑时最快 | 转发 |
 | `just ready` | **提交前跑这一个**：全部门禁（安静聚合，失败才倾倒） | 根组合 |
@@ -122,6 +122,7 @@ just deny-offline                       # 新依赖的许可证要过门禁
 | app 起不来，或 Victauri 连不上 | app 必须先跑（`just dev`）；再用 `just doctor` 确认连的是本项目 |
 | `just ready` 有一步红了 | 看结尾提示的那一步，或 `.just-ready-fail.log` |
 | 改了配方但 `just --list` 没显示 | 检查缩进（配方体必须是 tab 或统一缩进），以及是否写在了对的 justfile 里 |
+| 改了 `crates/` 下的文件，app 却不重编译 | tauri CLI **默认只监听 `src-tauri`**。`src-tauri/tauri.conf.json` 的 `build.additionalWatchFolders` 必须含 `../crates`（**相对 app 目录**解析，不是 cwd）。少了它开发循环会**静默失效** —— 见 `STATUS.md` 坑 #21 |
 
 **受限环境里跑 app**（容器 / agent 沙箱 / 无写权限的家目录）：
 Tauri 启动时要写 `$HOME` 下的数据目录，被拒时会 panic 在

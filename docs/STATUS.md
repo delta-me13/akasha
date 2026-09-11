@@ -8,93 +8,83 @@
 
 ## 一句话
 
-**路线图已细分为逐工作项 plan**（42 份，阶段块号 `TTxx`）：下一步仍是落地根 workspace。
-项目可编译、`just ready` 全绿；**CI 的真实验证要等首次推送**。
+**阶段 1 基本落地**：根 workspace、两个不依赖 Tauri 的 crate（`akasha-core` / `akasha-pty`）、
+CI 三平台矩阵、迁移后的开发循环复测 —— 其中**监听范围确实失效过，已修好并实测**。
 
-产品范围为三后端（local/ssh/serial）+ SFTP + 四套配置池 + Bitwarden +
-SSH 端口转发（L/R/D）+ 常驻托盘，见
-[`docs/scope.md`](./scope.md)。[`ROADMAP.md`](../ROADMAP.md) 10 个阶段、42 个条目，
-**每个条目都挂 plan 指针**；索引与归档规则见 [`docs/plans/README.md`](./plans/README.md)。
-ADR 收敛为 3 份（[`docs/adr/README.md`](./adr/README.md)）。
+`ROADMAP.md` 共 49 个条目（10 个阶段），阶段 1 的 5 个工作项已完成 4 项、1 项待 CI 实跑。
+**下一步**：[`docs/plans/0201`](./plans/0201-output-batching.md)（`Transport` 输出合批）——
+它是阶段 2「端到端最小终端」的第一步，前置 plan 0105 已完成。
 
-**下一步**：[`docs/plans/0101`](./plans/0101-root-workspace.md)（根 workspace）——
-ADR-0001 决策二已裁定，不再阻塞。
-
-两条定位性约束：**可搬迁**（搬走 bin 文件夹后仍能开且数据还在）与**不依赖 OS 组件**
-（webview 及其依赖栈的写入已由用户豁免，见 `scope.md` §1.1）。
+**CI 仍未真正跑过**：仓库**没有配置任何 git remote**，所以这不是"等一次推送"，而是等托管到位。
 
 ## 已验证为绿（命令 + 实际结果）
 
-| 命令 | 结果 |
+| 命令 / 检查 | 结果 |
 |---|---|
-| `just ready`（fmt-check + lint + test + deny-offline + docs-check） | 退出码 **0** |
-| `just docs-check` | 三部分全过：命令未漂移 / ROADMAP 49 条目在 3 行内 / **plan 42 份 ≤200 行且索引一致** |
-| `just check` | 退出码 **0** |
-| `just lint`（clippy `-D warnings` + ast-grep scan） | 退出码 **0** |
-| `just deny-offline`（licenses / bans / sources） | `bans ok, licenses ok, sources ok` |
+| `just ready`（fmt-check + lint + test + deny-offline + docs-check） | 退出码 **0**，5/5 全绿 |
+| `just test` | **27 tests run: 27 passed**（`akasha-core` 8 + `akasha-pty` 14 + `akasha` 5） |
+| `just check` / `just clippy`（`--workspace`） | 退出码 **0**，覆盖全部成员 |
+| `just deny-offline` | `bans ok, licenses ok, sources ok` |
+| `just docs-check` | 三部分全过（命令未漂移 / ROADMAP 49 条目在 3 行内 / plan 42 份 ≤200 行且索引一致） |
+| `cargo tree -p akasha-core` / `-p akasha-pty` \| `grep -c tauri` | **0** / **0**（分层成立） |
+| `ast-grep scan` | 退出码 **0**；`no-println` / `no-tauri-in-core-crates` / `no-ui-vocab-in-types` 三条规则均已用负例验证会红 |
+| `just dev` | 起窗口；CLI 打印**两行**监听：`src-tauri` + `crates`；增量重编译 6.09–6.26s |
+| `just doctor` | **13/13 passed**，`Connected to Victauri server`（v0.8.8，端口 7373） |
+| IPC 端到端 | `greet` → `Hello, preflight! You've been greeted from Rust!`（与迁移前逐字相同） |
+| `.github/workflows/ci.yml` | YAML 解析通过：2 个 job、矩阵三项、`e2e.needs = checks`；4 个 just 资产 URL 全部 HTTP 200 |
 | `just syscheck` | webkit2gtk-4.1 2.52.6 / javascriptcoregtk-4.1 2.52.6 / gtk+-3.0 3.24.52 / librsvg-2.0 2.62.3 |
-| `.github/workflows/ci.yml` YAML | 用 `js-yaml` 解析通过；2 个 job，`e2e.needs = checks` |
 
 > `just deny`（含 advisories）**尚未验证** —— 需要联网拉 RustSec 数据库。
-> 首次 `just ready` 要编译测试目标（nextest），可能超过 60 秒，别误判为卡死。
+> 首次跑 `just test` 要编译测试目标，可能超过 60 秒，别误判为卡死。
 
 ## 待验证（本地跑不了）
 
-- **CI 是否真能变绿** —— 需要首次 push。本地只能校验 YAML 合法性、命令存在性、
-  依赖/action 版本可获取性；runner 环境（apt 包可用性、xvfb 起 app）必须在 CI 上见分晓。
-- **`just dev` 在根 workspace 布局下能否起窗口** —— ADR-0001 决策一的验收项，
-  见 `docs/plans/0001` 第 4 条。当前布局下尚未跑过 `tauri dev`。
+- **CI 是否真能变绿** —— 三个矩阵 job + e2e job。本地只能校验 YAML 合法性、
+  矩阵结构与资产 URL 可下载性；runner 环境差异（apt 包、macOS SDK、
+  Windows 上 Tauri 构建脚本能否过类型检查、Windows runner 的 Git Bash）必须在 CI 上见分晓。
+  **且仓库当前没有 remote**（见上）。
+- **宿主 MCP 连不到沙箱内运行的 app** —— agent 的 bash 调用跑在 bwrap 里
+  （`--tmpfs /tmp`、`--unshare-pid`），Victauri 的发现文件在沙箱私有 `/tmp`。
+  这不是项目问题；沙箱内 `just doctor` 与 IPC 均正常（实测见上表）。
 
-## 预跑基线（2026-09-11 实测，当前布局）
+## 迁移后基线（2026-09-11 实测，根 workspace 布局）
 
-ADR-0001 决策一（根 workspace 迁移）**迁移前**的实测记录 —— 迁移后必须拿它逐项对比。
+ADR-0001 决策一落地后的实测记录 —— 后续再动 workspace 结构时拿它逐项对比。
+迁移前的旧基线（`src-tauri/target`、47.53s 冷编译等）已随 plan 0101 归档。
 
 | 项 | 实测结果 |
 |---|---|
-| 二进制落点 | `src-tauri/target/debug/akasha`（日志 `Running target/debug/akasha`，cwd = `src-tauri`），393 MB |
-| 冷编译 | **47.53s** |
-| 增量重编译 | **6.09s** |
-| dev server | Vite 就绪于 `http://localhost:1420`（实测 HTTP 200） |
-| Rust 监听范围 | CLI 打印 `Watching /home/lycurgus/akasha/src-tauri for changes` |
-| app 数据目录 | `~/.local/share/fans.cyrene.akasha-terminal/`（CacheStorage / hsts-storage.sqlite） |
-| Victauri | 连上，`identifier = fans.cyrene.akasha-terminal`，35 个工具，端口 7373 |
-| **IPC 端到端** | `invoke('greet', {name:'preflight'})` → `Hello, preflight! You've been greeted from Rust!` ✅ |
-| 前端渲染 | `dom_snapshot` 拿到完整模板 UI（heading / link / form / textbox / button） |
-| 前提条件 | **需要能写 `$HOME`**；受限环境下会在 `Failed to setup app: 只读文件系统 (os error 30)` panic |
-
-> **当前没有任何 `just dev` 在运行**（2026-09-11 已停掉遗留的那个；它当时已半死 ——
-> app 未运行、仅 Vite 占着 1420，详见下面「踩过的坑」#15）。
-> 1420 端口已释放，开工时从根目录**重新**起一个。
-
-**预跑得出的、迁移后必须复测的点**（已写入 `docs/plans/0001`）：
-CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` 落在 `src-tauri` 之外，
-**必须确认改 `crates/` 下的文件仍会触发重编译与重启** —— 否则开发循环会静默失效，
-而 `cargo check` 完全看不出来。
+| 二进制落点 | `/home/lycurgus/akasha/target/debug/akasha`（**根 target**） |
+| 增量重编译 | **6.09 / 6.18 / 6.26s**（迁移前为 6.09s，同量级） |
+| dev server | Vite 就绪于 `http://localhost:1420`，端口在听 |
+| Rust 监听范围 | CLI 打印**两行**：`Watching …/src-tauri` 与 `Watching …/crates` |
+| 改 `crates/` 文件 | `Rebuilding application...` → `Compiling akasha-core` → `Compiling akasha` → 重启 |
+| `just doctor` | 13/13 passed，端口 7373 |
+| IPC 端到端 | `greet` 与迁移前返回同一字符串 |
+| 前提条件 | **需要能写 `$HOME`**；沙箱内会刷 `dconf-CRITICAL` 与 WebKit 缓存 hard-link 告警，但 **app 仍正常起窗口** |
 
 ## 进行中 / 下一步
 
-- [ ] **落地决策一**（根 workspace）：步骤与验收见 [`docs/plans/0001`](./plans/0001-root-workspace.md)
-      —— ADR-0001 **已接受**（决策二裁定见其 §0.3），前置条件已满足，**可以开工**
-      注意其中"迁移后必须复测"的一项：改 `crates/` 下的文件仍要能触发重编译与重启
+- [~] **plan 0102（CI 平台矩阵）**：本地部分完成，最终判据 = CI 上三个矩阵 job 与 e2e 全绿，
+  **卡在没有 remote**。见 [`docs/plans/0102`](./plans/0102-ci-platform-matrix.md)
+- [ ] **阶段 2 第一步**：[`docs/plans/0201`](./plans/0201-output-batching.md)（输出合批）。
+  接上 `src-tauri → crates/*` 的真实依赖后，**顺手再改一次 `crates/` 下的文件**确认开发循环
+  仍然生效（本次是用临时依赖证明的，见 plan 0104 的实施记录）
 
-### 路线图细分（本轮已完成）
+### 本轮完成（阶段 1）
 
-- [x] **`ROADMAP.md` 按工作项细分**：42 个条目各自挂一个 plan 指针；编号改用
-      **阶段块号 `TTxx`**（阶段 1 = `01xx`），原 `0001` 已 `git mv` 为 `0101`
-- [x] **一工作项一 plan 文件**：阶段 1–3 与两份 ADR 前置共 **15 份完整 plan**
-      （步骤 + 可粘贴的验收命令）；阶段 4–10 共 **27 份骨架**（只有目标/非目标/前置/判据，
-      **不写推测性步骤**）—— 分界就是"现在能不能写出可执行的验收命令"
-- [x] **归档机制成文**：[`docs/plans/README.md`](./plans/README.md) 定义编号、索引、
-      **单文件 ≤200 行**预算与归档规则（完成后整份 `git mv` 进 `archive/`，索引保留一行，
-      **永不把多份 plan 拼接成汇总**）；[`archive/README.md`](./plans/archive/README.md) 占位
-- [x] **修正四处结构性错位**：ADR-0002 从阶段 5 归位阶段 4（存储动工前必须先定案）；
-      ADR-0003 提到阶段 5 之首；阶段 2 的"生命周期三态"只保留**真正退出**的路径
-      （托盘语义归阶段 3，避免在托盘不存在时就要求"收托盘时子进程仍在"）；
-      阶段 9 的"实测 `bw`"提到最前（它是实现的前置）
-- [x] **`just docs-check` 增加第三部分**：plan ≤200 行 / 索引双向一致 / 骨架不许标"进行中"。
-      三个负例分别验证（286 行超预算、改号造成索引缺行 + 孤儿文件、骨架标"进行中"）
-      → 都如实报红，还原后转绿
-- [x] `AGENTS.md` §8 登记 plan 生命周期与预算（**宪法改动，单独提交**）
+- [x] **plan 0101 根 workspace**：根 `Cargo.toml`（members / `[workspace.lints]` / release profile）、
+  `Cargo.lock` 与 `deny.toml` 上移、`.gitignore` 调整、构建缓存整体迁移 → 归档
+- [x] **plan 0103 `crates/akasha-core`**：`SessionId` / `SessionKind` / `SessionRegistry`（登记 + 事件路由
+  合一体，保证"关闭后不再投递"）/ `SessionEvent`；零依赖零 Tauri，8 个单测 → 归档
+- [x] **plan 0105 `crates/akasha-pty`**：通用 `Transport` trait（`write` / `output_stream` / `resize` /
+  `shutdown` / `exited` + `Capabilities`）、`portable-pty` 实现、`ShellLaunch`、
+  `testing::FakeTransport`；14 个单测（含 3 个真实 PTY）→ 归档
+- [x] **plan 0104 迁移后复测**：**发现并修复了监听范围的静默失效**
+  （`build.additionalWatchFolders` 必须含 `../crates`）→ 归档
+- [x] **两条 ast-grep 规则落地**（`no-tauri-in-core-crates` / `no-ui-vocab-in-types`），
+  规则与代码同 PR，并用"应命中 + 诱饵不应命中"的负例验证
+- [x] **`docs(agents)` 单独提交**：§6 登记两条规则 + 写明"规则必须用负例验证"
 
 ### 已定案（cyrene 裁定，2026-09-11）
 
@@ -121,6 +111,9 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
 - [ ] **可搬迁性收尾**（详见 [`portable.md`](./portable.md)）：
       数据目录相对可执行文件推导；**库里不存绝对路径**；便携模式由标记触发，
       不可写时**启动即报错**；实现"搬家后仍可用"的验证配方（当前只有方法）
+- [ ] **`tauri.conf.json` 的 `csp` 目前是 `null`**，与 `AGENTS.md` §4.3「`csp` 不得为 `null`」相冲突；
+      接入前端渲染时按需最小化放行（阶段 2）
+- [ ] 阶段 2 接上真实 `src-tauri → crates/*` 依赖后，复验 `crates/` 改动仍触发重编译
 - [ ] 托盘的 Linux 依赖 `libayatana-appindicator3` 已在 CI apt 列表里，需实测
 - [ ] 单实例处理（第二个实例应唤起已有窗口，而不是各跑一套隧道）
 - [ ] 动态转发（`-D`）需要自己实现 SOCKS5 服务端
@@ -128,12 +121,18 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
 
 ## 结构现状（容易找错地方）
 
+- **根 workspace**：成员 = `src-tauri` + `crates/*`；`Cargo.lock`、`deny.toml`、`target/` 都在仓库根。
+  `[workspace.lints]` 定义 `unsafe_code = forbid` 与 `clippy::unwrap_used = warn`
+  （成员必须写 `[lints] workspace = true` 才继承）。
+- **两个纯逻辑 crate**（零 Tauri 依赖，由 ast-grep 强制）：
+  `crates/akasha-core`（Session 模型，零依赖）、`crates/akasha-pty`（`Transport` + portable-pty）。
+  `src-tauri` 目前**还没有**依赖它们 —— 真实依赖在 plan 0201 / 0202 建立。
 - **文档三级粒度**：`ROADMAP.md`（判据）→ `docs/plans/TTxx-*`（手段）→ 本文件的坑（痕迹）。
-  plan 索引与归档规则在 [`docs/plans/README.md`](./plans/README.md)；
-  **完成的 plan 整份移入 `docs/plans/archive/`**（不拼接、不追加，见 `AGENTS.md` §8）。
+  完成的 plan **整份移入 `docs/plans/archive/`**（不拼接、不追加，见 `AGENTS.md` §8）。
 - 命令入口分两处：项目级在根 `justfile`，crate 级在 `src-tauri/justfile`。
   根只**转发**，命令体只有一处。**权威清单在 `docs/just.md` §2**，由 `just docs-check` 强制同步。
-- CI 只有一个文件 `.github/workflows/ci.yml`（原 `victauri.yml` 已删除并合并进来）。
+  ⚠️ crate 级配方必须显式带 `--workspace`（见坑 #20）。
+- CI 只有一个文件 `.github/workflows/ci.yml`：`checks`（三平台矩阵）+ `e2e`（Linux，xvfb + 真 app）。
 
 ## 踩过的坑（避免重复踩）
 
@@ -151,7 +150,7 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
 7. **just 的 shebang 配方需要可写的 runtime dir**，在受限环境会失败 —— 用普通配方。
 8. **仓库根没有 `Cargo.toml`** → 一切没显式指定 manifest 的 cargo 命令在根目录失败：
    `cargo build`、`cargo metadata`（原 CI 因此坏掉）、`cargo fmt --all`（退出码 141）。
-   详见 `docs/adr/0001` §2.2。若采纳决策一，这类问题会整体消失。
+   已由 plan 0101 整体解决。
 9. **`victauri-test` 生成的 `tests/*.rs` 不符合 rustfmt 默认风格** ——
    `fmt-check` 会红。跑一次 `just fmt` 规范化即可（已做）。
 10. **CI 里 `libappindicator3-dev` 在 ubuntu-latest 上已不存在**，要用
@@ -173,14 +172,31 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
     重建失败后 **app 不再启动，但 Vite dev server 仍在监听 1420**。
     现象很有迷惑性：**端口在听、HTTP 200，但 Victauri 说 app 没在运行**。
     判别方法：`just doctor`（它直接问 app，而不是问端口）。
-    ⚠️ 工作区切分迁移（plan-0001）后**必须停掉旧进程再重起**，
-    否则旧进程的监听范围还是老的 `src-tauri`，会让迁移后的验收项失真。
 16. **含反引号的 grep 模式在 justfile 配方里必须整体放进单引号** ——
     配方体由 bash 执行，裸反引号会被当**命令替换**跑掉。
     `docs-check` 的 ROADMAP 纪律检查踩过这一点。
 17. **多文件行数检查要逐文件取（`wc -l < 单文件`，或 awk 的 `FNR`）** ——
     awk 的 `NR` 会**跨文件累加**：42 份小 plan 会被报成"某一份 1813 行"。
     `docs-check` 的 plan 预算检查因此对每个文件单独 `wc -l`，不要图省事用一次 awk。
+18. **`[profile.*]` 写在 workspace 成员里会被 cargo 静默忽略** —— 每个 workspace 只认
+    root 的那一份，成员里写的只产出一行 warning（`profiles for the non root package
+    will be ignored`）。不迁移就等于**悄悄丢掉 `lto` / `strip` / `panic = "abort"`**，
+    而没有任何门禁会红。plan 0101 把 release profile 上移到了根 `Cargo.toml`。
+19. **整体 `mv` 构建缓存（`target/`）会留下写死的绝对路径** —— 省下重建时间，
+    但 `target/debug/build/<pkg>/output` 里记着旧的绝对路径，而 cargo 会把它们作为
+    `DEP_*` 环境变量**原样重放**给下游；于是 tauri 的构建脚本去读一个已不存在的
+    permissions 目录，报错看起来像"代码坏了"。处置：删掉那些构建脚本产物目录让其重跑。
+    **下次迁 target 直接删掉重建**，别为省时间搬缓存。
+20. **`cargo` 在成员目录里只选当前包** —— crate 级配方（cwd = `src-tauri/`）如果
+    不显式带 `--workspace`，`crates/*` 的 check / clippy / test 会被**静默漏掉**：
+    `just ready` 全绿，但那些 crate 根本没被编译过。实测：加上 `akasha-core`
+    的 8 个单测后 `just test` 仍只报 5 个；加 `--workspace` 后才是 27 个。
+21. **tauri CLI 默认只监听 `src-tauri`** —— 根 workspace 之后纯逻辑都在 `crates/`，
+    少了 `src-tauri/tauri.conf.json` 里的 `build.additionalWatchFolders`，
+    改 `crates/` 不会触发任何重编译：**开发循环静默失效**（门禁全绿，改了看不到效果）。
+    两个附带的坑：命令行形式 `--additional-watch-folders` 的路径**相对 app 目录**解析
+    （不是 cwd），写错只**警告后继续**（`not found, ignoring`）；
+    而且 `src-tauri` 若尚未依赖该 crate，即使监听生效也是"空转重建"，看着像没反应。
 
 ## 环境
 
