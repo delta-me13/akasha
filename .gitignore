@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Rust 产物。根 workspace 之后 cargo 的 target 落在**仓库根**（ADR-0001 决策一），
+# 原先写在 src-tauri/.gitignore 里的 /target/ 已随之作废。
+/target/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -37,9 +37,9 @@
 
 目标：多 crate 布局落地，且跨平台差异从第一天就被验证。
 
-- [ ] **落地 ADR-0001 决策一：根 workspace**
+- [x] **落地 ADR-0001 决策一：根 workspace**
       验收：仓库根成为 workspace、`src-tauri` 降为成员之一，且门禁仍全绿
-      → [plan 0101](./docs/plans/0101-root-workspace.md)
+      → [plan 0101](./docs/plans/archive/0101-root-workspace.md)
 - [ ] **CI 平台矩阵**（Linux + Windows + macOS）
       验收：三平台都能通过类型检查；Linux 另跑完整门禁与 E2E
       → [plan 0102](./docs/plans/0102-ci-platform-matrix.md)

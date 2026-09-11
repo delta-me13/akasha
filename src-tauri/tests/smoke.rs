@@ -3,6 +3,11 @@
 //! Requires a running Tauri dev server.
 //! Run with: VICTAURI_E2E=1 cargo test --test smoke
 
+// 豁免 workspace 的 `clippy::unwrap_used`（根 Cargo.toml）：本文件是**测试**，
+// unwrap 在这里就是断言手段，不属于 AGENTS.md §0「command 边界或长驻任务」。
+// 生产代码没有这条豁免。⚠️ 本文件由 victauri-test 生成，重生成后需重新补上这一行。
+#![allow(clippy::unwrap_used)]
+
 use victauri_test::VictauriClient;
 
 fn skip_unless_e2e() -> bool {

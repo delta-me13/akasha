@@ -37,13 +37,13 @@ specta = "2.0.0-rc.25"
 specta-typescript = "0.0.12"
 
 
-# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
-panic = "abort"
-strip = true
+# 继承根 Cargo.toml 的 [workspace.lints]（unsafe_code = forbid、clippy::unwrap_used = warn）。
+# 少了这一行，workspace lints 对本 crate 完全不生效。
+[lints]
+workspace = true
+
+# release profile 已上移到根 Cargo.toml —— 成员里的 [profile.*] 会被**静默忽略**
+# （cargo 每个 workspace 只认 root 的那个，见 docs/STATUS.md 坑 #18）。
 
 [dev-dependencies]
 criterion = "0.8.2"
