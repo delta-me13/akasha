@@ -8,6 +8,21 @@ MANIFEST := "src-tauri/Cargo.toml"
 default:
     @just --list
 
+# ── 环境 ────────────────────────────────────────────────────────────────────
+
+# 按 mise.toml 装齐全局 CLI 工具（这些不是 Cargo.toml 依赖，见 AGENTS.md §10）
+tools:
+    mise install
+
+# 查看工具版本与来源
+tools-ls:
+    @mise ls
+
+# 系统库前置检查（Arch 系：webkit2gtk-4.1 缺失会让 cargo 在构建脚本阶段才失败）。
+# 刻意不用 shebang 配方 —— 那要求 just 能写 runtime dir，在受限/CI 环境里会无谓失败。
+syscheck:
+    @for p in webkit2gtk-4.1 javascriptcoregtk-4.1 gtk+-3.0 librsvg-2.0; do pkg-config --exists "$p" && echo "✅ $p $(pkg-config --modversion "$p")" || { echo "❌ $p 缺失 → Arch 系: sudo pacman -S webkit2gtk-4.1"; exit 1; }; done
+
 # ── 开发循环 ────────────────────────────────────────────────────────────────
 
 # 常驻开发主控：前端 HMR；Rust 改动自动增量重编译 + 重启 app。
