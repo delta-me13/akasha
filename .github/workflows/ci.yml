@@ -1,0 +1,130 @@
+# akasha CI —— 两个 job，共用同一份依赖列表。
+#
+# 历史说明：本文件取代了 `victauri init` 生成的 `.github/workflows/victauri.yml`。
+# 原文件在仓库根执行 `cargo build` / `cargo metadata`，但根目录没有 Cargo.toml，
+# 必然失败；而且两个 job 分在两个文件里无法用 `needs` 串联。现在合并为一个文件。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  # 唯一一份系统依赖列表。Tauri 官方 Debian/Ubuntu 列表：
+  # https://v2.tauri.app/start/prerequisites/
+  # 注意是 libayatana-appindicator3-dev —— 旧名 libappindicator3-dev 在
+  # ubuntu-latest 上已经不存在。
+  APT_DEPS: >-
+    libwebkit2gtk-4.1-dev build-essential curl wget file
+    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+jobs:
+  # ── 静态门禁：不需要启动 app ───────────────────────────────────────────────
+  # 跑的就是本地那一条 `just ready` —— 门禁只有一处定义，避免 CI 与本地漂移。
+  checks:
+    name: 格式 / lint / 依赖门禁
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_DEPS
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-06)
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+      # just 不在 taiki-e/install-action 的工具列表里，用官方固定版本资产
+      # （URL 已实测可下载）。装到 ~/.local，避免写系统目录。
+      - name: 安装 just
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl --proto '=https' --tlsv1.2 -sSfL \
+            https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz \
+            | tar xz -C "$HOME/.local/bin" just
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # cargo-nextest / cargo-deny 在支持列表里，走预编译 GitHub Releases
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
+        with:
+          tool: cargo-nextest,cargo-deny
+
+      # 结构护栏（ast-grep）用官方 npm 包，自带预编译二进制。
+      # --prefix 装到 ~/.local，避免全局写权限问题。
+      - name: 安装 ast-grep
+        run: npm install -g --prefix "$HOME/.local" @ast-grep/cli
+
+      # 与本地完全相同的门禁：fmt-check + clippy + ast-grep scan + test + deny-offline
+      - name: just ready
+        run: just ready
+
+      # 防止 AGENTS.md §11 的命令表与实际 justfile 漂移
+      - name: 命令表未漂移
+        run: just docs-check
+
+  # ── E2E：需要真实运行的 app ────────────────────────────────────────────────
+  e2e:
+    name: E2E（真实 app + Victauri）
+    runs-on: ubuntu-latest
+    needs: checks # 静态门禁不过就不必烧 CI 时间起 app
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_DEPS xvfb
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-06)
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+      # 显式给 --manifest-path：这样无论将来是否采纳 ADR-0001 的根 workspace，
+      # 本步骤都成立（选项 B 与选项 A 都能跑）。
+      - name: 构建
+        run: cargo build --manifest-path src-tauri/Cargo.toml
+
+      # 用 cargo metadata 询问 target 目录，而不是猜路径。
+      # 单 crate 时是 src-tauri/target，采纳根 workspace 后是 ./target —— 两者都正确。
+      - name: 解析产物路径
+        run: |
+          echo "TARGET_DIR=$(cargo metadata --manifest-path src-tauri/Cargo.toml \
+            --format-version 1 --no-deps | jq -r '.target_directory')" >> "$GITHUB_ENV"
+
+      # 不要再写 `$(cargo metadata | jq '.packages[0].name')`：采纳根 workspace 后
+      # packages[0] 不再必然是 app crate，而且 crate 名不一定等于 bin 名。
+      - name: 在 xvfb 下启动 app
+        run: |
+          xvfb-run -a "$TARGET_DIR/debug/akasha" &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Victauri 冒烟测试
+        uses: 4DA-Systems/victauri/.github/actions/victauri-test@v0.8.8
+        with:
+          check: "true"
+          victauri-version: "0.8.8"
+
+      - name: 集成测试
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test integration -- --test-threads=1
+        env:
+          VICTAURI_E2E: "1"
+
+      - name: 清理
+        if: always()
+        run: |
+          if [ -n "${APP_PID:-}" ]; then
+            kill "$APP_PID" 2>/dev/null || true
+          fi
