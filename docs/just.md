@@ -114,7 +114,11 @@ just deny-offline                       # 新依赖的许可证要过门禁
 
 **受限环境里跑 app**（容器 / agent 沙箱 / 无写权限的家目录）：
 Tauri 启动时要写 `$HOME` 下的数据目录，被拒时会 panic 在
-`Failed to setup app: 只读文件系统 (os error 30)`。把 XDG 目录重定向到工作区内即可：
+`Failed to setup app: 只读文件系统 (os error 30)`。**这是环境权限问题，不是项目 bug。**
+
+**顺序很重要 —— 先提权，重定向只是退路**：让这一次运行能写工作区之外
+（agent 场景下就是对该命令申请提权；规则见 `AGENTS.md` §1 末）。
+只有提权不可用（被拒绝 / 无人审批）时，才用下面的 XDG 重定向：
 
 ```bash
 mkdir -p .devhome/{data,config,cache}
@@ -126,10 +130,14 @@ just dev
 
 （`.devhome/` 已在 `.gitignore` 里。dconf 的 `dconf-CRITICAL` 警告无害，可忽略。）
 
-> ⚠️ **这个办法有副作用**（实测）：mise 也读 `XDG_DATA_HOME` / `XDG_CACHE_HOME`，
+> ⚠️ **重定向有副作用**（实测）：mise 也读 `XDG_DATA_HOME` / `XDG_CACHE_HOME`，
 > 于是它会把 node / pnpm / just **重新下载进 `.devhome`**（实测约 94 MB，启动明显变慢），
-> 而不是复用 `~/.local/share/mise`。若只是想绕开写权限限制、又不想付这个代价，
-> 更直接的做法是**给这一次运行完整的文件系统权限**，而不是重定向 XDG。
+> 而不是复用 `~/.local/share/mise`。**这就是它只配当退路的原因** ——
+> 能提权就直接提权，别为了绕开权限去付这份代价。
+
+> 同一类问题还有 `just deny`：它要写 `~/.cargo/advisory-dbs`，受限环境下会报
+> `failed to acquire advisory database lock ... failed to create parent directories`。
+> 处理方式相同：**先提权**。
 
 ## 7. 想加一条新命令
 

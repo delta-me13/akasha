@@ -90,6 +90,9 @@ CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` �
    `fmt-check` 会红。跑一次 `just fmt` 规范化即可（已做）。
 10. **CI 里 `libappindicator3-dev` 在 ubuntu-latest 上已不存在**，要用
     Tauri 官方列表里的 `libayatana-appindicator3-dev`（还漏了 `libxdo-dev`）。
+11. **受限环境下"写工作区之外被拒"看起来像工具/代码故障**（`just dev` 的 `os error 30`、
+    `just deny` 的 advisory lock 失败）。已写成规则：识别 → **直接提权重试**，
+    见 `AGENTS.md` §1 末。**不要把它当成项目 bug 去翻代码。**
 
 ## 环境
 
