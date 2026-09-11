@@ -17,9 +17,11 @@
 - [x] 工具链与依赖就位（`just check` / `just lint` 退出码 0）
 - [x] 依赖门禁（`just deny-offline` → bans / licenses / sources all ok）
 - [x] 规范与文档体系（`AGENTS.md` + `ROADMAP.md` + `docs/`）
-- [!] **修好 CI workflow** —— `.github/workflows/victauri.yml` 在仓库根跑 `cargo build`，
-      而根目录没有 `Cargo.toml`。**不修就一直红。**
-      验收：CI 上该 job 变绿
+- [~] **修好 CI** —— 原 `victauri.yml` 在仓库根跑 `cargo build`（根目录无 `Cargo.toml`），
+      且两个 job 分在两个文件里无法用 `needs` 串联。已合并为 `.github/workflows/ci.yml`：
+      `checks` 跑 `just ready` + `just docs-check`，`e2e` 依赖 `checks`
+      验收：CI 上两个 job 变绿 —— **待首次推送确认**
+      （本地只能校验 YAML 合法性、命令存在性与依赖版本，跑不了 runner）
 - [ ] **ADR-0001 定案**（工作区切分 + PTY 抽象，当前状态：提议）
       验收：`docs/adr/0001` 状态改为"已接受"，或写明被哪条取代
 - [ ] **落地 ADR-0001 决策一**（根 workspace）

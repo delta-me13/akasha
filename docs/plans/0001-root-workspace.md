@@ -47,13 +47,15 @@ grep -n '状态' docs/adr/0001-crate-split-and-pty-abstraction.md | head -3
 3. `git mv src-tauri/Cargo.lock Cargo.lock`，并在根 `.gitignore` 加 `/target/`，
    删除 `src-tauri/.gitignore` 里的 `/target/`（保留 `gen/schemas` 那行）。
 
-4. `justfile`：`MANIFEST` 相关配方切到 `--workspace`；`cargo nextest run --workspace`。
-   保留 `--manifest-path` 写法也可行，但**必须统一**，不能一半一半。
+4. `justfile`：**大概率无需改动**。crate 级命令已在 `src-tauri/justfile`，
+   而 just 用 justfile 所在目录作为 cwd —— 采纳根 workspace 后它照样工作。
+   只需确认 `cargo fmt --all` 与 `cargo nextest run` 在新布局下覆盖全部成员。
+   （本 plan 初稿写"把 `MANIFEST` 切到 `--workspace`"——那是 justfile 搬迁前的写法，已作废。）
 
-5. CI（`.github/workflows/victauri.yml`）：
-   - `cargo build` → 明确 `cargo build -p akasha`（`packages[0].name` 取到的不再必然是 bin）
-   - 启动路径改为 `./target/debug/akasha`，不再靠 `cargo metadata | jq` 推断
-   - 加 `ast-grep scan` 与 `just deny-offline`
+5. CI：**无需改动**。`.github/workflows/ci.yml` 已经显式传 `--manifest-path`，
+   并用 `cargo metadata` 解析 target 目录（而不是猜 `src-tauri/target`）——
+   这正是为了在 A/B 两种布局下都成立。只需确认 e2e job 仍能启动
+   `$TARGET_DIR/debug/akasha`。
 
 6. `git mv src-tauri/deny.toml deny.toml`，同步 `justfile` 里 `--config` 的路径。
 
