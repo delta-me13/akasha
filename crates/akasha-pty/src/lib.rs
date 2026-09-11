@@ -1,0 +1,37 @@
+//! akasha-pty —— **`Transport`：通用字节载体**。
+//!
+//! 这里落成的是**通用**抽象，不是 PTY 专属 trait：本地 PTY 只是它的第一个实现，
+//! 之后 SSH shell 通道与串口要装进同一个 trait（`docs/scope.md` §2）。
+//! 若做成 `PtySession` 那种形态，第二个后端到来时就得重构 —— 那正是本工作项存在的理由。
+//!
+//! 三条设计约束（都来自规范，不是偏好）：
+//!
+//! 1. **能力差异用 capability flag 表达**，不是"多几个方法都得实现一遍"
+//!    （`docs/scope.md` §2）。所以 [`Transport`] 里 `resize` / `exited` 都有**默认实现**：
+//!    不具备该能力的载体不必写它们，写了才有意义。
+//! 2. **绝不当 `String` 传字节**（`AGENTS.md` §3.2）：trait 的方法签名只出现 `&[u8]`
+//!    与 [`std::io::Read`]，不出现 `String` / `&str`。
+//! 3. **shutdown 必须显式 kill + wait 收尸**，`drop` 不能代替（`AGENTS.md` §3.3）。
+//!    所以本 crate **没有** `Drop` 实现 —— 那会让"忘记收尸"变成静默成功。
+//!
+//! 本 crate **不含**：输出合批（plan 0201）、IPC（plan 0202）、前端（阶段 2）、
+//! `Session` 模型（已在 `akasha-core`）。它只管"字节怎么进出载体"。
+//!
+//! ```no_run
+//! use akasha_pty::{PtyTransport, TerminalSize, Transport};
+//!
+//! let mut transport = PtyTransport::spawn_default(TerminalSize::DEFAULT)?;
+//! let _output = transport.output_stream();
+//! transport.write(b"echo hi\n")?;
+//! transport.shutdown()?; // 显式收尸；不调用它就会留下子进程
+//! # Ok::<(), akasha_pty::TransportError>(())
+//! ```
+
+mod pty;
+mod shell;
+pub mod testing;
+mod transport;
+
+pub use pty::PtyTransport;
+pub use shell::ShellLaunch;
+pub use transport::{Capabilities, ExitStatus, TerminalSize, Transport, TransportError};

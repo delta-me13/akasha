@@ -67,7 +67,7 @@
 | 0102 | CI 平台矩阵（Linux + Windows + macOS） | 进行中（本地已完成，待 CI 实跑） | plan 0101 | [0102](./0102-ci-platform-matrix.md) |
 | 0103 | `crates/akasha-core`：`Session` 模型骨架 | 已完成 | plan 0101 | [0103](./archive/0103-core-session-model.md) |
 | 0104 | 迁移后复测开发循环 | 未开始 | plan 0103（要有 `crates/` 成员才测得了） | [0104](./0104-dev-loop-retest.md) |
-| 0105 | `crates/akasha-pty`：通用 `Transport` trait | 未开始 | plan 0103（命名与规则先立） | [0105](./0105-pty-transport-trait.md) |
+| 0105 | `crates/akasha-pty`：通用 `Transport` trait | 已完成 | plan 0103（命名与规则先立） | [0105](./archive/0105-pty-transport-trait.md) |
 
 ### 阶段 2 — 端到端最小终端
 

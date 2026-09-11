@@ -65,6 +65,14 @@ name = "akasha-core"
 version = "0.1.0"
 
 [[package]]
+name = "akasha-pty"
+version = "0.1.0"
+dependencies = [
+ "portable-pty",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

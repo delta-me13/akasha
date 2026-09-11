@@ -49,9 +49,9 @@
 - [ ] **迁移后复测开发循环**：改 `crates/` 下的文件仍触发重编译与重启
       验收：改一个 `crates/` 文件后 app 自动重启（否则开发循环静默失效）
       → [plan 0104](./docs/plans/0104-dev-loop-retest.md)
-- [ ] `crates/akasha-pty`：通用 `Transport` trait + `portable-pty` 实现
+- [x] `crates/akasha-pty`：通用 `Transport` trait + `portable-pty` 实现
       验收：用假实现覆盖 spawn / write / shutdown 的单测通过
-      → [plan 0105](./docs/plans/0105-pty-transport-trait.md)
+      → [plan 0105](./docs/plans/archive/0105-pty-transport-trait.md)
 
 ---
 

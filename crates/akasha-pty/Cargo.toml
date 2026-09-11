@@ -1,0 +1,21 @@
+# akasha-pty —— `Transport`：**通用字节载体**，不是 PTY 专属抽象。
+#
+# 名字里的 `pty` 是这个 crate 的**首个实现**，不是它的边界：同一个 trait 之后要装下
+# SSH shell 通道与串口（docs/scope.md §2）。叫 `akasha-pty` 而不是 `PtySession` 一类，
+# 是因为后者会容不下第二个后端 —— 词汇表的理由见 docs/scope.md §1.2。
+
+[package]
+name = "akasha-pty"
+version = "0.1.0"
+edition = "2024"
+description = "akasha 的 Transport 抽象：通用字节载体 + portable-pty 实现"
+# 桌面应用的一部分，不发布到 crates.io（同 akasha-core）。
+publish = false
+
+[dependencies]
+portable-pty = "0.9.0"
+# AGENTS.md §3.4：错误用 thiserror 分域定义。
+thiserror = "2"
+
+[lints]
+workspace = true
