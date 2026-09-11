@@ -6,6 +6,22 @@
 
 ---
 
+## 文件在哪（先看这里）
+
+| 想知道 | 看 |
+|---|---|
+| **规则**：什么能做什么不能做、命令入口 | 本文件 |
+| **下一步做什么** | [`ROADMAP.md`](./ROADMAP.md) |
+| **现在到哪了、有哪些坑** | [`docs/STATUS.md`](./docs/STATUS.md) |
+| **某个决定为什么这样定** | [`docs/adr/`](./docs/adr/) |
+| **某个工作项怎么做** | [`docs/plans/`](./docs/plans/) |
+| 文档索引与骨架 | [`docs/README.md`](./docs/README.md) |
+
+> 本文件**只放规则**。状态与待办不写在这里 —— 规则的时效是"几乎不变"，
+> 状态的时效是"每次会话"，混在一起两边都会烂。
+
+---
+
 ## 0. 项目定位与硬性原则
 
 - **产品**：`akasha` — Tauri 2 桌面终端应用（identifier `fans.cyrene.akasha-terminal`）。
@@ -182,17 +198,23 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | 性能基线 | `criterion` | 解析与写路径吞吐 | 否 |
 | 集成 / E2E | `victauri-test` + `VICTAURI_E2E=1` | IPC 契约、前后端一致性 | **是** |
 
-### DoD 检查表（功能宣布完成前逐项确认）
+### DoD：一条命令 + 两件机器查不了的事
 
-- [ ] `just fmt && just lint && just test` 全绿。
-- [ ] `ast-grep scan` 无新增违规。
-- [ ] 改过 command/event → 跑过 `just gen-types`，产物差异已提交。
-- [ ] 真实路径走通：Victauri `invoke_command`（或 UI 交互）触发 → `wait_for` 等到
+```bash
+just ready   # fmt-check + lint(clippy -D warnings + ast-grep scan) + test + deny-offline
+```
+
+`just ready` 就是**可执行的 DoD**。能在命令里表达的验收标准，不要写成散文 ——
+散文规则不会被强制执行。它覆盖不了、必须另外确认的只有两件：
+
+- [ ] **真实路径走通**：Victauri `invoke_command`（或 UI 交互）触发 → `wait_for` 等到
       **真正结束** → `verify_state` 确认前后端状态一致。**禁止用 sleep 代替**。
-- [ ] 新 command 在 `get_registry` 中可见；`detect_ghost_commands` 无新增
-      `confirmed_ghosts`。
-- [ ] 涉及 PTY / 子进程 → `introspect { action: "processes" }` 确认关闭后无残留。
-- [ ] 涉及终端输出解析 → 新增对应 `insta` 快照。
+- [ ] **涉 PTY / 子进程**：`introspect { action: "processes" }` 确认关闭后无残留。
+
+改过 command/event 时额外一条：新 command 应在 `get_registry` 中可见，
+`detect_ghost_commands` 无新增 `confirmed_ghosts`；`just gen-types` 后 `git diff` 为空
+（接入 tauri-specta 后纳入 `ready`，见 ROADMAP 阶段 3）。
+涉及终端输出解析时，补一个 `insta` 快照。
 
 ### Victauri 使用纪律
 
@@ -205,12 +227,22 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 ---
 
-## 8. 文档与决策
+## 8. 文档体系（时效性各不相同，不要混）
 
-- 架构决策写 `docs/adr/NNNN-<slug>.md`（背景 / 选项 / 决策 / 后果）。
+| 文件 | 回答什么 | 时效 |
+|---|---|---|
+| `AGENTS.md`（本文件） | 规则 | 几乎不变，保持 <200 行 |
+| `ROADMAP.md` | 去哪 | 偶尔变，**只勾复选框** |
+| `docs/STATUS.md` | 现在在哪 | **每次会话覆盖写，不追加** |
+| `docs/adr/NNNN-*.md` | 为什么这样定 | **不可变**，只追加"被 NNNN 取代" |
+| `docs/plans/NNNN-*.md` | 这次怎么做 | 随实现更新，就地修改 |
+
+- **不要把状态、进度、待办写进本文件** —— 那会让本文件每天都要改，
+  而后人无法分辨哪条还是现行规则。
 - 终端领域选型（PTY 库、VT 解析器、渲染器、序列化协议）**必须**有 ADR：
   这类决定日后被反复推翻的成本最高。
-- ADR 一经接受不修改，只追加"被 NNNN 取代"。
+- plan 与 ADR 各自独立编号，用 plan 头部的 `关联：ADR-XXXX` 建立关系。
+- 索引、plan 骨架、为什么暂时不建 `specs/` —— 见 `docs/README.md`。
 
 ---
 
@@ -218,16 +250,16 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 - 约定式提交：`feat|fix|refactor|perf|test|docs|chore|build(scope): 摘要`。
 - 一个提交一件事；**规范文件、CI、格式化等大范围改动单独提交**。
-- pre-commit：`fmt --check` + `clippy -D warnings` + `ast-grep scan`（装了 `just` 后走 `just lint`）。
+- 提交前跑 `just ready`（fmt-check + lint + test + deny-offline）—— 见 §7。
 - 不要提交：`node_modules/`、`dist/`、`target/`、生成的 `gen/schemas`。
 - **要提交**：`Cargo.lock` / `pnpm-lock.yaml`（这是应用不是库，锁文件必须进仓库）。
 - 大文件（图标除外）不进 git。
 
 ---
 
-## 10. 依赖与工具状态
+## 10. 依赖与工具：清单放哪个文件
 
-### 10.1 清单放在哪个文件（不要放错地方）
+### 10.1 四类清单的归属
 
 | 类别 | 文件 | 安装方式 |
 |---|---|---|
@@ -245,39 +277,5 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 > 会用 mise 再装一份并让 shim 优先。若不想装两份，删掉 `mise.toml` 即可 ——
 > 它退化为一份文档，不影响现有工具可用性。
 
-### 10.2 已就绪（已实测，非推测）
-
-| 项 | 验证方式 |
-|---|---|
-| Rust CLI（just 1.58.0 / bacon 3.25.0 / nextest 0.9.144 / sccache 0.17.0 / deny 0.20.2） | `<tool> --version` |
-| 前端依赖（xterm 6 + 各 addon、vitest 5、biome 2.5） | `package.json` |
-| Rust 依赖（portable-pty / vte / thiserror / tracing / tauri-plugin-log / tauri-specta / insta / criterion） | `src-tauri/Cargo.toml` |
-| **系统库 webkit2gtk-4.1 2.52.6** | `just syscheck` 全绿 |
-| **`just check`** | 退出码 **0** |
-| **`just lint`**（clippy `-D warnings` + ast-grep scan） | 退出码 **0** |
-| **`just deny-offline`**（licenses / bans / sources） | 退出码 **0**，all ok |
-
-### 10.3 本轮修掉的坑（都是"构建脚本阶段才暴露"的类型）
-
-1. **缺 `tokio` dev-dependency**：`victauri-test` 生成的 `tests/*.rs` 用
-   `#[tokio::test]`，但 tokio 不会由它传递给你 —— 其 README 明确要求消费方自己加。
-   已加：`tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }`。
-2. **生成脚手架有过时导入**：`tests/integration.rs` 里的 `serde_json::json` 与
-   `e2e_test` 从未使用，会让 `clippy -D warnings` 失败（即 `just lint` 红）。
-   已删除这两个导入。
-
-### 10.4 剩余待办
-
-1. 🔴 **`.github/workflows/victauri.yml` 当前是坏的**：它在仓库根跑 `cargo build`
-   与 `cargo metadata`，但根目录没有 `Cargo.toml`。**两种修法都可行** ——
-   采纳 ADR-0001 决策一（根 workspace），或直接给 workflow 加 `--manifest-path`
-   并写死 bin 名 `akasha`。**不修就一直红。**
-2. 工作区切分与 PTY 抽象待 `docs/adr/0001` 定案。定案后需同步：§3.1 的分层图、
-   `justfile` 的 `MANIFEST`、根 `.gitignore`（`target/` 位置）、
-   `src-tauri/deny.toml` → 根 `deny.toml`、CI。
-3. `tauri-specta` 是 `2.0.0-rc.25`（预发布）：接入 §5 前决定锁 rc 还是等正式版。
-4. （可选）固定 Rust 工具链：加 `rust-toolchain.toml`（`channel = "1.98.1"`）。
-   代价是 rustup 会把它当独立 toolchain 再下载一份（与现有 `stable` 同版本但不同目录）。
-
-> 已完成，不再是待办：**`cargo deny init` 不需要在仓库根执行** —— 实测在
-> `src-tauri/` 中退出码 0。该错误论据已在 `docs/adr/0001` §2.1 更正。
+> **当前装了什么、哪些门禁是绿的、还剩哪些待办 —— 见 [`docs/STATUS.md`](./docs/STATUS.md)。**
+> 状态不写在本文件里（见 §8）。

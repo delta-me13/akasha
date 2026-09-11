@@ -1,17 +1,25 @@
 # CLAUDE.md
 
+@AGENTS.md
+
+> 上面这行是 Claude Code 的导入语法，等价于把 `AGENTS.md` 内联到这里 ——
+> 目的是**两边读同一份规则，不复制内容**（复制出来的第二份必然漂移）。
+> 其他工具直接读本文件或 [`AGENTS.md`](./AGENTS.md) 均可。
+
 **本项目的完整规范在 [`AGENTS.md`](./AGENTS.md)。开始任何工作前先读它。**
 
 `AGENTS.md` 是唯一规范入口（项目定位、开发循环与热重载真相、Rust/前端硬约束、
-IPC 类型边界、ast-grep 结构护栏、测试与 DoD、依赖安装清单）。
+IPC 类型边界、ast-grep 结构护栏、测试与 DoD、依赖清单归属）。
 本文件只保留指针与 Victauri 自动生成块，不再重复规范内容 —— 避免两处漂移。
+
+现在到哪一步、有哪些坑 → `docs/STATUS.md`；下一步做什么 → `ROADMAP.md`。
 
 需要立刻记住的少数几条：
 
 - 常驻一个 `just dev`，不要每次手动 `cargo tauri dev`（Tauri 无 Rust 热重载）。
 - 前端禁止裸 `invoke("...")`；Rust 侧业务逻辑放 `crates/`，`src-tauri` 只做 IPC 薄壳。
 - 异步后端操作用 Victauri `wait_for` 等待，禁止 `sleep` 猜测。
-- 宣布完成前过一遍 `AGENTS.md` §7 的 DoD 检查表。
+- **提交前跑 `just ready`**（可执行的 DoD），外加 `AGENTS.md` §7 里机器查不了的两件事。
 
 ---
 
