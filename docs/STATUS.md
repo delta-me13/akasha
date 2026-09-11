@@ -33,6 +33,31 @@ ADR-0001 待拍板。
 - **`just dev` 在根 workspace 布局下能否起窗口** —— ADR-0001 决策一的验收项，
   见 `docs/plans/0001` 第 4 条。当前布局下尚未跑过 `tauri dev`。
 
+## 预跑基线（2026-09-11 实测，当前布局）
+
+ADR-0001 决策一（根 workspace 迁移）**迁移前**的实测记录 —— 迁移后必须拿它逐项对比。
+
+| 项 | 实测结果 |
+|---|---|
+| 二进制落点 | `src-tauri/target/debug/akasha`（日志 `Running target/debug/akasha`，cwd = `src-tauri`），393 MB |
+| 冷编译 | **47.53s** |
+| 增量重编译 | **6.09s** |
+| dev server | Vite 就绪于 `http://localhost:1420`（实测 HTTP 200） |
+| Rust 监听范围 | CLI 打印 `Watching /home/lycurgus/akasha/src-tauri for changes` |
+| app 数据目录 | `~/.local/share/fans.cyrene.akasha-terminal/`（CacheStorage / hsts-storage.sqlite） |
+| Victauri | 连上，`identifier = fans.cyrene.akasha-terminal`，35 个工具，端口 7373 |
+| **IPC 端到端** | `invoke('greet', {name:'preflight'})` → `Hello, preflight! You've been greeted from Rust!` ✅ |
+| 前端渲染 | `dom_snapshot` 拿到完整模板 UI（heading / link / form / textbox / button） |
+| 前提条件 | **需要能写 `$HOME`**；受限环境下会在 `Failed to setup app: 只读文件系统 (os error 30)` panic |
+
+> 当前有一个 `just dev` 正在运行（我以完整权限启动的）。停止：结束该后台作业即可；
+> 注意它占用 1420 端口，另起一个 `tauri dev` 前先停掉它。
+
+**预跑得出的、迁移后必须复测的点**（已写入 `docs/plans/0001`）：
+CLI 打印的监听路径是 `src-tauri`。根 workspace 迁移后 `crates/*` 落在 `src-tauri` 之外，
+**必须确认改 `crates/` 下的文件仍会触发重编译与重启** —— 否则开发循环会静默失效，
+而 `cargo check` 完全看不出来。
+
 ## 进行中 / 下一步
 
 - [ ] **ADR-0001 定案**：待 cyrene 拍板 §3 决策二（v1 是否建 `akasha-vt`）与 §6 的未决项

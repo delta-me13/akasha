@@ -77,8 +77,25 @@ test -d target && echo "OK: target at root"; test ! -d src-tauri/target && echo 
 just dev              # 期望能起窗口；看输出里 target 路径与重启行为是否正常
 ```
 
-**第 4 条是硬性的**：这条 planet 的全部风险集中在"Tauri CLI 在 workspace 下的
-target 路径与 dev watcher 行为"，只跑 `cargo check` 证明不了它。
+**第 4 条是硬性的**：本 plan 的全部风险集中在"Tauri CLI 在 workspace 下的
+target 路径与 dev watcher 行为"。只跑 `cargo check` 证明不了它。
+
+### 迁移后必须逐项对比的基线（迁移前已实测，见 `docs/STATUS.md`）
+
+| 项 | 迁移前 | 迁移后应为 |
+|---|---|---|
+| 二进制落点 | `src-tauri/target/debug/akasha` | `<root>/target/debug/akasha` |
+| 冷编译 / 增量 | 47.53s / 6.09s | 同量级（不应变慢） |
+| dev server | Vite 1420 | 1420，HTTP 200 |
+| **CLI 监听范围** | `Watching .../src-tauri for changes` | **改为 `crates/` 下的文件后仍触发重编译 + 重启** ⚠️ |
+| IPC 端到端 | `greet` 返回预期字符串 | 同样返回 |
+| Victauri | 连上，35 工具 | 同样连上 |
+
+⚠️ **监听范围是本次迁移最大的隐性风险**：CLI 打印的监听路径是 `src-tauri`，
+而迁移后 `crates/*` 在它之外。如果 crate 改动不再触发重启，开发循环会**静默失效** ——
+`cargo check` / `just ready` 全绿，但你改了代码看不到效果。
+验证方法：跑起 `just dev`，改一下 `crates/` 下任意文件的注释，观察 CLI 是否重编译并重启。
+若失效，就在 `src-tauri/Cargo.toml` 或 `.taurignore` 层面想办法（而不是默默接受）。
 
 ## 回滚
 
