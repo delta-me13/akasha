@@ -2,8 +2,8 @@
 name = "akasha"
 version = "0.1.0"
 description = "A Tauri App"
-authors = ["you"]
-edition = "2021"
+authors = ["cyrene"]
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,11 +18,20 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["specta"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 victauri-plugin = "0.8.8"
+portable-pty = "0.9.0"
+vte = "0.15.0"
+thiserror = "2.0.20"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+tauri-plugin-log = "2.9.1"
+tauri-specta = "2.0.0-rc.25"
+specta = "2.0.0-rc.25"
+specta-typescript = "0.0.12"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -34,4 +43,6 @@ panic = "abort"
 strip = true
 
 [dev-dependencies]
+criterion = "0.8.2"
+insta = "1.48.0"
 victauri-test = "0.8.8"
