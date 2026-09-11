@@ -78,6 +78,8 @@ Spec Kit / Kiro 那类"每个特性一个 `specs/NNN-slug/{spec,plan,tasks}.md`"
 | `scope.md` 里展开某协议的字段 / 条款 / API 全貌 | 参考资料 | 单独文档（如 `portable.md`），scope.md 留结论 + 指针 |
 | `STATUS.md` 里写"第一步先做什么" | 步骤 | plan；STATUS 只写"现在在哪 + 下一步是哪个条目" |
 | 汇总文档里写排错步骤 | 参考资料 | [`just.md`](./just.md) §6、[`portable.md`](./portable.md)，或专门文档 |
+| CI 为什么不能简化成一份 GitHub 工作流 | 规则 | [`AGENTS.md`](../AGENTS.md) §12（规则）+ `.github/workflows/ci.yml` 头部（出处与边界） |
+| 一个临时用的检查脚本 | 检查 | 做成 just 配方（[`AGENTS.md`](../AGENTS.md) §11）—— 散落的 `.sh` 不会被任何门禁照看 |
 
 ### 三级粒度：同一事实只有一处
 

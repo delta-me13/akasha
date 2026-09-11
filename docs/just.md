@@ -45,7 +45,7 @@
 | `just tools` | 按 `mise.toml` 装齐全局 CLI 工具 | 根 |
 | `just tools-ls` | 看工具版本与来源 | 根 |
 | `just docs-check` | 文档纪律：① 命令未漂移 ② ROADMAP 没长细节（每条 ≤3 行、无代码块、无命令调用）③ plan 预算（≤200 行）+ 索引一致 + 骨架不许开工 | 根 |
-| `just ci-check` | CI 双 forge（Gitea + GitHub）可移植性：无 `runner` 上下文 / 非 Linux 分支有 `github.server_url` 门 / 三平台齐全 / 无 `.gitea/workflows/` 抢占目录 | 根 |
+| `just ci-check` | CI 双 forge（Gitea + GitHub）可移植性：无 `runner` 上下文 / 非 Linux 分支有 `github.server_url` 门 / 三平台齐全 / 无 `.gitea/workflows/` 抢占目录（规则见 `AGENTS.md` §12） | 根 |
 
 ## 3. 两个 justfile 是什么关系
 
@@ -124,7 +124,7 @@ just deny-offline                       # 新依赖的许可证要过门禁
 | `just ready` 有一步红了 | 看结尾提示的那一步，或 `.just-ready-fail.log` |
 | 改了配方但 `just --list` 没显示 | 检查缩进（配方体必须是 tab 或统一缩进），以及是否写在了对的 justfile 里 |
 | 改了 `src-tauri/crates/` 下的文件，app 却不重编译 | 先确认它**确实在 `src-tauri/` 里面**（tauri CLI 默认只监听 `src-tauri`）。成员若被放到它外面（例如仓库根的 `src-tauri/crates/`），必须另配监听范围，否则开发循环**静默失效** —— 见 `STATUS.md` 坑 #21 |
-| Gitea 上 CI 不跑 / 一直排队 | 三个已知原因：存在 `.gitea/workflows/`（它只读第一个存在的目录）、用了 `runner` 上下文、非 Linux 分支没有 `github.server_url` 门。跑 `just ci-check` 一次全查 |
+| Gitea 上 CI 不跑 / 一直排队 | 三个已知原因：存在 `.gitea/workflows/`（它只读第一个存在的目录）、用了 `runner` 上下文、非 Linux 分支没有 `github.server_url` 门。跑 `just ci-check` 一次全查（规则见 `AGENTS.md` §12） |
 
 **受限环境里跑 app**（容器 / agent 沙箱 / 无写权限的家目录）：
 Tauri 启动时要写 `$HOME` 下的数据目录，被拒时会 panic 在

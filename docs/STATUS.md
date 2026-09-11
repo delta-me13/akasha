@@ -84,6 +84,11 @@ CI 改成**一份工作流同时支持 Gitea 与 GitHub**。
 - [x] **规则路径重验**：ast-grep 规则的 `files:` 改为 `src-tauri/crates/**` 后，
   用探针重新验证它们仍会命中（否则规则会**静默失效**）
 - [x] `AGENTS.md` §1/§3.1/§7/§9/§11 同步布局与 `ready` 步骤（**宪法改动，单独提交**）
+- [x] **本轮新规则一并落进宪法**（第二笔宪法提交，仍单独提交）：新增 **§12**（CI 双 forge 的
+      四条约束 + 由 `just ci-check` 强制）、§11 两条（非临时脚本一律做成 just 配方；
+      crate 级配方必须显式带 `--workspace`）、§6 一条（改了规则的 `files:`/`ignores:` 后
+      必须重跑负例 —— 路径写错是静默失效）；`docs/README.md` / `docs/just.md` / 本文件
+      与 `justfile` 的注释一并指回 §12
 
 ### 已定案（cyrene 裁定）
 
@@ -136,6 +141,7 @@ CI 改成**一份工作流同时支持 Gitea 与 GitHub**。
   根只**转发**，命令体只有一处。**权威清单在 `docs/just.md` §2**，由 `just docs-check` 强制同步。
   ⚠️ crate 级配方必须显式带 `--workspace`（坑 #20）。
 - CI 只有一个文件 `.github/workflows/ci.yml`：`checks-linux` + `checks-other`（仅 GitHub）+ `e2e`。
+  **规则在 `AGENTS.md` §12**（双 forge 的四条约束，由 `just ci-check` 强制），出处与边界在文件头注释。
   **不要创建 `.gitea/workflows/`**（坑 #24）。
 
 ## 踩过的坑（避免重复踩）
