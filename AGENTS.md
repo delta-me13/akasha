@@ -238,6 +238,9 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 > "规则写错了、什么都没匹配到"。负例要一对 —— 一个应当命中、一个诱饵应当**不**命中
 > （例如 `no-ui-vocab-in-types` 命中 `NegTabProbe` 但不命中 `Previewer`）。
 > 验证后删掉探针文件，别留在仓库里。
+>
+> ⚠️ **改了规则的 `files:` / `ignores:` 之后要重跑一次负例**（目录搬家、crate 改名都算）：
+> 路径写错的表现是"不匹配任何文件"，即**静默失效** —— `ast-grep scan` 照样退出码 0。
 
 ---
 
@@ -384,6 +387,12 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + ci-check + test + deny
   —— just 用 **justfile 所在目录**作为配方工作目录，所以那里 `cargo check` 天然找得到
   manifest，**不需要任何 `--manifest-path`**
 - 根 `justfile` 对 crate 级命令**只做转发**，不复制命令体
+- **非临时脚本一律做成 just 配方**，不要在仓库里散落 `.sh`：配方是唯一被 `docs-check`
+  强制登记的入口（每个配方都必须出现在 `docs/just.md` §2，且 `just --list` 里可见），
+  散落的脚本没有任何门禁照看。例外只有在 CI 里跑一次的安装步骤（它们不服务于本地工作流）。
+- ⚠️ crate 级配方**必须显式带 `--workspace`**：cargo 在成员目录里**只选当前包**，
+  漏了会让 `crates/*` 的 check / clippy / test **完全不被执行**，而 `just ready` 照样全绿
+  （坑 #20）。`cargo fmt --all` 是例外（`--all` 本来就指全 workspace）。
 
 **完整命令清单（全部 20 个配方 + 用途 + 典型工作流 + 排错）见
 [`docs/just.md`](./docs/just.md) §2。** 新增或改名配方时必须同步那里 ——
@@ -392,3 +401,24 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + ci-check + test + deny
 
 > 设这个校验的原因很具体：agent 最容易犯的错就是照着一份**过期的规则**
 > 去用一个已经不存在的旧命令，而这类错误在类型检查里看不出来。
+
+---
+
+## 12. CI：一份工作流，两个 forge
+
+**Gitea 先验、GitHub 后推**（cyrene 2026-09-11 指示）。因此 `.github/workflows/ci.yml`
+必须**同时**能在两边跑。下面只列规则；每条约束的出处、边界与实测都写在那个文件的头部注释里
+（改它之前先读那一段）。
+
+- **只维护一份工作流文件**，且**不要创建 `.gitea/workflows/`**：Gitea 的
+  `[actions] WORKFLOW_DIRS` 默认是 `.gitea/workflows,.github/workflows`，**只读第一个存在的目录**
+  —— 建了它反而让 Gitea 忽略 GitHub 目录，CI **静默不跑**。
+- **不用 `${{ runner.* }}` 上下文**（Gitea 的上下文表里只有 `github.*` / `gitea.*`）：
+  OS 与架构改用矩阵值、`uname`、`GITHUB_*` 环境变量。
+- **`runs-on` 只用简单形式**（`xyz` / `[xyz]`）；**表达式函数只用 `always()`**。
+- **Windows / macOS 整条 job 用 `github.server_url` 门在 GitHub**：Gitea runner 是 Linux 容器，
+  放常规矩阵会一直排队等一个不存在的 runner，而**步骤级 `if` 拦不住排队**。
+  被门住的 job 会连带跳过依赖它的 job —— 所以 `e2e` 只 `needs` Linux 那条。
+- 前四条由 **`just ci-check`**（已并入 `ready`）强制：破了约束那天本地不会有任何门禁变红，
+  那正是"CI 跑不起来但没人知道"的形态。它只覆盖文本层能确定的部分，
+  **真实行为以 Gitea 上的实跑为准**。
