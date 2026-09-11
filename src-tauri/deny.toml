@@ -1,0 +1,41 @@
+# cargo-deny 配置：许可证 / 漏洞 / 来源门禁。用法：just deny
+#
+# ⚠️ 不要直接用 `cargo deny init` 生成的模板：它的 [licenses] allow = [] 含义是
+# **拒绝一切许可证**，启用后 check 会全红。下面是本项目实际接受的宽松许可证合集。
+#
+# 网络依赖：advisories 需要联网拉取 RustSec 数据库（缓存于 ~/.cargo/advisory-dbs）；
+# licenses / bans / sources 不需要联网，离线也能跑（just deny-offline）。
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Unlicense",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+# 本 crate 是桌面应用、不发布到 crates.io（Cargo.toml 里 publish = false），
+# 因此不需要许可证表达式；第三方依赖仍然逐个检查。
+ignore = true
+
+[bans]
+# Tauri 的依赖树里重复版本是常态，deny 会不可用；但通配版本号必须拒绝。
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# 只允许 crates.io：挡住被投毒的同名 git 依赖。
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

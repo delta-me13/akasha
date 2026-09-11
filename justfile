@@ -58,9 +58,14 @@ lint:
 test:
     cargo nextest run --manifest-path {{MANIFEST}}
 
-# 依赖门禁：许可证 + CVE（配置在 deny.toml）
+# 依赖门禁：许可证 + 漏洞 + 来源。配置在 src-tauri/deny.toml。
+# advisories 需要联网拉取 RustSec 数据库。
 deny:
-    cargo deny check
+    cargo deny --manifest-path {{MANIFEST}} --config src-tauri/deny.toml check
+
+# 同上但跳过需要联网的 advisories（离线可用）
+deny-offline:
+    cargo deny --manifest-path {{MANIFEST}} --config src-tauri/deny.toml check licenses bans sources
 
 # E2E：需要 app 正在运行（just dev）。
 # 用 cargo test 而非 nextest —— 这些用例要求串行且依赖真实 app 进程。
