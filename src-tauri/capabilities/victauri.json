@@ -1,0 +1,9 @@
+{
+  "identifier": "victauri",
+  "description": "Victauri testing plugin — debug builds only",
+  "context": "local",
+  "windows": ["*"],
+  "permissions": [
+    "victauri:default"
+  ]
+}

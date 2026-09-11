@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "victauri": {
+      "command": "victauri",
+      "args": ["bridge", "--app", "fans.cyrene.akasha-terminal"]
+    },
+    "rust-analyzer": {
+      "command": "rust-analyzer-mcp"
+    }
+  }
+}
