@@ -421,6 +421,12 @@ Windows + macOS 类型检查 / Linux E2E）。**不要为别的 forge 加兼容�
   串成一条链只会让"Windows 红了"顺带吃掉 E2E 的结论。
 - **系统依赖列表只有 `env.APT_DEPS` 一处**（Tauri 官方列表；注意是
   `libayatana-appindicator3-dev`，不是已消失的旧名 `libappindicator3-dev`）。
+- **放手用 GitHub 专属能力，并且优先选省钱的**：`concurrency` + `cancel-in-progress`
+  取消同一分支上被取代的运行（`main` 除外 —— 合并后的结论不该被掐断）、
+  `permissions: contents: read`、`defaults.run.shell`、`${{ runner.* }}` 上下文与任意
+  表达式函数。工具安装统一走 `taiki-e/install-action`（预编译产物 + SHA256/attestation 校验），
+  **不要再手写"按平台选资产 + curl + 追加 `GITHUB_PATH`"的脚本** —— 那是兼容层的遗产，
+  它的存在理由（"不能用 `${{ runner.arch }}`"）已经消失。
 
 > 改了 workflow 先在本机跑 `just ready` —— 但它只证明"命令链是通的"：
 > **CI 的真实行为以 runner 上的实跑为准**（状态见 `docs/STATUS.md`）。
