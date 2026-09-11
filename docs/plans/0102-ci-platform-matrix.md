@@ -37,16 +37,27 @@ just ready                                      # 本地门禁必须先是绿的
    若 `e2e` 也 needs `checks-other`，一条 Windows 红就会顺带吃掉 E2E 的结论。
 4. Linux 装 apt 依赖（含 `libayatana-appindicator3-dev` 与 `libxdo-dev`，坑 #10）后跑
    `just ready`；完整门禁只跑一次，避免矩阵把时间乘三。依赖列表只有 `env.APT_DEPS` 一处。
-5. **just 这两个 job 各装一次**，用官方固定版本资产、**按 `uname -s`-`uname -m` 选架构**：
-   `macos-latest` 已是 arm64，装错架构会以 `bad CPU type in executable` 失败，
-   而那个报错完全不提架构。未覆盖的组合直接 `exit 1`，不退回一个"大概能用"的二进制。
-6. `cargo-nextest` / `cargo-deny` 走 `taiki-e/install-action`，ast-grep 走官方 npm 包
-   （`--prefix "$HOME/.local"`，避免全局写权限问题）。
-7. 缓存 `~/.cargo` 与 `target`，**按平台分键**（`Swatinem/rust-cache` 的键自动含 OS 与 rustc 版本）。
-8. E2E 用 `cargo metadata` 问产物路径、在 `xvfb-run` 下起 app、跑
+5. **工具安装统一走 `taiki-e/install-action`**（预编译产物 + SHA256 / attestation 校验）：
+   `checks-linux` 一次装齐 `just@1.58.0,cargo-nextest,cargo-deny`，`checks-other` 只装
+   `just@1.58.0`（版本写死，与本地对齐）。**不要手写"按平台选资产 + curl + 追加
+   `GITHUB_PATH`"的脚本** —— 那是兼容层的遗产，理由见「放弃记录」。
+6. ast-grep 走官方 npm 包，**直接 `npm install -g`**：不再需要 `--prefix "$HOME/.local"`
+   绕全局写权限（那是 job 容器里的写法，GitHub runner 上没有这个问题）。
+7. **把 GitHub 专属的省钱 / 提速开关用上**：`concurrency` + `cancel-in-progress` 取消同一分支
+   上被取代的运行（`main` 除外 —— 合并后的结论不该被掐断）、`permissions: contents: read`、
+   `defaults.run.shell: bash`（与本地配方的 bash shell 对齐，Windows 上不再逐步写 `shell:`）。
+8. 缓存 `~/.cargo` 与 `target`，**按平台分键**（`Swatinem/rust-cache` 的键自动含 OS 与 rustc 版本）。
+9. E2E 用 `cargo metadata` 问产物路径、在 `xvfb-run` 下起 app、跑
    `victauri-test` 与 `--test integration`，并**用 `if: always()` 收掉后台进程**。
-9. Windows / macOS 若在 `cargo check` 阶段因 Tauri 的构建脚本失败：记录到「实施记录」并**单独决策**，
-   不要就地绕开（绕过等于把平台差异藏起来，正是本 plan 要消灭的东西）。
+10. Windows / macOS 若在 `cargo check` 阶段因 Tauri 的构建脚本失败：记录到「实施记录」并**单独决策**，
+    不要就地绕开（绕过等于把平台差异藏起来，正是本 plan 要消灭的东西）。
+
+### 还想要的省钱手段（未启用，留个记录）
+
+- **跳过 draft PR**（`if: github.event.pull_request.draft == false`）：省一次完整运行，
+  代价是"draft 打开时 CI 不跑"这件事本身要记得住，先不加。
+- **按改动路径过滤**（`paths-ignore`）：文档改动其实**会影响** `docs-check`，
+  忽略它等于把一条门禁藏起来，不做。
 
 ## 验收命令
 
@@ -60,7 +71,14 @@ node -e 'const y=require("/tmp/yaml"),fs=require("fs");const w=y.load(fs.readFil
 # 2. 三平台齐全，且非 Linux 那条只做类型检查
 grep -cE 'ubuntu-latest|windows-latest|macos-latest' .github/workflows/ci.yml   # ≥ 3
 
-# 3. 本地门禁没被改坏
+# 3. GitHub 专属开关在位
+grep -qE '^concurrency:' .github/workflows/ci.yml && grep -q 'cancel-in-progress' .github/workflows/ci.yml
+grep -q 'contents: read' .github/workflows/ci.yml
+
+# 4. 兼容层遗产已清干净（只查非注释行）
+grep -v '^[[:space:]]*#' .github/workflows/ci.yml | grep -cE 'uname|GITHUB_PATH|--prefix'   # 期望 0
+
+# 5. 本地门禁没被改坏
 just ready            # 期望退出码 0
 ```
 
@@ -89,12 +107,37 @@ CI 配置改动只影响门禁，不影响产物与用户数据。
 
 ### 与初稿不同的三处（都有理由）
 
-- **just 按 `uname` 选资产，不用 `${{ runner.arch }}`**：`macos-latest` 已是 arm64，
-  装错架构的报错不提架构（这条当初是为别的 forge 写的，**现在依然是更稳的写法**，保留）。
 - **从"一个矩阵 job"拆成"Linux job + 其余平台矩阵 job"**：E2E 只挂在 Linux 上，
   拆开才能让"平台检查红"与"E2E 红"互不吞并。
 - **删掉原先单列的 `just docs-check` 步骤**：`just ready` 本来就包含它 —— 同一件事只定义一处。
   超时 30 → **45 分钟**。
+- **E2E 里的 `needs` 只留 `checks-linux`**，理由见步骤 3。
+
+### 第二轮：把 GitHub 专属能力吃透（2026-09-11）
+
+放弃兼容层之后才腾得出手，逐条都是"省时间 / 省钱"，其中第一条是**省钱的主力**：
+
+| 改动 | 为什么 |
+|---|---|
+| `concurrency` + `cancel-in-progress`（`main` 除外） | 连推三次只跑完最后一次；旧运行立刻让出 runner |
+| `permissions: contents: read` | 最小权限（本工作流本来就只读仓库） |
+| `defaults.run.shell: bash` | 与本地配方的 bash shell 对齐；Windows 上不再逐步写 `shell:` |
+| 两个 job 的手写 just 安装脚本 → `install-action` | **净删 50 行 shell**；顺带拿到 SHA256 / attestation 校验，版本 `just@1.58.0` 写死 |
+| `npm install -g @ast-grep/cli`（去掉 `--prefix`） | 那是 job 容器里绕全局写权限的写法，GitHub runner 无此问题 |
+
+（`JUST_VERSION` 环境变量随之删除：版本现在写在 `tool:` 里。）
+
+本轮的本地验证：YAML 解析通过；`top-level: name, on, concurrency, permissions, defaults, env, jobs`；
+`checks-linux` 7 步（工具三件套一次装机）、`checks-other` 5 步、`e2e` 10 步；
+非注释行里 `uname|GITHUB_PATH|--prefix` 计数为 **0**；`just ready` 退出码 0。
+
+新增的两条**只在真 runner 上才见分晓**的风险：
+
+1. `install-action` 装 `just`（它确实在支持列表里，源码是
+   `taiki-e/install-action` 的 `TOOLS.md`）—— 第一次在本仓库这么用，注意看它是否落在
+   `$CARGO_HOME/bin` 且能被后续步骤找到；
+2. `permissions: contents: read` 是否够 `victauri-test` 那个 composite action 用
+   （不够就在这里补一条并写明理由，别直接删掉整个 `permissions`）。
 
 ### 放弃记录：双 forge 兼容层（2026-09-11）
 
@@ -124,6 +167,11 @@ CI 配置改动只影响门禁，不影响产物与用户数据。
 **真实行为仍以实跑为准** —— 它给出的是"没写错"的下界，不是"跑得通"的证明。
 删掉它是这个决定的一部分：留着就等于承认兼容层还在维护清单里。
 
+**跟着一起删掉的还有那些"迁就写法"**：手写的按平台选资产脚本（因为当时不能用
+`${{ runner.arch }}`）、`runs-on` 的简化形式、job 级 `github.server_url` 门、
+`npm --prefix` 绕权限。它们的共同点是**看起来更"稳"，其实只是在替兼容层还债** ——
+见到这类写法先问一句"它是为哪个 forge 写的"。
+
 ### 最终判据仍未达成 —— 所以状态是「进行中」
 
 - **仓库当前没有配置任何 git remote**（`git remote -v` 为空）：这不是"等一次推送"，
@@ -131,5 +179,5 @@ CI 配置改动只影响门禁，不影响产物与用户数据。
 - 三条**只在真 runner 上才见分晓**的风险：
   1. `actions/checkout` 与 `Swatinem/rust-cache` 的缓存是否如预期命中；
   2. E2E 能否在 runner 上起 webkit2gtk + xvfb 的窗口；
-  3. Windows 上 Tauri 的构建脚本能否过 `cargo check`（不过就按步骤 9 单独决策）。
+  3. Windows 上 Tauri 的构建脚本能否过 `cargo check`（不过就按步骤 10 单独决策）。
 - 阶段 0 的「CI 变绿」条目（`ROADMAP.md` 里标 `[~]`）挂的是同一条。

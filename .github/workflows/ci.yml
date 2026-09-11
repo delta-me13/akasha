@@ -1,13 +1,27 @@
-# akasha CI —— **只维护 GitHub Actions 这一份**。
+# akasha CI —— **只维护 GitHub Actions 这一份，并且吃透 GitHub 专属能力**。
 #
 # 三个 job：
 #   ① `checks-linux`  —— 完整门禁，跑的**就是本地那一条 `just ready`**
 #   ② `checks-other`  —— Windows / macOS 只做类型检查
 #   ③ `e2e`           —— Ubuntu + xvfb，起真实 app 跑 Victauri 冒烟与集成测试
 #
+# ## 刻意用上的 GitHub 专属能力（放弃双 forge 之后才腾得出手）
+#
+# - **`concurrency` + `cancel-in-progress`** —— 同一分支上来了新推送，就取消上一次
+#   还没跑完的运行（`main` 除外：合并后的结论不该被掐断）。
+#   这是**最直接的成本开关**：连推三次只跑完最后一次，而不是付三份 runner 时间。
+# - **`permissions: contents: read`** —— 工作流默认权限收紧到最小。
+# - **`taiki-e/install-action` 一次装齐 `just` / `cargo-nextest` / `cargo-deny`** ——
+#   从 GitHub Releases 取预编译产物，并**校验 SHA256 与 attestation**。
+#   它替掉的是原来那段手写的"`uname` 选资产 + curl + 追加 `GITHUB_PATH`"脚本 ——
+#   那段脚本是**兼容层的遗产**（当时的理由是"不能用 `${{ runner.arch }}`"），
+#   现在没有任何理由继续手写。
+# - **`${{ runner.* }}` 上下文、任意表达式函数（`format()` 等）、矩阵、`defaults`**
+#   都可以用：不必再把这些换成 `uname` / `GITHUB_*` 之类的等价物。
+#
 # ## 为什么完整门禁只在 Linux 跑一次
 #
-# fmt / clippy / docs-check 的结论与平台无关，放进矩阵只是把时间乘三。
+# fmt / clippy / docs-check 的结论与平台无关，放进矩阵只是把时间乘三（也就是成本乘三）。
 # 平台差异（PTY / serial / ssh 的 cfg 分支）由 ② 的 `just check` 拦住 ——
 # 目标是"挡 cfg 错误"，不是"三平台各跑一遍全套"。
 #
@@ -21,6 +35,8 @@
 # `always()`、只能有 Linux runner）。2026-09-11 评估后放弃，**理由与那份约束清单
 # 留在 [`docs/plans/0102`](../../docs/plans/0102-ci-platform-matrix.md) 的「放弃记录」**。
 # 所以：不要为了别的 forge 再加兼容层；若哪天真的要在别处跑，先读那段记录。
+# ⚠️ 兼容层的倾向是**留下"看起来更稳"的写法**（手写资产选择、`uname`、
+# `--prefix` 绕权限）—— 见到这类写法先问一句"它是为哪个 forge 写的"。
 
 name: CI
 
@@ -30,9 +46,24 @@ on:
   pull_request:
     branches: [main]
 
+# 同一分支只保留最新一次运行：main 不取消，其余（PR 分支、重复推送）都取消。
+# `format()` 这类表达式函数现在可以放心用了（兼容层的表达式限制已随之作废）。
+concurrency:
+  group: ${{ format('{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# 最小权限：本工作流只读仓库内容。加权限要写理由。
+permissions:
+  contents: read
+
+# 所有 `run:` 一律 bash：本地配方本身就用 bash 作 shell（见 justfile 的
+# `set shell := ["bash", "-uc"]`），统一之后 Windows 上不再需要逐步写 `shell: bash`。
+defaults:
+  run:
+    shell: bash
+
 env:
   CARGO_TERM_COLOR: always
-  JUST_VERSION: 1.58.0
   # 唯一一份系统依赖列表。Tauri 官方 Debian/Ubuntu 列表：
   # https://v2.tauri.app/start/prerequisites/
   # 注意是 libayatana-appindicator3-dev —— 旧名 libappindicator3-dev 在
@@ -66,44 +97,14 @@ jobs:
       # 所以平台之间天然分键，不需要手写 key。
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
-      # just 不在 taiki-e/install-action 的工具列表里，用官方固定版本资产。
-      # **按 uname 选资产，而不是 `${{ runner.arch }}`**：macos-latest 已是 arm64，
-      # 装错架构会以 "bad CPU type in executable" 失败，而那个报错完全不提架构。
-      # 未覆盖的组合直接失败，不退回一个"大概能用"的二进制。
-      - name: 安装 just
-        shell: bash
-        run: |
-          bin="$HOME/.local/bin"
-          mkdir -p "$bin"
-          case "$(uname -s)-$(uname -m)" in
-            Linux-x86_64)        target=x86_64-unknown-linux-musl ;;
-            Darwin-arm64)        target=aarch64-apple-darwin ;;
-            Darwin-x86_64)       target=x86_64-apple-darwin ;;
-            MINGW*|MSYS*|CYGWIN*) target=x86_64-pc-windows-msvc ;;
-            *) echo "::error::未覆盖的平台组合：$(uname -s)-$(uname -m)"; exit 1 ;;
-          esac
-          url="https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-${target}"
-          case "$target" in
-            *windows*)
-              curl --proto '=https' --tlsv1.2 -sSfL "$url.zip" -o "$bin/just.zip"
-              unzip -oq "$bin/just.zip" -d "$bin"
-              rm -f "$bin/just.zip"
-              ;;
-            *)
-              curl --proto '=https' --tlsv1.2 -sSfL "$url.tar.gz" | tar xz -C "$bin"
-              ;;
-          esac
-          echo "$bin" >> "$GITHUB_PATH"
-
-      # cargo-nextest / cargo-deny 走预编译 GitHub Releases
+      # 三个工具一次装齐（预编译 + 校验和）。just 版本写死，与本地对齐。
       - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
         with:
-          tool: cargo-nextest,cargo-deny
+          tool: just@1.58.0,cargo-nextest,cargo-deny
 
       # 结构护栏（ast-grep）用官方 npm 包，自带预编译二进制。
-      # --prefix 装到 ~/.local，避免全局写权限问题。
       - name: 安装 ast-grep
-        run: npm install -g --prefix "$HOME/.local" @ast-grep/cli
+        run: npm install -g @ast-grep/cli
 
       # 门禁只有这一处定义：fmt-check + lint(clippy + ast-grep) + test + deny-offline + docs-check
       - name: just ready
@@ -129,33 +130,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
-      - name: 安装 just
-        shell: bash
-        run: |
-          bin="$HOME/.local/bin"
-          mkdir -p "$bin"
-          case "$(uname -s)-$(uname -m)" in
-            Linux-x86_64)        target=x86_64-unknown-linux-musl ;;
-            Darwin-arm64)        target=aarch64-apple-darwin ;;
-            Darwin-x86_64)       target=x86_64-apple-darwin ;;
-            MINGW*|MSYS*|CYGWIN*) target=x86_64-pc-windows-msvc ;;
-            *) echo "::error::未覆盖的平台组合：$(uname -s)-$(uname -m)"; exit 1 ;;
-          esac
-          url="https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-${target}"
-          case "$target" in
-            *windows*)
-              curl --proto '=https' --tlsv1.2 -sSfL "$url.zip" -o "$bin/just.zip"
-              unzip -oq "$bin/just.zip" -d "$bin"
-              rm -f "$bin/just.zip"
-              ;;
-            *)
-              curl --proto '=https' --tlsv1.2 -sSfL "$url.tar.gz" | tar xz -C "$bin"
-              ;;
-          esac
-          echo "$bin" >> "$GITHUB_PATH"
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
+        with:
+          tool: just@1.58.0
 
       - name: 类型检查（含 tests / benches）
-        shell: bash
         run: just check
 
   # ── ③ E2E：需要真实运行的 app，只做 Linux ───────────────────────────────────

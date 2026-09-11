@@ -32,7 +32,7 @@ CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**�
 | `just dev` | 起窗口；CLI 打印**一行** `Watching …/src-tauri`（成员在其内，默认覆盖）；增量重编译 6.09–6.26s |
 | `just doctor` | **13/13 passed**，`Connected to Victauri server`（v0.8.8，端口 7373） |
 | IPC 端到端 | `greet` → `Hello, preflight! You've been greeted from Rust!` |
-| `.github/workflows/ci.yml` | YAML 解析通过：3 个 job（`checks-linux` / `checks-other`(windows+macos) / `e2e` needs `checks-linux`）；四个 just 资产 URL 全部 HTTP 200 |
+| `.github/workflows/ci.yml` | YAML 解析通过：3 个 job（`checks-linux` / `checks-other`(windows+macos) / `e2e` needs `checks-linux`）；`concurrency` + `permissions: contents: read` + `defaults.run.shell` 在位；非注释行里 `uname`/`GITHUB_PATH`/`--prefix` 计数 **0** |
 | `just syscheck` | webkit2gtk-4.1 2.52.6 / javascriptcoregtk-4.1 2.52.6 / gtk+-3.0 3.24.52 / librsvg-2.0 2.62.3 |
 
 > `just deny`（含 advisories）**尚未验证** —— 需要联网拉 RustSec 数据库。
@@ -72,18 +72,24 @@ CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**�
   接上 `src-tauri → src-tauri/crates/*` 的真实依赖后，**顺手再改一次 `crates/` 下的文件**
   确认开发循环仍然生效（本次是用临时依赖证明的，见 plan 0104 的实施记录）
 
-### 本轮完成（CI 去 Gitea 化）
+### 本轮完成（CI 去 Gitea 化 + 吃透 GitHub 专属能力）
 
 - [x] **放弃双 forge 兼容层**（2026-09-11 评估）：工作流改回单 forge，
   Windows / macOS 不再需要 `github.server_url` 整条 job 门住，`e2e` 的 `needs` 理由
   从"被门住的 job 会连带跳过"改成"两个信号互不吞并"
+- [x] **用上 GitHub 专属开关**（省钱优先）：`concurrency` + `cancel-in-progress`
+  取消同一分支上被取代的运行（`main` 除外）、`permissions: contents: read`、
+  `defaults.run.shell: bash`
+- [x] **工具安装统一走 `taiki-e/install-action`**：`just@1.58.0,cargo-nextest,cargo-deny`
+  一次装齐（预编译 + SHA256/attestation 校验），**净删 50 行手写 shell**；
+  ast-grep 去掉 `--prefix`（那是 job 容器里的写法）。`JUST_VERSION` 环境变量随之删除
 - [x] **删除 `ci-check` 配方**（曾并入 `ready`）：它守的是兼容性约束，兼容层没了就得一起删，
   否则等于还留着一份"兼容清单"。`ready` 回到 5 步，配方 20 → **19**
 - [x] **约束清单不丢**：四条 Gitea 约束与放弃理由整段搬进
   [`docs/plans/0102`](./plans/0102-ci-platform-matrix.md) 的「放弃记录」
-- [x] `AGENTS.md` §12 重写为"只维护 GitHub Actions 一份"（**宪法改动，单独提交**）；
-  §7/§9 的 `ready` 步骤串与 §11 的配方计数同步
-- [x] `docs/just.md`（§2 删行、§6 换掉排错行、§8 改成三 job 表）、
+- [x] `AGENTS.md` §12 重写为"只维护 GitHub Actions 一份"并加一条"放手用 GitHub 专属能力"
+  （**宪法改动，单独提交**）；§7/§9 的 `ready` 步骤串与 §11 的配方计数同步
+- [x] `docs/just.md`（§2 删行、§6 换掉排错行、§8 改成三 job 表 + 并发取消）、
   `docs/README.md` 搬运表、`ROADMAP.md` 两条、`docs/plans/README.md` 索引行同步
 
 ### 上一轮完成（阶段 1 收口）
@@ -115,7 +121,9 @@ CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**�
 
 ### 待实测 / 待确认
 
-- [ ] **CI 首次推送实跑**（三条风险见上）
+- [ ] **CI 首次推送实跑**（风险见上：缓存命中 / E2E 起窗口 / Windows 构建脚本 /
+  `install-action` 装 `just` 的落点 / `permissions: contents: read` 够不够 Victauri 那个
+  composite action 用）
 - [ ] **Windows / macOS 的 `just check` 从未在本机验证过** —— 只能等真 runner
 - [ ] **`bw` 对 `sshKey` 条目的非交互行为** —— 需要真实 vault 才能测
       （未解锁报错形态 / `bw list items --raw` 的 JSON 形状 / 条目是否稳定可见 /
@@ -217,6 +225,12 @@ CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**�
     之外的表达式函数都不能用，Windows/macOS 还得整条 job 门住 —— 而门住之后
     两个 forge 上的 job 结构**本来就不一样**。**四条约束与放弃理由**留在
     [`docs/plans/0102`](./plans/0102-ci-platform-matrix.md) 的「放弃记录」，下次想再试先读它。
+25. **兼容层的遗产会以"看起来更稳"的样子留下来** —— 放弃双 forge 之后，仓库里还留着
+    一段手写的"`uname` 选资产 + curl + 追加 `GITHUB_PATH`"装 just 的脚本，
+    连注释都写着它的理由是"不能用 `${{ runner.arch }}`"；还有 `npm --prefix` 绕权限。
+    这些都不是"更稳"，只是**在替兼容层还债**，而且它们不会自己消失。
+    处置：换成 `taiki-e/install-action`（预编译 + 校验和），**见到这类写法先问
+    "它是为哪个 forge 写的"**。
 
 ## 环境
 

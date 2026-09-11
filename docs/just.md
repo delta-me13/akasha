@@ -170,6 +170,9 @@ CI（`.github/workflows/ci.yml`，GitHub Actions 一份）三个 job：
 | `checks-other` | Windows / macOS 上只跑 `just check`（挡 cfg 分支错误） |
 | `e2e` | Ubuntu + xvfb 起真实 app，跑 Victauri 冒烟与集成测试 |
 
+同一分支上来了新推送，**上一次没跑完的运行会被取消**（`main` 除外）——
+所以连着推几次只跑完最后一次，这是刻意的成本开关。
+
 **所以本地绿 ≈ CI 绿** —— 不存在"本地过了 CI 挂"的两套标准。
 规则见 `AGENTS.md` §12；为什么不做别的 forge 的兼容层，见 `docs/plans/0102`。
 
