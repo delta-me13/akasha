@@ -1,0 +1,27 @@
+id: no-ui-vocab-in-types
+language: Rust
+severity: error
+message: 后端类型名不得编码 UI 呈现方式（Tab / Pane / Window / View）—— 见 docs/scope.md §1.2
+note: |
+  前端把 `Session` 渲染成标签页 / 面板 / 分屏 / 独立窗口**都行**，后端只按语义命名。
+  一旦后端类型叫 `Tab`，等前端模型定型那天它就变成了谎话，而改名要动到 IPC 类型与生成物。
+
+  改用这套词汇：`Session`（资源的归属单位）、`Transport`（字节载体）、
+  `Connection`（一条 SSH 连接）。`Window` 尤其危险 —— 它与 Tauri 的窗口类型撞名。
+
+  只拦**类型声明**（struct / enum / union / trait / type 别名），不拦对第三方类型的**引用**：
+  `use tauri::Window;` 在 src-tauri/src/ 里是正当用法，本规则不会命中它。
+files:
+  - "crates/**/*.rs"
+  - "src-tauri/src/**/*.rs"
+rule:
+  any:
+    - kind: struct_item
+    - kind: enum_item
+    - kind: union_item
+    - kind: trait_item
+    - kind: type_item
+  # 只看声明的**名字**，不看函数体与文档注释 —— 注释里讨论 "Tab" 是正当的。
+  has:
+    field: name
+    regex: "(Tab|Pane|Window|View)"

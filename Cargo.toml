@@ -10,9 +10,9 @@
 [workspace]
 resolver = "2"
 # ⚠️ 实测（2026-09-11）：`crates/*` 在 `crates/` 尚不存在时**不是**空匹配，而是硬错误 ——
-# `failed to load manifest for workspace member .../crates/*`。所以 `crates/*` 要等
-# plan 0103 建出首个成员后再加回，否则 `cargo metadata` 直接失败。
-members = ["src-tauri"]
+# `failed to load manifest for workspace member .../crates/*`。所以它是在 plan 0103 建出
+# 首个成员（`crates/akasha-core`）之后才加回来的。
+members = ["src-tauri", "crates/*"]
 
 # 全 workspace 的 lint 基线。成员必须在自己的 Cargo.toml 里写 `[lints] workspace = true`
 # 才会继承 —— 少了那一行，本节形同虚设。

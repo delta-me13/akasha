@@ -43,9 +43,9 @@
 - [ ] **CI 平台矩阵**（Linux + Windows + macOS）
       验收：三平台都能通过类型检查；Linux 另跑完整门禁与 E2E
       → [plan 0102](./docs/plans/0102-ci-platform-matrix.md)
-- [ ] `crates/akasha-core` 骨架：**`Session` 模型**（**必须先于任何后端**）
+- [x] `crates/akasha-core` 骨架：**`Session` 模型**（**必须先于任何后端**）
       验收：单测覆盖 `SessionId` 分配、关闭一个 `Session` 不影响另一个
-      → [plan 0103](./docs/plans/0103-core-session-model.md)
+      → [plan 0103](./docs/plans/archive/0103-core-session-model.md)
 - [ ] **迁移后复测开发循环**：改 `crates/` 下的文件仍触发重编译与重启
       验收：改一个 `crates/` 文件后 app 自动重启（否则开发循环静默失效）
       → [plan 0104](./docs/plans/0104-dev-loop-retest.md)
