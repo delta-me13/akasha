@@ -34,12 +34,12 @@ doctor:
 
 # ── 开发循环 ────────────────────────────────────────────────────────────────
 
-# 常驻开发主控：前端 HMR；Rust 改动自动增量重编译 + 重启 app。只需启动一次
-#
 # 监听范围**不需要额外配置**：workspace 就在 `src-tauri/` 里（ADR-0004），
 # 而 tauri CLI 默认监听 `src-tauri` —— 成员天然被覆盖，实测见 docs/STATUS.md 坑 #21。
 # ⚠️ 别把成员挪到 `src-tauri/` 外面：一旦挪出去，开发循环会**静默失效**
 # （门禁全绿，但改了代码看不到效果），那时才需要 `build.additionalWatchFolders`。
+#
+# 常驻开发主控：前端 HMR；Rust 改动自动增量重编译 + 重启 app。只需启动一次
 dev:
     pnpm tauri dev
 
@@ -94,8 +94,6 @@ lint:
     just clippy
     ast-grep scan
 
-# CI 工作流的**双 forge 可移植性**检查（Gitea + GitHub 都要能跑）。
-#
 # 为什么必须在这里查：这四条约束一旦破了，**恰恰是 CI 跑不起来** ——
 # 而破掉的那一刻，本地没有任何门禁会红（Gitea 上是"静默不跑"或"排队等一个不存在的 runner"）。
 # 规则本身在 AGENTS.md §12；每条约束的出处与边界在 `.github/workflows/ci.yml` 的文件头。
@@ -105,6 +103,8 @@ lint:
 # 顺带避开一个雷：配方体里不能出现两个连续花括号（just 会当插值炸掉），
 # 所以模式写 `runner\.(os|arch|…)` 而不是那个上下文的字面量（坑 #23）。
 # **注释行不算**（文件头必须能讨论这些约束本身）。
+#
+# CI 工作流的**双 forge 可移植性**检查（Gitea + GitHub 都要能跑）。
 ci-check:
     @miss=0; \
     wf=.github/workflows/ci.yml; \
@@ -124,12 +124,12 @@ ci-check:
     if [ "$miss" = "1" ]; then exit 1; fi; \
     echo "✅ CI 双 forge 检查通过（无 runner 上下文；非 Linux 分支有 github.server_url 门；三平台齐全；无 .gitea/workflows 抢占目录）"
 
-# 可执行的 DoD（AGENTS.md §7）：提交前跑这一个。
-#
 # 默认安静：每步一行 + 耗时；失败时把该步输出倒出来（超长则首尾各 40 行并落盘）。
 # 为什么需要这个壳：cargo deny 对 Tauri 这种依赖树会打 5000+ 行「重复版本」警告，
 # 而 multiple-versions 是 warn 级、永远不让门禁失败 —— 在成功的运行里那些纯粹是噪音。
 # 要看完整输出就直接跑单个配方（just deny-offline / just lint / just test ...）。
+#
+# 可执行的 DoD（AGENTS.md §7）：提交前跑这一个。
 ready:
     @set -uo pipefail; \
     steps="fmt-check lint ci-check test deny-offline docs-check"; \
@@ -160,8 +160,6 @@ ready:
     done; \
     echo "✅ just ready 全绿（$ok/$total）"
 
-# 文档纪律（三部分，规则见 AGENTS.md §8 与 §8.1，plan 规则见 docs/plans/README.md）。
-#
 # A. 命令未漂移 —— 防止照着一份过期规则去用已不存在的旧命令
 #    * docs/just.md §2 是**权威清单**：必须覆盖**全部**配方（正向，且**只认 §2 表格内的记录**）
 #    * 顶层文档与 docs/**/*.md 可以只提一部分，但提到的每个命令必须真实存在（反向）
@@ -179,6 +177,8 @@ ready:
 #   2. 正向检查若不限定在 §2 表格内就形同虚设 —— 某条命令可能只在排错段落里被顺带提及，
 #      而表格里其实已经删掉了。所以用 awk 取出 §2 段落，只在那里面找。
 #   3. 含反引号的 grep 模式必须整体放进**单引号**里，否则会被 bash 当命令替换执行。
+#
+# 文档纪律（三部分，规则见 AGENTS.md §8 与 §8.1，plan 规则见 docs/plans/README.md）。
 docs-check:
     @miss=0; \
     recipes=$( { just --summary; just --justfile {{SRC}}/justfile --summary; } | tr ' ' '\n' | sort -u ); \
