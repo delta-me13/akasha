@@ -1,5 +1,5 @@
 # akasha — 唯一命令入口。规则文件只引用这里的配方，不要另写一套命令。
-# 依赖：just（见 AGENTS.md §10.1）。未安装 just 时，可读配方正文手动执行等价命令。
+# 依赖：just / bacon / cargo-nextest / cargo-deny / sccache（已安装，见 AGENTS.md §10）。
 
 set shell := ["bash", "-uc"]
 
@@ -9,6 +9,7 @@ default:
     @just --list
 
 # ── 开发循环 ────────────────────────────────────────────────────────────────
+
 # 常驻开发主控：前端 HMR；Rust 改动自动增量重编译 + 重启 app。
 # 只需启动一次，不要每次手动重跑（AGENTS.md §1）。
 dev:
@@ -18,11 +19,12 @@ dev:
 dev-web:
     pnpm dev
 
-# Rust 秒级反馈循环（bacon），全程不启动 app。需要 bacon。
+# Rust 秒级反馈循环，全程不启动 app。修纯逻辑时用这个，别等 app 重启。
 watch:
     bacon clippy
 
 # ── 质量门禁 ────────────────────────────────────────────────────────────────
+
 check:
     cargo check --manifest-path {{MANIFEST}} --all-targets
 
@@ -37,13 +39,16 @@ lint:
     cargo clippy --manifest-path {{MANIFEST}} --all-targets -- -D warnings
     ast-grep scan
 
+# 单元测试：纯 crate 不启动 app
 test:
-    cargo test --manifest-path {{MANIFEST}}
+    cargo nextest run --manifest-path {{MANIFEST}}
 
-# 需要已安装 just/bacon/cargo-nextest 后切换为：
-#   cargo nextest run --manifest-path {{MANIFEST}}
+# 依赖门禁：许可证 + CVE（配置在 deny.toml）
+deny:
+    cargo deny check
 
-# E2E：需要 app 正在运行（just dev）
+# E2E：需要 app 正在运行（just dev）。
+# 用 cargo test 而非 nextest —— 这些用例要求串行且依赖真实 app 进程。
 test-e2e:
     VICTAURI_E2E=1 cargo test --manifest-path {{MANIFEST}} --test smoke --test integration -- --test-threads=1
 
@@ -52,9 +57,11 @@ doctor:
     victauri doctor
 
 # ── 类型边界 ────────────────────────────────────────────────────────────────
+
 # Rust command/event → src/ipc/bindings.ts。改过 IPC 就必须跑，并提交产物。
 gen-types:
-    @echo "TODO: 接入 tauri-specta 后启用（见 AGENTS.md §5、§10.5）"
+    @echo "TODO: 接入 tauri-specta 后启用（见 AGENTS.md §5）"
 
 # ── 提交前 ──────────────────────────────────────────────────────────────────
+
 precommit: fmt-check lint test

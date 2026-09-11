@@ -1,0 +1,5 @@
+# 由 AGENTS.md §10 要求：Rust 编译缓存。
+# sccache 已安装；此文件的唯一作用是把 rustc 包一层。
+# 验证：just check 后跑 `sccache --show-stats`，Compile requests 应 > 0。
+[build]
+rustc-wrapper = "sccache"
