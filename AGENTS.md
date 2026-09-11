@@ -255,6 +255,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | **系统库 webkit2gtk-4.1 2.52.6** | `just syscheck` 全绿 |
 | **`just check`** | 退出码 **0** |
 | **`just lint`**（clippy `-D warnings` + ast-grep scan） | 退出码 **0** |
+| **`just deny-offline`**（licenses / bans / sources） | 退出码 **0**，all ok |
 
 ### 10.3 本轮修掉的坑（都是"构建脚本阶段才暴露"的类型）
 
@@ -268,12 +269,15 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 ### 10.4 剩余待办
 
 1. 🔴 **`.github/workflows/victauri.yml` 当前是坏的**：它在仓库根跑 `cargo build`
-   与 `cargo metadata`，但根目录没有 `Cargo.toml`。ADR-0001 若采纳根工作区会自动修好；
-   否则必须改成 `--manifest-path src-tauri/Cargo.toml` 并写死 bin 名 `akasha`。
-2. `cargo deny init` 被同一原因阻塞（退出码 1）→ `deny.toml` 未生成，
-   `just deny` 暂时无效。同样依赖 ADR-0001 的结论。
-3. 工作区切分与 PTY 抽象待 `docs/adr/0001` 定案。定案后需同步：§3.1 的分层图、
-   `justfile` 的 `MANIFEST`、根 `.gitignore`（`target/` 位置）、CI。
-4. `tauri-specta` 是 `2.0.0-rc.25`（预发布）：接入 §5 前决定锁 rc 还是等正式版。
-5. （可选）固定 Rust 工具链：加 `rust-toolchain.toml`（`channel = "1.98.1"`）。
+   与 `cargo metadata`，但根目录没有 `Cargo.toml`。**两种修法都可行** ——
+   采纳 ADR-0001 决策一（根 workspace），或直接给 workflow 加 `--manifest-path`
+   并写死 bin 名 `akasha`。**不修就一直红。**
+2. 工作区切分与 PTY 抽象待 `docs/adr/0001` 定案。定案后需同步：§3.1 的分层图、
+   `justfile` 的 `MANIFEST`、根 `.gitignore`（`target/` 位置）、
+   `src-tauri/deny.toml` → 根 `deny.toml`、CI。
+3. `tauri-specta` 是 `2.0.0-rc.25`（预发布）：接入 §5 前决定锁 rc 还是等正式版。
+4. （可选）固定 Rust 工具链：加 `rust-toolchain.toml`（`channel = "1.98.1"`）。
    代价是 rustup 会把它当独立 toolchain 再下载一份（与现有 `stable` 同版本但不同目录）。
+
+> 已完成，不再是待办：**`cargo deny init` 不需要在仓库根执行** —— 实测在
+> `src-tauri/` 中退出码 0。该错误论据已在 `docs/adr/0001` §2.1 更正。
