@@ -1,7 +1,7 @@
 # Plan 0001: 落地根 workspace
 
 - **关联**：ROADMAP 阶段 0 · `docs/adr/0001` 决策一
-- **状态**：未开始（**前置条件：ADR-0001 决策一被接受 —— 当前仍是"提议"**）
+- **状态**：未开始（**前置条件已满足**：ADR-0001 已接受，决策二裁定见其 §0.3）
 - **预计影响**：`Cargo.toml`（新增）、`Cargo.lock`（移动）、`.gitignore`、`justfile`、CI、`deny.toml`
 
 ## 目标
@@ -17,7 +17,7 @@
 ## 前置检查
 
 ```bash
-# 确认决策一已被接受（ADR 状态不再是"提议"）
+# 确认 ADR-0001 已被接受（预期看到「已接受（Accepted」）
 grep -n '状态' docs/adr/0001-crate-split-and-pty-abstraction.md | head -3
 ```
 
