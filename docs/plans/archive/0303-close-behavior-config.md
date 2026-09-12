@@ -2,8 +2,8 @@
 
 - **关联**：ROADMAP 阶段 3 ·「关闭行为可配置」
 - **前置**：plan 0302（隐藏语义已成立，本步把它变成可选项）
-- **状态**：未开始
-- **影响面**：配置读取层（新增最小配置载体）、`src-tauri/src/**`、`src-tauri/crates/akasha-core`（配置类型）
+- **状态**：已完成（**与 0302 同一批落地**，理由见下）
+- **影响面**：`src-tauri/src/config.rs`（新）、`src-tauri/crates/akasha-core`（配置类型）
 
 > ⚠️ **与 0302 一起落地**（理由见 0302 头部）：本步除了"可配置"，还是
 > ① 无托盘模块用户**唯一的退出退路**；② `exit_residue` 那条 E2E 的**可移植刺激**。
@@ -63,4 +63,32 @@ grep -rn 'hide()' src-tauri/src | head         # 目视：hide 只在按配置�
 
 ## 实施记录
 
-（边做边追加：记录两种配置下的**实际进程检查输出**与配置文件路径。）
+**载体**：`<数据目录>/config.json`，内容 `{"close_behavior":"tray"}` 或 `{"close_behavior":"exit"}`
+（JSON 不支持注释，所以取值写全在 `src/config.rs` 的模块文档里）。
+
+数据目录按 `docs/portable.md` §4：**bin 同目录存在 `akasha-data/` 就用它**（便携模式），
+否则退回 OS 标准数据目录（Linux 上 = `~/.local/share/fans.cyrene.akasha-terminal/`）。
+目录**不自动创建** —— 开发构建的 bin 目录是可写的，自动创建会让"便携模式"在没人要求时生效。
+
+**只读，不写**：启动路径上每多一次写就多一条"写不了就起不来"（`AGENTS.md` §3.3），
+而"文件不存在 = 默认值"本来就是正常状态。
+
+**分层**：类型、默认值与判据在 `akasha-core`（`CloseBehavior` / `CloseAction` / `Config`；
+本 crate 的 `[dependencies]` **为空是有意的**，所以值的解析在这里、文件的解析在 app 侧）；
+文件读取 + `serde_json` 解析在 `src-tauri/src/config.rs`。`deny_unknown_fields`：拼错的字段名
+（`close_behaviour`）**会报错**，不会被静默忽略 —— 那是最难查的一类"配置不生效"。
+
+**实测**（同一台机器、同一次会话）：
+
+| 场景 | 实测 |
+|---|---|
+| 文件不存在 | probe → `close_behavior=tray`；日志 `config not found close_behavior="tray" path=~/.local/share/fans.cyrene.akasha-terminal/config.json` |
+| `{"close_behavior":"exit"}` | probe → `close_action=exit`；关窗 → app 退出，`sessions reclaimed reclaimed=1 trigger="exit"`，**忽略 SIGHUP 的探针被收掉**（零残留） |
+| `{"close_behavior":"nope"}` | 日志 `config invalid err=unknown close_behavior value "nope" (expected "tray" or "exit")` → 回默认 tray；app 照常启动 |
+| 便携分支 | 日志里的 `path=` 就是 `<target>/debug/akasha-data/config.json` —— 配置确实是从 bin 同目录读到的 |
+
+**E2E**：`just test-e2e` 的自起分支分两段（第一段无配置 = 收托盘；第二段写 `exit` 再起一次 app），
+配置文件跑完还原。于是 `exit_residue` 保留了原来的刺激（关窗）**并且**成了"配置真的被读到"的
+证据：配置没生效的话关窗只会隐藏，那条用例会红。
+
+**迁移债**：阶段 4 的存储落地后，这个文件应并入数据库 —— 在 plan 0403 的「前置检查」里回看一眼。

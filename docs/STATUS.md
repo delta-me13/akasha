@@ -8,28 +8,38 @@
 
 ## 一句话
 
-**阶段 2「端到端最小终端」5/5 完成**；**阶段 3 已完成 3/5**：托盘已经立起来（plan 0301），
-标签页与它自己的会话**同生命期**（0305 / 0306 两个方向都落地）。
+**阶段 2「端到端最小终端」5/5 完成**；**阶段 3 已完成 5/6**：托盘（0301）、
+**点叉 = 收托盘**（0302）、**关闭行为可配置**（0303）、标签页与会话同生命期（0305 / 0306）。
+阶段 3 只剩 **0304 单实例**。
 
-托盘（0301）现在能做的三件事，都实测过：**显示/隐藏窗口**、**列隧道**（阶段 6 之前是空列表）、
-**退出**。退出走的是 plan 0204 的收尾入口（`shutdown_all` → `app.exit`），**没有第二条退出路径**。
+**点叉的语义由配置 × 托盘共同决定**（plan 0302 + 0303）：
 
-⚠️ **"点叉 = 收托盘"还没做**（那是 plan 0302），所以现在点叉仍然是**真的退出**。
-0302 会**与 0303 一起落地**（理由见下面「下一步」）。
+| `close_behavior` | 托盘建成了吗 | 点叉之后 |
+|---|---|---|
+| `tray`（默认） | 是 | **窗口隐藏、进程留着** —— 会话与终端缓冲原样存活 |
+| `tray` | **否** | 退出（**降级**：藏起来就再也叫不回来，坑 #60） |
+| `exit` | 任意 | 退出（走 0204 的收尾路径，零残留） |
 
-"何时回收"因此有六种触发（前四种是进程/窗口级，最后一种粒度最小）：
+配置文件 = **数据目录**里的 `config.json`（`docs/portable.md` §3.1）：bin 同目录存在
+`akasha-data/` 就用它（便携模式），否则退回 OS 数据目录（Linux 上 =
+`~/.local/share/fans.cyrene.akasha-terminal/`）。**只读、不自动创建**；读不到 / 值不认识 →
+默认值 + 一条日志。⚠️ **只在启动时读** —— 改完要重启 app。
+
+"何时回收"因此有七种触发（粒度从一个会话到整个进程）：
 
 | 触发 | 谁被回收 |
 |---|---|
 | 关一个终端标签页 / 会话自己结束 | **只有那一个会话** |
+| **关窗口（默认 = 收托盘）** | **不回收** —— 进程、会话、终端缓冲全留着（0302） |
+| 关窗口（`close_behavior = exit`） | 全部（`RunEvent::Exit` → `Sessions::shutdown_all()`） |
 | **从托盘菜单退出** | 全部（`shutdown_all` → `app.exit` → `RunEvent::Exit` 再收一次，幂等） |
-| 关窗口 / 正常退出 | 全部（`RunEvent::Exit` → `Sessions::shutdown_all()`） |
+| 正常退出 | 全部（同上，`trigger="exit"`） |
 | panic | 全部（panic hook：打崩溃现场 → 回收 → `abort()`） |
 | `tauri dev` 重载 / `kill -9` / `kill -TERM` | 全部 —— **另一个进程**：看门狗读到管道 EOF（ADR-0005） |
 
-⚠️ **关标签页 ≠ 关窗口 ≠ 退出应用**：关掉**最后一个**标签页只是**空状态**（界面空了、进程留着）。
-只有**三大终端**（local / ssh / serial）的标签页有关闭按钮；转发 / 密码库 / 文件传输是**仅渲染**的
-视图标签页（**无关闭按钮**），关前端不影响后端执行 —— 见 `docs/scope.md` §5.6。
+⚠️ **关标签页 ≠ 关窗口 ≠ 退出应用**：关掉**最后一个**标签页只是**空状态**（界面空了、进程留着）；
+关窗口（默认）只是**隐藏**。只有**三大终端**（local / ssh / serial）的标签页有关闭按钮；
+转发 / 密码库 / 文件传输是**仅渲染**的视图标签页（**无关闭按钮**）—— 见 `docs/scope.md` §5.6。
 
 ## ⚠️ UI 现状：**当前界面是功能验证壳层，不是设计稿**
 
@@ -49,22 +59,22 @@
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全绿** |
-| `just test` | **73 tests run: 73 passed**（`akasha-pty` 37 + `akasha` 28 + `akasha-core` 8） |
-| ↑ 本轮新增 | 4 条单测：会话表变更通知在 register / close / retire / shutdown 都发出；**钩子在锁外调用**（钩子里回头读表，死锁会当场暴露）；第二个订阅者被忽略；终端不被列成隧道 |
-| `just test-e2e`（自包含：起 Vite + app → 逐个目标 → 收尾） | 退出码 **0**，**10 个用例全绿**：`smoke` 3 / `integration` 2 / `session_channel` 1 / `terminal_render` 2 / `tab_close` 1 / `exit_residue` 1 |
-| ↑ **托盘（0301，Linux 实测）** | ✅ 注册进宿主 `org.kde.StatusNotifierWatcher`；菜单四项俱在（显示/隐藏窗口 / 隧道 / 禁用的"（暂无隧道）" / 退出）；**开一个会话后菜单 revision 4→5、item id 随之改变**（= 会话表一变就重推菜单，管线通了）；点菜单能 true→false→true 地显示隐藏窗口；点"退出"→ app 退出码 0 **且忽略 SIGHUP 的探针消失**；日志 `sessions reclaimed reclaimed=1 trigger="tray"` |
-| ↑ **托盘建不起来时的降级** | ✅ 只读 `$XDG_RUNTIME_DIR`（沙箱）下只记一条 `tray unavailable` warn，**app 照常启动**、终端照常用 |
-| ↑ 关标签页 = 立刻丢弃会话（0305，真 UI 点击） | ✅ 两个忽略 SIGHUP 的探针 → 点 `+` / 切换 / 点 `×`：探针 A 在 **83–93 ms** 内消失、**不需要第二次点击**；探针 B 仍在且屏幕内容还在；关掉最后一个 → 空状态 + 探针 B 也被丢 |
+| `just test` | **93 tests run: 93 passed**（`akasha` 41 + `akasha-pty` 37 + `akasha-core` 15） |
+| ↑ 本轮新增 | **19 条单测**：`akasha-core` 的判据表（配置 × 托盘 → 隐藏 / 退出，含"没有托盘就降级为退出"）与取值解析；`akasha` 的配置解析（缺失 / 非法值 / 坏 JSON / 拼错字段 / 类型不符）+ 便携数据目录推导 + probe 快照 |
+| `just test-e2e`（自包含：起 Vite + app → **两段** → 收尾） | 退出码 **0**，**11 个用例全绿**：`smoke` 3 / `integration` 2 / `session_channel` 1 / `terminal_render` 2 / `tab_close` 1 / **`window_close` 1** / `exit_residue` 1 |
+| ↑ **关窗 = 隐藏（0302，Linux 实测）** | ✅ 第一段（没有配置文件 = 默认收托盘）：`app_state{probe:"lifecycle"}` → `{"close_action":"hide","close_behavior":"tray","tray_ready":true}`；`window manage close` 之后**进程仍在**、`visible=false`；隐藏期间屏幕内容仍读得到、忽略 SIGHUP 的探针仍活着（**预期**）；`show` 之后还能继续敲命令；用例自己把窗口恢复成可见 |
+| ↑ **关闭行为可配置（0303，Linux 实测）** | ✅ 三种情形：**文件不存在** → 默认 tray，日志 `config not found … path=~/.local/share/fans.cyrene.akasha-terminal/config.json`；**`{"close_behavior":"exit"}`**（放在 `<target>/debug/akasha-data/`，即便携分支）→ probe `close_action=exit`、关窗后 app 退出且 `sessions reclaimed reclaimed=1 trigger="exit"`、忽略 SIGHUP 的探针**被收掉**；**`"nope"`** → `config invalid err=unknown close_behavior value "nope" (expected "tray" or "exit")` + 回默认，app 照常启动 |
+| ↑ 关标签页 = 立刻丢弃会话（0305，真 UI 点击） | ✅ 两个忽略 SIGHUP 的探针 → 点 `+` / 切换 / 点 `×`：探针 A 在 **85 ms** 内消失、**不需要第二次点击**；探针 B 仍在且屏幕内容还在；关掉最后一个 → 空状态 + 探针 B 也被丢 |
 | ↑ 敲 `exit` → 标签页跟着关（0306，反方向） | ✅ `在终端里敲 exit：标签页自己关掉（app 仍在）`；随后再开一个标签页可交互 |
-| ↑ 退出零残留（0204/0205，未退化） | ✅ `app 已退出（pid 144）`；`✅ 零残留：忽略 SIGHUP 的 1884 已随会话被收掉` |
-| ↑ 终端判据（未退化） | `renderer = webgl`、canvas 2 块、DOM 行容器 **0** 个；8 MB 分 **134 批**、之后仍可交互；`WEBGL_lose_context` 后退到 canvas **且屏幕内容保留** |
-| ↑ 会话判据（未退化） | raw 通道 10.2 MB / 156 批，帧类型 = `ArrayBuffer`（JSON 帧 **0**）；收尾帧 1 个、console 零异常 |
+| ↑ 退出零残留（0204/0205，未退化） | ✅ `app 已退出（pid 2644）`；`✅ 零残留：忽略 SIGHUP 的 3393 已随会话被收掉`。这条现在同时是**"配置真的被读到"的证据**：配置没生效的话关窗只会隐藏 |
+| ↑ 终端判据（未退化） | `renderer = webgl`、canvas 2 块、DOM 行容器 **0** 个；8 MB 分 **135 批**、之后仍可交互；`WEBGL_lose_context` 后退到 canvas **且屏幕内容保留** |
+| ↑ 会话判据（未退化） | raw 通道 10.36 MB / 159 批，帧类型 = `ArrayBuffer`（JSON 帧 **0**）；收尾帧 1 个、console 零异常 |
 | `pnpm build`（tsc + vite build） | 退出码 0；产物 **843 kB / gzip 231 kB**；生产包里 `akashaTerminal` / `activateProbe` / `mockIPC` 命中数 **0**（本轮未改前端，数字沿用） |
 | `just check` / `just clippy`（`--workspace --all-targets`） | 退出码 **0** |
-| `just deny-offline` | `bans ok, licenses ok, sources ok`。⚠️ 托盘 feature 让 `tray-icon` → `libappindicator` → `libappindicator-sys` → **`libloading 0.7.4`（ISC 许可证）** 进了**参与检查的依赖图**（`Cargo.lock` 一行没动：这些包本来就解析在锁里，只是没被启用），于是 `deny.toml` 放行 `ISC` 一条 —— **只放行许可证，不忽略任何包** |
-| `just docs-check` | 三部分全过（ROADMAP **54** 条目在 3 行内 / plan **47** 份 ≤200 行且索引一致） |
+| `just deny-offline` | `bans ok, licenses ok, sources ok`。⚠️ 托盘 feature 让 `tray-icon` → `libappindicator` → `libappindicator-sys` → **`libloading 0.7.4`（ISC 许可证）** 进了**参与检查的依赖图**（`Cargo.lock` 一行没动），于是 `deny.toml` 放行 `ISC` 一条 —— **只放行许可证，不忽略任何包** |
+| `just docs-check` | 三部分全过（ROADMAP 条目在 3 行内 / plan ≤200 行且索引一致） |
 | `ast-grep scan` | 退出码 **0**；**四条**规则均已用正负例验证（本轮未改规则） |
-| `cargo tree -p akasha-core` / `-p akasha-pty` \| `grep -c tauri` | **0** / **0**（分层成立；托盘依赖只在 app 包里） |
+| `cargo tree -p akasha-core` \| `grep -c tauri` | **0**（分层成立；托盘与配置载体都只在 app 包里） |
 | `just bench`（criterion） | 52.7 GiB/s / 14.1 ns 每批 / 9.64 GiB/s（**0201 的数字，本轮未复跑**） |
 
 > `just deny`（含 advisories）**尚未验证** —— 需要联网拉 RustSec 数据库。
@@ -73,14 +83,19 @@
 
 - **托盘图标在面板里"看得见"** —— 机器只能证明"注册进了 watcher"，**不能**证明宿主面板
   有托盘模块（`scope.md` §5.5）。Windows / macOS 上的实际表现同样未验（CI 上没有托盘宿主）。
+- **`window_close`（关窗 = 隐藏）在 CI 上必然跳过**：它需要托盘宿主（会话总线 + 可写
+  `$XDG_RUNTIME_DIR`），xvfb 两样都没有。用例**显式跳过**并把 app 上报的 probe 打出来，
+  所以"跳过"在输出里看得见 —— 但它也意味着这条判据只在**有托盘宿主的开发机**上被执行。
+- **"点叉 = 隐藏"在 Windows / macOS 上未验**：本机只有 Linux；CI 的 E2E 矩阵上会跳过（同上），
+  所以三平台的实际行为要靠人工各点一次。
 - **托盘没有自动化门禁**：验它要 D-Bus 会话总线 + 宿主 watcher，CI（xvfb）两样都没有。
   本轮的证据是**手工实机**（命令与输出在 `docs/plans/archive/0301` 的实施记录里）。
 - **CI 三个 job 是否真能变绿** —— 仓库还没有 remote，从没跑过。三条只在真 runner 上见分晓的
   风险记在 [`docs/plans/0102`](./plans/0102-ci-platform-matrix.md) 的实施记录里。
 - **E2E 矩阵的三个格子**（Linux/xvfb + macOS + Windows，三格跑同一条 `just test-e2e`）——
   同上：没有 remote 就没跑过。本地只覆盖 **Linux/Wayland** 这一格。
-  ⚠️ `tab_close` 的进程判据、"敲 exit" 与"会话级回收"在**非 Linux** 上本来就是缺口
-  （见坑 #46 / plan 0204），CI 首跑时要盯这一格。
+  ⚠️ `tab_close` 的进程判据、"敲 exit"、"会话级回收"与"关窗 = 隐藏"在**非 Linux / 无托盘宿主**
+  的环境里本来就是缺口（见坑 #46 / plan 0204），CI 首跑时要盯这一格。
 - **`tauri dev` 重载那条路径没有门禁**：只能手动实测（plan 0205 的实施记录里有脚本与输出）。
 - **前端类型检查不在任何门禁里**：`just ready` 只覆盖 Rust + 文档，`pnpm build`（tsc）要手动跑。
 - **在"有后台作业握着 PTY"的标签页里敲 `exit`**：不会有 EOF、不会关标签页（刻意，见坑 #55），
@@ -96,8 +111,12 @@
 |---|---|
 | workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` |
 | 二进制落点 | `src-tauri/target/debug/akasha`（另有代码生成工具 `gen-types`，故必须 `default-run`，坑 #29） |
-| 后端模块 | `bindings`（命令 + 事件 + 代码生成）/ `session`（会话表 + 回收）/ `tray`（托盘）/ `watchdog`（进程外兜底） |
+| 后端模块 | `bindings`（命令 + 事件 + 代码生成）/ `session`（会话表 + 回收）/ `tray`（托盘）/ `config`（配置文件载体）/ `lifecycle`（关窗语义 + probe）/ `watchdog`（进程外兜底） |
+| **关窗语义** | 判据 = `akasha-core::CloseAction::decide(close_behavior, tray_ready)`；app 侧 `CloseRequested` → **先 `hide()`、成功才 `prevent_close()`**。**不挂 `RunEvent::ExitRequested`**（理由见 `lib.rs` 注释与坑 #65） |
+| **配置** | `<数据目录>/config.json`，`{"close_behavior":"tray"\|"exit"}`；`serde_json` + `deny_unknown_fields`；**只读不写**；在 `.setup()` 里读一次 |
+| **数据目录** | bin 同目录存在 `akasha-data/` → 用它（便携）；否则 `app_data_dir()`。**不自动创建**。开发构建里便携目录 = `src-tauri/target/debug/akasha-data` |
 | **系统托盘** | 图标 = `bundle.icon` 那张（构建脚本已解码进二进制）；Linux 上落盘到 `$XDG_RUNTIME_DIR/tray-icon/tray-icon-akasha-0.png`；菜单 id 是稳定字面量（`window.toggle` / `tunnels` / `tunnels.empty` / `app.quit`）；**会话表一变整份重建**（dbusmenu revision +1、item id 全换） |
+| **`lifecycle` probe** | `app_state { probe: "lifecycle" }` → `{"close_behavior":…,"tray_ready":…,"close_action":…}`；启动期还没登记时回 `{"initialized": false}`（E2E 靠它决定"该验隐藏还是该跳过"） |
 | 出字节路径 | PTY read → 合批（64 KiB / 16 ms）→ `Channel<InvokeResponseBody>` **raw** → JS `ArrayBuffer` → `term.write` |
 | 前端结构与布局 | `src/tabs/TabStrip.tsx`（标签栏）+ `src/App.tsx`（标签模型，多面**同时挂载**、非活动的 `visibility: hidden` 叠放）+ `src/terminal/`（xterm 面与会话接线）+ `src/ipc/`（唯一的后端入口） |
 | **关闭一个标签页** | 移除 → React 卸载该面 → `attachTerminal` 清理（**先** `close_session`，**后** `surface.dispose()`）→ `Sessions::close` → `Transport::shutdown()` → 撤销看门狗登记。**实测 83–93 ms** |
@@ -106,55 +125,49 @@
 | 回收路径（进程外） | 看门狗（每个 app 实例一个）读管道：`register` 写 `+<会话首进程 pid>`，收干净后写 `-<pid>`；**EOF = app 死了** → 逐个 `kill_session` |
 | 事件通道 | `tauri-specta` 生成 `events.sessionEnded`（`src/ipc/bindings.ts`）；`Builder::mount_events` 在 `.setup()` 里必须调用（坑 #53） |
 | 前端渲染器 | **WebGL**（WebKitGTK + MESA 软件栈下仍拿到 WebGL2）；`canvas` 元素 2 块；DOM 渲染器未启用 |
-| 大输出实测 | 11.18 MB / 170 批（0202）；11.28 MB / 168 批（0204）；10.80 MB / 162 批（0205）；10.41 MB / 159 批（0305）；10.22 MB / 156 批（0301） |
+| 大输出实测 | 11.18 MB / 170 批（0202）；11.28 MB / 168 批（0204）；10.80 MB / 162 批（0205）；10.41 MB / 159 批（0305）；10.36 MB / 159 批（0302/0303） |
 | 前端产物 | 843 kB（gzip 231 kB） |
 | 合批参数 | `max_bytes` = 64 KiB、`max_delay` = 16 ms（`BatchPolicy::DEFAULT`，唯一来源） |
 | CSP | `csp`：`default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:`；`devCsp` 多一个 `ws://localhost:1420 http://localhost:1420` |
-| capabilities | 仍只有 `core:default` + `opener:default`（+测试用的 `victauri`）。**托盘没有加任何 permission** —— 它全在 Rust 侧建，前端碰不到（最小权限，§4.3） |
+| capabilities | 仍只有 `core:default` + `opener:default`（+测试用的 `victauri`）。**托盘与配置都没有加任何 permission** —— 它们全在 Rust 侧，前端碰不到（最小权限，§4.3） |
 | 前提条件 | **需要能写 `$HOME`**；沙箱内会刷 `dconf-CRITICAL` 与 WebKit 缓存 hard-link 告警，但 app 仍正常起窗口。**托盘另需能写 `$XDG_RUNTIME_DIR`**（否则只降级、不影响启动） |
 
 ## 进行中 / 下一步
 
+- [ ] **阶段 3 只剩 0304（单实例）**：第二个实例唤起已有窗口而不是各跑一套；要接 0302 的隐藏语义
+  （唤起时窗口若隐藏着必须**显示出来**，不能只 focus）—— [plan 0304](./plans/0304-single-instance.md)
 - [~] **plan 0102（CI 平台矩阵）**：本地部分完成，最终判据 = **推上去三个 job 全绿**，卡在没有 remote
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测 —— `just test-e2e` 自包含、
-  **10 个用例全绿**；剩 CI 三平台格子（同上）
-- [ ] **阶段 3 的"收托盘"要 0302 + 0303 一起做**（[plan 0302](./plans/0302-hide-not-destroy.md) /
-  [0303](./plans/0303-close-behavior-config.md)）。两条具体理由：
-  ① 没有配置项之前，"点叉 = 隐藏"会让**面板里没有托盘模块的用户无法退出 app**；
-  ② `exit_residue`（E2E）现在靠"关窗口 = 真退出"取刺激，而配置项（`close_behavior = exit`）
-  正好给出**可移植**的替代刺激 —— 只做 0302 会把一条绿用例变成红的。
+  **11 个用例全绿**（含两段配置）；剩 CI 三平台格子（同上）
 - [ ] 阶段 3 还要**复核 0205 的看门狗**：托盘时代"窗口关掉但进程还在"是常态，看门狗的
   生命周期仍然 = 一个 app 实例（ADR-0005 §6 的复审条件之一）
-- [ ] 托盘时代还要**复核 0305/0306 的前提**：① 关窗口（收托盘）时标签页与它们的会话必须原样存活；
-  ② "关最后一个标签页 = 空状态"在"窗口隐藏"成为常态之后是否仍然合适；
-  ③ 会话自己结束时**窗口是隐藏的** —— 事件照样要送到前端。
-  ✅ **③ 已有一条实测支撑**：窗口被托盘菜单隐藏期间，页面仍在应答、终端内容仍读得到（0301 实测）
+- [ ] 托盘时代还要**复核 0305/0306 的前提**：① 关窗口（收托盘）时标签页与它们的会话必须原样存活
+  —— ✅ **已由 `window_close` 守住**（真关窗 + 真按键）；② "关最后一个标签页 = 空状态"在
+  "窗口隐藏"成为常态之后是否仍然合适 —— 待定；③ 会话自己结束时**窗口可能是隐藏的** ——
+  ✅ 已有实测支撑（隐藏期间页面照常应答、终端内容照读得到）
 - [ ] **正式 UI**：等设计稿（见上面「UI 现状」）—— 没有验收标准，故**不进 ROADMAP**
 
-### 本轮完成（plan 0301：托盘图标 + 菜单）
+### 本轮完成（plan 0302 + 0303：点叉收托盘 + 关闭行为可配置）
 
-- [x] `tray-icon` feature + `src-tauri/src/tray.rs`：图标复用 `bundle.icon`（**不新增图片解码依赖**）、
-  菜单三项（显示/隐藏窗口、隧道、退出）、**按稳定 id 分发**（不按文案 —— 文案会改、要翻译）
-- [x] `Sessions::on_change`（会话表变更通知，**锁外**调用）+ `Sessions::tunnels()`：
-  "隧道列表"的数据来源就这么一条，事件管线已通（阶段 6 接上即可）
+- [x] 判据下沉到 `akasha-core::CloseAction::decide`（**配置 × 托盘可用性 → 隐藏 / 退出**），
+  三条分支各一条单测；app 侧 `src/lifecycle.rs` 只记启动期事实、接窗口事件、给 probe 一份快照
+- [x] `CloseRequested` → **先 `hide()`、成功才 `prevent_close()`**（失败就让窗口关掉，不留
+  "点了叉没反应"的窗口）；**不写 `prevent_exit`**（理由见坑 #65 与 `lib.rs` 注释）
+- [x] 配置载体：`<数据目录>/config.json`（便携目录优先，`docs/portable.md` §4）；**只读不写**
+  （启动路径上不多一次可能失败的写）；坏文件 / 非法值 / 拼错字段一律回默认值 + 一条日志
+- [x] E2E：新增 `window_close`（真关窗 + 真按键，4 层判据）；`exit_residue` 的刺激改为配置驱动，
+  配方自起分支分**两段**（第一段无配置 = 收托盘，第二段写 `exit` 再起一次 app），配置文件跑完还原
+- [x] 规范：`docs/portable.md` 新增 §3.1（数据目录里放什么）+ 标注"便携不可写要报错"那条尚未实现；
+  `docs/just.md` 的 `test-e2e` 行同步两段说明。`AGENTS.md` 本轮**未改**（降级那条规则上一轮已写进去）
+- [ ] **未覆盖**：`window_close` 在 CI 上跳过（需要托盘宿主）；Windows / macOS 的"点叉 = 隐藏"未验
+
+### 上一轮完成（plan 0301：托盘图标 + 菜单）
+
+- [x] `tray-icon` feature + `src-tauri/src/tray.rs`：菜单三项（显示/隐藏窗口、隧道、退出）、
+  **按稳定 id 分发**；`Sessions::on_change` + `Sessions::tunnels()` 把"会话表一变就重推菜单"接上
 - [x] 退出项走 0204 的收尾入口，**没有第二条退出路径**；日志 `trigger="tray"`
 - [x] `capabilities/*.json` **不动**：托盘全在 Rust 侧建（最小权限）
-- [x] **建不起托盘不挡启动**：只记 `tray unavailable` + `warn`；返回值留给 0302 决定关窗语义
-- [x] 规范：[`AGENTS.md`](../AGENTS.md) §3.3 新增"启动路径上的可选能力失败不得挡住启动"；
-  [`docs/scope.md`](./scope.md) §5.5 补 Linux 的两条实现约束；[`docs/logging.md`](./logging.md)
-  的 `trigger` 取值加 `tray`
-- [ ] **未覆盖**：托盘图标在面板里是否可见（人工）；Windows / macOS 未验；
-  **没有 E2E 目标守着托盘**（要 D-Bus + 宿主 watcher，CI 上没有 —— 见「待验证」）
-
-### 上一轮完成（日志用语规范化：消息 = 事件名，变量进字段）
-
-- [x] 16 处 `tracing` 调用改成**英文小写事件名 + 结构化字段**：`session retired` `handle= session= exit_code=`
-  / `sessions reclaimed` `reclaimed= trigger=` / `watchdog registration failed` `leader= err=`
-- [x] 去掉三处 **`Debug` 泄漏**：`watchdog=Some(524494)` / `retired.status=Some(Code(0))` /
-  `failures=[(1, "…")]`。前两个展开成 `pid=` / `exit_code=`（新增 `session.rs::log_ended`，被信号带走时改记
-  `signal=`），集合改成 `failed=<数量>`，**每个会话的细节各自成行**
-- [x] 规范持久化：[`AGENTS.md`](../AGENTS.md) §3.4 硬规则 + [`docs/logging.md`](./logging.md) 展开
-- [x] 机器拦一半：ast-grep 规则 `no-non-ascii-log-message`（负例一对验过）
+- [x] **建不起托盘不挡启动**：只记 `tray unavailable` + `warn`
 
 ### 更早
 
@@ -169,18 +182,21 @@
 - **workspace root 在 `src-tauri/`**（ADR-0004）。**仓库根没有 `Cargo.toml`** ——
   在根目录直接跑 `cargo …` 会失败（坑 #8），一律用 `just` 转发。⚠️ **临时脚本里也一样**：
   `cargo run` 的 cwd 必须是 `src-tauri/`。
-- **三个 crate 的分工**：`akasha-core`（Session 模型，零依赖）、`akasha-pty`
-  （`Transport` + portable-pty + 合批 + `teardown`（会话级回收）+ **`watchdog`**（进程外兜底））、
-  `akasha`（app 包 = IPC 薄壳 + 托盘 + 退出钩子 + 看门狗接线 + 事件 + 代码生成 bin）。
+- **三个 crate 的分工**：`akasha-core`（Session 模型 + 配置模型与判据，**零 Tauri 依赖**）、
+  `akasha-pty`（`Transport` + portable-pty + 合批 + `teardown`（会话级回收）+ **`watchdog`**（进程外兜底））、
+  `akasha`（app 包 = IPC 薄壳 + 托盘 + 配置载体 + 关窗语义 + 退出钩子 + 看门狗接线 + 事件 + 代码生成 bin）。
 - **前端四层**：`src/ipc/`（唯一允许碰后端，含会话事件订阅）、`src/tabs/`（标签栏）、
   `src/terminal/`（xterm 面与会话接线）、`src/App.tsx`（标签模型 = 谁在、谁是活动的）。
 - **调试白屏**：Victauri 的 `logs {action:"console"}`；读不到"模块执行期就抛错"的失败 ——
   那时临时往 `index.html` 塞 `window.onerror` 钩子（坑 #35）。⚠️ **React 的 effect 清理函数里抛错
   会卸载整棵树**（坑 #50）—— "界面突然全空"要先怀疑它，而不是先怀疑样式。
-- **调试 E2E / 真 app**：`just test-e2e` 的 app 日志落在 `$tmp/akasha-e2e-app.log`；
-  在**同一个 bash 调用**里才能同时读到 app 与测试（坑 #33）。
+- **调试 E2E / 真 app**：`just test-e2e` 的 app 日志落在 `$tmp/akasha-e2e-app1.log` /
+  `-app2.log`（**两段各一份**）；在**同一个 bash 调用**里才能同时读到 app 与测试（坑 #33）。
 - **调试托盘**：它是原生的，webview 工具看不见 —— 走会话总线查
   `org.kde.StatusNotifierWatcher` 的注册表与 `com.canonical.dbusmenu` 的布局（坑 #62 / #63）。
+- **调试"点叉之后怎么了"**：`app_state { probe: "lifecycle" }` 一次读出配置、托盘可用性与实际动作；
+  日志里还有 `config loaded` / `config not found` / `config invalid`，以及降级时的
+  `close behavior degraded`。
 - **文档三级粒度**：`ROADMAP.md`（判据）→ `docs/plans/TTxx-*`（手段）→ 本文件的坑（痕迹）。
   完成的 plan **整份移入 `docs/plans/archive/`**（不拼接、不追加）。
   规范之外的两份"展开"：`docs/logging.md`（日志形态）、`docs/just.md`（命令清单）。
@@ -299,3 +315,17 @@
     （本机由 waybar 提供），**别 grep 总线名** —— grep 只会得到"没注册"的假结论。
 64. **Victauri 的 `window` 工具能机器验证窗口状态**（`manage_action: close|show|hide`、
     `get_state` 里的 `visible`）—— "窗口藏起来了没有"不必靠人看，也不必截图。
+65. **`AppHandle::exit()` 也会触发 `RunEvent::ExitRequested`**（tauri 的 `exit()` 文档与
+    `tauri-runtime-wry` 的 `Message::RequestExit` 都写着）。所以在托盘模式下**不能**用
+    `ExitRequested` + `prevent_exit` 来"拦住关窗导致的退出"—— 那会把托盘菜单的"退出"
+    一起拦掉，app 变成关不掉。要拦就拦在**更早**的 `CloseRequested`（`prevent_close`，
+    窗口根本不会被销毁）。剩下唯一会触发 `ExitRequested` 的窗口路径是 `destroy()` 强拆，
+    而那时窗口已经没了、从托盘也叫不回来 —— 放行才是对的。
+66. **便携数据目录就在 bin 同目录**（开发构建里 = `target/debug/akasha-data`），而 `just dev`
+    与 `just test-e2e` **共用同一个 bin**：E2E 写进去的 `close_behavior=exit` 会**影响下一次
+    `just dev`**（症状：点叉直接退出、数据落进 `target/`）。`just test-e2e` 因此**先备份、
+    跑完还原**；排查时看启动那条 `config loaded` / `config not found` 的 `path=` —— 它写着
+    这一次到底用了哪个文件。
+67. **Victauri 的 REST 兜底接口返回的是 `{"result": …}` 包了一层**（MCP 的 content 包装），
+    而 `victauri-test` 的 `call_tool` 会把它拆好交给你 —— 手写 `curl` 时别少剥一层，
+    否则 `jq '.[0].visible'` 会得到 `Cannot index object with number`（本轮踩过）。
