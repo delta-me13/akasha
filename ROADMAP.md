@@ -62,9 +62,9 @@
 
 目标：能开一个 shell、敲命令、看到输出，且**真正退出后**不残留进程。
 
-- [ ] `Transport` 输出合批（≥16ms 或 ≥64KiB）
+- [x] `Transport` 输出合批（≥16ms 或 ≥64KiB）
       验收：合批边界有单测断言；有吞吐基线数字
-      → [plan 0201](./docs/plans/0201-output-batching.md)
+      → [plan 0201](./docs/plans/archive/0201-output-batching.md)
 - [ ] IPC 二进制通道（`tauri::ipc::Channel<Vec<u8>>`）
       验收：大输出不掉帧，且这条路径被结构性规则守住
       → [plan 0202](./docs/plans/0202-ipc-binary-channel.md)

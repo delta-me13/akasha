@@ -74,7 +74,7 @@
 
 | 编号 | 标题 | 状态 | 前置 | 文件 |
 |---|---|---|---|---|
-| 0201 | `Transport` 输出合批 | 未开始 | plan 0105 | [0201](./0201-output-batching.md) |
+| 0201 | `Transport` 输出合批 | 已完成 | plan 0105 | [0201](./archive/0201-output-batching.md) |
 | 0202 | IPC 二进制通道 | 未开始 | plan 0201 | [0202](./0202-ipc-binary-channel.md) |
 | 0203 | 前端 xterm + WebGL 渲染 | 未开始 | plan 0202 | [0203](./0203-xterm-webgl-render.md) |
 | 0204 | 真正退出零残留 | 未开始 | plan 0203 | [0204](./0204-exit-zero-residue.md) |

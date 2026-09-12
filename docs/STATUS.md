@@ -8,13 +8,13 @@
 
 ## 一句话
 
-**阶段 1 布局收口**：Rust 成员全部收进 `src-tauri/`（仓库根零 Rust 成员，见
-[ADR-0004](./adr/0004-rust-workspace-under-src-tauri.md)），两个纯逻辑 crate 立住，
-CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**，理由见 plan 0102）。
+**阶段 2 开工：`Transport` 输出合批已落地**（合批器 + 驱动 + 吞吐基线，plan 0201 归档），
+前面是阶段 1 的布局收口（Rust 成员全在 `src-tauri/`，见
+[ADR-0004](./adr/0004-rust-workspace-under-src-tauri.md)）与 CI 收敛为 **GitHub Actions 一份**。
 
-`ROADMAP.md` 共 50 个条目（10 个阶段），阶段 1 的 6 个工作项已完成 5 项、1 项等 CI 实跑。
-**下一步**：[`docs/plans/0201`](./plans/0201-output-batching.md)（`Transport` 输出合批）——
-阶段 2「端到端最小终端」的第一步，前置 plan 0105 已完成。
+`ROADMAP.md` 共 50 个条目（10 个阶段），阶段 1 的 6 个工作项已完成 5 项、1 项等 CI 实跑；
+阶段 2 的 4 个条目已完成 1 项。**下一步**：[`docs/plans/0202`](./plans/0202-ipc-binary-channel.md)
+（IPC 二进制通道 `Channel<Vec<u8>>`）—— 把 0201 交出来的批次送过 IPC 边界。
 
 **CI 仍未真正跑过**：仓库**没有配置任何 git remote**。这是阶段 0 唯一没勾掉的条目。
 
@@ -23,8 +23,10 @@ CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**�
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + docs-check） | 退出码 **0**，5/5 全绿 |
-| `just test` | **27 tests run: 27 passed**（`akasha-core` 8 + `akasha-pty` 14 + `akasha` 5） |
-| `just check` / `just clippy`（`--workspace`） | 退出码 **0**，覆盖全部三个成员 |
+| `just test` | **39 tests run: 39 passed**（`akasha-core` 8 + `akasha-pty` 26 + `akasha` 5） |
+| `cargo nextest run -p akasha-pty batcher` | **12 tests run: 12 passed, 14 skipped**（合批边界与不变式） |
+| `just bench`（criterion 0.8.2，配方 #20） | 三条基准全部跑出数字：**52.7 GiB/s**（纯逻辑容量路径）/ **14.1 ns/批**（每批开销）/ **9.64 GiB/s**（含线程与 channel 的端到端） |
+| `just check` / `just clippy`（`--workspace --all-targets`） | 退出码 **0**，覆盖三个成员（含 `benches/`） |
 | `just deny-offline`（配置在 `src-tauri/deny.toml`） | `bans ok, licenses ok, sources ok` |
 | `just docs-check` | 三部分全过（ROADMAP 50 条目在 3 行内 / plan 43 份 ≤200 行且索引一致） |
 | `cargo tree -p akasha-core` / `-p akasha-pty` \| `grep -c tauri` | **0** / **0**（分层成立） |
@@ -37,6 +39,7 @@ CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**�
 
 > `just deny`（含 advisories）**尚未验证** —— 需要联网拉 RustSec 数据库。
 > 首次跑 `just test` 要编译测试目标，可能超过 60 秒，别误判为卡死。
+> `just bench` 整组约 30 秒，其中大头是 criterion 的统计开销，不是被测代码慢。
 
 ## 待验证（本地跑不了）
 
@@ -55,24 +58,45 @@ CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**�
 |---|---|
 | workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` |
 | 二进制落点 | `src-tauri/target/debug/akasha` |
-| target 目录 | `src-tauri/target`（13G，含迁移前的缓存） |
+| target 目录 | `src-tauri/target`（含迁移前的缓存） |
 | 增量重编译 | **6.09 / 6.18 / 6.26s** |
 | dev server | Vite 就绪于 `http://localhost:1420` |
 | Rust 监听范围 | CLI 打印**一行**：`Watching …/src-tauri`（`crates/` 在其内部，无需额外配置） |
 | 改 `src-tauri/crates/` 文件 | `Rebuilding application...` → 重启 |
 | `just doctor` | 13/13 passed，端口 7373 |
 | IPC 端到端 | `greet` → 与迁移前逐字相同 |
+| 合批吞吐（release） | 容量路径 **52.7 GiB/s**；每批开销 **14.1 ns/批**；端到端（读线程 + 有界队列 + 合批线程）**9.64 GiB/s**（复跑一次三组都在 3% 内浮动 —— 所以它是基线，不是门禁） |
+| 合批参数 | `max_bytes` = 64 KiB、`max_delay` = 16 ms（`BatchPolicy::DEFAULT`，唯一来源） |
 | 前提条件 | **需要能写 `$HOME`**；沙箱内会刷 `dconf-CRITICAL` 与 WebKit 缓存 hard-link 告警，但 **app 仍正常起窗口** |
 
 ## 进行中 / 下一步
 
 - [~] **plan 0102（CI 平台矩阵，GitHub Actions 一份）**：本地部分完成，
   最终判据 = **推上去三个 job 全绿**，卡在没有 remote。见 [`docs/plans/0102`](./plans/0102-ci-platform-matrix.md)
-- [ ] **阶段 2 第一步**：[`docs/plans/0201`](./plans/0201-output-batching.md)（输出合批）。
+- [ ] **阶段 2 第二步**：[`docs/plans/0202`](./plans/0202-ipc-binary-channel.md)（IPC 二进制通道）。
   接上 `src-tauri → src-tauri/crates/*` 的真实依赖后，**顺手再改一次 `crates/` 下的文件**
-  确认开发循环仍然生效（本次是用临时依赖证明的，见 plan 0104 的实施记录）
+  确认开发循环仍然生效（上次是用临时依赖证明的，见 plan 0104 的实施记录）
+- [ ] 0202 落地时补一条实测：**IPC 侧消费慢会不会把 PTY 反压死**。
+  `spawn_batcher` 的读线程会在有界队列上阻塞（这是**设计**：背压），
+  要确认的是它停住时 shell 只是"输出暂停"而不是"卡死"
 
-### 本轮完成（CI 去 Gitea 化 + 吃透 GitHub 专属能力）
+### 本轮完成（plan 0201：`Transport` 输出合批）
+
+- [x] **合批器 `OutputBatcher`**（`src-tauri/crates/akasha-pty/src/batcher.rs`）：
+  `push` / `poll_due` / `flush` + `deadline`，**时钟由外部注入** ——
+  两条触发（≥64 KiB / ≥16 ms）的边界因此能精确断言（差 1 字节、差 1 ms 都钉住了）
+- [x] **驱动 `spawn_batcher`**（计划外、必要）：读线程 → 有界队列（8 × 64 KiB，带背压）
+  → 合批线程 `recv_timeout(期限)`。没有它，"时间触发"会被阻塞的 `Read` 吃掉（坑 #26）
+- [x] **`Trigger` 枚举**（计划外、小）：容量 / 时间 / 收尾。只断言字节内容的话，
+  两条触发在字节上完全一样，实现写反了测试照样绿
+- [x] **12 条单测**：容量边界、超大块不切碎、16 ms 边界、期限锚在首字节、EOF 残批、
+  空输入不产生空批次、多字节字符可被切开、以及"拼起来与输入逐字节相同"的不变式
+- [x] **criterion 基线 3 条** + **新增 `just bench` 配方**（19 → 20，同步 `docs/just.md` §2/§3）
+- [x] `AGENTS.md` §7 增加「**性能基线不是门禁**」（数字随机器变，只用于改动前后对比）、
+  §11 配方计数（**宪法改动，单独提交**）；顺手把 §7 的「三层测试」改正为「四层」
+- [x] plan 0201 状态改「已完成」→ 归档，索引/ROADMAP 同步
+
+### 上一轮完成（CI 去 Gitea 化 + 吃透 GitHub 专属能力）
 
 - [x] **放弃双 forge 兼容层**（2026-09-11 评估）：工作流改回单 forge，
   Windows / macOS 不再需要 `github.server_url` 整条 job 门住，`e2e` 的 `needs` 理由
@@ -81,22 +105,14 @@ CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**�
   取消同一分支上被取代的运行（`main` 除外）、`permissions: contents: read`、
   `defaults.run.shell: bash`
 - [x] **工具安装统一走 `taiki-e/install-action`**：`just@1.58.0,cargo-nextest,cargo-deny`
-  一次装齐（预编译 + SHA256/attestation 校验），**净删 50 行手写 shell**；
-  ast-grep 去掉 `--prefix`（那是 job 容器里的写法）。`JUST_VERSION` 环境变量随之删除
-- [x] **删除 `ci-check` 配方**（曾并入 `ready`）：它守的是兼容性约束，兼容层没了就得一起删，
-  否则等于还留着一份"兼容清单"。`ready` 回到 5 步，配方 20 → **19**
-- [x] **约束清单不丢**：四条 Gitea 约束与放弃理由整段搬进
-  [`docs/plans/0102`](./plans/0102-ci-platform-matrix.md) 的「放弃记录」
-- [x] `AGENTS.md` §12 重写为"只维护 GitHub Actions 一份"并加一条"放手用 GitHub 专属能力"
-  （**宪法改动，单独提交**）；§7/§9 的 `ready` 步骤串与 §11 的配方计数同步
-- [x] `docs/just.md`（§2 删行、§6 换掉排错行、§8 改成三 job 表 + 并发取消）、
-  `docs/README.md` 搬运表、`ROADMAP.md` 两条、`docs/plans/README.md` 索引行同步
+  一次装齐（预编译 + SHA256/attestation 校验），**净删 50 行手写 shell**；`JUST_VERSION` 随之删除
+- [x] **删除 `ci-check` 配方**（曾并入 `ready`）：它守的是兼容性约束，兼容层没了就得一起删。
+  四条 Gitea 约束与放弃理由整段搬进 [`docs/plans/0102`](./plans/0102-ci-platform-matrix.md) 的「放弃记录」
 
-### 上一轮完成（阶段 1 收口）
+### 更早（阶段 1 收口）
 
 - [x] **plan 0106 布局收口**：`crates/` → `src-tauri/crates/`，`Cargo.lock` / `deny.toml` / `target/`
-  随之外移，根 `Cargo.toml` 删除，workspace root 改为 `src-tauri/Cargo.toml` → 归档
-- [x] **ADR-0004** 记录该决定并取代 ADR-0001 决策一（ADR-0001 按规则只追加取代指针）
+  随之外移，根 `Cargo.toml` 删除 → 归档。**ADR-0004** 记录该决定并取代 ADR-0001 决策一
 - [x] **规则路径重验**：ast-grep 规则的 `files:` 改为 `src-tauri/crates/**` 后，
   用探针重新验证它们仍会命中（否则规则会**静默失效**）
 
@@ -118,6 +134,7 @@ CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**�
 | 传输落盘 | **临时名 + 原子重命名**；失败/取消/关 `Session` 删除临时文件；不做断点续传 |
 | `libudev` | 做成 **cargo feature，仅 Linux 编译时启用** |
 | `akasha-vt` | **维持延后**；若必要则建于 **`src-tauri/crates/akasha-vt/`**，不在仓库根平铺 |
+| 性能基线 | criterion 数字**不进门禁**（2026-09-11 写进 `AGENTS.md` §7）：数字随机器与编译器浮动，当通过条件只会得到随机红 |
 
 ### 待实测 / 待确认
 
@@ -143,10 +160,13 @@ CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**�
 
 - **workspace root 在 `src-tauri/`**（ADR-0004）：成员 = `akasha`（app 包）+ `crates/*`
   （`akasha-core` / `akasha-pty`）。`Cargo.lock`、`deny.toml`、`target/` 都在 `src-tauri/` 下。
-  **仓库根没有 `Cargo.toml`** —— 在根目录直接跑 `cargo …` 会失败（坑 #8），一律用 `just` 转发。
+  **仓库根没有 `Cargo.toml`** —— 在根目录直接跑 `cargo …`（含 `cargo bench`）会失败（坑 #8），
+  一律用 `just` 转发。
 - **两个纯逻辑 crate**（零 Tauri 依赖，由 ast-grep 强制）：`akasha-core`（Session 模型，零依赖）、
-  `akasha-pty`（`Transport` + portable-pty）。`src-tauri` 目前**还没有**依赖它们 ——
-  真实依赖在 plan 0201 / 0202 建立。
+  `akasha-pty`（`Transport` + portable-pty + **输出合批**）。`src-tauri` 目前**还没有**依赖它们 ——
+  真实依赖在 plan 0202 建立。
+- **合批分三层**（都在 `akasha-pty::batcher`，别混）：`OutputBatcher` 纯逻辑（注入时钟、可确定性单测）
+  → `spawn_batcher` 驱动（读线程 + 合批线程）→ 下游 IPC（0202 才接）。
 - **文档三级粒度**：`ROADMAP.md`（判据）→ `docs/plans/TTxx-*`（手段）→ 本文件的坑（痕迹）。
   完成的 plan **整份移入 `docs/plans/archive/`**（不拼接、不追加，见 `AGENTS.md` §8）。
   归档 plan 里的路径按**当时**布局书写（`crates/…` 现读作 `src-tauri/crates/…`）。
@@ -171,7 +191,7 @@ CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**�
    bacon 独立循环"拿回来，不靠热重载。
 7. **just 的 shebang 配方需要可写的 runtime dir**，在受限环境会失败 —— 用普通配方。
 8. **仓库根没有 `Cargo.toml`** → 一切没显式指定 manifest 的 cargo 命令在根目录失败：
-   `cargo build`、`cargo metadata`、`cargo fmt --all`。
+   `cargo build`、`cargo metadata`、`cargo fmt --all`、`cargo bench`。
    2026-09-11 起这是**有意为之**（ADR-0004）：manifest 在 `src-tauri/`，用 `just` 转发或显式
    `--manifest-path`。踩到它的人多半是照着一份"根目录有 workspace"的旧记忆在操作。
 9. **`victauri-test` 生成的 `tests/*.rs` 不符合 rustfmt 默认风格** ——
@@ -231,6 +251,21 @@ CI 收敛为 **GitHub Actions 一份**（双 forge 兼容层**评估后放弃**�
     这些都不是"更稳"，只是**在替兼容层还债**，而且它们不会自己消失。
     处置：换成 `taiki-e/install-action`（预编译 + 校验和），**见到这类写法先问
     "它是为哪个 forge 写的"**。
+26. **阻塞的 `Read` 与"按时间交付"天生冲突** —— `Box<dyn Read + Send>` 没有可移植的
+    超时接口，所以"读一块→喂一块"的循环里，**时间触发永远不会单独发生**，它会退化成
+    "下一块字节到来时才顺便交付"。这不是理论问题：shell 打完提示符 `> ` 之后就没有输出了，
+    而用户正**等这个提示符**，它会一直躺在缓冲里直到用户按键 —— **只按容量合批的实现
+    在交互场景是坏的**。正解是让等待可超时：一个线程只管读、把块丢进有界队列，
+    另一个线程用 `recv_timeout(期限)` 取（合批的 `spawn_batcher` 就是这么写的；
+    注意它不是 `sleep`，`AGENTS.md` §0 禁的是盲等）。
+27. **零匹配的测试过滤器在 nextest 里是"报错"，不是"跑过 0 条"** ——
+    `cargo nextest run -p akasha-pty batching` 匹配不到任何用例（模块叫 `batcher`），
+    输出是 `error: no tests to run` 并**非零退出**。两个后果：一是它看起来像"测试挂了"，
+    二是**过滤器会随模块/用例改名静默失效** —— plan 里的 `… batching` 就是这么过期的。
+    过滤器是手段，判据要写成"哪些用例必须绿"；改名后记得回头改验收命令。
+28. **`cargo bench` 会顺带用 bench 模式跑一遍单测目标，打印 `0 passed; N ignored`** ——
+    那是 libtest 在 `--bench` 模式下**只跑 `#[bench]`**（普通 `#[test]` 忽略），
+    不是"测试没跑"。别把它当成异常去查。
 
 ## 环境
 
