@@ -22,10 +22,11 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 
 use akasha_core::{SessionId, SessionKind, SessionRegistry};
+use akasha_pty::watchdog::SessionWatchdog;
 use akasha_pty::{
     Batch, BatchPolicy, PtyTransport, TerminalSize, Transport, TransportError, spawn_batcher,
 };
@@ -97,6 +98,11 @@ struct Live {
     /// 载体。**装箱成 trait 对象**：一来 `shutdown_all` 要用假载体测调用序列
     /// （plan 0204 的验收），二来阶段 5/6 的 SSH / 隧道要装进同一个 map。
     transport: Box<dyn Transport>,
+    /// 本地会话首进程 pid（看门狗的兜底凭据）。`None` = 这个载体没有本地进程。
+    ///
+    /// 存下来而不是每次现问 `transport`：`close` 与 `shutdown_all` 是在**收尾之后**
+    /// 才去撤销登记的，那时载体已经收干净、pid 没了（`session_leader()` 会返回 `None`）。
+    leader: Option<u32>,
 }
 
 #[derive(Default)]
@@ -113,6 +119,14 @@ struct Inner {
 #[derive(Default, Clone)]
 pub struct Sessions {
     inner: Arc<Mutex<Inner>>,
+    /// 最后一道兜底：app **再也不跑代码**时（`tauri dev` 重载的 SIGKILL、`kill -9`），
+    /// 由它拿会话首进程 pid 去收掉整个会话（plan 0205）。还没挂上 = 没起来
+    /// （载体不支持、或启动失败）—— 那时退化回 plan 0204 的三条路径。
+    ///
+    /// 为什么是 `OnceLock` 而不是构造时定死：看门狗**最前面**起（会话一存在就必须
+    /// 已经在兜底清单里），而它的日志要等到日志插件注册之后才有人看得到 —— 两件事
+    /// 的时机不同，`OnceLock` 正好表达"只会被设置一次，读的人多"。
+    watchdog: Arc<OnceLock<Arc<SessionWatchdog>>>,
 }
 
 /// 一次"全部回收"的结果。**给日志与测试用**，不是控制流。
@@ -133,10 +147,52 @@ impl ShutdownReport {
 }
 
 impl Sessions {
+    /// 挂上看门狗（plan 0205）。
+    ///
+    /// `Sessions` 默认**没有**看门狗：单元测试和"看门狗起不来"的降级路径都走那一支，
+    /// 那时行为就是 plan 0204 的三条路径（能跑代码的两条干净、SIGKILL 那条有残留）。
+    ///
+    /// 已经挂过就忽略这一次 —— 两个看门狗会各自收同一批会话，"收两次"至少是重复劳动，
+    /// 更要紧的是它说明**有第三个地方在悄悄接另一条管道**，那必须被看见。
+    pub fn attach_watchdog(&self, watchdog: SessionWatchdog) {
+        if self.watchdog.set(Arc::new(watchdog)).is_err() {
+            tracing::warn!("看门狗：已经挂过一个了，这一次忽略");
+        }
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, Inner>, IpcError> {
         self.inner.lock().map_err(|err| IpcError::Internal {
             message: err.to_string(),
         })
+    }
+
+    /// 把"这个会话由看门狗兜底"写进协议。
+    ///
+    /// **失败只记日志**：看门狗是最后一道兜底，它坏了不该让用户开不了终端。
+    /// 反过来说，这条路径上的失败会**静默地**把安全性退回 0204 的水平 —— 所以
+    /// 日志级别是 `warn`，不是 `debug`。
+    fn watch(&self, leader: Option<u32>) {
+        let (Some(watchdog), Some(leader)) = (self.watchdog.get(), leader) else {
+            return;
+        };
+        if let Err(err) = watchdog.watch(leader) {
+            tracing::warn!(leader, %err, "看门狗：登记会话失败（这条会话少一道兜底）");
+        }
+    }
+
+    /// 撤销登记。调用点必须排在这个会话**收尾之后**（理由见 `SessionWatchdog::forget`）。
+    fn forget(&self, leader: Option<u32>) {
+        let (Some(watchdog), Some(leader)) = (self.watchdog.get(), leader) else {
+            return;
+        };
+        if let Err(err) = watchdog.forget(leader) {
+            tracing::warn!(leader, %err, "看门狗：撤销登记失败（端到端退出时会再收一次）");
+        }
+    }
+
+    /// 看门狗进程的 pid（诊断用：证明它真的起来了）。
+    pub fn watchdog_pid(&self) -> Option<u32> {
+        self.watchdog.get().and_then(|watchdog| watchdog.pid())
     }
 
     /// 登记一个会话，并把它的**批次流**交出来。
@@ -159,6 +215,15 @@ impl Sessions {
                 message: "读端已被取走".into(),
             })?;
 
+        // 登记去**前面**、锁**外面**：
+        //   * 前面 —— 会话一旦存在就必须已经在兜底清单里。反过来的话，"登记完、
+        //     还没告诉看门狗"这一瞬 app 死了，那个 shell 就没人管了；
+        //   * 外面 —— 写管道是可能阻塞的（看门狗被暂停住、管道写满），
+        //     握着会话表的锁阻塞会冻住全部会话命令。
+        // 多登记一次是安全的：看门狗收的是**会话**，重复收同一个 pid 不会误伤别人。
+        let leader = transport.session_leader();
+        self.watch(leader);
+
         let mut inner = self.lock()?;
         let id = inner
             .registry
@@ -172,6 +237,7 @@ impl Sessions {
             Live {
                 id,
                 transport: Box::new(transport),
+                leader,
             },
         );
         // 锁只保护"谁存在"，读循环在锁外跑 —— 否则一次阻塞的读就冻住整个 app。
@@ -223,6 +289,11 @@ impl Sessions {
             .map_err(|err| IpcError::Internal {
                 message: err.to_string(),
             })?;
+        // 撤销登记排在**收尾之后**（`SessionWatchdog::forget` 的理由），且放在**锁外**
+        // —— 写管道可能阻塞，握着会话表的锁阻塞会冻住全部会话命令。
+        // 收尾失败时上面已经 `?` 返回了：那时**不撤销**，让看门狗下次再试一遍。
+        drop(inner);
+        self.forget(live.leader);
         Ok(())
     }
 
@@ -268,6 +339,8 @@ impl Sessions {
             match live.transport.shutdown() {
                 Ok(status) => {
                     report.shut_down += 1;
+                    // 收干净了才撤销登记：失败的那些留着，让看门狗在 EOF 时再试一次。
+                    self.forget(live.leader);
                     tracing::info!(
                         handle,
                         session = live.id.get(),
@@ -534,6 +607,8 @@ mod tests {
         name: &'static str,
         fail: bool,
         closed: bool,
+        /// 本地会话首进程 pid（看门狗兜底凭据）。`None` = 这个假载体没有本地进程。
+        leader: Option<u32>,
     }
 
     impl Recording {
@@ -543,7 +618,14 @@ mod tests {
                 name,
                 fail,
                 closed: false,
+                leader: None,
             }
+        }
+
+        /// 让这个假载体看起来像"有一个本地会话"。
+        fn leader(mut self, leader: u32) -> Self {
+            self.leader = Some(leader);
+            self
         }
     }
 
@@ -553,6 +635,10 @@ mod tests {
                 return Err(TransportError::Closed);
             }
             Ok(())
+        }
+
+        fn session_leader(&self) -> Option<u32> {
+            self.leader
         }
 
         fn output_stream(&mut self) -> Option<Box<dyn std::io::Read + Send>> {
@@ -637,5 +723,154 @@ mod tests {
         assert!(!report.is_clean());
         // 收不掉也摘牌：留着它只会在退出路径上被重复失败一遍。
         assert!(sessions.is_empty() && sessions.registered() == 0);
+    }
+
+    // ── plan 0205：看门狗（app 被 SIGKILL 时的最后一道兜底）────────────────────
+
+    /// 把看门狗的控制端接到一段内存上，好断言协议到底写了什么。
+    ///
+    /// 为什么要断言**字节**而不是"调用过"：协议是**跨进程**的约定，两端各自编译、
+    /// 各自演进 —— 只有把写出去的行与 `akasha_pty::watchdog::parse` 对上，
+    /// 才能保证"app 说登记了"与"看门狗听懂了"是同一件事。
+    #[derive(Clone)]
+    struct ControlLog(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for ControlLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("控制端锁中毒").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 每次写都失败的看门狗（进程没了、管道断了的样子）。
+    struct DeadControl;
+
+    impl std::io::Write for DeadControl {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("看门狗不在了"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn watchdog_with(log: &ControlLog) -> (Sessions, Arc<Mutex<Vec<u8>>>) {
+        let sessions = Sessions::default();
+        sessions.attach_watchdog(SessionWatchdog::with_writer(Box::new(log.clone())));
+        (sessions, Arc::clone(&log.0))
+    }
+
+    fn control_lines(written: &Arc<Mutex<Vec<u8>>>) -> Vec<String> {
+        let bytes = written.lock().expect("控制端锁中毒").clone();
+        String::from_utf8(bytes)
+            .expect("协议必须是 ASCII")
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn the_watchdog_is_told_exactly_which_sessions_to_collect() {
+        let log = ControlLog(Arc::new(Mutex::new(Vec::new())));
+        // 两个流水账：`trace` 记载体被怎么用了（plan 0204 的假载体），
+        // `written` 记协议写出去什么（本 plan）。混在一起会分不清是哪一边的事。
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let (sessions, written) = watchdog_with(&log);
+
+        let (first, _a) = sessions
+            .register(
+                Recording::new(&trace, "a", false).leader(1001),
+                BatchPolicy::DEFAULT,
+            )
+            .expect("登记 a 失败");
+        let (_second, _b) = sessions
+            .register(
+                Recording::new(&trace, "b", false).leader(1002),
+                BatchPolicy::DEFAULT,
+            )
+            .expect("登记 b 失败");
+        assert_eq!(
+            control_lines(&written),
+            vec!["+1001", "+1002"],
+            "会话一存在就必须已经在兜底清单里"
+        );
+
+        sessions.close(first).expect("关闭 a 失败");
+        assert_eq!(
+            control_lines(&written),
+            vec!["+1001", "+1002", "-1001"],
+            "收干净的会话要撤销登记（否则端到端退出时会对着复用掉的 pid 再发一次 SIGKILL）"
+        );
+
+        sessions.shutdown_all();
+        assert_eq!(
+            control_lines(&written),
+            vec!["+1001", "+1002", "-1001", "-1002"]
+        );
+    }
+
+    #[test]
+    fn a_session_without_a_local_process_is_not_registered() {
+        // 内存载体 / 将来的纯网络后端没有本地进程可收：不能凭空登记一个 pid。
+        let log = ControlLog(Arc::new(Mutex::new(Vec::new())));
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let (sessions, written) = watchdog_with(&log);
+
+        sessions
+            .register(Recording::new(&trace, "a", false), BatchPolicy::DEFAULT)
+            .expect("登记失败");
+        sessions.shutdown_all();
+
+        assert!(
+            control_lines(&written).is_empty(),
+            "没有本地进程的载体不该产生任何协议行"
+        );
+    }
+
+    #[test]
+    fn a_dead_watchdog_does_not_take_the_sessions_with_it() {
+        // 看门狗是**最后一道**兜底，不是主路径：它坏了，终端必须照常能用
+        // （退化回 plan 0204 的水平），只是少了一层保险。
+        let sessions = Sessions::default();
+        sessions.attach_watchdog(SessionWatchdog::with_writer(Box::new(DeadControl)));
+
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let (handle, _batches) = sessions
+            .register(
+                Recording::new(&trace, "a", false).leader(7),
+                BatchPolicy::DEFAULT,
+            )
+            .expect("看门狗写不进去，也不该让会话开不了");
+        sessions.close(handle).expect("关闭失败");
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn a_failed_collection_keeps_the_session_registered_for_the_watchdog() {
+        // 收不掉的会话**不撤销**：留着它，让看门狗在 app 真的死掉时再试一次。
+        // 反过来的话，唯一一次机会被一个瞬时错误花掉了，进程永远留在用户机器上。
+        let log = ControlLog(Arc::new(Mutex::new(Vec::new())));
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let (sessions, written) = watchdog_with(&log);
+
+        sessions
+            .register(
+                Recording::new(&trace, "bad", true).leader(1003),
+                BatchPolicy::DEFAULT,
+            )
+            .expect("登记失败");
+        let report = sessions.shutdown_all();
+
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(
+            control_lines(&written),
+            vec!["+1003"],
+            "失败的会话不得被撤销登记"
+        );
     }
 }

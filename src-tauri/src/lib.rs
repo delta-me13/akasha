@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 pub mod bindings;
 pub mod session;
+pub mod watchdog;
 
 use session::Sessions;
 
@@ -22,8 +23,7 @@ fn greet(name: &str) -> String {
 /// |---|---|
 /// | 关窗口 / 正常退出 | `RunEvent::Exit`（下面） |
 /// | panic | panic hook（[`install_panic_reclaim`]） |
-/// | `tauri dev` 重编译重启 | **没人能跑**：CLI 用的是 `SharedChild::kill()` = SIGKILL，
-/// |  | 进程没有机会执行任何代码。见 plan 0204 的实施记录 |
+/// | `tauri dev` 重编译重启 / `kill -9` / `kill -TERM` | **app 里没人能跑**（SIGKILL 不可捕获）：改由[看门狗](crate::watchdog)在**另一个进程**里收 —— 它读一条管道，app 一死就收到 EOF。见 plan 0205 |
 ///
 /// 日志走 `tauri-plugin-log`；`tracing` 的事件靠 `tracing/log-always` 特性转发成 `log`
 /// 记录 —— 没有这一步，那些回收记录会**静默消失**（app 里没有 tracing subscriber）。
@@ -35,7 +35,15 @@ pub fn run() {
 
     // 会话表要**共享**给退出钩子与 panic hook —— tauri 的 `State` 只借给命令用。
     // `Sessions` 内部是 `Arc`，clone 出来的是同一份表。
+    //
+    // 看门狗在这里起：它是第四道回收，专管"进程里没有任何代码能跑"的那条路径
+    // （`tauri dev` 重载 = SIGKILL、`kill -9`、`kill -TERM`）—— plan 0205。
+    // 起不来就退化回 plan 0204 的三条路径，**不挡启动**（理由见 `watchdog` 模块）。
+    //
+    // ⚠️ 起得比日志插件早，所以**不能在这里记日志**（那时 `tracing` 没有 `log` 出口，
+    // 记录会静默消失）；`Startup` 把结果留到 `.setup()` 里再报 —— 见 `watchdog::Startup`。
     let sessions = Sessions::default();
+    let startup = watchdog::start_early(&sessions);
     install_panic_reclaim(sessions.clone());
 
     let app = tauri::Builder::default()
@@ -44,6 +52,11 @@ pub fn run() {
         .manage(sessions.clone())
         .invoke_handler(builder.invoke_handler())
         .plugin(victauri_plugin::init())
+        // 到这一步日志插件已经就绪 —— 看门狗的成败终于有人看得到（`Startup` 的理由）。
+        .setup(move |_app| {
+            watchdog::report(&startup);
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
@@ -53,6 +66,8 @@ pub fn run() {
         //（plan 0301/0302）。在那里收会话 = "窗口收进托盘、终端却全被杀掉"，
         // 与托盘语义正好相反 —— 所以回收点必须晚于"退出已成定局"。
         if let tauri::RunEvent::Exit = event {
+            // 这一条比看门狗**更早、更精确**（进程还活着，能逐个 kill + wait 收尸），
+            // 所以两条路径不是二选一：能跑代码的时候跑这里，跑不了的时候才轮到看门狗。
             let report = sessions.shutdown_all();
             if report.is_clean() {
                 tracing::info!(
