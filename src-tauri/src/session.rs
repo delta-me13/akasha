@@ -129,6 +129,12 @@ pub struct Sessions {
     /// 已经在兜底清单里），而它的日志要等到日志插件注册之后才有人看得到 —— 两件事
     /// 的时机不同，`OnceLock` 正好表达"只会被设置一次，读的人多"。
     watchdog: Arc<OnceLock<Arc<SessionWatchdog>>>,
+    /// 会话集合变化时的通知（plan 0301）：托盘靠它刷新隧道列表。
+    ///
+    /// 为什么不是 tauri 事件：这条信号只在**进程内**用 —— 前端不需要知道"表变了"
+    /// （它有自己的 `session_ended`），把内部表的变更广播给 webview 只会多一份要维护的契约。
+    /// 反过来说，也**不要**在每个变更点手动调一次托盘：那会把"谁在订阅"散落到各处。
+    changed: Arc<OnceLock<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// 一次"全部回收"的结果。**给日志与测试用**，不是控制流。
@@ -190,6 +196,26 @@ impl Sessions {
     pub fn attach_watchdog(&self, watchdog: SessionWatchdog) {
         if self.watchdog.set(Arc::new(watchdog)).is_err() {
             tracing::warn!(reason = "already-attached", "watchdog attach ignored");
+        }
+    }
+
+    /// 登记"会话集合变了"的通知。托盘是**唯一**的订阅者（plan 0301）。
+    ///
+    /// 只接受一个订阅者，第二个被忽略并记日志 —— 同 [`Self::attach_watchdog`] 的理由：
+    /// 它说明有两处在悄悄改同一份 UI 状态，那必须被看见。
+    pub fn on_change(&self, hook: impl Fn() + Send + Sync + 'static) {
+        if self.changed.set(Arc::new(hook)).is_err() {
+            tracing::warn!(reason = "already-registered", "change hook ignored");
+        }
+    }
+
+    /// 通知订阅者"表变了"。
+    ///
+    /// ⚠️ **必须在放掉会话表的锁之后调用**：订阅者会回头读这张表（托盘要列隧道），
+    /// 握着锁通知就是自己等自己。调用点因此都排在 `drop(inner)` 之后。
+    fn notify_changed(&self) {
+        if let Some(hook) = self.changed.get() {
+            hook();
         }
     }
 
@@ -275,6 +301,7 @@ impl Sessions {
         );
         // 锁只保护"谁存在"，读循环在锁外跑 —— 否则一次阻塞的读就冻住整个 app。
         drop(inner);
+        self.notify_changed();
         Ok((handle, spawn_batcher(output, policy)))
     }
 
@@ -327,6 +354,7 @@ impl Sessions {
         // 收尾失败时上面已经 `?` 返回了：那时**不撤销**，让看门狗下次再试一遍。
         drop(inner);
         self.forget(live.leader);
+        self.notify_changed();
         Ok(())
     }
 
@@ -366,6 +394,7 @@ impl Sessions {
         // —— 写管道可能阻塞。
         drop(inner);
         self.forget(live.leader);
+        self.notify_changed();
 
         Ok(Some(Retired {
             id: live.id,
@@ -382,6 +411,27 @@ impl Sessions {
     /// 两张表分叉就说明有会话"查得到、却没人管"（或反过来）。
     pub fn registered(&self) -> usize {
         self.lock().map(|inner| inner.registry.len()).unwrap_or(0)
+    }
+
+    /// 当前登记着的**隧道类**会话，升序（plan 0301：托盘菜单要列它们）。
+    ///
+    /// 阶段 6 之前**必然是空的** —— 那时隧道才存在。这一步先把"列表从哪来"定下来：
+    /// **只读注册表**，不另立一张表（两张表必然分叉，`registered` 的注释里已写过这条）。
+    pub fn tunnels(&self) -> Vec<SessionId> {
+        let inner = match self.lock() {
+            Ok(inner) => inner,
+            // 中毒时**不假装空列表**：菜单里少一项的后果比"日志里说清楚"小，但谎报
+            // "一条都没有"会让排查的人往错的方向找（`docs/logging.md` 的字段值不撒谎）。
+            Err(err) => {
+                tracing::warn!(%err, "session table unavailable");
+                return Vec::new();
+            }
+        };
+        inner
+            .registry
+            .ids()
+            .filter(|id| inner.registry.kind(*id) == Some(SessionKind::Tunnel))
+            .collect()
     }
 
     /// **真正退出时**把全部会话收掉：逐个显式 `shutdown()`（kill + wait 收尸），再摘牌。
@@ -438,6 +488,7 @@ impl Sessions {
             }
         }
 
+        self.notify_changed();
         report
     }
 
@@ -621,6 +672,7 @@ mod tests {
     use super::*;
     use akasha_pty::ExitStatus;
     use akasha_pty::ShellLaunch;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
 
@@ -1116,5 +1168,78 @@ mod tests {
             vec!["+2003", "-2003"],
             "失败也要撤销登记：它已经不存在了"
         );
+    }
+
+    // ── plan 0301：托盘靠这条通知刷新菜单（隧道列表）─────────────────────────
+
+    /// 登记一个假载体，返回句柄。
+    fn register_recording(sessions: &Sessions, name: &'static str) -> SessionHandle {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        sessions
+            .register(Recording::new(&log, name, false), BatchPolicy::DEFAULT)
+            .expect("登记失败")
+            .0
+    }
+
+    #[test]
+    fn sessions_changed_hook_fires_on_open_close_and_retire() {
+        // ⚠️ 钩子里**回头读会话表** —— 托盘就是这么干的（列出隧道）。通知若排在会话表
+        // 的锁里面，这里会自己等自己：于是"忘了 `drop(inner)` 再通知"这种错当场暴露。
+        let sessions = Sessions::default();
+        let fired = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&fired);
+        let table = sessions.clone();
+        sessions.on_change(move || {
+            assert!(
+                table.tunnels().is_empty(),
+                "会话表读到一半的状态必须是可读的"
+            );
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let handle = register_recording(&sessions, "a");
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "开一个会话没通知");
+
+        sessions.close(handle).expect("关闭失败");
+        assert_eq!(fired.load(Ordering::SeqCst), 2, "关一个会话没通知");
+
+        // retire 是另一条路（用户敲 exit）—— 它同样会改变菜单该显示什么。
+        let handle = register_recording(&sessions, "b");
+        sessions.retire(handle).expect("retire 失败");
+        assert_eq!(fired.load(Ordering::SeqCst), 4, "自己结束的会话也要通知");
+
+        sessions.shutdown_all();
+        assert_eq!(fired.load(Ordering::SeqCst), 5, "退出收尾也要通知");
+    }
+
+    #[test]
+    fn a_second_change_hook_is_ignored() {
+        // 两个订阅者会去改同一份 UI 状态（托盘菜单），那必须被看见而不是静默叠加。
+        let sessions = Sessions::default();
+        let first = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(AtomicUsize::new(0));
+        let (a, b) = (Arc::clone(&first), Arc::clone(&second));
+        sessions.on_change(move || {
+            a.fetch_add(1, Ordering::SeqCst);
+        });
+        sessions.on_change(move || {
+            b.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let _ = register_recording(&sessions, "a");
+
+        assert_eq!(first.load(Ordering::SeqCst), 1);
+        assert_eq!(second.load(Ordering::SeqCst), 0, "第二个订阅者必须被忽略");
+    }
+
+    #[test]
+    fn terminal_sessions_are_not_listed_as_tunnels() {
+        // ⚠️ 这条只守一半：**能开出隧道类会话的入口要到阶段 6 才有**（0601），
+        // 所以"隧道出现在列表里"那一半现在无法构造。它守的是"别把终端混进隧道列表"。
+        let sessions = Sessions::default();
+        let _ = register_recording(&sessions, "a");
+
+        assert!(sessions.tunnels().is_empty());
+        assert_eq!(sessions.registered(), 1, "终端会话本身仍然登记着");
     }
 }

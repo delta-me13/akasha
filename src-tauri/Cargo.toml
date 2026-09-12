@@ -72,7 +72,11 @@ strip = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["specta"] }
+# `tray-icon`：系统托盘（plan 0301）。⚠️ 它只加**能力**，不加权限 —— 托盘全在 Rust 侧建、
+# 前端一次都不碰，所以 `capabilities/*.json` 里**不**该多出 `core:tray:*`（`AGENTS.md` §4.3）。
+# ⚠️ Linux 上图标要落到 `$XDG_RUNTIME_DIR/tray-icon`（tray-icon 的 `temp_icon_path`）：
+# 只读 runtime dir / 容器里建不起来 —— 那时**只记日志、不挡启动**（见 `src/tray.rs`）。
+tauri = { version = "2", features = ["specta", "tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

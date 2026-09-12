@@ -21,6 +21,10 @@ allow = [
     "Unicode-3.0",
     "CC0-1.0",
     "Unlicense",
+    # ISC：宽松许可证（OSI 与 FSF 都认，条款与 MIT/BSD 同族）。
+    # 具体来源是托盘那条链：`tray-icon` → `libappindicator` → `libappindicator-sys`
+    # → `libloading 0.7.4`（plan 0301）。**只放行许可证，不忽略任何包**。
+    "ISC",
 ]
 confidence-threshold = 0.93
 

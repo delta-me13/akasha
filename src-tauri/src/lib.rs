@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 pub mod bindings;
 pub mod session;
+pub mod tray;
 pub mod watchdog;
 
 use session::{Sessions, ShutdownReport};
@@ -58,6 +59,9 @@ pub fn run() {
             // ⚠️ 事件必须在 setup 里挂上：`tauri-specta` 的 `Builder::invoke_handler`
             // 只覆盖命令，事件缺了这一步会在**发**的时候 panic（`EventRegistry not found`）。
             builder.mount_events(app);
+            // 托盘在窗口与会话表都就绪之后建。返回"可用吗" —— plan 0302 拿它决定
+            // "关窗口 = 隐藏还是真关掉"（没有托盘就没有能叫回窗口的地方）。本步还没有消费者。
+            let _tray_ready = tray::setup(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -79,8 +83,9 @@ pub fn run() {
 /// 收尾结果的一条汇总：**数字进字段，每个会话的细节在 `shutdown_all` 里各自记**
 /// （这里不 `?` 打 `failures` —— 那是把 `Vec<(u32, String)>` 的 `Debug` 倒进日志）。
 ///
-/// 形态规则见 `docs/logging.md`；`trigger` 取值是稳定的字面量（`exit` / `panic`）。
-fn log_reclaim(report: &ShutdownReport, trigger: &'static str) {
+/// 形态规则见 `docs/logging.md`；`trigger` 取值是稳定的字面量
+/// （`exit` / `panic` / `tray`）。
+pub(crate) fn log_reclaim(report: &ShutdownReport, trigger: &'static str) {
     if report.is_clean() {
         tracing::info!(reclaimed = report.shut_down, trigger, "sessions reclaimed");
     } else {
