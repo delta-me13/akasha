@@ -1,7 +1,7 @@
 id: no-string-pty-channel
 language: Rust
 severity: error
-message: PTY 字节流不能走 `Channel<String>` / `Channel<Vec<u8>>` —— 那是 JSON 数组，不是二进制通道（AGENTS.md §3.2）
+message: PTY 字节流不能走 `Channel<String>` / `Channel<Vec<数字>>` —— 那是 JSON 数组，不是二进制通道（AGENTS.md §3.2）
 note: |
   这条规则守的是**终端应用最容易踩的坑**：以为"用了 Channel 就是二进制通道"。
 
@@ -24,6 +24,16 @@ note: |
   ⚠️ 生成器（tauri-specta）写不出 `InvokeResponseBody` 的 TS 类型，所以过 IPC 的参数
   只声明"频道句柄是个字符串"，由 Rust 侧还原成 raw 频道 —— 见
   `src-tauri/src/session.rs` 的 `RawChannel`。
+
+  ⚠️ 两条**实测出来的**边界（探针：正例 `tauri::ipc::Channel<Vec<u8>>` + 诱饵
+  `Channel<u32>` / 字符串里的 `"Channel<String>"`）：
+
+    * **限定路径的写法也要拦**：`tauri::ipc::Channel<Vec<u8>>` 的 `type` 节点文本是
+      `tauri::ipc::Channel`，写 `^Channel$` 会**整条漏掉**（静默失效）—— 用 `(^|::)Channel$`；
+    * **整数 Vec 不止 `u8` / `i8`**：凡整数 `Vec` 都走同一条"JSON 数字数组"慢路。
+
+  真实的"允许写法"只有一处（`session.rs` 的 `Channel<InvokeResponseBody>`）——
+  用 `kind: generic_type` + `regex: "Channel<"` 结构搜过，注释里的反例不会被误报。
 files:
   - "src-tauri/src/**/*.rs"
 rule:
@@ -31,7 +41,7 @@ rule:
   all:
     - has:
         field: type
-        regex: '^Channel$'
+        regex: '(^|::)Channel$'
     - has:
         kind: type_arguments
-        regex: '^<\s*(String|Vec\s*<\s*(u8|i8)\s*>)\s*>$'
+        regex: '^<\s*(String|Vec\s*<\s*(u8|i8|u16|i16|u32|i32|u64|i64|usize|isize)\s*>)\s*>$'
