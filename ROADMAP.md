@@ -96,9 +96,9 @@
 - [x] 关闭行为可配置（收托盘 / 直接退出）
       验收：切成"直接退出"后点叉即退出且零残留；切回收托盘后点叉不退出
       → [plan 0303](./docs/plans/archive/0303-close-behavior-config.md)
-- [ ] 单实例（第二个实例唤起已有窗口，而不是各跑一套）
+- [x] 单实例（第二个实例唤起已有窗口，而不是各跑一套）
       验收：连续启动两次只有一个进程、一条隧道
-      → [plan 0304](./docs/plans/0304-single-instance.md)
+      → [plan 0304](./docs/plans/archive/0304-single-instance.md)
 - [x] **关闭终端标签页 = 立刻丢弃该 Session**（只有三大终端 local / ssh / serial 有 ×）
       验收：点 × 后该会话的进程消失、无需二次确认、别的标签页毫发无伤；转发 / 密码库 /
       文件传输是**仅渲染**的视图（无 ×），关前端不影响后端 → [plan 0305](./docs/plans/archive/0305-tab-close-discards-session.md)

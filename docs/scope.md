@@ -344,8 +344,10 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
 
 ### 5.4 由此产生的三条硬要求
 
-1. **窗口关闭 ≠ 进程退出。** 必须拦截 `WindowEvent::CloseRequested` 并 `prevent_close()`
-   + `hide()`；app 层还要 `prevent_exit()` 兜住"最后一个窗口关闭"的默认退出。
+1. **窗口关闭 ≠ 进程退出。** 必须拦截 `WindowEvent::CloseRequested`，先 `hide()`、**成功才**
+   `prevent_close()`（配置成"直接退出"时放行）。⚠️ **不要**再挂 `RunEvent::ExitRequested` 去
+   `prevent_exit()`：`AppHandle::exit()` **同样**会触发它，拦下去会把托盘菜单的"退出"一起
+   拦掉。理由与实测见 [`docs/plans/archive/0302`](./plans/archive/0302-hide-not-destroy.md)。
 2. **PTY 会话与隧道在窗口关闭时不得被回收。** 这条与原本的"窗口关闭即收尸"规则
    **方向相反**，必须显式写进规范，否则一个"勤快"的清理逻辑会把隧道杀掉。
    见 §8 风险 1。
