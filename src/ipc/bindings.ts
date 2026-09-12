@@ -13,12 +13,35 @@ export const commands = {
 	 */
 	greet: (name: string) => __TAURI_INVOKE<string>("greet", { name }),
 	/**
-	 *  库在哪、建过没有。**只读元数据**：不打开库、不创建目录、不要口令。
+	 *  库在哪、建过没有、开着没有。**只读元数据 + 一个布尔**：不打开库、不创建目录、不要口令。
 	 * 
 	 *  它**不记日志**：那是一个查询（前端可能反复调），而日志留给状态**变化** ——
 	 *  这里没有变化，只有"此刻是什么"。
 	 */
 	vaultStatus: () => typedError<VaultStatus, VaultError>(__TAURI_INVOKE("vault_status")),
+	/**
+	 *  解锁：打开已有的库；**没有库就建一个**（文件不存在或 0 字节）。
+	 * 
+	 *  建 / 开的选择来自 [`plan_for`]，而"开"与"建"仍然是存储层的两条路（plan 0402）——
+	 *  这里没有把它们合并成一个"打不开就建"的兜底：那正是实测里"任何口令都能打开一个
+	 *  0 字节文件"的那条歧路。
+	 * 
+	 *  已经解开时返回 [`VaultError::AlreadyUnlocked`]：**不替换、不重复开**。
+	 *  检查是 check-then-act：并发调用时两边都会算一次 KDF（约 105 ms）而只有一个成功 ——
+	 *  代价照实记，不为它加一套排队逻辑。
+	 */
+	vaultUnlock: (passphrase: PassphraseInput) => typedError<VaultContents, VaultError>(__TAURI_INVOKE("vault_unlock", { passphrase })),
+	/**
+	 *  锁定：把解好的连接与口令**一起**丢掉（`Some` → `None`）。
+	 * 
+	 *  返回"刚才是不是真锁上了一个"：调用方（前端 / 测试）要靠它区分
+	 *  "锁上了"与"本来就是锁着的"—— 后者不是错误，但也不该被报成一次状态变化。
+	 * 
+	 *  抹掉了什么、抹不掉什么：见模块文档的「边界」与 plan 0407 的副本清单。
+	 *  口令那一页由 `memsafe` `munmap`（实测 `VmLck` 归零）；SQLCipher 内部的密钥材料
+	 *  由 `cipher_memory_security` 在释放时擦零（实测：派生密钥的副本一处不剩）。
+	 */
+	vaultLock: () => typedError<boolean, VaultError>(__TAURI_INVOKE("vault_lock")),
 	/**
 	 *  打开一个终端会话，输出经 `channel` 以 **raw 字节**送出。
 	 * 
@@ -71,6 +94,19 @@ export type IpcError =
 } };
 
 /**
+ *  口令**经 IPC 进来的形态**（`PassphraseInput`）。
+ * 
+ *  它是口令在 IPC 边界上的唯一类型，而它唯一能做的事是 [`PassphraseInput::into_bytes`]。
+ *  刻意**没有** `Debug`：`tracing::info!(?input)` 是**编译错误**，而不是"打码" ——
+ *  与 `Passphrase` 同一手法（`AGENTS.md` §3.4）。
+ * 
+ *  `#[specta(transparent)]` 让它生成成 `string`（线上确实是 JSON 字符串），
+ *  前端因此不需要为它手写第二份签名（对比 `RawChannel` 那段：那个需要手写，
+ *  因为频道句柄的语义生成器表达不出来）。
+ */
+export type PassphraseInput = string;
+
+/**
  *  前端 raw 字节频道的句柄。
  * 
  *  **线上就是一个字符串**（`__CHANNEL__:<id>`）：tauri 的频道是前端创建、只把 id 递给
@@ -101,23 +137,47 @@ export type SessionEnded = {
  * 
  *  两边的映射写成穷尽 `match`（下面的 `From`）：存储层加了状态，**这里编译不过** ——
  *  而不是悄悄少一个分支，让前端在一个它不认识的值上做默认动作。
+ * 
+ *  ⚠️ 这个名字与 `tauri::State` 撞车，所以那几个签名里写全 `tauri::State<'_, Vault>` ——
+ *  不为了省几个字把 IPC 类型改名（它已经出现在生成物里）。
  */
 export type State = 
-/**  文件不存在：还没有建过。 */
+/**  文件不存在：还没有建过。解锁会**建一个新的**。 */
 "missing" | 
 /**
  *  文件在但是 **0 字节**：还没有密钥落在那里（这种文件用什么口令都能"打开"，
- *  见 ADR-0002 §7）。与 `Missing` 分开是因为用户的下一步动作不同。
+ *  见 ADR-0002 §7）。解锁同样会建一个新的。
  */
 "empty" | 
-/**  有内容。能不能打开是解锁那一步的事（plan 0407）。 */
+/**  有内容。解锁会**打开它**（口令不对就打不开）。 */
 "present";
+
+/**
+ *  解锁之后读一次四套池的结果。
+ * 
+ *  它存在的理由不是"给用户看几个数字"，而是让 `AGENTS.md` §7 那条"真实路径走通"
+ *  有对象：真 app 上 `invoke` 出来的这份数字，正是**库真的被解开并读通了**的证据
+ *  （只有拿到了正确的密钥才读得出行数）。
+ */
+export type VaultContents = {
+	/**
+	 *  计数是 `u32` 而不是 `usize`：生成器**拒绝**把 64 位整数导出成 TS
+	 *  （BigInt 的精度问题，坑 #32 的同一个坑）。这里不做 `as` 截断，而是 checked 转换。
+	 */
+	keys: number,
+	hosts: number,
+	serials: number,
+	forwards: number,
+};
 
 /**
  *  取库的状态时可能出的错。
  * 
- *  与 `IpcError` 分开：域不同，前端能据此做的动作也不同（这里是"环境没准备好"，
+ *  与 `IpcError` 分开：域不同，前端能据此做的动作也不同（这里是"环境或口令的问题"，
  *  而不是"某个会话坏了"）。
+ * 
+ *  变体按**用户的下一步动作**合并（与 `StoreError::Conflict` 同一个理由）：
+ *  版本不对 / 缺表 / 文件在半路被删了，对用户都是"这个库用不了，看消息"。
  */
 export type VaultError = 
 /**
@@ -129,6 +189,48 @@ export type VaultError =
 { kind: "noDataDir" } | 
 /**  看文件状态这一步失败了（权限 / IO）。 */
 { kind: "io"; detail: {
+	message: string,
+} } | 
+/**
+ *  已经解开了。**不替换**：静默换掉一个正在用的连接，会让"我现在用的是哪把口令"
+ *  变成一个没人答得上来的问题。
+ */
+{ kind: "alreadyUnlocked" } | 
+/**
+ *  打不开：口令错**或**文件不是本程序的库。SQLCipher 对这两者给同一个
+ *  `SQLITE_NOTADB`，我们也不假装能区分（文案因此把两种可能都说出来）。
+ */
+{ kind: "wrongPassphrase" } | 
+/**
+ *  空口令。前端本该拦住，但**后端也不接受** —— 空 key 会让 SQLCipher 退化成明文库
+ *  （ADR-0002 D5）。
+ */
+{ kind: "emptyPassphrase" } | 
+/**
+ *  口令比一页受保护内存还长（`akasha_store::MAX_LEN`）。**不是截断**：
+ *  截断会让"口令错了"变成一件没人能解释的事。
+ */
+{ kind: "passphraseTooLong"; detail: {
+	max: number,
+} } | 
+/**
+ *  **内存锁不住**（`mlock` 被拒）：`memsafe` 没有降级路径，所以解锁**不能进行**。
+ * 
+ *  这条必须是用户能懂的一句话，而不是一个错误码：它是"这台机器上你解不开自己的库"，
+ *  下一步动作是查 `ulimit -l` / 容器里的 `RLIMIT_MEMLOCK`，而不是重试。
+ */
+{ kind: "notLockable"; detail: {
+	message: string,
+} } | 
+/**  这个库用不了：版本不认识、缺表、或者文件在半路没了。 */
+{ kind: "unusable"; detail: {
+	message: string,
+} } | 
+/**
+ *  内部状态不可用（Mutex 中毒、阻塞任务 join 失败）。
+ *  **不是用户错误**，但也不能 `unwrap`。
+ */
+{ kind: "internal"; detail: {
 	message: string,
 } };
 
@@ -143,6 +245,11 @@ export type VaultStatus = {
 	 */
 	path: string,
 	state: State,
+	/**
+	 *  库**开着**没有（解密连接在不在）。与 `state` 是两件事：文件一直在，
+	 *  而锁开了、又锁上了。
+	 */
+	unlocked: boolean,
 };
 
 /* Tauri Specta runtime */

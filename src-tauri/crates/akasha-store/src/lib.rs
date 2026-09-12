@@ -47,10 +47,18 @@ mod schema;
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, ffi};
+use rusqlite::ffi;
 
 pub use passphrase::{MAX_LEN, Passphrase};
 pub use pools::{forwards, hosts, keys, serial};
+/// 解好的连接 —— **就是上游 `rusqlite` 那个类型**，这里只是把它再导出一遍。
+///
+/// 为什么要在这一层转一次手：`open` / `create` / [`dump::dump`] 的签名里本来就有它，
+/// 调用方（app）不该为了写一个字段类型去依赖某一个 `rusqlite` 版本 ——
+/// 那样迟早会出现"app 要 0.32、存储层要 0.33"，而 `libsqlite3-sys` 带 `links`，
+/// 两个版本连编都编不过。**这不是给 app 开一条绕开四套池直接写 SQL 的路**：
+/// 想拿到连接仍然只能经 `open` / `create`，而那两条路已经是公开的。
+pub use rusqlite::Connection;
 pub use schema::TABLES;
 /// 库文件名（ADR-0002 D1）：四套池与 Bitwarden 缓存**同一个**文件。
 ///

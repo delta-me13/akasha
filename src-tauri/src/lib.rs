@@ -70,6 +70,9 @@ pub fn run() {
         .plugin(logger())
         .plugin(tauri_plugin_opener::init())
         .manage(sessions.clone())
+        // 库的解锁状态（plan 0407）。**启动时是锁着的** —— 口令只从 `vault_unlock` 进来，
+        // 没有自动解锁，也没有从配置文件 / 环境变量读取的路径（ADR-0002 D5）。
+        .manage(vault::Vault::default())
         .invoke_handler(builder.invoke_handler())
         // 比 `victauri_plugin::init()` 只多注册两个 probe：**关窗语义**（plan 0302/0303）
         // 与**单实例**（plan 0304）。它们给 E2E 一个"这台机器该验哪条、还是该显式跳过"

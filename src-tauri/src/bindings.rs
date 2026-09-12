@@ -23,6 +23,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             crate::greet,
             crate::vault::vault_status,
+            crate::vault::vault_unlock,
+            crate::vault::vault_lock,
             crate::session::open_session,
             crate::session::write_session,
             crate::session::resize_session,
