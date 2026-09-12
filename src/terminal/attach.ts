@@ -107,10 +107,21 @@ export function attachTerminal(host: HTMLElement, handlers: TerminalHandlers): (
     disposed = true;
     if (frame !== 0) cancelAnimationFrame(frame);
     observer.disconnect();
-    surface.dispose();
+
+    // ⚠️ **顺序是有意的：先关会话，再拆渲染面。**
+    //
+    // 这个清理函数就是"关闭标签页 → 丢弃 Session"那个动作的落点（plan 0305）。而
+    // `surface.dispose()` 里跑的是 xterm 与它的 addon —— 第三方代码**会抛**
+    // （实测：丢过 WebGL 上下文的终端在 dispose 时抛 TypeError）。顺序反过来写的话，
+    // 渲染器一抛，**会话回收那一句就永远执行不到**：标签页从界面上消失了，PTY 与
+    // 里面的作业却留在用户机器上。
+    //
+    // 关闭是后端的"显式 kill + 收尸"，这里只发命令、不假装等它结束。
+    // 即使有批次随后到达，`surface.write` 已经在 `disposed` 之后直接返回。
     const closing = session;
     session = null;
-    // 关闭是后端的"显式 kill + 收尸"；这里只发命令，不假装等它结束。
     if (closing) void closing.close().catch(() => {});
+
+    surface.dispose();
   };
 }

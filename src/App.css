@@ -1,7 +1,11 @@
-/* akasha 的壳层样式 —— 现在整个界面就是一个终端。
+/* akasha 的壳层样式 —— 标签栏 + 若干终端面（plan 0305）。
  *
- * 布局只有一条要求：`.terminal-host` 必须有**确定的**尺寸（flex: 1 + min-height: 0），
- * 否则 FitAddon 量不出宿主大小，`fit()` 会一直返回 null，终端就永远停在 80×24。 */
+ * 布局两条要求：
+ *   1. `.terminal-host` 必须有**确定的**尺寸（flex: 1 + min-height: 0），
+ *      否则 FitAddon 量不出宿主大小，`fit()` 会一直返回 null，终端就永远停在 80×24；
+ *   2. `.tab-panes` 是**相对定位容器**，每个 `.tab-pane` 绝对定位铺满它 —— 非活动的面用
+ *      `visibility: hidden`（**不是** `display: none`：那样量不出尺寸，切回去行列数会错；
+ *      更不能卸载，卸载 = 关会话）。 */
 
 :root {
   color-scheme: dark;
@@ -27,6 +31,113 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
+}
+
+/* ── 标签栏 ─────────────────────────────────────────────────────────────── */
+
+.tab-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px 8px 0;
+  background: #0c0e12;
+  user-select: none;
+  overflow-x: auto;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  max-width: 220px;
+  border: 1px solid #232a35;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: #141821;
+}
+
+.tab.is-active {
+  background: #1c2230;
+  border-color: #33405a;
+}
+
+.tab-label {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #8d99a8;
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 4px 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab.is-active .tab-label {
+  color: #d8dee9;
+}
+
+.tab-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #7b8794;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  padding: 4px 9px 6px 6px;
+  cursor: pointer;
+}
+
+.tab-close:hover {
+  background: #40242a;
+  color: #ffb4b4;
+}
+
+.tab-new {
+  appearance: none;
+  border: 1px dashed #2b3444;
+  background: transparent;
+  color: #8d99a8;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  padding: 5px 11px 6px;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+}
+
+.tab-new:hover {
+  border-color: #3f4d66;
+  color: #d8dee9;
+}
+
+/* ── 终端面 ─────────────────────────────────────────────────────────────── */
+
+.tab-panes {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.tab-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  visibility: hidden;
+}
+
+.tab-pane.is-active {
+  visibility: visible;
+}
+
+.tab-empty {
+  margin: 24px 16px;
+  color: #7b8794;
+  font-size: 13px;
 }
 
 .terminal-pane {

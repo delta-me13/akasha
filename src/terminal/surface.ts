@@ -24,6 +24,9 @@ export type RendererKind = "webgl" | "canvas";
  * 的缓冲里。没有探针，Victauri 就只能去猜 canvas 像素，而那种断言证明不了任何事
  * （`AGENTS.md` §7：观察内部状态要注册 probe，不要靠反推）。
  *
+ * ⚠️ **每个面各有一份**，`window.__akashaTerminal` 只是"**当前活动面**那一份"
+ * （多标签下由 [`activateProbe`] 负责切换，见 plan 0305）。
+ *
  * 生产构建里 `import.meta.env.DEV` 为 `false`，整个探针被摇掉。
  */
 export interface TerminalProbe {
@@ -41,6 +44,28 @@ declare global {
     __akashaTerminal?: TerminalProbe;
   }
 }
+
+/**
+ * 宿主元素 → 它的探针。
+ *
+ * 为什么要按**面**记：多标签之后一个进程里有好几个终端面，而验收用例读的是一个全局
+ * （`window.__akashaTerminal`）。"最后挂载的那个面"**不再等于**"用户正在看的那个面"
+ * —— 切回去、关掉别的标签页都会让两者分叉。于是由 [`activateProbe`] 显式指定活动面。
+ */
+const probes = new WeakMap<HTMLElement, TerminalProbe>();
+
+/**
+ * 把 `host` 这个面的探针挂成**当前活动面**（`window.__akashaTerminal`）。
+ *
+ * 由 `TerminalPane` 在"切到这个标签页"时调用（plan 0305）。生产构建里是空函数
+ * —— 与探针本身一样整段被摇掉（非 DEV 下 `probes` 永远是空的）。
+ */
+export const activateProbe: (host: HTMLElement) => void = import.meta.env.DEV
+  ? (host) => {
+      const probe = probes.get(host);
+      if (probe) window.__akashaTerminal = probe;
+    }
+  : () => {};
 
 export interface SurfaceHooks {
   /** 用户按键。xterm 已经把它解码成字符串；编码成 UTF-8 字节是调用方的事。 */
@@ -181,6 +206,7 @@ export function mountTerminalSurface(host: HTMLElement, hooks: SurfaceHooks): Te
   // 而不是留一个"永远不进的判断"和一对孤儿字符串。
   const clearProbe = import.meta.env.DEV
     ? installProbe(
+        host,
         () => ({ renderer, term, disposed }),
         () => ({ pendingBytes, batches }),
       )
@@ -190,7 +216,16 @@ export function mountTerminalSurface(host: HTMLElement, hooks: SurfaceHooks): Te
     if (disposed) return;
     disposed = true;
     clearProbe?.();
-    term.dispose();
+    // ⚠️ **必须兜住**：`term.dispose()` 里跑的是 xterm 与它的 addon（第三方代码，会抛）。
+    // 实测（plan 0305）：一个 WebGL 上下文丢过、已经退到 canvas 的终端，`dispose()` 会在
+    // xterm 内部抛 `TypeError`（`this._linkifier2` 读到 undefined）。而这一句跑在 **React 的
+    // effect 清理函数**里 —— 抛出去就是 React 卸载整棵树：**关一个标签页，整个界面变空白**。
+    // 拆面失败只记账，不带崩界面；会话的回收也不该被它连累（见 `attach.ts` 的清理顺序）。
+    try {
+      term.dispose();
+    } catch (err) {
+      console.error("终端渲染面销毁失败（xterm 内部错误，已忽略）：", err);
+    }
   }
 
   return {
@@ -204,6 +239,7 @@ export function mountTerminalSurface(host: HTMLElement, hooks: SurfaceHooks): Te
 }
 
 function installProbe(
+  host: HTMLElement,
   state: () => { renderer: RendererKind | "none"; term: Terminal; disposed: boolean },
   counters: () => { pendingBytes: number; batches: number },
 ): () => void {
@@ -229,9 +265,12 @@ function installProbe(
     batches: () => counters().batches,
   };
 
+  probes.set(host, probe);
   window.__akashaTerminal = probe;
-  // 挂载期结束后由 `dispose` 调用：只摘掉**自己**那只探针（StrictMode 会挂两次）。
+  // 挂载期结束后由 `dispose` 调用：只摘掉**自己**那只探针（StrictMode 会挂两次，
+  // 多标签下更不能把**别人**的面摘了）。
   return () => {
+    probes.delete(host);
     if (window.__akashaTerminal === probe) delete window.__akashaTerminal;
   };
 }

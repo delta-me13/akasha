@@ -1,10 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { attachTerminal, type TerminalStatus } from "./attach";
-import type { RendererKind } from "./surface";
+import { activateProbe, type RendererKind } from "./surface";
 
 interface Status {
   kind: TerminalStatus;
   detail?: string;
+}
+
+interface TerminalPaneProps {
+  /**
+   * 这个面是不是**当前显示的那个**标签页。
+   *
+   * ⚠️ 它**不决定挂载**：所有标签页的面都保持挂载（卸载 = 关会话，见 `App.tsx`）。
+   * 它的唯一用途是"用户切到这个标签页时把键盘焦点与验收探针交给它"。
+   */
+  readonly active: boolean;
 }
 
 /**
@@ -14,7 +24,7 @@ interface Status {
  * 命令式闭包里直接进了 xterm 的写入缓冲。这个组件从 `attachTerminal` 拿到的
  * 只有"连接状态"和"渲染器种类"，没有任何一条路径会把终端字节交给 `setState`。
  */
-export function TerminalPane() {
+export function TerminalPane({ active }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
   const [renderer, setRenderer] = useState<RendererKind | null>(null);
@@ -28,6 +38,18 @@ export function TerminalPane() {
       onRenderer: setRenderer,
     });
   }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    const host = hostRef.current;
+    if (!host) return;
+    // 两件**只跟"当前是哪个标签页"有关**的事：
+    //   1. 把键盘焦点交给 xterm 的输入框 —— 用户点标签页就是想接着敲键盘；
+    //   2. 把验收探针挂成当前活动面（多标签之后"最后挂载的那个面"不再等于"正在看的那个面"）。
+    // 两者都**不碰终端内容**：字节仍然只从 `attachTerminal` 的闭包进 xterm（§4.2）。
+    activateProbe(host);
+    host.querySelector<HTMLElement>(".xterm-helper-textarea")?.focus();
+  }, [active]);
 
   return (
     <div className="terminal-pane">
