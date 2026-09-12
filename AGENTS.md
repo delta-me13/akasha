@@ -349,6 +349,10 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline
 改过 command/event 时额外一条：新 command 应在 `get_registry` 中可见，
 `detect_ghost_commands` 无新增 `confirmed_ghosts`；生成物必须已提交
 （`gen-types-check` 已纳入 `ready`，见 §5）。
+> ⚠️ **本仓库的 `get_registry` 目前是空的**（实测 `{"result":[]}`）：注册表只收录标了
+> `#[inspectable]` 的命令，而本仓库的命令一个都没标。所以这一条**暂时只能用替代证据**：
+> 真路径上 `invoke_command` 调用成功。要让注册表真的镜像命令集，得单独给命令加
+> `#[inspectable]`（别混在功能改动里）——现状与实测见 `docs/STATUS.md` 的坑 #82。
 涉及终端输出解析时，补一个 `insta` 快照。
 
 ### Victauri 使用纪律
