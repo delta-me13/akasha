@@ -246,7 +246,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 ## 7. 测试与验收（Definition of Done）
 
-### 三层测试
+### 四层测试
 
 | 层 | 工具 | 范围 | 是否需要 app |
 |---|---|---|---|
@@ -254,6 +254,10 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | 快照 | `insta` | VT 解析输出、屏幕状态 | 否 |
 | 性能基线 | `criterion` | 解析与写路径吞吐 | 否 |
 | 集成 / E2E | `victauri-test` + `VICTAURI_E2E=1` | IPC 契约、前后端一致性 | **是** |
+
+> **性能基线不是门禁**：MB/s 随机器、编译器版本与是否插电而变，拿它当通过条件
+> 只会得到一条随机红、且很快没人信的红线。基线**数字**记进 plan 与 `docs/STATUS.md`，
+> 用途是改动前后对比（入口 `just bench`）。
 
 ### DoD：一条命令 + 两件机器查不了的事
 
@@ -394,7 +398,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline + 
   漏了会让 `crates/*` 的 check / clippy / test **完全不被执行**，而 `just ready` 照样全绿
   （坑 #20）。`cargo fmt --all` 是例外（`--all` 本来就指全 workspace）。
 
-**完整命令清单（全部 19 个配方 + 用途 + 典型工作流 + 排错）见
+**完整命令清单（全部 20 个配方 + 用途 + 典型工作流 + 排错）见
 [`docs/just.md`](./docs/just.md) §2。** 新增或改名配方时必须同步那里 ——
 `just docs-check` 强制要求：**每个配方都必须在 `docs/just.md` 里出现**，
 且两份文档提到的命令都必须真实存在。该校验已纳入 `just ready` 与 CI。
