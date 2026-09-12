@@ -47,7 +47,12 @@ test:
 # E2E 用例清单（`tests/` 下的目标名）。**新增目标必须加进来** ——
 # 否则它会像坑 #36 那样"生成了但没人跑"，而 `just ready` 照样全绿。
 # 运行时这条清单由下面的 guard 与 `tests/*.rs` 对账。
-E2E_TARGETS := "smoke integration session_channel terminal_render"
+#
+# ⚠️ **顺序有意义**：`exit_residue` 会**关掉被测 app**（它验的就是"退出之后零残留"），
+# 所以它必须排最后 —— 放前面会让后面几个目标连不上 app。
+# 也正因为这样，下面**逐个目标各跑一条 `cargo test`**：`cargo test` 一次收多个 `--test`
+# 时是按**目标名字母序**跑的，不是按你写的顺序（`exit_residue` 会第一个跑）。
+E2E_TARGETS := "smoke integration session_channel terminal_render exit_residue"
 
 # E2E：真 app 上的验收（契约 + 交互）。用 cargo test 而非 nextest —— 用例共享一个真 app，必须串行。
 #
@@ -59,6 +64,10 @@ E2E_TARGETS := "smoke integration session_channel terminal_render"
 # 命名空间，坑 #33），而"请你自己先起 app"的入口最后就是没人跑（坑 #36）。
 # 平台能力差异由用例自己**显式跳过并写明原因**（Wayland 截不了窗口等），
 # 多平台覆盖面交给 CI 矩阵（AGENTS.md §12）。
+#
+# ⚠️ **自己起的 app 才允许被用例关掉**：`exit_residue` 走的就是"关窗口 = 真退出"，
+# 而它只在 `AKASHA_E2E_OWNS_APP=1`（= 下面这条自起分支）时才真跑，复用别人的 app 时
+# 显式跳过并打印原因。`owns_app` 只在自起分支里被设置，别把它挪到外面去。
 test-e2e:
     @set -uo pipefail; \
     tmp="${TMPDIR:-${TEMP:-/tmp}}"; \
@@ -114,6 +123,7 @@ test-e2e:
     if app_port >/dev/null 2>&1; then \
       echo "→ 复用已在运行的 app（不启动、也不收尾）"; \
     else \
+      owns_app=1; \
       if curl -s -o /dev/null -m 2 "$vite_url"; then \
         echo "→ 复用已在运行的 Vite（1420）"; \
       else \
@@ -145,9 +155,11 @@ test-e2e:
         echo "❌ app 没起来（日志：$tmp/akasha-e2e-app.log）"; tail -n 20 "$tmp/akasha-e2e-app.log"; exit 1; \
       fi; \
     fi; \
-    args=""; \
-    for t in {{E2E_TARGETS}}; do args="$args --test $t"; done; \
-    VICTAURI_E2E=1 cargo test --no-fail-fast $args -- --test-threads=1 --nocapture || rc=1; \
+    if [ -n "${owns_app:-}" ]; then export AKASHA_E2E_OWNS_APP=1; fi; \
+    for t in {{E2E_TARGETS}}; do \
+      echo "── E2E: $t ──"; \
+      VICTAURI_E2E=1 cargo test --no-fail-fast --test "$t" -- --test-threads=1 --nocapture || rc=1; \
+    done; \
     if [ "$rc" != 0 ] && [ -f "$tmp/akasha-e2e-app.log" ]; then \
       echo "—— app 日志尾部（$tmp/akasha-e2e-app.log）——"; tail -n 20 "$tmp/akasha-e2e-app.log"; \
     fi; \
