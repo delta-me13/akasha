@@ -50,14 +50,15 @@ test:
 #
 # ⚠️ **顺序有意义**：清单的顺序就是执行顺序，而它们**共用同一个 app**。
 # `tab_close` 只是多开一个标签页再关掉它（不关 app），`window_close` 关掉窗口再显示回来
-# （也不关 app），`exit_residue` 会把 app 关掉 —— 所以它排在**另一段**的最后。
+# （也不关 app），`single_instance` 藏起窗口再让第二个实例把它叫回来（同样不关 app），
+# `exit_residue` 会把 app 关掉 —— 所以它排在**另一段**的最后。
 #
 # ⚠️ **两段，两套配置**（plan 0302 + 0303）：关窗语义由数据目录里的 `config.json` 决定，
 # 而它**只在启动时读**。所以：
 #   * 第一段（本清单）：没有配置文件 = 默认"收托盘" → `window_close` 有判据；
 #   * 第二段（`E2E_TARGETS_EXIT`）：写 `close_behavior=exit` 再起一次 app → `exit_residue`
 #     拿到的就是"关窗即退出"这条**可移植**的刺激（不需要托盘宿主，CI 上照样成立）。
-E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close"
+E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance"
 
 # 需要 `close_behavior=exit` 的目标：**只能**在第二段跑（见上）。
 E2E_TARGETS_EXIT := "exit_residue"
