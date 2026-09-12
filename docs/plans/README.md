@@ -76,7 +76,7 @@
 |---|---|---|---|---|
 | 0201 | `Transport` 输出合批 | 已完成 | plan 0105 | [0201](./archive/0201-output-batching.md) |
 | 0202 | IPC 二进制通道（输出走 raw 字节） | 已完成 | plan 0201 | [0202](./archive/0202-ipc-binary-channel.md) |
-| 0203 | 前端 xterm + WebGL 渲染 | 未开始 | plan 0202 | [0203](./0203-xterm-webgl-render.md) |
+| 0203 | 前端 xterm + WebGL 渲染 | 已完成 | plan 0202 | [0203](./archive/0203-xterm-webgl-render.md) |
 | 0204 | 真正退出零残留 | 未开始 | plan 0203 | [0204](./0204-exit-zero-residue.md) |
 
 ### 阶段 3 — 托盘与应用生命周期

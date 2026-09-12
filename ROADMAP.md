@@ -68,9 +68,9 @@
 - [x] IPC 二进制通道（输出走 **raw 字节**，不是 JSON 数组）
       验收：10 MB 输出完整到达前端且无错误；该路径被 `no-string-pty-channel` 守住
       → [plan 0202](./docs/plans/archive/0202-ipc-binary-channel.md)
-- [ ] 前端 xterm + WebGL 渲染，字节流不进 React state
+- [x] 前端 xterm + WebGL 渲染，字节流不进 React state
       验收：终端由 canvas 渲染；无 per-chunk 组件重渲染
-      → [plan 0203](./docs/plans/0203-xterm-webgl-render.md)
+      → [plan 0203](./docs/plans/archive/0203-xterm-webgl-render.md)
 - [ ] **真正退出零残留**（窗口关闭退出 / app 重载 / panic 三条路径）
       验收：三条路径退出后都没有残留子进程（托盘语义见阶段 3）
       → [plan 0204](./docs/plans/0204-exit-zero-residue.md)
