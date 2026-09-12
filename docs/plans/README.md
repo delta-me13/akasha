@@ -79,7 +79,7 @@
 | 0202 | IPC 二进制通道（输出走 raw 字节） | 已完成 | plan 0201 | [0202](./archive/0202-ipc-binary-channel.md) |
 | 0203 | 前端 xterm + WebGL 渲染 | 已完成 | plan 0202 | [0203](./archive/0203-xterm-webgl-render.md) |
 | 0204 | 真正退出零残留（能跑代码的两条路径） | 已完成 | plan 0203 | [0204](./archive/0204-exit-zero-residue.md) |
-| 0205 | 被 SIGKILL 的退出路径也零残留 | 未开始 | plan 0204 | [0205](./0205-sigkill-exit-residue.md) |
+| 0205 | 被 SIGKILL 的退出路径也零残留（看门狗进程 + 管道 EOF） | 已完成 | plan 0204 / ADR-0005 | [0205](./archive/0205-sigkill-exit-residue.md) |
 
 ### 阶段 3 — 托盘与应用生命周期
 

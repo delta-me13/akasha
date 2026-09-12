@@ -77,9 +77,9 @@
 - [x] **真正退出零残留（能跑代码的两条路径）**：关窗口退出 / panic 都显式回收会话
       验收：两条路径退出后（含**忽略 SIGHUP** 的子进程）零残留 —— E2E 实测
       → [plan 0204](./docs/plans/archive/0204-exit-zero-residue.md)
-- [ ] **被 SIGKILL 的退出路径也零残留**（`tauri dev` 重编译重启 / `kill -9`）
-      验收：重载后上一轮会话的**忽略 SIGHUP 的子进程**也不残留（现状：会残留）
-      → [plan 0205](./docs/plans/0205-sigkill-exit-residue.md)
+- [x] **被 SIGKILL 的退出路径也零残留**（`tauri dev` 重编译重启 / `kill -9` / `kill -TERM`）
+      验收：三条路径之后，上一轮会话里**忽略 SIGHUP 的子进程**也一个不剩 —— 实测 + 集成用例
+      → [plan 0205](./docs/plans/archive/0205-sigkill-exit-residue.md)
 
 ---
 
