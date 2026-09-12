@@ -210,6 +210,8 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
   - `no-non-ascii-log-message` 拦"消息里有非 ASCII"这一半（§6）。
 - 敏感内容（用户键入的终端输入）**默认不落盘**，debug 级需显式开关。
 - `unsafe`：默认禁止；确有必要时须 `// SAFETY:` 注释 + 单测覆盖。
+  **只有 `src-tauri/crates/akasha-store/` 允许出现它**（把口令送进 SQLCipher 的 C API，
+  ADR-0002 D4）—— 由 `.ast-grep/rules/no-unsafe-outside-store.yml` 强制，放宽它等于改架构。
 
 ---
 
@@ -284,6 +286,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | `no-string-pty-channel` ✅ 已落地 | PTY 字节流走 `Channel<Vec<u8>>` / `Channel<String>`（其实是 JSON 数组）而不是 raw 通道（§3.2） |
 | `no-ui-vocab-in-types` ✅ 已落地 | `src-tauri/crates/**` 与 `src-tauri/src/**` 类型名中的 `Tab`/`Pane`/`Window`/`View`（见 §3.1 命名规则） |
 | `no-non-ascii-log-message` ✅ 已落地 | `tracing::*!` 的消息里的非 ASCII 字符（消息必须是英文短语，§3.4） |
+| `no-unsafe-outside-store` ✅ 已落地 | `src-tauri/crates/akasha-store/` 之外的 `unsafe`（唯一单点，§3.4） |
 
 > 现阶段这些规则尚**未全部创建** —— 每条规则应与它守护的代码一起落地，
 > 否则只是噪音。新增规则时同步更新上表。
