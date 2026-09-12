@@ -1,0 +1,42 @@
+# akasha-store —— 存储层：把口令送进 SQLCipher、把库打开（`AGENTS.md` §3.1 分层最底层之一）。
+#
+# 它存在的理由很具体：**这是全仓库唯一允许出现 `unsafe` 的 crate**。
+# 密钥必须经 `sqlite3_key()`（C API）送入，而不是 `PRAGMA key='…'` 文本形式（ADR-0002 D4）。
+# 这件事由两个东西一起守：workspace 的 `unsafe_code = "deny"`（root Cargo.toml 里写了
+# 为什么不能是 `forbid`）+ `.ast-grep/rules/no-unsafe-outside-store.yml`（只放行本目录）。
+#
+# 依赖方向单向：`akasha` → `akasha-store`，反向视为架构违规（`AGENTS.md` §3.1）。
+# 本 crate **不得** `use tauri::*`，由 `.ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
+
+[package]
+name = "akasha-store"
+version = "0.1.0"
+edition = "2024"
+description = "akasha 的存储层：SQLCipher 库的打开、密钥送入与格式事实"
+# 桌面应用的一部分，不发布到 crates.io（同时让 cargo-deny 跳过本 crate 的许可证表达式要求）。
+publish = false
+
+[dependencies]
+# ⚠️ 两个词都不能少（`docs/scope.md` §6）：`bundled-sqlcipher` 单独用会去链**系统** OpenSSL，
+# 四平台构建（尤其交叉编译）立刻变成负担，所以必须带 `-vendored-openssl`。
+# 代价照实记：它把 `openssl-src` 拉进构建，**从源码编一遍 OpenSSL**（首次数分钟，
+# 之后由 sccache 缓存）—— 这是"不撞系统 OpenSSL"的价格，不是配置失误。
+#
+# ⚠️ 版本**不是我们选的**：`victauri-plugin`（调试期嵌在 app 里的 MCP 服务）已经依赖
+# `rusqlite ^0.32`，而 `libsqlite3-sys` 带 `links = "sqlite3"` —— cargo 规定同一个原生库
+# **只能有一个版本**（两个版本会直接 `failed to select a version`，实测过）。
+# 所以本 crate 只能跟着 0.32.x 走，实际落到 `libsqlite3-sys 0.30.1`（内含 SQLCipher 4.5.7）。
+# 顺带的好处：features 会并集，app 里从此只有**一个** sqlite，而且是我们指定的那个。
+#
+# 0.32 的 rusqlite **没有默认特性**（也没有 `cache`，那是后来的版本才拆出来的），
+# 所以这里不需要 `default-features = false`。`victauri-plugin` 那边开着 `bundled` + `hooks`，
+# features 取并集 —— `bundled-sqlcipher` 本身就包含 `bundled`，两者并存是设计内的组合。
+rusqlite = { version = "0.32.1", features = ["bundled-sqlcipher-vendored-openssl"] }
+thiserror = "2.0.20"
+
+[lints]
+# 继承全 workspace 的 lint（`unsafe_code = "deny"` 也在这里来的）。
+# ⚠️ 不能在这里"继承 + 把 unsafe_code 放宽成 deny"：cargo 不允许部分覆盖
+# （`cannot override workspace.lints`）。所以让 `unsafe` 只许出现在本 crate 的是
+# `.ast-grep/rules/no-unsafe-outside-store.yml`，不是这张表。
+workspace = true
