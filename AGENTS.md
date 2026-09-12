@@ -209,9 +209,17 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
   - 字段值**不撒谎**：拿不到就不写这个字段，不填 `0` / `unknown` 顶替。
   - `no-non-ascii-log-message` 拦"消息里有非 ASCII"这一半（§6）。
 - 敏感内容（用户键入的终端输入）**默认不落盘**，debug 级需显式开关。
+- **内存里长住的机密统一经 `memsafe` 的受保护页**（口令、私钥、会话令牌、Bitwarden 主密码
+  与 `BW_SESSION`；ADR-0002 D13）：不得放进普通 `Vec` / `String`，**也不得自己写
+  `mlock` / `mprotect` / `VirtualLock` 封装** —— Unix 与 Windows 是两套 syscall，再加
+  macOS 缺的分支，自研等于两百来行 `cfg` 加一处新 `unsafe`。
+  ⚠️ 它的防护**有明确边界**（Windows 静止只读、macOS 没有 `dd`/`wf`、`/proc/self/mem` 仍读得到），
+  所以**新增一个用途就要按 ADR-0002 D13 那张判据表重验一遍**，别只说"用了 memsafe"。
 - `unsafe`：默认禁止；确有必要时须 `// SAFETY:` 注释 + 单测覆盖。
   **只有 `src-tauri/crates/akasha-store/` 允许出现它**（把口令送进 SQLCipher 的 C API，
   ADR-0002 D4）—— 由 `.ast-grep/rules/no-unsafe-outside-store.yml` 强制，放宽它等于改架构。
+  ⚠️ 上一条（机密的防护交给 `memsafe`）正是这条能守住的**前提之一**：没人在自己代码里
+  手写平台 syscall。
 
 ---
 
