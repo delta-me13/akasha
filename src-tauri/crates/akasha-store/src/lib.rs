@@ -28,19 +28,25 @@
 //! KDF 根本没跑。于是"打开不存在的库"不会失败，反而会把这把口令当成创建口令。
 //! 拆开之后：`open` 只开已有的库（没有就 `NoVault`），`create` 从不覆盖已有内容。
 //!
-//! 表结构与 CRUD 不在这里（plan 0403）：[`create`] 只写版本号，**一列都不建**。
+//! 表结构是 v1 的一部分（plan 0403）：[`create`] 在**一次事务**里建四张表并写版本号
+//! （[`schema`]），[`open`] 除版本号外还要确认这四张表都在 —— `user_version = 1` 的含义是
+//! "**这四张表**"，不是"一个空库"。四套池的增删改查在 [`pools`]。
 //!
 //! **零 Tauri 依赖**（`AGENTS.md` §3.1），由
 //! `.ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
 
 mod passphrase;
+pub mod pools;
+mod protected;
+mod schema;
 
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, ffi};
 
 pub use passphrase::{MAX_LEN, Passphrase};
-
+pub use pools::{forwards, hosts, keys, serial};
+pub use schema::TABLES;
 /// 库文件名（ADR-0002 D1）：四套池与 Bitwarden 缓存**同一个**文件。
 ///
 /// 放在这里而不是调用方：它是**磁盘上的格式**的一部分，改它等于迁移用户数据。
@@ -85,6 +91,14 @@ pub enum StoreError {
     /// 口令对不对要到第一条语句才知道，所以这条分支是"意外状态"，不是正常失败路径。
     #[error("sqlite3_key returned {0}")]
     KeyRejected(i32),
+    /// 机密比受保护页还长（[`pools::keys::MAX_PEM_LEN`]）。同 [`StoreError::PassphraseTooLong`]：
+    /// **不是截断**。
+    #[error("secret longer than the {max}-byte protected page")]
+    SecretTooLong { max: usize },
+    /// 空的私钥（[`pools::keys::PrivateKey::new`]）。一把"看起来有、其实没有"的钥匙
+    /// 要到连接时才暴露，所以在**构造**这一层就拒绝：空值造不出来。
+    #[error("empty private key refused: a key that is not a key")]
+    EmptyPrivateKey,
     /// 要打开的库不存在（文件缺失或 0 字节）：**还没有建过**。
     ///
     /// 与"口令错"分开是因为用户的下一步动作不同：这里是"去创建"，那里是"重新输入"。
@@ -96,6 +110,21 @@ pub enum StoreError {
     /// `user_version` 不是 [`FORMAT_VERSION`]（ADR-0002 D7）。
     #[error("unsupported vault format version {found} (this build writes {FORMAT_VERSION})")]
     UnsupportedVersion { found: i64 },
+    /// 库有版本号、却缺 v1 的某张表（[`TABLES`]）。写到一半被打断、或根本不是本程序写的库。
+    #[error("vault is missing table {table}")]
+    MissingTable { table: &'static str },
+    /// 要改 / 要删的那一行不在。
+    #[error("no such row in {pool}: id={id}")]
+    NoSuchRow { pool: &'static str, id: i64 },
+    /// 库自己拦下来的约束：重名（`UNIQUE`）、不变量（`CHECK`）、或还被别的行引用着
+    /// （外键 `ON DELETE RESTRICT`）。合成一个变体是因为**用户的下一步动作是同一个**：
+    /// 改这一行，或先去掉引用它的东西。
+    #[error("{pool} row violates a constraint: {detail}")]
+    Conflict { pool: &'static str, detail: String },
+    /// 跳板链不可用：走回头路（成环），或深得离谱（`pools::MAX_JUMP_DEPTH`）。
+    /// 两者对用户是同一件事：这条链连不通，而且都不是能连的配置。
+    #[error("jump chain is unusable: a cycle, or deeper than the limit")]
+    JumpChain,
     /// 打不开：口令错**或**文件不是个库。
     #[error("not a database: wrong passphrase or corrupt file")]
     NotADatabase,
@@ -113,6 +142,32 @@ pub enum StoreError {
 /// 本 crate 不猜、也**不创建目录**（`portable.md` §3.1）。
 pub fn vault_path(data_dir: &Path) -> PathBuf {
     data_dir.join(STORE_FILE_NAME)
+}
+
+/// 库文件在磁盘上的三种状态（plan 0403）。
+///
+/// **没有第四种**："有文件但打不开"不是状态 —— 那是 [`open`] 的错误（口令错 / 不是个库），
+/// 而**不开库就分不出来**：连 `user_version` 都在加密的第一页里，没有口令读不到。
+/// 这也是 [`vault_state`] 不需要口令的原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaultState {
+    /// 文件不存在。
+    Missing,
+    /// 文件在，但是 **0 字节** —— 还没有密钥落在那里（实测：这种文件用什么口令都能"打开"）。
+    /// 与 `Missing` 分开是因为用户的下一步动作不同：一个是"去新建"，一个是"为什么是空的"。
+    Empty,
+    /// 有内容。能不能打开、是不是本程序的库，要 [`open`] 说了算。
+    Present,
+}
+
+/// 看一眼库文件的状态。**只读元数据**：不打开库、不要口令、不创建目录。
+pub fn vault_state(path: &Path) -> Result<VaultState, StoreError> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() == 0 => Ok(VaultState::Empty),
+        Ok(_) => Ok(VaultState::Present),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(VaultState::Missing),
+        Err(err) => Err(StoreError::Io(err)),
+    }
 }
 
 /// 打开一个**已经存在**的加密库，返回解好锁的连接。
@@ -134,39 +189,53 @@ pub fn open(path: &Path, passphrase: &mut Passphrase) -> Result<Connection, Stor
     let conn = Connection::open(path)?;
     unlock(&conn, passphrase)?;
     check_format_version(&conn)?;
+    schema::check(&conn)?;
     restrict_to_owner(path);
     Ok(conn)
 }
 
-/// 在一个**空位置**上建一个新库，并把 `passphrase` 钉进去。
+/// 在一个**空位置**上建一个新库：建 v1 的四张表 + 写版本号，并把 `passphrase` 钉进去。
 ///
 /// 已经有内容 → [`StoreError::VaultExists`]（永不覆盖）。
-/// 落地的动作只有 `PRAGMA user_version = FORMAT_VERSION` 一句 —— 它同时是
-/// ①D7 的版本字段、②把文件从 0 字节变成 4096 字节的那一次写。**没有第二句**：
-/// 表结构是 plan 0403 的事，本函数建出来的库除了版本号什么都没有。
+///
+/// 建表与版本号在**一次事务**里（plan 0403）：两次写之间的中断会留下一个
+/// "有表没版本号"或"有版本号没表"的文件，而 [`open`] 两样都会拒 —— 用户手里就多了一个
+/// 打不开、也说不清为什么的文件。事务让它要么全是，要么全不是。
 ///
 /// 为什么"写一句版本号"就等于"钉住口令"：SQLCipher 的盐与密钥校验值都只在**第一次写页**
 /// 时落盘（连带生成 16 字节随机盐）。在那之前文件是空的，任何口令都能打开它 ——
-/// 这正是 §实施记录里那条实测。
+/// 这正是 §实施记录里那条实测。建表语句里的第一条 `CREATE TABLE` 就是那第一次写。
 pub fn create(path: &Path, passphrase: &mut Passphrase) -> Result<Connection, StoreError> {
     if file_len(path)? > 0 {
         return Err(StoreError::VaultExists(path.to_path_buf()));
     }
 
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     unlock(&conn, passphrase)?;
-    conn.pragma_update(None, "user_version", FORMAT_VERSION)?;
+
+    let tx = conn.transaction()?;
+    schema::create(&tx)?;
+    tx.pragma_update(None, "user_version", FORMAT_VERSION)?;
+    tx.commit()?;
+
     restrict_to_owner(path);
     Ok(conn)
 }
 
-/// 送密钥前后的固定三步。两条路（打开 / 新建）用的是**同一段** ——
-/// 复制成两份，迟早有一份会少一步（少的那一步的表现是"库打不开"）。
+/// 送密钥前后的固定四步。两条路（打开 / 新建）用的是**同一段** ——
+/// 复制成两份，迟早有一份会少一步（少的那一步的表现是"库打不开"、或者更糟：
+/// "外键静默不生效"）。
 fn unlock(conn: &Connection, passphrase: &mut Passphrase) -> Result<(), StoreError> {
     enable_memory_security(conn)?;
     apply_key(conn, passphrase)?;
+    pools::enable_foreign_keys(conn)?;
     probe_unlocked(conn)
 }
+
+// 外键那一步为什么排在**送密钥之后**：`PRAGMA foreign_keys` 是连接级的、不读库，
+// 所以它与 D4 的顺序要求无关（D1 的 `cipher_memory_security` 同理）。它**必须**开 ——
+// 默认是关的，而"声明了外键但没开"的表现是"引用完整性看着没问题"（见
+// `pools::enable_foreign_keys`）。
 
 /// 让 SQLCipher 擦除自己分配的内存（ADR-0002 §6 的"建议开"）。
 ///

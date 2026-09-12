@@ -41,7 +41,7 @@ fn a_fresh_vault_only_accepts_the_passphrase_it_was_created_with() {
 
     {
         let conn = create(&db, &mut pass(PASSPHRASE)).unwrap();
-        // 一句话就够：`create` 写下的 `user_version` 是文件的第一页，
+        // 一句话就够：`create` 那次写（建表 + `user_version`）就是文件的**第一次写页**，
         // 盐与密钥校验值就落在这里 —— 在那之前文件是 0 字节，谁的"口令"都成立。
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
@@ -52,7 +52,11 @@ fn a_fresh_vault_only_accepts_the_passphrase_it_was_created_with() {
 
     let bytes = fs::read(&db).unwrap();
     println!("create 之后 = {} 字节", bytes.len());
-    assert_eq!(bytes.len(), 4096, "建库应当把文件实体化（一页头）");
+    // 判据是"**实体化了**"，不是一个具体字节数：plan 0403 起 `create` 还要建 v1 的四张表，
+    // 于是它从 0402 时的一页（4096）长成 9 页（36864，实测）。钉死数字只会让每次改表都红一次；
+    // 真正的判据是"整页"（页是 SQLCipher 的写单位，半个页不该出现在文件里）。
+    assert!(!bytes.is_empty(), "建库应当把文件实体化");
+    assert_eq!(bytes.len() % 4096, 0, "库文件不是整页：{}", bytes.len());
     assert!(
         !bytes.starts_with(b"SQLite format 3"),
         "库头是明文 SQLite 魔数 —— 这个库没加密"
@@ -131,7 +135,10 @@ fn create_accepts_a_zero_byte_leftover() {
             .unwrap(),
         FORMAT_VERSION
     );
-    assert_eq!(fs::metadata(&db).unwrap().len(), 4096);
+    assert!(
+        fs::metadata(&db).unwrap().len() > 0,
+        "0 字节的残留位置应当变成一个真库"
+    );
 }
 
 // ── 4. D7：版本是唯一的格式权威，打开时校验 ─────────────────────────────────

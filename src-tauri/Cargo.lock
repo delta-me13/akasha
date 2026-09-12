@@ -41,6 +41,7 @@ version = "0.1.0"
 dependencies = [
  "akasha-core",
  "akasha-pty",
+ "akasha-store",
  "criterion",
  "insta",
  "portable-pty",
