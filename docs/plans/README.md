@@ -103,7 +103,7 @@
 | 0407 | 解锁与锁定的生命周期（谁持有连接、口令从哪来、锁定时抹什么） | 已完成（2026-09-12） | plan 0403 / 0404 / 0406 | [0407](./archive/0407-unlock-lifecycle.md) |
 | 0404 | dump 与导出（加密 / 明文两条路 + 还原） | 已完成（2026-09-12） | plan 0403（四套池能读写） | [0404](./archive/0404-dump-export.md) |
 | 0406 | 口令的内存防护（`memsafe`） | 已完成（2026-09-12） | plan 0402（`Passphrase` 已就位） | [0406](./archive/0406-memsafe-passphrase-page.md) |
-| 0405 | 可搬迁性验证 | 进行中 | plan 0403 / 0407（有数据、能读） | [0405](./0405-portability-verify.md) |
+| 0405 | 可搬迁性验证 | 已完成（2026-09-12：配方 `portable`；搬家后四套池 1/1/1/1；便携目录不可写 → 退出码 2） | plan 0403 / 0407（有数据、能读） | [0405](./archive/0405-portability-verify.md) |
 
 ### 阶段 5 — SSH 栈（`russh`）
 

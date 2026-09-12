@@ -1,14 +1,15 @@
 # Plan 0405: 可搬迁性验证
 
-- **关联**：ROADMAP 阶段 4 ·「可搬迁性验证」（展开见 [`../portable.md`](../portable.md)）
+- **关联**：ROADMAP 阶段 4 ·「可搬迁性验证」（展开见 [`../../portable.md`](../../portable.md)）
 - **前置**：plan 0403（四套池的 CRUD —— 没有数据就验不了"数据还在"）、
   plan 0407（`vault_unlock` —— "数据**可用**"要有命令能读出来）
-- **状态**：进行中
+- **状态**：已完成（2026-09-12）—— `just ready` 6/6；`just test` 186 passed；
+  `just test-e2e` 退出码 0（自起分支第三段就是这条）
 
 ## 目标
 
-把 [`../portable.md`](../portable.md) §5 的五步**做成一条能跑的配方**，并补上 §4 第 3 条
-（**便携模式下不可写 → 启动即报错**）—— 后者今天**没有实现**，实测见下。
+把 [`../../portable.md`](../../portable.md) §5 的五步**做成一条能跑的配方**，并补上 §4 第 3 条
+（**便携模式下不可写 → 启动即报错**）—— 后者落地前**没有实现**（实测见下），现在有了。
 
 判据是 ROADMAP 那一句：搬走整个文件夹后重启，**原有主机 / 密钥 / 规则都在**。
 "只验证能开"不算过。
@@ -69,15 +70,14 @@
 ## 验收命令
 
 ```bash
-just ready        # 6/6。config 的新单测在这里（纯函数 + 探针文件）
-just test-e2e     # 全绿；自起分支的第三段就是可搬迁性
-just test         # workspace 单测（新增单测计入）
+just ready      # 6/6（config 的新单测在这里：纯函数 + 探针文件）
+just portable   # 可搬迁性：搬家五步 + 不可写拒绝（Vite 由配方自己保证）
+just test-e2e   # 全绿；自起分支的第三段调用的就是上一条
+just test       # workspace 单测（新增单测计入）
 ```
 
-预期：可搬迁性那一段打印 A/B 两个位置与解锁读回的行数；拒绝那条打印退出码与错误消息。
-
-> 步骤 4 那条配方落地后，它自己也是一条入口（`just --list` 可见、只跑可搬迁性那一段）。
-> 本文件的「步骤」与「验收命令」按 §8 的规矩**在落地时就地更新**。
+预期：`portable` 打印 A/B 两个位置与解锁读回的行数，三条用例全 ok；
+拒绝那条打印退出码 `2` 与那条 error。
 
 ## 判据
 
@@ -96,4 +96,53 @@ just test         # workspace 单测（新增单测计入）
 
 ## 实施记录
 
-（边做边追加实际输出）
+**落点**
+
+| 文件 | 改了什么 |
+|---|---|
+| `src-tauri/src/config.rs` | 抽出 `portable_dir()`（`data_dir()` 复用它）；新增 `portable_data_dir()`、`require_writable()`（写探针文件）、`NotWritable`、`EXIT_NOT_WRITABLE = 2`；3 条单测 |
+| `src-tauri/src/lib.rs` | `.setup()` 开头：便携目录不可写 → `error!` + `exit(2)`（在窗口与托盘之前） |
+| `src-tauri/tests/portable.rs` | 3 条用例：搬家、不可写拒绝、**没有便携目录时不许拒绝**（正对照的另一半） |
+| `src-tauri/justfile` | `portable` 配方；`E2E_SELF_APP` 清单 + guard；`test-e2e` 自起分支的第三段 |
+| 根 `justfile` / `docs/just.md` §2 | 转发 + 登记 |
+
+**实测输出（2026-09-12）**
+
+```text
+A 的 vault_status = {"path":"…/akasha-portable-307-a/akasha-data/akasha.db","state":"missing","unlocked":false}
+B 的 vault_status = {"path":"…/akasha-portable-307-b/akasha-data/akasha.db","state":"present","unlocked":false}
+B 解锁读回四套池 = {"forwards":1,"hosts":1,"keys":1,"serials":1}
+test result: ok. 3 passed; 0 failed
+```
+
+拒绝那条：
+
+```text
+退出码 ExitStatus(unix_wait_status(512))     # = 2
+[akasha_lib][ERROR] portable data dir not writable err=not writable: 权限不够 (os error 13) path=…/akasha-data
+```
+
+**写用例时撞出来的两件事**（都不是产品 bug，都是"就绪"这个概念）
+
+1. **发现目录出现 ≠ app 就绪**：Victauri 的插件 setup 比 app 自己的 `.setup()` 早，
+   所以刚连上时 `lifecycle` probe 还是 `{"initialized": false}`（`record()` 在 `.setup()` 里，
+   而拒绝启动的检查在它前面）。第一版用例把那个中间态当成了答案，红在
+   `probe 里没有 close_behavior：{"initialized":false}`。改成**等那个字段自己出现**。
+   （同一条理由还有第二层：`invoke_command` 走 webview bridge，是最后才好的一个，
+   所以 `vault_status` 也改成"等它真的答一次"。）
+2. **库是 app 建的，不是我们建的**：第一版的 `seed()` 用 `create()` → `VaultExists`。
+   顺序是有意的（第 1 步要验的正是"app 自己把库建在便携目录里"），所以 `seed()` 改用 `open()`。
+3. **`chmod 500` 那个 fixture 在单测里站不住**：`no-println` 规则豁免的是 `**/tests/**`，
+   **不豁免** `src/` 里 `#[cfg(test)]` 模块里的 `eprintln!`（那条"跳过并说明原因"因此红在 lint 上）。
+   改成**结构性**造法：把探针路径指到一个普通文件底下（`ENOTDIR`，root 也绕不过去）——
+   于是它不依赖权限、平台或文件系统。`chmod` 那条留在 `tests/portable.rs`：
+   那里要的是 **app 真的看见一个不可写目录**，而它本来就有"跳过并打印原因"的豁免。
+
+**没有做的事**
+
+- **没有 GUI 报错面**：拒绝启动是"日志 + 退出码 2"，不是弹窗。理由见决定 2（要引 dialog 插件与权限），
+  边界记进了 `portable.md` §4 与 `STATUS.md` 的待验证。
+- **没有在本机验 Windows / macOS**：`chmod` 那条正对照在 Windows 上会显式跳过（并打印原因）；
+  另两个平台的覆盖交给 CI 矩阵 —— 但 CI 至今没跑过（无 remote），照实记着。
+- **复用别人 app 的那一支不跑这一段**（单实例会让它起的第二份自己退掉），
+  `test-e2e` 会打印原因；想验就单独跑 `portable`。

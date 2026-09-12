@@ -133,10 +133,10 @@
 - [x] dump 与导出（可选加密；明文导出必须二次确认）
       验收：加密导出可在另一目录导入还原；明文导出路径有显式确认门槛
       → [plan 0404](./docs/plans/archive/0404-dump-export.md)
-- [ ] **可搬迁性验证**（见 [`docs/portable.md`](./docs/portable.md)）
+- [x] **可搬迁性验证**（见 [`docs/portable.md`](./docs/portable.md)）
       验收：移动整个文件夹后重启，**原有主机/密钥/规则都在**（只验证"能开"不算过）
-      → [plan 0405](./docs/plans/0405-portability-verify.md)
-- [ ] **ADR-0002 转「已定案」**（阶段 4 落地完成之后）
+      → [plan 0405](./docs/plans/archive/0405-portability-verify.md)
+- [x] **ADR-0002 转「已定案」**（阶段 4 落地完成之后）
       验收：状态为「已定案」，且 §10 修订记录里每次改动都有理由
 
 ---
