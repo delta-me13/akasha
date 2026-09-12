@@ -13,6 +13,9 @@
 （plan 0405：`just portable` 把"搬走整个文件夹"跑成自动化判据），
 以及 **ADR-0002 转「已定案」**（落地它的 plan 0401–0405 全部归档，本文从此不可改）。
 
+本轮另做了一遍**文档一致性与正确性核查**（改掉若干过时说法，逐条见下），
+并把 **`unsafe` 的注释规范**按 Linux 内核的做法写成规则 + 三条 clippy lint。
+
 已落地八块：**SQLCipher 加密库能开**（plan 0401）、**口令只从一条路进来，而且能真的验证它**
 （0402 —— 拆开了"打开"与"新建"，原来在没有文件的路径上**任何口令都能开**）、
 **口令在内存里也受保护**（0406）、**四套池能增删改查**（0403 —— v1 的四张表、不变量写在库自己身上、
@@ -117,7 +120,9 @@
 | `pnpm build`（tsc + vite build） | 退出码 0；产物 **843 kB / gzip 231 kB**（本轮未改前端，数字沿用） |
 | `just deny-offline` | `bans ok, licenses ok, sources ok`（`--workspace` 已加，补上了"未被人依赖的成员不在图里"那个盲区） |
 | `just docs-check` | 全过（ROADMAP 条目在 3 行内且无代码块 / plan ≤200 行且索引一致） |
-| `ast-grep scan` | 退出码 **0**；**六条**规则均已用正负例验证（本轮未新增规则，但被 `no-println` 拦了一次，见坑 #94） |
+| `ast-grep scan` | 退出码 **0**；**六条**规则均已用正负例验证（本轮改了 `no-unsafe-outside-store` 的 note，`files:` / `ignores:` 没动，所以不必重跑负例；此前被 `no-println` 拦了一次，见坑 #94） |
+| **三条 unsafe 注释 lint**（本轮新增的强制，`just lint` 的 clippy 那一步） | 退出码 **0**；三条各用一个探针证明**它们真的会红**：`undocumented_unsafe_blocks` → 把 `apply_key` 的 `// SAFETY:` 改名即报（**私有函数也报**）；`unnecessary_safety_comment` → 在安全语句上挂一条 `// SAFETY:` 即报；`unnecessary_safety_doc` → 给安全函数加 `/// # Safety` 即报。探针跑完即撤，仓库里不留 |
+| **文档一致性与正确性核查**（本轮：核对了 17 份文档 —— 规范 1 + 顶层 2 + `docs/` 7 + ADR 5 + plan 索引与在办 plan 2，逐处改掉过时说法） | ✅ 相对链接 **231 条全部可解析**；`cargo nextest list --workspace` 逐 crate 计数与本文的 **58 / 37 / 15 / 76 = 186** 一致；`unsafe` **3 处**（库 1 + 它的契约测试 2，都带 `// SAFETY:`）；`BatchPolicy::DEFAULT` = 64 KiB + 16 ms、`MAX_LEN` = 256、`MAX_JUMP_DEPTH` = 32、私钥页 16384 字节逐条对上代码 |
 | `cargo tree -p akasha-core` \| `grep -c tauri` | **0**（分层成立） |
 | `just bench`（criterion） | 52.7 GiB/s / 14.1 ns 每批 / 9.64 GiB/s（**0201 的数字，本轮未复跑**） |
 
@@ -160,6 +165,9 @@
 - **宿主 MCP 连不到沙箱内运行的 app**（私有 PID / 临时目录；坑 #33）。
 - **`just dev-web` 的模拟后端没在真浏览器里点过**（本环境没有浏览器）。
 - **大流量下的 JS heap 数字没取**。
+- **三条 unsafe 注释 lint 的行为随 clippy 版本变**：本机 1.98 实测**也查私有项**，
+  所以**没有**照抄内核的 `check-private-items`（理由见坑 #96）。若升级后私有项不再被查，
+  表现是**静默失效** —— 那时才需要补一个 `clippy.toml`。
 
 ## 当前基线（2026-09-12 实测，workspace root = `src-tauri/`）
 
@@ -183,7 +191,8 @@
 | 前端渲染器 | **WebGL**（WebKitGTK + MESA 软件栈下仍拿到 WebGL2）；`canvas` 元素 2 块 |
 | 大输出实测 | 10.36–11.28 MB / 159–170 批（0202–0305 各轮） |
 | 前端产物 | 843 kB（gzip 231 kB） |
-| **存储层** | `akasha-store`：**全仓库唯一允许出现 `unsafe` 的 crate**（送口令进 `sqlite3_key()`，ADR-0002 D4），由 workspace 的 `unsafe_code = "deny"` + `.ast-grep/rules/no-unsafe-outside-store.yml` 两层守。**两条路**：`create(path, &Passphrase)` = 有内容就 `VaultExists`（永不覆盖）→ 送密钥 → **一次事务里建 v1 的四张表 + 写 `user_version = 1`**；`open(path, &Passphrase)` = 不存在的/0 字节就 `NoVault` → 送密钥 → 开外键 → 读一次 `sqlite_master` 逼口令错暴露 → **校验版本号 + 四张表都在**。两条路都收 0600 |
+| **存储层** | `akasha-store`：**全仓库唯一允许出现 `unsafe` 的 crate**（全库 **3 处**：生产 1 处把口令送进 `sqlite3_key()`，加契约测试 2 处直接调 `sqlite3_key` / `sqlite3_rekey` 钉上游语义；都带 `// SAFETY:`，ADR-0002 D4），由 workspace 的 `unsafe_code = "deny"` + `.ast-grep/rules/no-unsafe-outside-store.yml` 两层守。**两条路**：`create(path, &Passphrase)` = 有内容就 `VaultExists`（永不覆盖）→ 送密钥 → **一次事务里建 v1 的四张表 + 写 `user_version = 1`**；`open(path, &Passphrase)` = 不存在的/0 字节就 `NoVault` → 送密钥 → 开外键 → 读一次 `sqlite_master` 逼口令错暴露 → **校验版本号 + 四张表都在**。两条路都收 0600 |
+| **unsafe 的注释** | 写法 = Linux 内核规范（`AGENTS.md` §3.4）：`// SAFETY:` 说"**为什么 sound**"、`/// # Safety` 说"调用方 / 实现方要守什么契约"，两件事不许互相替代；由 clippy 的 `undocumented_unsafe_blocks` / `unnecessary_safety_comment` / `unnecessary_safety_doc` 三条强制（跑在 `just lint` 里）。⚠️ 它们**也查私有项** —— 唯一那处生产 `unsafe` 就在私有函数 `apply_key` 里（坑 #96） |
 | **四套池** | `keys` / `hosts` / `serials` / `forwards`，各 5 个函数 + 反查（`hosts_using_key` / `hosts_jumping_to` / `forwards_of_host`）。`New*`（没有 id）与 `*`（有 id）**是两种类型**；不变量写在库上（`STRICT` + `CHECK` + 外键 `RESTRICT`，D14）。⚠️ 跳板链的成环**库表达不了**：`update` 时逐跳走链挡住（`MAX_JUMP_DEPTH` = 32） |
 | **私钥** | 池里存 BLOB，**出库直接进受保护页**（`PrivateKey` = `memsafe::Secret<[u8; 16384]>`）；`expose()` 返回**提权窗口**。空私钥与**超过一页**在**构造层**就被拒 |
 | **口令** | `Passphrase` = 口令在进程里的唯一形态：空值**造不出来**、**没有 `Debug`**、无 `Display`/`Serialize`、**不实现 `Clone`**；本体住在 `memsafe::Secret` 的一整页**受保护内存**里（`mlock` + 静止态 `PROT_NONE` + `dd` + `wf`） |
@@ -208,7 +217,32 @@
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测，剩 CI 三平台格子
 - [ ] **正式 UI**：等设计稿（见上面「UI 现状」）—— 没有验收标准，故**不进 ROADMAP**
 
-### 本轮完成（plan 0405：可搬迁性验证 + ADR-0002 定案）
+### 本轮完成（文档一致性与正确性核查 + unsafe 注释按 Linux 内核规范强制）
+
+**这一轮不动功能代码**：做的是"文档说的与代码做的是不是同一件事"，外加把 unsafe 的注释
+规范从一句话（"要有 `// SAFETY:`"）变成**可按内核做法执行的规定**。
+
+- [x] **核查方式**：代码侧一律走结构性工具 —— rust-analyzer MCP 取符号
+  （`config.rs` 的 `portable_dir` / `portable_data_dir` / `require_writable` / `EXIT_NOT_WRITABLE`
+  等逐一对上）、ast-grep 结构搜 `unsafe`（3 处全带 `// SAFETY:`）、`cargo nextest list` 取计数；
+  **没有**用全仓库 grep 去翻代码
+- [x] **过时说法按类型改掉**：① ADR-0002 已定案，而 `scope.md` 与 `docs/adr/README.md`
+  还写着"实现中"；② `portable.md` / `scope.md` 提到一个**从未存在**的"便携标记文件"
+  （代码里明写"目录本身就是标记"，是"或 X"自己长出来的典型）；③ `docs/just.md` 的
+  `just test-e2e` 还写着"自起时跑两段"（plan 0405 之后是**三段**），guard 清单也漏了
+  `E2E_SELF_APP`；④ 规则 note 与两处代码注释说"全仓库只有一处 unsafe"（实为 3 处）；
+  ⑤ `logging.md` 的 `path` 只说"配置文件路径"（0405 之后它也是便携数据目录）；
+  ⑥ plan 0501 的「关联」引错了 ROADMAP 原文
+- [x] **刻意保留的**：ADR-0001 里 `unsafe_code = "forbid"` 那个片段、ROADMAP 里已勾选的
+  旧条目 —— 都是**被取代的历史**（各自头部已写"已被 0004 取代"），不算错，也不该改
+- [x] **unsafe 注释成文**（`AGENTS.md` §3.4，单独提交）：`// SAFETY:`（说明**为什么 sound**，
+  紧贴每个 unsafe 块）与 `/// # Safety`（给调用方 / 实现方的**契约**）分清、不许互相替代，
+  一律英文 + 句首大写 + 句末句号 —— 依据是内核 `Documentation/rust/coding-guidelines.rst`
+- [x] **强制**：`just lint` 的 clippy 那一步加三条（内核 Makefile 里就是这三条），
+  负例见上表（"探针一改名就红"）
+- [x] 门禁：`just ready` **6/6**（lint 3s / test 58s —— 因 `Cargo.toml` 变了而全量重编）
+
+### 上一轮完成（plan 0405：可搬迁性验证 + ADR-0002 定案）
 
 **判据是 ROADMAP 那一句**：移动整个文件夹后重启，**原有主机 / 密钥 / 规则都在**
 （只验证"能开"不算过）。
@@ -384,3 +418,16 @@
     而"跳过"又会踩上一条）。改用**结构性**造法：把路径指到一个普通文件底下 —— `ENOTDIR`
     连 root 也绕不过去。要"app 真的看见一个不可写目录"时再用 `chmod`，且**自己先试写一次**
     当正对照（写不进去才继续）。
+96. **clippy 的 `undocumented_unsafe_blocks` 本来就看私有项**（1.98 实测）：去掉
+    `clippy.toml` 之后，**私有**函数 `apply_key` 里的 `unsafe` 照样被报（把 `// SAFETY:`
+    改名即红）。所以别照抄内核的 `check-private-items`（它服务的是另一类 lint）；
+    反过来，哪天它不再报私有项，就是**静默失效** —— 那时才需要那个开关。
+97. **只加 `undocumented_unsafe_blocks` 会漏掉另一半**：注释**写在了安全块上**要靠反向的
+    `unnecessary_safety_comment` 才拦得住（探针：在一条安全语句上挂 `// SAFETY:` 会红）；
+    `/// # Safety` 挂在安全函数上同理，靠 `unnecessary_safety_doc`。三条一起才闭环。
+98. **文档里的"或 X"最容易凭空长出来**：`portable.md` 与 `scope.md` 都写着
+    "（或便携标记文件）"，而代码里从来没有第二个标记 —— `config.rs` 的注释反而写着
+    "目录本身就是标记，不需要额外再放一个标记文件"。**核查时把每个"或"当成一条待证断言**。
+99. **"唯一一处"这类计数没有人核对就会腐烂**：规则 note 与两处代码注释都写着
+    "全仓库唯一的 `unsafe` 单点"，实际是 **3 处**（生产 1 + 契约测试 2）。要么写成
+    "唯一**允许**的 crate"（结构性说法，能被规则守住），要么就别在注释里写数字。
