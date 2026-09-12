@@ -418,7 +418,7 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
 |---|---|
 | 引擎 | SQLite（`rusqlite`），**同步 API + 专用线程**，不用 `sqlx`（SQLCipher 支持弱） |
 | 加密 | **SQLCipher**，feature `bundled-sqlcipher-vendored-openssl`（vendored 是必须的：否则交叉编译撞系统 OpenSSL） |
-| 密钥来源 | **用户口令 → KDF → 库密钥**（因为 P1 排除了 OS keychain）。口令不落盘 |
+| 密钥来源 | **用户口令 → KDF → 库密钥**（因为 P1 排除了 OS keychain）。口令不落盘；口令本体在内存里也**被护住**（锁定、静止不可读、不进 core dump，见 ADR-0002 §7.2） |
 | dump | 支持 |
 | 导出 | 可选**是否加密**导出文件 |
 

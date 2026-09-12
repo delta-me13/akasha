@@ -9,10 +9,12 @@
 ## 一句话
 
 **阶段 2「端到端最小终端」5/5 完成**；**阶段 3「托盘与应用生命周期」6/6 完成**。
-**阶段 4「存储与凭据池」在做（3/7）**：ADR-0002（机密存储与可搬迁）**已进入「实现中」**。
-已落地两块：**SQLCipher 加密库能开**（plan 0401）、**口令只从一条路进来并能真的验证它**
-（plan 0402）—— 后者拆开了"打开"与"新建"（原来在没有文件的路径上**任何口令都能开**），
-并把"无 `keyring` 类依赖"变成**常驻门禁**。下一步是 plan 0403（四套池的 CRUD）。
+**阶段 4「存储与凭据池」在做（4/8）**：ADR-0002（机密存储与可搬迁）**已进入「实现中」**。
+已落地三块：**SQLCipher 加密库能开**（plan 0401）、**口令只从一条路进来并能真的验证它**
+（plan 0402 —— 拆开了"打开"与"新建"，原来在没有文件的路径上**任何口令都能开**，
+并把"无 `keyring` 类依赖"变成**常驻门禁**）、**口令在内存里也受保护**
+（plan 0406 —— `mlock` + 静止不可读 + 不进 core dump + fork 清零，四条承诺各有一条测试）。
+下一步是 plan 0403（四套池的 CRUD）。
 
 **点叉的语义由配置 × 托盘共同决定**（plan 0302 + 0303）：
 
@@ -71,8 +73,9 @@
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全绿** |
-| `just test` | **119 tests run: 119 passed**（`akasha` 45 + `akasha-pty` 37 + `akasha-core` 15 + **`akasha-store` 22**） |
-| ↑ 本轮新增 | **13 条**：`Passphrase` 类型 3 条（空值造不出来 / `Debug` 不含口令 / 任意字节）、`passphrase_contract` 6 条（只认那一把 / `NoVault` / 不覆盖 / 0 字节可建 / 版本校验 / `vault_path`）、`passphrase_on_disk` 2 条（数据目录 0 命中 + **扫描器对照**）、`sqlcipher_contract` 2 条（盐 = 文件头且每库不同 / 内存安全关不掉） |
+| `just test` | **122 tests run: 122 passed**（`akasha` 45 + `akasha-pty` 37 + `akasha-core` 15 + **`akasha-store` 25**） |
+| ↑ 本轮新增 | **3 条**（plan 0406）：受保护页的**四条上游承诺**（`VmLck` 涨 + smaps 权限位 + `dd` + `wf`，**建口令前后取快照做差**，不猜地址）、**边界记录**（`/proc/self/mem` 仍读得出来）、错误文本里不含口令；另有 2 条改成受保护页语义（字节原样回来 / 超一页明确报错） |
+| ↑ **内存防护（plan 0406）** | ✅ 进程级 `VmLck` **0 → 4 kB**；那一页在 smaps 里是 `---p`、正好 4096 字节；`VmFlags = mr mw me lo ac wf dd sd`（**`dd` 不进 core dump、`wf` fork 后清零**）。⚠️ **同一批测试也钉住了边界**：`/proc/self/mem` 读那一页**成功**（`FOLL_FORCE` 绕过页保护）—— 这一层挡的是"意外"，不是"能在你进程里跑代码的人" |
 | ↑ **两条判据（plan 0402）** | ✅ **无 `keyring` 类依赖**：`deny.toml` 的 `[bans] deny` 常驻禁令 + `just deny-offline` 一直守着（负例验过：临时加 `keyring` → `bans FAILED` 并逐个报出）；✅ **口令不以任何形式落盘**：标记口令跑完 `create` + 解锁 + 解锁失败后，递归扫数据目录 **0 命中**，而对照目录的诱饵文件 **1 命中**（证明扫描器不是坏在原地） |
 | ↑ **一处推翻隐含假设的实测（plan 0402）** | ⚠️ **文件不存在或 0 字节时，任何口令都能"打开"** —— 库里没有东西可解、KDF 根本没跑（**~0.19 ms**，真实解锁 **~105 ms**）。于是 0401 的 `open()` 在"新建"这条路上**没有验证过口令**。已拆成 `open`（没有就 `NoVault`）/ `create`（**永不覆盖**，写 `user_version = 1` 把口令钉进文件） |
 | `just test-e2e`（自包含：起 Vite + app → **两段** → 收尾） | 退出码 **0**，**13 个用例全绿**：`smoke` 3 / `integration` 2 / `session_channel` 1 / `terminal_render` 2 / `tab_close` 1 / `window_close` 1 / **`single_instance` 2** / `exit_residue` 1 |
@@ -147,7 +150,7 @@
 | 大输出实测 | 11.18 MB / 170 批（0202）；11.28 MB / 168 批（0204）；10.80 MB / 162 批（0205）；10.41 MB / 159 批（0305）；10.36 MB / 159 批（0302/0303）；10.73 MB / 164 批（0304） |
 | 前端产物 | 843 kB（gzip 231 kB） |
 | **存储层（新）** | `akasha-store`：**全仓库唯一允许出现 `unsafe` 的 crate**（送口令进 `sqlite3_key()`，ADR-0002 D4），由 workspace 的 `unsafe_code = "deny"` + `.ast-grep/rules/no-unsafe-outside-store.yml` 两层守。**两条路**：`create(path, &Passphrase)` = 有内容就 `VaultExists`（永不覆盖）→ 建库 → 送密钥 → 写 `user_version = 1`；`open(path, &Passphrase)` = 不存在的/0 字节就 `NoVault` → 送密钥 → 读一次 `sqlite_master` 逼口令错暴露 → **校验 `user_version`**。两条路都收 0600。**还没有被 app 依赖**（plan 0403 才接） |
-| **口令（新）** | `Passphrase` 类型 = 口令在进程里的唯一形态：空值**造不出来**、`Debug` 只打 `<redacted>`、无 `Display`/`Serialize`、`expose()` 只对本 crate 可见、**不实现 `Clone`**。本 crate 没有任何日志设施，也没有 argv / 环境变量 / 配置读取口 —— 口令只能作为 `&Passphrase` 参数进来。**不做内存擦除**（`zeroize`），理由写在 `src/passphrase.rs` 文档里（边界是"文件是密文"） |
+| **口令（新）** | `Passphrase` 类型 = 口令在进程里的唯一形态：空值**造不出来**、**没有 `Debug`**（`{:?}` 是编译错误）、无 `Display`/`Serialize`、`expose()` 只对本 crate 可见、**不实现 `Clone`**；本体住在 `memsafe::Secret` 的一整页**受保护内存**里（`mlock` + 静止态 `PROT_NONE` + `dd` + `wf`，读它要 `&mut` = 一次提权动作）。本 crate 没有任何日志设施，也没有 argv / 环境变量 / 配置读取口 —— 口令只能作为 `&mut Passphrase` 参数进来 |
 | **库文件的磁盘事实** | `akasha.db`（ADR-0002 D1，与 `config.json` 同目录）；SQLCipher 4.5.7 + vendored OpenSSL 3.6.3；`user_version = 1` 是格式权威（`!= 1` 一律拒绝，**含 0**）；盐 16 字节随机、就在文件头前 16 字节（`PRAGMA cipher_salt` 逐字节相同）；SQLite **自己建出来是 644**，我们显式收紧到 **600**；不带 `-wal` / `-shm`（D8，`journal_mode` 保持 `delete`）；解锁代价 **~105 ms**（256,000 次 PBKDF2-HMAC-SHA512）。`cipher_memory_security = ON` 是**进程级、只能开不能关** |
 | 合批参数 | `max_bytes` = 64 KiB、`max_delay` = 16 ms（`BatchPolicy::DEFAULT`，唯一来源） |
 | CSP | `csp`：`default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:`；`devCsp` 多一个 `ws://localhost:1420 http://localhost:1420` |
@@ -176,7 +179,27 @@
   **13 个用例全绿**（含两段配置）；剩 CI 三平台格子（同上）
 - [ ] **正式 UI**：等设计稿（见上面「UI 现状」）—— 没有验收标准，故**不进 ROADMAP**
 
-### 本轮完成（plan 0402：口令 → KDF → 库密钥）
+### 本轮完成（plan 0406：口令的内存防护）
+
+**判据**：口令在内存里**不被换出、不被 dump、静止时读不到**，而且这四条**各有一条会红的测试**。
+
+- [x] `Passphrase` 从"普通堆上的一块 `Vec<u8>`"换成 `memsafe::Secret<[u8; 256]>` 的
+      **一整页受保护内存** —— 选 `Secret<[u8; N]>` 而不是 `MemSafe<Vec<u8>>`（后者只保护
+      `Vec` 的 24 字节头，字节还在普通堆上，上游文档管这叫 "the `MemSafe<Vec<u8>>` pitfall"）
+- [x] **把上游的四条承诺变成断言**（plan 0406 的判据表）：`mlock` 看进程级 `VmLck`、
+      `PROT_NONE` 看 smaps 权限位、`dd` / `wf` 看 `VmFlags`。
+      "那一页是我们的"不靠猜 —— **建口令前后各取一次快照，多出来的一页就是它**
+- [x] **同时钉住边界**（比"证明有防护"更重要）：`/proc/self/mem` 的读走 `FOLL_FORCE`，
+      **绕过页保护**，那一页照样读得出来。这条测试**故意断言"读得出来"** ——
+      哪天它开始失败，说明保护变强了，该回来改 ADR 的措辞
+- [x] 对外语义没变：空值仍造不出来、仍进不了日志、仍是任意字节；`expose()` 现在返回
+      一个**提权窗口**（守卫 drop 就降回 `PROT_NONE`），`open` / `create` 因此收 `&mut`
+- [x] **ADR-0002 D5 的内存立场改写**并记 §10：0402 当时写"不做内存擦除"，
+      本步推翻的是**结论而不是那句事实** —— 口令是唯一能解开整库的东西、生命期跨多次解锁，
+      而 core dump / swap / fork 是真实发生过的泄露路径
+- [x] 门禁：`just ready` **6/6**；`just test` **122 passed**（`akasha-store` 22 → **25**）
+
+### 上一轮完成（plan 0402：口令 → KDF → 库密钥）
 
 **判据是两条**：无任何 `keyring` 类依赖、口令不以任何形式落盘。
 
@@ -494,3 +517,15 @@ plan 0400 归档。
     workspace 把它设成 warn 而 `just clippy` 带 `-D warnings`，集成测试文件顶部的
     `#![allow(...)]` **管不到** lib 里的测试模块（症状：`just ready` 红在 clippy、
     报的却是"test profile"里的 unwrap）。写法是在 `mod tests {` 之后紧跟一行 `#![allow(...)]`。
+79. **`/proc/<pid>/mem` 的读用 `FOLL_FORCE`，绕过页保护** —— `mprotect(PROT_NONE)` 挡住的是
+    "本进程里的常规访存"（越界读会 SIGSEGV），**挡不住**通过 `/proc/self/mem` 的读：
+    实测那一页照样整页读出来（内容就是口令）。所以 `memsafe` 这一层别写成"内存里的密钥
+    读不出来" —— 它挡的是**意外**（越界读、误格式化、core dump、swap、fork），
+    挡不住"已经能在你进程里跑代码的人"。plan 0406 有一条测试**专门断言"读得出来"**，
+    就是不让这句话日后被说大。
+80. **`/proc/self/smaps` 的字段不是处处都有，而且属性行带缩进**：
+    本机的 smaps **没有 `VmLck`**（`VmFlags` 有），验 `mlock` 得看 `/proc/self/status` 的
+    **进程级** `VmLck`（造口令前后各取一次，0 → 4 kB）。另外 smaps 里段的属性行是
+    `    VmFlags: …`（前导空格），`line.strip_prefix("VmFlags:")` **永远返回 `None`** ——
+    解析前先 `trim_start()`。第一版测试就是这么"找不到自己那一页"的，而它报的是
+    "期望 1 页、实际 0 页"，完全不提缩进。

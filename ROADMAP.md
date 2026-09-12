@@ -121,6 +121,9 @@
 - [x] 口令 → KDF → 库密钥（**不依赖 OS keychain**，见 `scope.md` §1）
       验收：无任何 `keyring` 类依赖
       → [plan 0402](./docs/plans/archive/0402-passphrase-kdf.md)
+- [x] 口令的内存防护：受保护页（锁定 / 静止不可读 / 不进 core dump / fork 清零）
+      验收：进程 VmLck 涨；那页在 smaps 里没有任何权限；VmFlags 含 dd 与 wf
+      → [plan 0406](./docs/plans/archive/0406-memsafe-passphrase-page.md)
 - [ ] 四套池的 CRUD：密钥 / ssh 配置 / serial 配置 / 端口转发规则
       验收：各自的 round-trip 单测通过；**库里不存绝对路径**（P2）
       → [plan 0403](./docs/plans/0403-pools-crud.md)

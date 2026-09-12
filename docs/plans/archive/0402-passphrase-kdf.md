@@ -3,7 +3,10 @@
 - **关联**：ROADMAP 阶段 4 ·「口令 → KDF → 库密钥（**不依赖 OS keychain**）」；
   [ADR-0002](../../adr/0002-secret-storage.md) D2 / D3 / D5 / D7 / D12 与 §6 的落地
 - **前置**：plan 0401（库能开 —— `akasha-store` 已存在）
-- **状态**：已完成（2026-09-12）—— 单测 22/22（`akasha-store`）、`just ready` 6/6
+- **状态**：已完成（2026-09-12）
+- ⚠️ **后续（2026-09-12）**：本文「明确不做内存擦除」的**结论已被推翻** ——
+  口令改为一整页受保护内存（`mlock` / 静止不可读 / 不进 core dump / fork 清零），
+  见 [plan 0406](./0406-memsafe-passphrase-page.md)。本文其余部分仍是当时的记录。—— 单测 22/22（`akasha-store`）、`just ready` 6/6
 
 ## 目标
 

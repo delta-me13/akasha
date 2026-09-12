@@ -101,6 +101,7 @@
 | 0402 | 口令 → KDF → 库密钥 | 已完成（2026-09-12） | plan 0401（库能开） | [0402](./archive/0402-passphrase-kdf.md) |
 | 0403 | 四套池的 CRUD | 未规划（骨架） | 展开时机：plan 0401 / 0402 之后 | [0403](./0403-pools-crud.md) |
 | 0404 | dump 与导出 | 未规划（骨架） | 展开时机：plan 0403 之后 | [0404](./0404-dump-export.md) |
+| 0406 | 口令的内存防护（`memsafe`） | 已完成（2026-09-12） | plan 0402（`Passphrase` 已就位） | [0406](./archive/0406-memsafe-passphrase-page.md) |
 | 0405 | 可搬迁性验证 | 未规划（骨架） | 展开时机：plan 0403 之后 | [0405](./0405-portability-verify.md) |
 
 ### 阶段 5 — SSH 栈（`russh`）
