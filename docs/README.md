@@ -79,6 +79,7 @@ Spec Kit / Kiro 那类"每个特性一个 `specs/NNN-slug/{spec,plan,tasks}.md`"
 | `STATUS.md` 里写"第一步先做什么" | 步骤 | plan；STATUS 只写"现在在哪 + 下一步是哪个条目" |
 | 汇总文档里写排错步骤 | 参考资料 | [`just.md`](./just.md) §6、[`portable.md`](./portable.md)，或专门文档 |
 | CI 为什么只有一份 GitHub 工作流、为什么不再做别的 forge 的兼容层 | 规则 + 已放弃方案的成本 | [`AGENTS.md`](../AGENTS.md) §12（规则）+ [`plans/0102`](./plans/0102-ci-platform-matrix.md) 的「放弃记录」（理由与那份约束清单） |
+| IPC 字节通道为什么必须走 raw、为什么生成层有一处手写 | 规则 + 踩过的坑 | [`AGENTS.md`](../AGENTS.md) §3.2 / §5（规则）+ [`plans/0202`](./plans/archive/0202-ipc-binary-channel.md) 的实施记录（`Channel<Vec<u8>>` 为什么是错的）+ `STATUS.md` 坑 #31 |
 | 一个临时用的检查脚本 | 检查 | 做成 just 配方（[`AGENTS.md`](../AGENTS.md) §11）—— 散落的 `.sh` 不会被任何门禁照看 |
 | 基准数字（MB/s、ns/批） | 会随机器变的测量结果 | [`STATUS.md`](./STATUS.md) 的「当前基线」+ 产生它的 plan 的「实施记录」。**不是门禁、不进 ROADMAP**（规则见 [`AGENTS.md`](../AGENTS.md) §7） |
 

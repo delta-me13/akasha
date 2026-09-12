@@ -65,9 +65,9 @@
 - [x] `Transport` 输出合批（≥16ms 或 ≥64KiB）
       验收：合批边界有单测断言；有吞吐基线数字
       → [plan 0201](./docs/plans/archive/0201-output-batching.md)
-- [ ] IPC 二进制通道（`tauri::ipc::Channel<Vec<u8>>`）
-      验收：大输出不掉帧，且这条路径被结构性规则守住
-      → [plan 0202](./docs/plans/0202-ipc-binary-channel.md)
+- [x] IPC 二进制通道（输出走 **raw 字节**，不是 JSON 数组）
+      验收：10 MB 输出完整到达前端且无错误；该路径被 `no-string-pty-channel` 守住
+      → [plan 0202](./docs/plans/archive/0202-ipc-binary-channel.md)
 - [ ] 前端 xterm + WebGL 渲染，字节流不进 React state
       验收：终端由 canvas 渲染；无 per-chunk 组件重渲染
       → [plan 0203](./docs/plans/0203-xterm-webgl-render.md)
