@@ -1,0 +1,29 @@
+id: no-non-ascii-log-message
+language: Rust
+severity: error
+message: 日志消息必须是 ASCII 英文短语 —— 变量进结构化字段，说明文进注释（AGENTS.md §3.4）
+note: |
+  日志消息是**事件名**，不是写说明文的地方：不解释"为什么"、不写"（否则…）"、
+  不把文档里的命令与示例粘进去。变量一律进字段（`key = value`）——
+  消息因此是常量，一种事件一个 grep 模式，日志才是可检索的数据。
+
+  中文写在**注释**里（注释回答"为什么"，日志只陈述"发生了什么"）。
+  豁免：`%err` 之类的字段值 —— 那是错误类型自己的文本，不是本条消息。
+
+  展开与字段词汇表见 docs/logging.md。
+files:
+  - "src-tauri/**/*.rs"
+ignores:
+  - "**/tests/**"
+rule:
+  all:
+    - kind: string_literal
+    - regex: '[^\x00-\x7f]'
+    - inside:
+        any:
+          - pattern: tracing::info!($$$)
+          - pattern: tracing::warn!($$$)
+          - pattern: tracing::error!($$$)
+          - pattern: tracing::debug!($$$)
+          - pattern: tracing::trace!($$$)
+        stopBy: end
