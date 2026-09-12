@@ -115,9 +115,9 @@
 - [x] **ADR-0002 进入实现中**（动存储代码之前；同时收编 Bitwarden 的机密来源）
       验收：状态为「实现中」，且补齐了 `scope.md` 里"还没有值"的那几项
       → [plan 0400](./docs/plans/archive/0400-adr-0002-secret-storage.md)
-- [ ] `rusqlite` + **SQLCipher**（`bundled-sqlcipher-vendored-openssl`）
+- [x] `rusqlite` + **SQLCipher**（`bundled-sqlcipher-vendored-openssl`）
       验收：用错误口令打不开库；`.db` 文件里搜不到明文密钥
-      → [plan 0401](./docs/plans/0401-sqlcipher-open.md)
+      → [plan 0401](./docs/plans/archive/0401-sqlcipher-open.md)
 - [ ] 口令 → KDF → 库密钥（**不依赖 OS keychain**，见 `scope.md` §1）
       验收：无任何 `keyring` 类依赖
       → [plan 0402](./docs/plans/0402-passphrase-kdf.md)

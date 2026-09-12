@@ -8,10 +8,10 @@
 
 ## 一句话
 
-**阶段 2「端到端最小终端」5/5 完成**；**阶段 3「托盘与应用生命周期」6/6 完成**：
-托盘（0301）、**点叉 = 收托盘**（0302）、**关闭行为可配置**（0303）、**单实例**（0304）、
-标签页与会话同生命期（0305 / 0306）。**阶段 4 已在做**：第一项 ADR-0002（机密存储与可搬迁）
-**已进入「实现中」**，落地从 plan 0401 起（见「进行中 / 下一步」）。
+**阶段 2「端到端最小终端」5/5 完成**；**阶段 3「托盘与应用生命周期」6/6 完成**。
+**阶段 4「存储与凭据池」在做（2/7）**：ADR-0002（机密存储与可搬迁）**已进入「实现中」**，
+第一块落地 **SQLCipher 加密库能开**（plan 0401）**已完成** —— 库里是密文、错误口令打不开、
+ADR-0002 §7 的 7 项实测全部跑完（原先全是"预期"）。下一步是 plan 0402（口令 → KDF）。
 
 **点叉的语义由配置 × 托盘共同决定**（plan 0302 + 0303）：
 
@@ -70,8 +70,10 @@
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全绿** |
-| `just test` | **97 tests run: 97 passed**（`akasha` 45 + `akasha-pty` 37 + `akasha-core` 15） |
-| ↑ 本轮新增 | **4 条**：`single_instance` 的 probe 快照与激活计数；E2E 文件里的 `is_app_binary`（重建过的二进制仍要认得出来）+ 那条端到端用例本身 |
+| `just test` | **106 tests run: 106 passed**（`akasha` 45 + `akasha-pty` 37 + `akasha-core` 15 + **`akasha-store` 9**） |
+| ↑ 本轮新增 | **9 条**：`akasha-store` 的 SQLCipher 契约测试（参数集 / 版本 / 错误口令 / 空 key / 明文导出与 `user_version` / grep 不到明文 / 0600 权限 / `rekey` 后盐不变） |
+| ↑ **加密库两条判据（plan 0401）** | ✅ **错误口令打不开**：`SqliteFailure(Error { code: NotADatabase, extended_code: 26 }, Some("file is not a database"))`（正确口令仍打得开，说明这条判据不是因为"文件本来就坏"）；✅ **`.db` 里 grep 不到明文私钥**：8192 字节的库 **0** 命中、头部不是 `SQLite format 3`，而对照的空 key 库 **1** 命中（证明这条 grep 真的能搜到东西） |
+| ↑ **ADR-0002 §7 的 7 项实测** | ✅ SQLCipher **4.5.7 community**（provider `openssl` / **OpenSSL 3.6.3**，vendored）；`kdf_iter = 256000`、`cipher_page_size = 4096`、`HMAC_SHA512`、`PBKDF2_HMAC_SHA512`、`journal_mode = delete`；`sqlcipher_export` **不传** `user_version`（7 → 0）；`rekey` 后**盐不变**。⚠️ **一处与 ADR 预期不符**：空 key 是"`sqlite3_key` 返回 `SQLITE_ERROR` 且不挂 codec、连接照常可用"（不是"静默关掉加密"）—— 已回改 D5 并记入 §10 |
 | `just test-e2e`（自包含：起 Vite + app → **两段** → 收尾） | 退出码 **0**，**13 个用例全绿**：`smoke` 3 / `integration` 2 / `session_channel` 1 / `terminal_render` 2 / `tab_close` 1 / `window_close` 1 / **`single_instance` 2** / `exit_residue` 1 |
 | ↑ **单实例（0304，Linux 实测）** | ✅ probe `{"activations":0,"registered":true}`、日志 `single instance registered`；`window manage hide` → `visible=false`；再起同一个二进制 → **150–205 ms** 后 `exit=0`、`activations=1`、`visible=true`；进程表只剩 app + 它的看门狗；**藏起来之前的屏幕内容仍在**（是原来那个窗口） |
 | ↑ **单实例降级（0304）** | ✅ `unset DBUS_SESSION_BUS_ADDRESS` + runtime dir 里没有 `bus` → 日志 `single instance unavailable`、probe `{"registered":false}`，**窗口照常起来**（降级不挡启动） |
@@ -85,9 +87,9 @@
 | ↑ 会话判据（未退化） | raw 通道 10.73 MB / 164 批；收尾帧 1 个、console 零异常 |
 | `pnpm build`（tsc + vite build） | 退出码 0；产物 **843 kB / gzip 231 kB**；生产包里 `akashaTerminal` / `activateProbe` / `mockIPC` 命中数 **0**（本轮未改前端，数字沿用） |
 | `just check` / `just clippy`（`--workspace --all-targets`） | 退出码 **0** |
-| `just deny-offline` | `bans ok, licenses ok, sources ok`。本轮**没有新增要放行的包**：`tauri-plugin-single-instance` 拉的 `windows-sys 0.60` 只进 Windows 目标的图，`zbus` 早已在树里（许可证放行仍是托盘那轮的 `ISC` 一条） |
+| `just deny-offline` | `bans ok, licenses ok, sources ok`。本轮新增 3 个包（`akasha-store` / `openssl-src` / `openssl-sys`）**没有新增任何许可证放行** —— 它们都是 MIT / Apache-2.0 |
 | `just docs-check` | 三部分全过（ROADMAP 条目在 3 行内 / plan ≤200 行且索引一致） |
-| `ast-grep scan` | 退出码 **0**；**五条**规则均已用正负例验证（本轮未改规则） |
+| `ast-grep scan` | 退出码 **0**；**六条**规则均已用正负例验证（本轮新增 `no-unsafe-outside-store`，用"真 unsafe 命中 / akasha-store 里的同类不命中 / 注释与字符串里的 unsafe 不命中"三例验过才删探针） |
 | `cargo tree -p akasha-core` \| `grep -c tauri` | **0**（分层成立；单实例与配置载体都只在 app 包里） |
 | `just bench`（criterion） | 52.7 GiB/s / 14.1 ns 每批 / 9.64 GiB/s（**0201 的数字，本轮未复跑**） |
 
@@ -123,7 +125,7 @@
 
 | 项 | 实测结果 |
 |---|---|
-| workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` |
+| workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` / **`akasha-store`** |
 | 二进制落点 | `src-tauri/target/debug/akasha`（另有代码生成工具 `gen-types`，故必须 `default-run`，坑 #29） |
 | 后端模块 | `bindings`（命令 + 事件 + 代码生成）/ `session`（会话表 + 回收）/ `tray`（托盘）/ `config`（配置文件载体）/ `lifecycle`（关窗语义 + probe）/ **`single_instance`（单实例 + probe）** / `watchdog`（进程外兜底） |
 | **关窗语义** | 判据 = `akasha-core::CloseAction::decide(close_behavior, tray_ready)`；app 侧 `CloseRequested` → **先 `hide()`、成功才 `prevent_close()`**。**不挂 `RunEvent::ExitRequested`**（理由见 `lib.rs` 注释与坑 #65） |
@@ -143,6 +145,8 @@
 | 前端渲染器 | **WebGL**（WebKitGTK + MESA 软件栈下仍拿到 WebGL2）；`canvas` 元素 2 块；DOM 渲染器未启用 |
 | 大输出实测 | 11.18 MB / 170 批（0202）；11.28 MB / 168 批（0204）；10.80 MB / 162 批（0205）；10.41 MB / 159 批（0305）；10.36 MB / 159 批（0302/0303）；10.73 MB / 164 批（0304） |
 | 前端产物 | 843 kB（gzip 231 kB） |
+| **存储层（新）** | `akasha-store`：**全仓库唯一允许出现 `unsafe` 的 crate**（送口令进 `sqlite3_key()`，ADR-0002 D4），由 workspace 的 `unsafe_code = "deny"` + `.ast-grep/rules/no-unsafe-outside-store.yml` 两层守。`open(path, passphrase)` = 空口令先拒 → `Connection::open` → `sqlite3_key`（**打开后第一件事**）→ 读一次 `sqlite_master` 逼口令错暴露 → chmod 0600。**还没有被 app 依赖**（plan 0403 才接） |
+| **库文件的磁盘事实** | `akasha.db`（ADR-0002 D1，与 `config.json` 同目录）；SQLCipher 4.5.7 + vendored OpenSSL 3.6.3；SQLite **自己建出来是 644**，我们显式收紧到 **600**；不带 `-wal` / `-shm`（D8，`journal_mode` 保持 `delete`） |
 | 合批参数 | `max_bytes` = 64 KiB、`max_delay` = 16 ms（`BatchPolicy::DEFAULT`，唯一来源） |
 | CSP | `csp`：`default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:`；`devCsp` 多一个 `ws://localhost:1420 http://localhost:1420` |
 | capabilities | 仍只有 `core:default` + `opener:default`（+测试用的 `victauri`）。**托盘、配置与单实例都没有加任何 permission** —— 它们全在 Rust 侧，前端碰不到（最小权限，§4.3） |
@@ -154,12 +158,13 @@
   - 0205 的看门狗生命周期仍然 = 一个 app 实例（ADR-0005 §6 的复审条件之一）；
   - 0305/0306 的前提 ② "关最后一个标签页 = 空状态"在"窗口隐藏"成为常态之后是否仍然合适
     （前提 ① 已由 `window_close` 守住，③ 已有实测支撑）。
-- [ ] **下一步 = plan 0401 开工**（[`rusqlite` + SQLCipher 打开加密库](./plans/0401-sqlcipher-open.md)）。
-  **第一件事是跑 [ADR-0002](./adr/0002-secret-storage.md) §7 的 7 项实测**（现在全是"预期"）：
-  `PRAGMA cipher_settings` 的实际输出、错误口令与**空口令**的报错形态（空 key 在 SQLCipher 里
-  = 关闭加密）、明文导出 round-trip、`rekey` 后盐是否变化。
-  ⚠️ 任何一项与预期不符都要回 ADR 改对应决策，并在其 §10「修订记录」记一行 ——
-  **这正是三态里「实现中可改」的用途**。
+- [ ] **下一步 = plan 0402**（[口令 → KDF → 库密钥](./plans/0402-passphrase-kdf.md)）。
+  库能开之后要定的是"口令怎么进来、怎么保证不落盘"：KDF 照抄 ADR-0002 D3（用 SQLCipher
+  原生的那一套，不自己写），交付面是**无任何 `keyring` 类依赖**（`cargo tree` 可证）
+  与"口令不出现在磁盘 / 命令行 / 环境变量 / 日志里"。
+- [ ] **ADR-0002 §10 已有第一条修订**（空 key 的真实机制，见上）—— 这是三态里
+  「实现中可改」的第一次使用。0402–0405 再撞到与决策不符的实测时照同样办法：
+  **先改 ADR、记一行，再往下写代码**。
 - [ ] **ADR-0002 转「已定案」**（阶段 4 的 plan 0401–0405 全部完成时）——
   ROADMAP 阶段 4 末尾新增的条目。**加它的理由**：不定个时间点，它会永远停在"实现中"，
   而"不可修改"这份约束也就永远不会生效。
@@ -168,60 +173,65 @@
   **13 个用例全绿**（含两段配置）；剩 CI 三平台格子（同上）
 - [ ] **正式 UI**：等设计稿（见上面「UI 现状」）—— 没有验收标准，故**不进 ROADMAP**
 
-### 本轮完成（plan 0400：ADR-0002 进入实现中）
+### 本轮完成（plan 0401：SQLCipher 打开加密库）
+
+**判据是两条**：用错误口令打不开库、`.db` 文件里搜不到明文密钥 —— 两条都做成了**具名测试**，
+fixture 故意落在 `target/store-contract/`（不是 tempdir），因为"库里没有明文"是**安全声明**，
+必须能拿一个真实文件手工 `grep` 复核。
+
+- [x] 新建 `src-tauri/crates/akasha-store`：`open(path, passphrase)` = **空口令先拒**
+      → `Connection::open` → `sqlite3_key()`（**打开之后的第一件事**，D4）→ 读一次
+      `sqlite_master` 把"口令不对"逼到眼前 → 收紧到 0600（D12）
+- [x] **实测把 ADR-0002 §7 的 7 项从"预期"变成"事实"**（结果表见上；全在
+      `tests/sqlcipher_contract.rs` 里，上游换版本时它们该红）
+- [x] **一处与 ADR 不符，按新流程回改了 ADR**：空 key 的机制不是"静默关掉加密"，而是
+      `sqlite3_key` **返回 `SQLITE_ERROR` 且不挂 codec**，而连接**照常可用** ——
+      D5 的危险点因此更尖锐（不看返回值就会写出明文库，且之后每步都"成功"）。
+      已改 D5 并在 §10 记第一行
+- [x] **`unsafe` 这一刀比预想的难切**：`unsafe_code = "forbid"` 下 `AGENTS.md` §3.4 承诺的
+      "单点 allow + SAFETY 注释"**根本写不出来**（rustc 规定 forbid 不可被 allow 覆盖），
+      而"只给一个 crate 放宽"也走不通（cargo 不允许部分覆盖继承来的 lint）。
+      落地方案 = workspace 改 `deny` + 新增规则 `no-unsafe-outside-store` 把 `unsafe`
+      圈回 `akasha-store`（`AGENTS.md` 单独提交，规则用一对探针验过）
+- [x] **顺带发现 rusqlite 的版本不是我们能选的**：`victauri-plugin` 已依赖 `rusqlite ^0.32`，
+      而 `libsqlite3-sys` 带 `links = "sqlite3"` —— 同一原生库只许一个版本，
+      0.40.2 直接被拒。好处是 features 并集：全 app 只有一个 sqlite，且是 SQLCipher 那一支
+- [x] 门禁：`just ready` **6/6**；`just test` **106 passed**；`cargo tree` 里是
+      `openssl-src`（vendored）而不是系统 OpenSSL
+
+### 上一轮完成（plan 0400：ADR-0002 进入实现中）
 
 阶段 4 的第一项是"动存储代码之前先把数据文件格式定案"。
 [`docs/adr/0002-secret-storage.md`](./adr/0002-secret-storage.md) 已写完并**进入「实现中」**；
 plan 0400 归档。
 
-- [x] 12 条决定全部带「决定 / 理由 / 否决的替代路」，总览表逐条标**出处**
-      （`scope.md` §6 已定案的照抄、没定值的标"本 ADR 新增"）—— 这是 plan 0400 步骤 4 的校验
-- [x] `scope.md` 里"还没有值"的几项**都给了值**（这才是这份 ADR 存在的理由）：
-      KDF 参数（PBKDF2-HMAC-SHA512 / 256,000）、盐在库文件头部、**一个库文件**承载四套池、
-      **不用 WAL**、导出容器 = 同参数的另一个 SQLCipher 库、版本字段用 `user_version`、
-      BW 缓存"同级" = 同一个库同一把锁
-- [x] 定值时真正做的取舍记在 plan 0400 的实施记录里（KDF 用默认值 = 可用 `rekey` 原地升级，
-      所以不必现在为内存硬 KDF 永久引入旁挂文件）
-- [x] **顺手否掉一条要做的债**：plan 0403 前置检查里"把 `config.json` 并进 DB"—— 并进去之后
-      关窗行为就要等解锁才知道（D11）
-- [x] 上游事实**逐条核过**，不是凭印象：SQLCipher 4 默认 256,000 次 PBKDF2-HMAC-SHA512 /
-      16 字节盐在文件头部 / `sqlite3_key()` 与 `PRAGMA key` 等价 / `sqlcipher_export` **不传**
-      `user_version` / 空 key `''` = 关闭加密；本机 registry 里 `libsqlite3-sys 0.30.1` 打包
-      **SQLCipher 4.5.7**，且开 `bundled-sqlcipher*` 时复制的是含 `sqlite3_key` 的那份 bindings
-- [x] **收尾 5 项全做完**：ADR 状态 → 「实现中」+ §10 修订记录；`docs/adr/README.md` 同步；
-      `scope.md` §6/§7 补指针（§7 的"同级"换成具体含义）；plan 0403 那条据 D11 改掉；
-      plan 0400 归档 + ROADMAP 勾选，**并在阶段 4 末尾新增"ADR-0002 转「已定案」"一条**
-- [x] **顺带改了一条流程**（用户裁定）：ADR 原先只有"接受 / 不接受"两态，而"接受"同时意味着
+- [x] ADR-0002 写完并**进入「实现中」**：12 条决定各带「决定 / 理由 / 否决的替代路」，
+      总览表逐条标**出处**（`scope.md` §6 已定案的照抄、没定值的标"本 ADR 新增"）；
+      `scope.md` 里"还没有值"的几项**都给了值**（KDF 参数、盐放哪、**一个库文件**承载四套池、
+      **不用 WAL**、导出容器、版本字段、BW 缓存"同级"的含义）—— 这才是这份 ADR 存在的理由。
+      上游事实**逐条核过**，不是凭印象
+- [x] **顺手否掉一条要做的债**：plan 0403 前置检查里"把 `config.json` 并进 DB"——
+      并进去之后关窗行为就要等解锁才知道（D11）
+- [x] **改了一条流程**（用户裁定）：ADR 原先只有"接受 / 不接受"两态，而"接受"同时意味着
       "可以开工"与"不可再修改" —— 实现期一发现架构问题就无路可走。现为三态：
       **提议中 → 实现中（可改，每次记一行修订）→ 已定案（不可变，只能被新 ADR 取代）**。
       规则在 [`docs/adr/README.md`](./adr/README.md)，规范面在 `AGENTS.md` §8（单独提交）；
       `0001` / `0004` / `0005` 的状态词由「已接受」改为「已定案」（**只换词，内容未动**）
 - [x] **修掉 5 处坏链**（`ROADMAP.md` 里三个 `./scope.md` 式的链接少写了 `docs/`；
-      两份 `archive/` 文件里的 `../adr/` 应为 `../../adr/`）—— 用一次性脚本扫全部
-      `](相对路径)` 发现的。⚠️ **`just docs-check` 不查链接**（它只查配方与索引），
-      所以这类坏链能一直全绿 —— 要不要把它做成门禁待定（写进「进行中」之前先想清楚
-      "代码块里的链接示例算不算误报"）
+      两份 `archive/` 文件里的 `../adr/` 应为 `../../adr/`）—— 用一次性脚本扫全部 markdown
+      相对链接发现的。⚠️ **`just docs-check` 不查链接**（它只查配方与索引），
+      所以这类坏链能一直全绿 —— 要不要把它做成门禁待定（先要想清楚"代码块里的链接示例
+      算不算误报"）
 
-### 上一轮完成（文档审计：让文档对得上现状）
+### 更早（文档审计 · plan 0304 单实例）
 
-进阶段 4 之前把文档整体核了一遍（逐条对照代码 / justfile / 目录，不看措辞看事实）：
-
-- [x] `AGENTS.md`：删掉指向**并不存在**的 `.taurignore` 的规则（这个文件从未进过仓库）；
-      "行数""配方数"这类会漂的数字不再写进正文
-- [x] 配方数三处分叉（`README.md` 20 / `AGENTS.md` 21 / `just --list` 22，而
-      `docs/just.md` §2 表格是 21 行）→ 正文不写数字，`docs/just.md` §2 说明
-      `default` 为何不上表（`docs-check` 的正向检查本来就跳过它）
-- [x] `docs/logging.md` §2 的字段词汇表**漏掉了一半在用字段**（`window` /
-      `close_behavior` / `close_action` / `path` / `activations` / `step`）→ 补齐，
-      并加一条"一个概念一个字段名"；`single_instance.rs` 里那个 `label` 随之统一为 `window`
-      （同一个"哪个窗口"，`tray.rs` / `lifecycle.rs` 用的是 `window`）
-- [x] `docs/adr/README.md`：队列标题（"原定 3 份 + 1 份"→ 实际 5 个编号）、
-      `docs/plans/0001` 这条**不存在的路径**、"什么时候写：**不是现在**"（0002 现在到了）
-- [x] `docs/scope.md`：`no-ui-vocab-in-types` 早已落地却仍写作"计划中的约束"；
-      单实例从"需要显式处理"改成已定案（并写明"唤起"必须包含显示）
-- [x] **端口敲门**：`scope.md` §2 曾把它列为 ssh 后端的 v1 能力、§3 的 ssh 配置池里还有
-      「敲门序列」字段，而 `ROADMAP.md` / `docs/plans/` 里**没有任何条目** ——
-      已定为**降级 `later`**：两处收回，`scope.md` §10 记一行（理由 + 收回日期）
+- [x] **文档审计**（进阶段 4 之前逐条对照代码 / justfile / 目录核过一遍，不看措辞看事实）：
+      删掉指向**并不存在**的 `.taurignore` 的规则；正文不再写"行数 / 配方数"这类一定会漂的数字；
+      `logging.md` 的字段词汇表补上漏掉的一半（`label` 与 `window` 长期并存是同一件事两个名字）；
+      `adr/README.md` 的队列标题与一条**不存在的路径**修掉；`scope.md` 里已落地的约束不再写作
+      "计划中"。共同病根是**门禁查不了"这句话还成不成立"**（坑 #69）
+- [x] **端口敲门降级为 `later`**：`scope.md` §2 / §3 曾把它列进 v1，而 `ROADMAP.md` 与
+      `docs/plans/` 里**没有任何条目** —— 两处收回，`scope.md` §10 记一行（理由 + 日期）
 
 ### 更早（plan 0304：单实例）
 
@@ -251,8 +261,9 @@ plan 0400 归档。
 - **workspace root 在 `src-tauri/`**（ADR-0004）。**仓库根没有 `Cargo.toml`** ——
   在根目录直接跑 `cargo …` 会失败（坑 #8），一律用 `just` 转发。⚠️ **临时脚本里也一样**：
   `cargo run` 的 cwd 必须是 `src-tauri/`。
-- **三个 crate 的分工**：`akasha-core`（Session 模型 + 配置模型与判据，**零 Tauri 依赖**）、
+- **四个 crate 的分工**：`akasha-core`（Session 模型 + 配置模型与判据，**零 Tauri 依赖**）、
   `akasha-pty`（`Transport` + portable-pty + 合批 + `teardown`（会话级回收）+ **`watchdog`**（进程外兜底））、
+  **`akasha-store`**（SQLCipher 库的打开路径 —— 唯一允许 `unsafe` 的地方；**还没被 app 依赖**）、
   `akasha`（app 包 = IPC 薄壳 + 托盘 + 配置载体 + 关窗语义 + 单实例 + 退出钩子 + 看门狗接线 + 事件 + 代码生成 bin）。
 - **前端四层**：`src/ipc/`（唯一允许碰后端，含会话事件订阅）、`src/tabs/`（标签栏）、
   `src/terminal/`（xterm 面与会话接线）、`src/App.tsx`（标签模型 = 谁在、谁是活动的）。
@@ -414,3 +425,24 @@ plan 0400 归档。
     `logging.md` 的字段词汇表漏掉了一半在用的字段（于是 `label` 与 `window` 长期并存）。
     共同点：**门禁只查"索引对不对、命令在不在"，查不了"这句话还成不成立"** ——
     所以进新阶段之前要专门去核一遍，而**正文里不写数字**能消掉最常见的那一类。
+70. **cargo 的 workspace lint 继承是"全有或全无"**：成员不能"继承 + 覆盖其中一条"
+    （`cannot override workspace.lints`），而 rustc 又规定 **`forbid` 不能被 `#[allow]` 覆盖**
+    —— 于是 `unsafe_code = "forbid"` 下 `AGENTS.md` 那句"确有必要时单点 allow"**永远写不出来**，
+    "只给一个 crate 放宽"也走不通。正解：workspace 用 `deny`，再用一条 ast-grep 规则
+    （`no-unsafe-outside-store`）把"唯一单点"圈回来 —— 两层加起来等价于 `forbid`，
+    而且多一条"能改的口子"，比原来更诚实。
+71. **带 `links = "..."` 的原生库在依赖树里只能有一个版本**：`libsqlite3-sys` 带
+    `links = "sqlite3"`，而 `victauri-plugin` 已经钉了 `rusqlite ^0.32` —— 我们
+    `cargo add rusqlite@0.40` 直接 `failed to select a version`，**报错只说"与另一个包冲突"，
+    不说"是谁先占的"**。被别人的依赖定死版本时，先找占位者（`cargo tree -i <crate>` 对
+    非本包的 crate 会说不匹配，要顺着报错里点名的那个包看）。
+72. **SQLCipher 的空 key 不是"静默关掉加密"，而是"返回错误且不挂 codec"**：
+    `sqlite3_key_v2` 在 `nKey == 0` 时直接 `return SQLITE_ERROR`（源码
+    `libsqlite3-sys-0.30.1/sqlcipher/sqlite3.c:107794`），**连接随后照常可用** ——
+    于是"只看返回值而不中断"的后果是写出一个**明文库**，而之后每一步都"成功"。
+    ⚠️ `ATTACH … KEY ''` 是**另一条路径**，那里"不加密"正是本意（明文导出）。
+73. **SQLite 自己建出来的库文件是 644**（umask 022），不是 0600：库文件与加密是两件事，
+    权限要显式收紧；反过来也别写测试假设"默认就是 0600"。
+74. **`PRAGMA cipher_settings` 的输出是一列 `pragma` 行**（每行 `PRAGMA kdf_iter = 256000;`），
+    不是"参数名 / 值"两列 —— 照文档想象去 `query_row` 会一个字段都取不到。
+    解析 pragma 结果时按"列名 + 行"通用处理，别硬编码形状。

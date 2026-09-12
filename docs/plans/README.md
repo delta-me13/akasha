@@ -97,7 +97,7 @@
 | 编号 | 标题 | 状态 | 前置 / 展开时机 | 文件 |
 |---|---|---|---|---|
 | 0400 | 写 ADR-0002（机密存储与可搬迁） | 已完成 | 阶段 4 开工前 | [0400](./archive/0400-adr-0002-secret-storage.md) |
-| 0401 | `rusqlite` + SQLCipher 打开加密库 | 未规划（骨架） | 展开时机：plan 0400 定案后 | [0401](./0401-sqlcipher-open.md) |
+| 0401 | `rusqlite` + SQLCipher 打开加密库 | 已完成（2026-09-12） | plan 0400（ADR-0002 实现中） | [0401](./archive/0401-sqlcipher-open.md) |
 | 0402 | 口令 → KDF → 库密钥 | 未规划（骨架） | 展开时机：plan 0400 定案后 | [0402](./0402-passphrase-kdf.md) |
 | 0403 | 四套池的 CRUD | 未规划（骨架） | 展开时机：plan 0401 / 0402 之后 | [0403](./0403-pools-crud.md) |
 | 0404 | dump 与导出 | 未规划（骨架） | 展开时机：plan 0403 之后 | [0404](./0404-dump-export.md) |
