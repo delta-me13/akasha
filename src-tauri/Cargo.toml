@@ -47,9 +47,19 @@ members = ["crates/*"]
 
 # 全 workspace 的 lint 基线。成员（`crates/*`）必须各自写 `[lints] workspace = true`
 # 才继承 —— 少了那一行，本节对它们形同虚设。
+#
+# ⚠️ 继承是**全有或全无**：成员不能"继承 + 覆盖其中一条"（cargo 直接报
+# `cannot override workspace.lints`）。所以下面的取值只能是**全 workspace 同一个**。
 [workspace.lints.rust]
 # AGENTS.md §3.4：unsafe 默认禁止；确有必要时单点 `#[allow(unsafe_code)]` + `// SAFETY:` 注释。
-unsafe_code = "forbid"
+#
+# ⚠️ 这里是 **deny 而不是 forbid**，理由是硬的：rustc 规定 `forbid` **不能被 `#[allow]` 覆盖**，
+# 所以 `forbid` 会让上面那句"单点 allow"永远写不出来 —— 而 `akasha-store` 恰恰需要一处
+# （口令必须经 `sqlite3_key()` C API 送入，ADR-0002 D4）。既然不能按 crate 分开设，
+# 就只能选 `deny`，然后**用规则把"唯一单点"这件事补回来**：
+# `.ast-grep/rules/no-unsafe-outside-store.yml` 规定 `unsafe` 只许出现在 `akasha-store`。
+# 两层加起来与 `forbid` 等价，且比 `forbid` 多一条能改的口子。
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 # AGENTS.md §0 禁止 unwrap 出现在 command 边界与长驻任务中。这里设 warn 而非 deny：
