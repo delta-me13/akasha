@@ -9,12 +9,14 @@
 ## 一句话
 
 **阶段 2「端到端最小终端」5/5 完成**；**阶段 3「托盘与应用生命周期」6/6 完成**。
-**阶段 4「存储与凭据池」在做（4/8）**：ADR-0002（机密存储与可搬迁）**已进入「实现中」**。
-已落地三块：**SQLCipher 加密库能开**（plan 0401）、**口令只从一条路进来并能真的验证它**
+**阶段 4「存储与凭据池」在做（5/9）**：ADR-0002（机密存储与可搬迁）**已进入「实现中」**。
+已落地四块：**SQLCipher 加密库能开**（plan 0401）、**口令只从一条路进来并能真的验证它**
 （plan 0402 —— 拆开了"打开"与"新建"，原来在没有文件的路径上**任何口令都能开**，
-并把"无 `keyring` 类依赖"变成**常驻门禁**）、**口令在内存里也受保护**
-（plan 0406 —— `mlock` + 静止不可读 + 不进 core dump + fork 清零，四条承诺各有一条测试）。
-下一步是 plan 0403（四套池的 CRUD）。
+并把"无 `keyring` 类依赖"变成**常驻门禁**）、**口令在内存里也受保护**（plan 0406）、
+**四套池能增删改查**（plan 0403 —— v1 的四张表、不变量写在库自己身上、
+私钥读出来进受保护页；**库第一次被 app 依赖**，`vault_status` 走通了真路径）。
+下一步是 plan 0404（dump 与导出）与 0405（可搬迁性验证）；本步顺带把**解锁生命周期**
+立成 plan 0407（谁持有解好的连接、口令从哪来、锁定时抹什么）—— 它是 0404/0405 之后的事。
 
 **点叉的语义由配置 × 托盘共同决定**（plan 0302 + 0303）：
 
@@ -73,12 +75,15 @@
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全绿** |
-| `just test` | **122 tests run: 122 passed**（`akasha` 45 + `akasha-pty` 37 + `akasha-core` 15 + **`akasha-store` 25**） |
-| ↑ 本轮新增 | **3 条**（plan 0406）：受保护页的**四条上游承诺**（`VmLck` 涨 + smaps 权限位 + `dd` + `wf`，**建口令前后取快照做差**，不猜地址）、**边界记录**（`/proc/self/mem` 仍读得出来）、错误文本里不含口令；另有 2 条改成受保护页语义（字节原样回来 / 超一页明确报错） |
+| `just test` | **160 tests run: 160 passed**（`akasha` 47 + `akasha-pty` 37 + `akasha-core` 15 + **`akasha-store` 61**） |
+| ↑ 本轮新增 | **38 条**（plan 0403）：四套池的 round-trip（8）、v1 的形状与外键/`CHECK`（10）、**库里没有绝对路径**的两条判据 + 规则自己的诱饵负例（4）、**私钥那一页**按 D13 判据表重验（2）+ 各枚举 `parse`/`as_str` 往返等模块内单测 |
+| ↑ **四套池（plan 0403）** | ✅ 建库后文件 **36864 字节 = 9 页**（0402 时是一页 4096）、内嵌 SQLite **3.46**（`STRICT` 表要 ≥3.37，有断言）、`PRAGMA foreign_keys` 读回 **1**（sqlite 默认是**关**的 —— 声明了不生效是静默失效）、删还被引用的密钥/主机 → `Conflict` 且行还在。**私钥那一页**：smaps 多出一页 `---p`、正好 **16384 字节**，`VmLck` **68 → 84 kB**，`VmFlags = mr mw me lo ac wf dd sd`，`drop` 之后那一页**消失**（`munmap` 还回去了） |
 | ↑ **内存防护（plan 0406）** | ✅ 进程级 `VmLck` **0 → 4 kB**；那一页在 smaps 里是 `---p`、正好 4096 字节；`VmFlags = mr mw me lo ac wf dd sd`（**`dd` 不进 core dump、`wf` fork 后清零**）。⚠️ **同一批测试也钉住了边界**：`/proc/self/mem` 读那一页**成功**（`FOLL_FORCE` 绕过页保护）—— 这一层挡的是"意外"，不是"能在你进程里跑代码的人" |
 | ↑ **两条判据（plan 0402）** | ✅ **无 `keyring` 类依赖**：`deny.toml` 的 `[bans] deny` 常驻禁令 + `just deny-offline` 一直守着（负例验过：临时加 `keyring` → `bans FAILED` 并逐个报出）；✅ **口令不以任何形式落盘**：标记口令跑完 `create` + 解锁 + 解锁失败后，递归扫数据目录 **0 命中**，而对照目录的诱饵文件 **1 命中**（证明扫描器不是坏在原地） |
 | ↑ **一处推翻隐含假设的实测（plan 0402）** | ⚠️ **文件不存在或 0 字节时，任何口令都能"打开"** —— 库里没有东西可解、KDF 根本没跑（**~0.19 ms**，真实解锁 **~105 ms**）。于是 0401 的 `open()` 在"新建"这条路上**没有验证过口令**。已拆成 `open`（没有就 `NoVault`）/ `create`（**永不覆盖**，写 `user_version = 1` 把口令钉进文件） |
-| `just test-e2e`（自包含：起 Vite + app → **两段** → 收尾） | 退出码 **0**，**13 个用例全绿**：`smoke` 3 / `integration` 2 / `session_channel` 1 / `terminal_render` 2 / `tab_close` 1 / `window_close` 1 / **`single_instance` 2** / `exit_residue` 1 |
+| `just test-e2e`（自包含：起 Vite + app → **两段** → 收尾） | 退出码 **0**，**14 个用例通过**（其中 `window_close` **显式跳过**：这台机器上 `tray_ready=false` → 关窗语义降级为退出，它只验"隐藏"那条路并打印了判据）：`smoke` 3 / `integration` 2 / `session_channel` 1 / `terminal_render` 2 / `tab_close` 1 / `single_instance` 2 / **`vault_status` 1** / `exit_residue` 1 |
+| ↑ **`vault_status` 真路径（plan 0403）** | ✅ 真 app 上 `invoke_command("vault_status")` → `{"path":"…/src-tauri/target/debug/akasha-data/akasha.db","state":"missing"}`，与测试进程自己 `stat` 同一个文件得到的结论一致；父目录名是 `akasha-data` 且它是 **bin 同目录**（P2 的落点判据第一次走通真路径） |
+| ↑ **§7 的 registry 那一条：当前不可满足**（实测，见坑 #82） | `get_registry` 回 **`[]`** —— 本仓库的命令**都没有 `#[inspectable]`**，注册表不镜像命令集；`detect_ghost_commands` 的 `confirmed_ghosts` 也是空的，但它自己的 `reliability` 是 **low**（前端一次命令都没调过）。**替代证据**：真路径上的 `invoke_command` 成功（上面那一行）。用 REST 兜底问到的（沙箱里 MCP 连不到另一个 bash 命名空间里的 app，坑 #33） |
 | ↑ **单实例（0304，Linux 实测）** | ✅ probe `{"activations":0,"registered":true}`、日志 `single instance registered`；`window manage hide` → `visible=false`；再起同一个二进制 → **150–205 ms** 后 `exit=0`、`activations=1`、`visible=true`；进程表只剩 app + 它的看门狗；**藏起来之前的屏幕内容仍在**（是原来那个窗口） |
 | ↑ **单实例降级（0304）** | ✅ `unset DBUS_SESSION_BUS_ADDRESS` + runtime dir 里没有 `bus` → 日志 `single instance unavailable`、probe `{"registered":false}`，**窗口照常起来**（降级不挡启动） |
 | ↑ **dev 重启不被挡（0304）** | ✅ `kill -9` 主实例后立刻重启：新实例照常注册（D-Bus 名字挂在连接上，进程一死就释放，没有陈旧的锁） |
@@ -92,7 +97,7 @@
 | `pnpm build`（tsc + vite build） | 退出码 0；产物 **843 kB / gzip 231 kB**；生产包里 `akashaTerminal` / `activateProbe` / `mockIPC` 命中数 **0**（本轮未改前端，数字沿用） |
 | `just check` / `just clippy`（`--workspace --all-targets`） | 退出码 **0** |
 | `just deny-offline` | `bans ok, licenses ok, sources ok`。⚠️ 本轮**发现并修好了一个盲区**：cargo-deny 默认只把 manifest 指向的包当图根（本仓库 workspace root 同时是真实包 `akasha`），于是 `crates/*` 里尚无人依赖的成员**连同它独有的整棵子树都不在图里** —— `[bans] deny` 写 `keyring` 也静默不生效。加 `--workspace` 后图 **580 → 583**，负例立刻从 `bans ok` 变成 `bans FAILED`。**这同时补上一个先于本轮的洞**：`akasha-store` 的 vendored OpenSSL 此前从未被许可证门禁看过 |
-| `just docs-check` | 三部分全过（ROADMAP 条目在 3 行内 / plan ≤200 行且索引一致） |
+| `just docs-check` | 全过（ROADMAP 条目在 3 行内且无代码块 / plan ≤200 行且索引一致） |
 | `ast-grep scan` | 退出码 **0**；**六条**规则均已用正负例验证（本轮新增 `no-unsafe-outside-store`，用"真 unsafe 命中 / akasha-store 里的同类不命中 / 注释与字符串里的 unsafe 不命中"三例验过才删探针） |
 | `cargo tree -p akasha-core` \| `grep -c tauri` | **0**（分层成立；单实例与配置载体都只在 app 包里） |
 | `just bench`（criterion） | 52.7 GiB/s / 14.1 ns 每批 / 9.64 GiB/s（**0201 的数字，本轮未复跑**） |
@@ -131,7 +136,7 @@
 |---|---|
 | workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` / **`akasha-store`** |
 | 二进制落点 | `src-tauri/target/debug/akasha`（另有代码生成工具 `gen-types`，故必须 `default-run`，坑 #29） |
-| 后端模块 | `bindings`（命令 + 事件 + 代码生成）/ `session`（会话表 + 回收）/ `tray`（托盘）/ `config`（配置文件载体）/ `lifecycle`（关窗语义 + probe）/ **`single_instance`（单实例 + probe）** / `watchdog`（进程外兜底） |
+| 后端模块 | `bindings`（命令 + 事件 + 代码生成）/ `session`（会话表 + 回收）/ `tray`（托盘）/ `config`（配置文件载体 + **数据目录**）/ `lifecycle`（关窗语义 + probe）/ `single_instance`（单实例 + probe）/ **`vault`（库的落点与状态）** / `watchdog`（进程外兜底） |
 | **关窗语义** | 判据 = `akasha-core::CloseAction::decide(close_behavior, tray_ready)`；app 侧 `CloseRequested` → **先 `hide()`、成功才 `prevent_close()`**。**不挂 `RunEvent::ExitRequested`**（理由见 `lib.rs` 注释与坑 #65） |
 | **单实例** | 插件注册在**第一个插件位**（= 第二个实例在别的插件的 setup 之前就退掉；"不会先闪窗口"由 tauri 的时序保证，与顺序无关）；唤起 = `unminimize()` → `show()` → `set_focus()` **三步无条件都做**；`available()` 在 Linux 上 = 会话总线连得上 |
 | **配置** | `<数据目录>/config.json`，`{"close_behavior":"tray"\|"exit"}`；`serde_json` + `deny_unknown_fields`；**只读不写**；在 `.setup()` 里读一次 |
@@ -149,9 +154,11 @@
 | 前端渲染器 | **WebGL**（WebKitGTK + MESA 软件栈下仍拿到 WebGL2）；`canvas` 元素 2 块；DOM 渲染器未启用 |
 | 大输出实测 | 11.18 MB / 170 批（0202）；11.28 MB / 168 批（0204）；10.80 MB / 162 批（0205）；10.41 MB / 159 批（0305）；10.36 MB / 159 批（0302/0303）；10.73 MB / 164 批（0304） |
 | 前端产物 | 843 kB（gzip 231 kB） |
-| **存储层（新）** | `akasha-store`：**全仓库唯一允许出现 `unsafe` 的 crate**（送口令进 `sqlite3_key()`，ADR-0002 D4），由 workspace 的 `unsafe_code = "deny"` + `.ast-grep/rules/no-unsafe-outside-store.yml` 两层守。**两条路**：`create(path, &Passphrase)` = 有内容就 `VaultExists`（永不覆盖）→ 建库 → 送密钥 → 写 `user_version = 1`；`open(path, &Passphrase)` = 不存在的/0 字节就 `NoVault` → 送密钥 → 读一次 `sqlite_master` 逼口令错暴露 → **校验 `user_version`**。两条路都收 0600。**还没有被 app 依赖**（plan 0403 才接） |
-| **口令（新）** | `Passphrase` 类型 = 口令在进程里的唯一形态：空值**造不出来**、**没有 `Debug`**（`{:?}` 是编译错误）、无 `Display`/`Serialize`、`expose()` 只对本 crate 可见、**不实现 `Clone`**；本体住在 `memsafe::Secret` 的一整页**受保护内存**里（`mlock` + 静止态 `PROT_NONE` + `dd` + `wf`，读它要 `&mut` = 一次提权动作）。本 crate 没有任何日志设施，也没有 argv / 环境变量 / 配置读取口 —— 口令只能作为 `&mut Passphrase` 参数进来 |
-| **库文件的磁盘事实** | `akasha.db`（ADR-0002 D1，与 `config.json` 同目录）；SQLCipher 4.5.7 + vendored OpenSSL 3.6.3；`user_version = 1` 是格式权威（`!= 1` 一律拒绝，**含 0**）；盐 16 字节随机、就在文件头前 16 字节（`PRAGMA cipher_salt` 逐字节相同）；SQLite **自己建出来是 644**，我们显式收紧到 **600**；不带 `-wal` / `-shm`（D8，`journal_mode` 保持 `delete`）；解锁代价 **~105 ms**（256,000 次 PBKDF2-HMAC-SHA512）。`cipher_memory_security = ON` 是**进程级、只能开不能关** |
+| **存储层** | `akasha-store`：**全仓库唯一允许出现 `unsafe` 的 crate**（送口令进 `sqlite3_key()`，ADR-0002 D4），由 workspace 的 `unsafe_code = "deny"` + `.ast-grep/rules/no-unsafe-outside-store.yml` 两层守。**两条路**：`create(path, &Passphrase)` = 有内容就 `VaultExists`（永不覆盖）→ 送密钥 → **一次事务里建 v1 的四张表 + 写 `user_version = 1`**；`open(path, &Passphrase)` = 不存在的/0 字节就 `NoVault` → 送密钥 → 开外键 → 读一次 `sqlite_master` 逼口令错暴露 → **校验版本号 + 四张表都在**（缺表 → `MissingTable`）。两条路都收 0600。**app 现在依赖它**（`akasha-store` 进依赖图也补上了 cargo-deny 的图根盲区） |
+| **四套池（新）** | `keys` / `hosts` / `serials` / `forwards` 四个模块，各 5 个函数（insert / get / list / update / delete）+ 反查（`hosts_using_key`、`hosts_jumping_to`、`forwards_of_host`）。`New*`（没有 id）与 `*`（有 id）**是两种类型**；不变量写在库上（`STRICT` + `CHECK` + 外键 `RESTRICT`，ADR-0002 D14），应用层只把 sqlite 的失败翻成 `Conflict`。⚠️ 跳板链的成环**库表达不了**：由 `update` 时逐跳走链挡住（`MAX_JUMP_DEPTH` = 32 是防死循环的兜底） |
+| **私钥（新）** | 池里存 BLOB，**出库直接进受保护页**（`PrivateKey` = `memsafe::Secret<[u8; 16384]>`，与口令共用 `protected.rs`）；`expose()` 是**公开**的（SSH 层要读它），返回 `impl Deref<Target = [u8]>` 的**提权窗口**而不是守卫类型。空私钥与**超过一页（16384 B）**在**构造层**就被拒 —— 库里因此不可能有一条"读不出来"的行。⚠️ 读出时经过两块普通内存，**擦不掉的那一块照实说**：SQLCipher 的行缓冲走它自己的安全分配器（每个连接先开 `cipher_memory_security`），rusqlite 拷出来那个 `Vec` 被 `memsafe` 擦零 |
+| **口令** | `Passphrase` 类型 = 口令在进程里的唯一形态：空值**造不出来**、**没有 `Debug`**（`{:?}` 是编译错误）、无 `Display`/`Serialize`、`expose()` 只对本 crate 可见、**不实现 `Clone`**；本体住在 `memsafe::Secret` 的一整页**受保护内存**里（`mlock` + 静止态 `PROT_NONE` + `dd` + `wf`，读它要 `&mut` = 一次提权动作）。本 crate 没有任何日志设施，也没有 argv / 环境变量 / 配置读取口 —— 口令只能作为 `&mut Passphrase` 参数进来 |
+| **库文件的磁盘事实** | `akasha.db`（ADR-0002 D1，与 `config.json` 同目录）；建库后 **9 页 / 36864 字节**（v1 = 版本号 + 四张表）；SQLCipher 4.5.7 + vendored OpenSSL 3.6.3 + 内嵌 SQLite **3.46**；`user_version = 1` 是格式权威（`!= 1` 一律拒绝，**含 0**），**且要四张表都在**；盐 16 字节随机、就在文件头前 16 字节（`PRAGMA cipher_salt` 逐字节相同）；SQLite **自己建出来是 644**，我们显式收紧到 **600**；不带 `-wal` / `-shm`（D8，`journal_mode` 保持 `delete`）；解锁代价 **~105 ms**（256,000 次 PBKDF2-HMAC-SHA512）。`cipher_memory_security = ON` 是**进程级、只能开不能关** |
 | 合批参数 | `max_bytes` = 64 KiB、`max_delay` = 16 ms（`BatchPolicy::DEFAULT`，唯一来源） |
 | CSP | `csp`：`default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:`；`devCsp` 多一个 `ws://localhost:1420 http://localhost:1420` |
 | capabilities | 仍只有 `core:default` + `opener:default`（+测试用的 `victauri`）。**托盘、配置与单实例都没有加任何 permission** —— 它们全在 Rust 侧，前端碰不到（最小权限，§4.3） |
@@ -163,18 +170,20 @@
   - 0205 的看门狗生命周期仍然 = 一个 app 实例（ADR-0005 §6 的复审条件之一）；
   - 0305/0306 的前提 ② "关最后一个标签页 = 空状态"在"窗口隐藏"成为常态之后是否仍然合适
     （前提 ① 已由 `window_close` 守住，③ 已有实测支撑）。
-- [ ] **下一步 = plan 0403**（[四套池的 CRUD](./plans/0403-pools-crud.md)）。库与口令这两条路
-  已经打通，接着是**表建在哪**（`create()` 现在只写版本号、一列都不建；且 `open()` 已经会校验
-  `!= 1` 一律拒绝 —— 别把 `user_version = 1` 当成"库还没初始化"的标志，那条入口 plan 0402 关掉了）、
-  四套池的 round-trip、以及**把 `akasha-store` 接进 app**（`AGENTS.md` §7 那条"真实路径走通"
-  第一次有对象）。
-- [ ] **机密的内存防护已定为通则**（`AGENTS.md` §3.4 + ADR-0002 **D13**）：口令、私钥、会话令牌、
+- [ ] **下一步 = plan 0404**（[dump 与导出](./plans/0404-dump-export.md)）→ 0405（可搬迁性验证）。
+  两者都要库能开、四套池能读写，现在都具备了。⚠️ 0404 的"明文导出必须二次确认"是一条**门槛**
+  （不是 UI 细节）：判据要写成"没有确认就走不到那条路"，而不是"界面上有个勾"。
+- [ ] **解锁生命周期已立 plan 0407**（骨架，[0407](./plans/0407-unlock-lifecycle.md)）：谁持有解好的
+  `Connection`、口令从哪来、锁定时抹什么。**加它的理由**：plan 0403 只接了"库在哪、建过没有"
+  （纯函数 + 一次 `stat`，不需要先定生命周期），而下一步真正要读写池就必须回答这四个问题。
+  ⚠️ 展开时要处理 `mlock` 失败（`Passphrase::new` 会直接报错 —— 要变成用户能懂的一句话）。
+- [x] **机密的内存防护已定为通则**（`AGENTS.md` §3.4 + ADR-0002 **D13**）：口令、私钥、会话令牌、
   Bitwarden 主密码与 `BW_SESSION` 一律走 `memsafe`，**不自己写** `mlock` / `mprotect` /
-  `VirtualLock` 封装。⚠️ D13 同时定了"防护足够"的**判据表**（四条会红的测试）与**六条已知不足**，
-  并要求**每新增一个用途重验一遍** —— 下一个新用途是 plan 0403 的私钥池。
-- [ ] **ADR-0002 §10 已有 7 条修订**（空 key 的真实机制、空口令改成类型不变量、D4 的顺序措辞、
-  D7 的 `< 1` 改拒绝、§6 的内存安全分类）—— 三态里「实现中可改」的用法已经成型：
-  **先改 ADR、记一行，再往下写代码**。
+  `VirtualLock` 封装。**D13 那条"每新增一个用途重验一遍"已经用掉一次**：私钥（`N` 从 256 变成
+  16384）按同一张判据表重验，实测记进 ADR §7.3 —— 下次是"会话令牌"或 `BW_SESSION`。
+- [x] **ADR-0002 §10 已有 12 条修订**（本轮 +5：D7 补"v1 = 版本号 + 四张表"、D9 的私钥列改 BLOB、
+  新增 **D14**「不变量写进库」、新增 **§7.3** 的实测、§7.1 那条 4096 字节的旧数字标注取代）——
+  三态里「实现中可改」的用法已经成型：**先改 ADR、记一行，再往下写代码**。
 - [ ] **ADR-0002 转「已定案」**（阶段 4 的 plan 0401–0405 全部完成时）——
   ROADMAP 阶段 4 末尾新增的条目。**加它的理由**：不定个时间点，它会永远停在"实现中"，
   而"不可修改"这份约束也就永远不会生效。
@@ -183,7 +192,34 @@
   **13 个用例全绿**（含两段配置）；剩 CI 三平台格子（同上）
 - [ ] **正式 UI**：等设计稿（见上面「UI 现状」）—— 没有验收标准，故**不进 ROADMAP**
 
-### 本轮完成（plan 0406：口令的内存防护）
+### 本轮完成（plan 0403：四套池的 CRUD）
+
+**判据是两条**：各自的 round-trip 单测通过、**库里不存绝对路径**（P2）。
+
+- [x] **四套池 + v1 的形状**：`create` 在**一次事务**里建四张表并写 `user_version = 1`
+  （中途断电不会留下"有表没版本号"的半成品），`open` 除版本号外**还查四张表在不在**
+  —— `user_version = 1` 的含义从此是"**这四张表**"，不是"一个空库"（D7）。列的**形状**
+  有一条快照测试钉着：它红了就是"格式变了"，不是"测试过时了"
+- [x] **不变量写进库**（新增 **ADR-0002 D14**）：`STRICT` 表 + `CHECK` + 外键 `ON DELETE RESTRICT`，
+  `foreign_keys` **每个连接**开一次（sqlite 默认**关**，声明了不生效）。含一条独立的读回断言
+  —— "我们以为开了"不是证据。**代价也记了**：错误来自 sqlite，翻译成 `Conflict { pool, detail }`
+  会丢掉"到底是哪条约束"，但用户要做的事反正是同一件
+- [x] **P2 从散文变成两条判据**：① 没有**列名**像路径（规则按 `_` 分词、整词比较 ——
+  诱饵 `direction` 不许被误判，见坑 #81）；② **任何一个值**都不许提到我们的数据目录。
+  第二条是**现场枚举**表与列（`sqlite_master` + `PRAGMA table_info`），所以**将来加的列自动进检查**
+- [x] **私钥也进受保护页**（D13 判据表重验）：`N` 从 256 变 16384 → 那一页从 1 页变 4 页、
+  `VmLck` +16 kB，四条判据 + 第五条"读完还回去"（`munmap`）。`Protected<N>` 从口令那一份提出来
+  两处共用 —— 抄第二份等于让两份各自漂移
+- [x] **接进 app 只接"落点与状态"**：`vault_status` 命令 + `config::data_dir_of`，
+  **不接解锁生命周期**（它是 plan 0407：谁持有连接、口令从哪来、锁定时抹什么 —— 那是生命周期决定，
+  不该顺手定下来）。没有注册 probe：状态本身就是一条命令，再加一个只会**多一条观察路径、不多一点信息**
+- [x] **顺带修好 E2E 配方的一个隐患**：便携数据目录不存在时 app 会退回 OS 数据目录，
+  于是**两段跑在不同的数据目录里**（第二段写的 `close_behavior` 读不到，第一段还可能读到
+  OS 目录里上一次留下的配置）。现在两段都先 `mkdir -p` 便携目录（坑 #84）
+- [x] 门禁：`just ready` **6/6**；`just test` **160 passed**（`akasha-store` 25 → **61**）；
+  `just test-e2e` **退出码 0**（14 个通过 / 1 个显式跳过）
+
+### 上一轮完成（plan 0406：口令的内存防护）
 
 **判据**：口令在内存里**不被换出、不被 dump、静止时读不到**，而且这四条**各有一条会红的测试**。
 
@@ -208,7 +244,7 @@
       `aarch64-apple-darwin` 都编得过（CI 从未跑过，所以这是目前唯一的跨平台证据）
 - [x] 门禁：`just ready` **6/6**；`just test` **122 passed**（`akasha-store` 22 → **25**）
 
-### 上一轮完成（plan 0402：口令 → KDF → 库密钥）
+### 更早（plan 0402：口令 → KDF → 库密钥）
 
 **判据是两条**：无任何 `keyring` 类依赖、口令不以任何形式落盘。
 
@@ -231,7 +267,7 @@
 - [x] 门禁：`just ready` **6/6**；`just test` **119 passed**；`just deny-offline`
       `bans ok, licenses ok, sources ok`（这次真的覆盖 `crates/*` 独有的子树）
 
-### 上一轮完成（plan 0401：SQLCipher 打开加密库）
+### 更早（plan 0401：SQLCipher 打开加密库）
 
 **判据是两条**：用错误口令打不开库、`.db` 文件里搜不到明文密钥 —— 两条都做成了**具名测试**，
 fixture 故意落在 `target/store-contract/`（不是 tempdir），因为"库里没有明文"是**安全声明**，
@@ -257,7 +293,7 @@ fixture 故意落在 `target/store-contract/`（不是 tempdir），因为"库�
 - [x] 门禁：`just ready` **6/6**；`just test` **106 passed**；`cargo tree` 里是
       `openssl-src`（vendored）而不是系统 OpenSSL
 
-### 上一轮完成（plan 0400：ADR-0002 进入实现中）
+### 更早（plan 0400：ADR-0002 进入实现中）
 
 阶段 4 的第一项是"动存储代码之前先把数据文件格式定案"。
 [`docs/adr/0002-secret-storage.md`](./adr/0002-secret-storage.md) 已写完并**进入「实现中」**；
@@ -321,7 +357,8 @@ plan 0400 归档。
   `cargo run` 的 cwd 必须是 `src-tauri/`。
 - **四个 crate 的分工**：`akasha-core`（Session 模型 + 配置模型与判据，**零 Tauri 依赖**）、
   `akasha-pty`（`Transport` + portable-pty + 合批 + `teardown`（会话级回收）+ **`watchdog`**（进程外兜底））、
-  **`akasha-store`**（SQLCipher 库的打开路径 —— 唯一允许 `unsafe` 的地方；**还没被 app 依赖**）、
+  **`akasha-store`**（SQLCipher 库的打开路径 + v1 的四张表 + 四套池的 CRUD —— 唯一允许 `unsafe`
+  的地方；**app 依赖它**，但只用"落点与状态"两样）、
   `akasha`（app 包 = IPC 薄壳 + 托盘 + 配置载体 + 关窗语义 + 单实例 + 退出钩子 + 看门狗接线 + 事件 + 代码生成 bin）。
 - **前端四层**：`src/ipc/`（唯一允许碰后端，含会话事件订阅）、`src/tabs/`（标签栏）、
   `src/terminal/`（xterm 面与会话接线）、`src/App.tsx`（标签模型 = 谁在、谁是活动的）。
@@ -538,3 +575,31 @@ plan 0400 归档。
     `    VmFlags: …`（前导空格），`line.strip_prefix("VmFlags:")` **永远返回 `None`** ——
     解析前先 `trim_start()`。第一版测试就是这么"找不到自己那一页"的，而它报的是
     "期望 1 页、实际 0 页"，完全不提缩进。
+81. **子串匹配会把规则变成笑话**：`no_absolute_paths` 的第一版用"列名里含 `dir`"判路径，
+    于是 **`forwards.direction` 被判成了路径**。判据自己分不清"`direction` 与 `dir`"的后果很具体：
+    下一个被它拦下的人第一反应是把整条检查删掉。正解是**按 `_` 分词、整词比较**，
+    并且给规则配一对负例 —— 一个该命中（`key_path`）、一个**诱饵**（`direction` 必须不命中）。
+    这条与 `AGENTS.md` §6 对 ast-grep 规则的要求是同一条：**没有负例的规则不算落地**。
+82. **Victauri 的 `get_registry` 在本仓库是空的**（实测：`{"result":[]}`）：注册表只收录
+    **标了 `#[inspectable]`** 的命令，而本仓库六个命令一个都没标 —— 于是 `AGENTS.md` §7 里
+    "新 command 应在 `get_registry` 中可见"这条**当前无法满足**，`detect_ghost_commands` 的
+    `confirmed_ghosts` 也证明不了什么（它自己的 `reliability` 是 **low**，"没调用过"与"没有幽灵"
+    是两回事）。**可用的替代证据**是真路径上的 `invoke_command` 成功。要真正满足它，得先给命令
+    加 `#[inspectable]`（那是一次单独的改动，别混在功能里）。
+    ⚠️ 沙箱里问 app 只能走 **REST 兜底**（`POST /api/tools/<tool>` + `<tmp>/victauri/<pid>/token`），
+    因为 MCP 连不到**另一个 bash 命名空间**里的 app（坑 #33）—— 于是"起 app + 问 app + 收 app"
+    必须在**同一次** bash 调用里。
+83. **clippy 会把"两个常量比较"的断言判红**（`assertions_on_constants`），正解是搬进 `const` 块：
+    `const { assert!(MAX_PEM_LEN <= 65536, "…") }`。搬到那里反而更好 —— "取值依据"从"某天有人跑测试
+    才发现"升级成**编译不过**。注意 `const` 块里的消息只能是字面量（不能用 `{}` 带值进去）。
+84. **E2E 配方两段可能跑在**不同**的数据目录里**：便携目录（bin 同目录的 `akasha-data/`）不存在时
+    app 按 `portable.md` §4 退回 OS 数据目录，于是第二段写进便携目录的 `close_behavior` **读不到**，
+    而第一段还可能读到 OS 目录里**上一次**留下的配置（"关窗即退出"）→ `window_close` 莫名其妙地红。
+    正解：两段都先 `mkdir -p` 便携目录（配方里两处注释都写了理由）。
+85. **集成测试的共用脚手架放 `tests/common/mod.rs`，但必须自己 `#![allow(dead_code)]`**：
+    `cargo` 只把 `tests/*.rs` 当测试目标，`common/mod.rs` 是被各目标 `mod common;` 引进去的普通模块
+    —— 每个目标只用到其中一部分函数，用不到的那些在 `-D warnings` 下会直接让门禁红。
+    （同一类：`let rows = …; rows` 会被 clippy 判 `let_and_return`。）
+86. **`pkill -f <pattern>` 会匹配到你自己那条命令行**：命令里含有那个模式（例如
+    `pkill -f "node_modules/.bin/vite"`），于是脚本在收尾阶段**把自己杀掉**，退出码 143，
+    看起来像"app 崩了"。要么用记录的 pid，要么先 `ps` 核对，要么用 `pkill -x <进程名>`。

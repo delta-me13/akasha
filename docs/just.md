@@ -36,7 +36,7 @@
 | `just fmt` | rustfmt 格式化（`--all` = workspace 全成员） | 转发 |
 | `just fmt-check` | 只检查格式，不改文件 | 转发 |
 | `just test` | 单元测试（cargo-nextest），**workspace 全成员** | 转发 |
-| `just test-e2e` | E2E：真 app 上的验收（契约 + 交互）。**自包含** —— 已有 app（`just dev`）就复用，没有就自己起 Vite + app，跑完收掉；跳过的用例会把原因打出来。**自起时跑两段**（关窗语义由数据目录里的配置决定、只在启动时读）：第一段没有配置文件 = 收托盘（`window_close` 在这里有判据），第二段写 `close_behavior=exit` 再起一次 app（`exit_residue` 的退出刺激），配置文件跑完还原。目标按 `E2E_TARGETS` / `E2E_TARGETS_EXIT` 的顺序逐个串行跑（`cargo test` 一次收多个 `--test` 时是按名字排序的）；guard 要求 `tests/*.rs` 出现在这两个清单**或** `E2E_NO_APP`（后者 = 不需要真 app 的集成测试，理由写在各自文件头） | 转发 |
+| `just test-e2e` | E2E：真 app 上的验收（契约 + 交互）。**自包含** —— 已有 app（`just dev`）就复用，没有就自己起 Vite + app，跑完收掉；跳过的用例会把原因打出来。**自起时跑两段**（关窗语义由数据目录里的配置决定、只在启动时读）：**两段都先在 bin 同目录备好便携数据目录**（没有它 app 会退回 OS 数据目录，两段就跑在不同的目录里，第二段写的配置也就读不到），第一段没有配置文件 = 收托盘（`window_close` 在这里有判据），第二段写 `close_behavior=exit` 再起一次 app（`exit_residue` 的退出刺激），配置文件跑完还原。目标按 `E2E_TARGETS` / `E2E_TARGETS_EXIT` 的顺序逐个串行跑（`cargo test` 一次收多个 `--test` 时是按名字排序的）；guard 要求 `tests/*.rs` 出现在这两个清单**或** `E2E_NO_APP`（后者 = 不需要真 app 的集成测试，理由写在各自文件头） | 转发 |
 | `just bench` | 吞吐基线（criterion）。**不是门禁**，用于改动前后对比 | 转发 |
 | `just deny` | 依赖门禁：许可证 / 漏洞 / 来源（需联网）。⚠️ 带 `--workspace`，理由见下 | 转发 |
 | `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |
