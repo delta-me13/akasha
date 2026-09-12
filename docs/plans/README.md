@@ -100,7 +100,7 @@
 | 0401 | `rusqlite` + SQLCipher 打开加密库 | 已完成（2026-09-12） | plan 0400（ADR-0002 实现中） | [0401](./archive/0401-sqlcipher-open.md) |
 | 0402 | 口令 → KDF → 库密钥 | 已完成（2026-09-12） | plan 0401（库能开） | [0402](./archive/0402-passphrase-kdf.md) |
 | 0403 | 四套池的 CRUD（含库内的不变量与私钥的受保护页） | 已完成（2026-09-12） | plan 0401 / 0402 / 0406 | [0403](./archive/0403-pools-crud.md) |
-| 0407 | 解锁与锁定的生命周期（谁持有连接、口令从哪来、锁定时抹什么） | 未规划（骨架） | 展开时机：plan 0403 之后 | [0407](./0407-unlock-lifecycle.md) |
+| 0407 | 解锁与锁定的生命周期（谁持有连接、口令从哪来、锁定时抹什么） | 进行中 | plan 0403 / 0404 / 0406 | [0407](./0407-unlock-lifecycle.md) |
 | 0404 | dump 与导出（加密 / 明文两条路 + 还原） | 已完成（2026-09-12） | plan 0403（四套池能读写） | [0404](./archive/0404-dump-export.md) |
 | 0406 | 口令的内存防护（`memsafe`） | 已完成（2026-09-12） | plan 0402（`Passphrase` 已就位） | [0406](./archive/0406-memsafe-passphrase-page.md) |
 | 0405 | 可搬迁性验证 | 未规划（骨架） | 展开时机：plan 0403 之后 | [0405](./0405-portability-verify.md) |
