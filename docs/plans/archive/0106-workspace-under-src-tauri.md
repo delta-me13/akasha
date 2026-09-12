@@ -3,7 +3,7 @@
 - **关联**：ROADMAP 阶段 1 ·「Rust 成员收进 `src-tauri/`（取代根 workspace 布局）」
 - **前置**：plan 0101（根 workspace，本次要把它挪进 `src-tauri/`）、plan 0104（监听范围实测）
 - **状态**：已完成（2026-09-11）
-- **决策**：[ADR-0004](../adr/0004-rust-workspace-under-src-tauri.md)（取代 ADR-0001 决策一）
+- **决策**：[ADR-0004](../../adr/0004-rust-workspace-under-src-tauri.md)（取代 ADR-0001 决策一）
 - **影响面**：`Cargo.toml` / `Cargo.lock` / `deny.toml` / `target/` 的位置、`.gitignore`、
   `src-tauri/justfile`、`src-tauri/tauri.conf.json`、`.ast-grep/rules/*`、
   `AGENTS.md` §1/§3.1/§7/§9/§11、`ROADMAP.md`、`docs/`（scope / just / plans / STATUS / ADR）

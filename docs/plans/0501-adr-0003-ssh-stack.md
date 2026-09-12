@@ -43,13 +43,14 @@ cargo search russh 2>/dev/null | head -3         # 记录调研时的版本（�
 3. 补上还没有值的部分：`russh` 具体版本与 feature、认证优先级（agent 还是密钥池）、
    内存凭据缓存的键与失效条件、隧道状态机的转移表、退避序列的具体取值。
 4. 写明不可逆点：连接模型与 `Transport` 映射一旦被代码固化，改动会波及 IPC 类型与前端。
-5. `docs/adr/README.md` 里 0003 状态改为「已接受」，记日期。
+5. `docs/adr/README.md` 里 0003 状态改为「**实现中**」（三态见 [`../adr/README.md`](../adr/README.md)）——
+   实现完成后再转「已定案」。
 
 ## 验收命令
 
 ```bash
 ls docs/adr/0003-*.md
-grep -n '状态' docs/adr/0003-*.md           # 期望：已接受（Accepted，<日期>）
+grep -n '状态' docs/adr/0003-*.md           # 期望：实现中（Implementing，<日期>）
 grep -n 'russh' docs/adr/0003-*.md | head   # 期望：出现**带版本号**的结论，不是泛指
 just docs-check                             # 期望退出码 0
 just ready                                  # 期望退出码 0
@@ -60,7 +61,8 @@ just ready                                  # 期望退出码 0
 
 ## 回滚
 
-未接受前可随意改写；接受后只能由新 ADR 取代。回滚 = 删除该文件。
+三态见 [`../adr/README.md`](../adr/README.md)：进入「实现中」后仍可就地修订（记修订行），
+「已定案」后只能由新 ADR 取代。回滚 = 删除该文件。
 
 ## 实施记录
 

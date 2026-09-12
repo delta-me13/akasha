@@ -1,11 +1,14 @@
 # ADR-0002：机密存储与可搬迁
 
-- **状态**：**提议中**（Proposed，2026-09-12）—— 待 cyrene 裁定；接受后本文不可修改
+- **状态**：**实现中**（Implementing，2026-09-12）—— 已同意按本文动存储代码（plan 0401 起）。
+  ⚠️ **实现中允许就地修订**（`docs/adr/README.md` 的三态）：实现暴露出的架构问题在这里改，
+  不硬扛；每次改动记入 §10。落地 plan 0401–0405 全部完成后转「已定案」，
+  此后不可修改，只能被新 ADR 取代。
 - **日期**：2026-09-12
 - **决策者**：cyrene
 - **影响范围**：数据文件格式（库文件 / 导出文件）、密钥派生与解锁路径、数据目录里的文件清单、
   四套池的物理组织、Bitwarden 离线缓存
-- **关联**：[plan 0400](../plans/0400-adr-0002-secret-storage.md)（本文就是它的产出）、
+- **关联**：[plan 0400](../plans/archive/0400-adr-0002-secret-storage.md)（本文就是它的产出）、
   [plan 0401](../plans/0401-sqlcipher-open.md) – [plan 0405](../plans/0405-portability-verify.md)（从本文取实现约束）
 - **取代**：无
 - **出处**：[`scope.md`](../scope.md) §1（P1 / P2）、§3、§6、§7；[`portable.md`](../portable.md) §2
@@ -319,3 +322,13 @@ PBKDF2-HMAC-SHA512（256,000 次）派生出 256 位库密钥；盐由 SQLCipher
   开启 SQLCipher 时 `libsqlite3-sys` 复制的是 `sqlcipher/bindgen_bundled_version.rs`，
   其中含 `sqlite3_key` / `sqlite3_key_v2` / `sqlite3_rekey`
 - 项目内：`scope.md` §1 / §3 / §6 / §7、`portable.md`、`bitwarden.md`、`docs/logging.md`
+
+---
+
+## 10. 修订记录
+
+实现中就地修订本文时，每次在这里记一行（日期 + 改了什么 + 为什么）。
+**定案之后本节只读** —— 定案的条件是 plan 0401–0405 全部完成。
+
+（尚无 —— 第一次修订从这里开始。plan 0401 的实测清单（§7）跑完之后大概率会有第一条：
+那 7 项现在全是"预期"，而其中任何一项与预期不符都要回到对应决策上改。）

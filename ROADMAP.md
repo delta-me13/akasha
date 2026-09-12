@@ -28,8 +28,8 @@
 - [x] **ADR 队列收敛为 3 份**（见 [`docs/adr/README.md`](./docs/adr/README.md)）
 - [~] **CI 变绿** —— 工作流已重写（`checks-linux` / `checks-other` / `e2e` 三个 job）
       验收：CI 上三个 job 变绿 —— **待首次推送确认**
-- [x] **ADR-0001 定案** —— 已接受（2026-09-11），决策二裁定见其 §0.3
-      验收：`docs/adr/0001` 状态已改为"已接受" ✓
+- [x] **ADR-0001 定案** —— 已定案（2026-09-11），决策二裁定见其 §0.3
+      验收：`docs/adr/0001` 状态已改为"已定案" ✓
 
 ---
 
@@ -112,9 +112,9 @@
 
 目标：四套池可增删改查；库加密；可导出。
 
-- [ ] **ADR-0002 定案**（动存储代码之前；同时收编 Bitwarden 的机密来源）
-      验收：ADR 状态为已接受，且补齐了 `scope.md` 里"还没有值"的那几项
-      → [plan 0400](./docs/plans/0400-adr-0002-secret-storage.md)
+- [x] **ADR-0002 进入实现中**（动存储代码之前；同时收编 Bitwarden 的机密来源）
+      验收：状态为「实现中」，且补齐了 `scope.md` 里"还没有值"的那几项
+      → [plan 0400](./docs/plans/archive/0400-adr-0002-secret-storage.md)
 - [ ] `rusqlite` + **SQLCipher**（`bundled-sqlcipher-vendored-openssl`）
       验收：用错误口令打不开库；`.db` 文件里搜不到明文密钥
       → [plan 0401](./docs/plans/0401-sqlcipher-open.md)
@@ -127,9 +127,11 @@
 - [ ] dump 与导出（可选加密；明文导出必须二次确认）
       验收：加密导出可在另一目录导入还原；明文导出路径有显式确认门槛
       → [plan 0404](./docs/plans/0404-dump-export.md)
-- [ ] **可搬迁性验证**（见 [`docs/portable.md`](./portable.md)）
+- [ ] **可搬迁性验证**（见 [`docs/portable.md`](./docs/portable.md)）
       验收：移动整个文件夹后重启，**原有主机/密钥/规则都在**（只验证"能开"不算过）
       → [plan 0405](./docs/plans/0405-portability-verify.md)
+- [ ] **ADR-0002 转「已定案」**（阶段 4 落地完成之后）
+      验收：状态为「已定案」，且 §10 修订记录里每次改动都有理由
 
 ---
 
@@ -137,8 +139,8 @@
 
 目标：纯 Rust SSH，不调系统 `ssh`。
 
-- [ ] **ADR-0003 定案**（动 `akasha-ssh` 之前；含线协议与资源模型）
-      验收：ADR 状态为已接受，且有可核对的 `russh` 版本结论
+- [ ] **ADR-0003 进入实现中**（动 `akasha-ssh` 之前；含线协议与资源模型）
+      验收：状态为「实现中」，且有可核对的 `russh` 版本结论
       → [plan 0501](./docs/plans/0501-adr-0003-ssh-stack.md)
 - [ ] `src-tauri/crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存）
       验收：同主机开三个 Session **只问一次**凭据（`scope.md` §2.2）
@@ -217,7 +219,7 @@
 目标：`bw` 前置换算清楚，只读导入可用，离线缓存强度与本地池同级。
 
 - [ ] **实测 `bw` 对 `sshKey` 条目的非交互行为**（实现前；需要真实 vault，可提前做）
-      验收：四项实测各有结论与可复现命令，写回 [`docs/bitwarden.md`](./bitwarden.md)
+      验收：四项实测各有结论与可复现命令，写回 [`docs/bitwarden.md`](./docs/bitwarden.md)
       → [plan 0901](./docs/plans/0901-bw-noninteractive-probe.md)
 - [ ] 前置检查：探测 `bw` **及其变体**
       验收：未安装 → 明确报"需安装 Bitwarden CLI **及该装哪个变体**"；专有变体 → 给出提示
@@ -255,4 +257,4 @@
 - 不为 webview 依赖栈做环境重定向
 - 不做 host↔host"真不中转"
 
-**每条的理由与完整清单见 [`docs/scope.md`](./scope.md) §10。**
+**每条的理由与完整清单见 [`docs/scope.md`](./docs/scope.md) §10。**

@@ -63,7 +63,7 @@
 
 | 编号 | 标题 | 状态 | 前置 | 文件 |
 |---|---|---|---|---|
-| 0101 | 落地根 workspace | 已完成 | ADR-0001 已接受 | [0101](./archive/0101-root-workspace.md) |
+| 0101 | 落地根 workspace | 已完成 | ADR-0001 已定案 | [0101](./archive/0101-root-workspace.md) |
 | 0106 | Rust 成员收进 `src-tauri/`（**取代 0101 的布局**） | 已完成 | plan 0101 / 0104 | [0106](./archive/0106-workspace-under-src-tauri.md) |
 | 0102 | CI 平台矩阵（Linux + Windows + macOS，GitHub Actions 一份） | 进行中（本地已完成，待 CI 实跑） | plan 0101 | [0102](./0102-ci-platform-matrix.md) |
 | 0103 | `src-tauri/crates/akasha-core`：`Session` 模型骨架 | 已完成 | plan 0101 | [0103](./archive/0103-core-session-model.md) |
@@ -96,7 +96,7 @@
 
 | 编号 | 标题 | 状态 | 前置 / 展开时机 | 文件 |
 |---|---|---|---|---|
-| 0400 | 写 ADR-0002（机密存储与可搬迁） | 进行中（草案已写，待裁定） | 阶段 4 开工前 | [0400](./0400-adr-0002-secret-storage.md) |
+| 0400 | 写 ADR-0002（机密存储与可搬迁） | 已完成 | 阶段 4 开工前 | [0400](./archive/0400-adr-0002-secret-storage.md) |
 | 0401 | `rusqlite` + SQLCipher 打开加密库 | 未规划（骨架） | 展开时机：plan 0400 定案后 | [0401](./0401-sqlcipher-open.md) |
 | 0402 | 口令 → KDF → 库密钥 | 未规划（骨架） | 展开时机：plan 0400 定案后 | [0402](./0402-passphrase-kdf.md) |
 | 0403 | 四套池的 CRUD | 未规划（骨架） | 展开时机：plan 0401 / 0402 之后 | [0403](./0403-pools-crud.md) |

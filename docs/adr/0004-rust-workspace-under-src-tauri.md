@@ -1,6 +1,6 @@
 # ADR-0004：Rust workspace 收在 `src-tauri/` 下
 
-- **状态**：**已接受**（Accepted，2026-09-11）
+- **状态**：**已定案**（Frozen，2026-09-11）
 - **日期**：2026-09-11
 - **决策者**：cyrene
 - **影响范围**：仓库布局、`Cargo.toml` / `Cargo.lock` / `deny.toml` / `target/` 的位置、
