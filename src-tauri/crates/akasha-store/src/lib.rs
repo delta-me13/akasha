@@ -29,12 +29,17 @@
 //! 拆开之后：`open` 只开已有的库（没有就 `NoVault`），`create` 从不覆盖已有内容。
 //!
 //! 表结构是 v1 的一部分（plan 0403）：[`create`] 在**一次事务**里建四张表并写版本号
-//! （[`schema`]），[`open`] 除版本号外还要确认这四张表都在 —— `user_version = 1` 的含义是
+//! （`schema`），[`open`] 除版本号外还要确认这四张表都在 —— `user_version = 1` 的含义是
 //! "**这四张表**"，不是"一个空库"。四套池的增删改查在 [`pools`]。
+//!
+//! 库里的东西怎么拿出去：看有什么用 [`dump`]（**结构上不含机密**），拿走用 [`export`]
+//! （加密 / 明文两条路，后者有门槛），放回来用 [`export::restore`]（D6 的"导出件就是库"）。
 //!
 //! **零 Tauri 依赖**（`AGENTS.md` §3.1），由
 //! `.ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
 
+pub mod dump;
+pub mod export;
 mod passphrase;
 pub mod pools;
 mod protected;
@@ -125,6 +130,19 @@ pub enum StoreError {
     /// 两者对用户是同一件事：这条链连不通，而且都不是能连的配置。
     #[error("jump chain is unusable: a cycle, or deeper than the limit")]
     JumpChain,
+    /// **明文导出的门槛没过**（ADR-0002 D6）：确认短语不对，或文件名不自曝含 `plain`。
+    ///
+    /// 合成一个变体与 [`StoreError::Conflict`] 同理：用户的下一步动作是同一个 ——
+    /// 按提示补上那个条件，或者放弃明文导出。`reason` 是**固定短语**，不含用户输入
+    /// （文件名可能带用户的私人命名，而这条错误有可能进日志）。
+    #[error("plaintext export refused: {reason}")]
+    PlaintextRefused { reason: &'static str },
+    /// 导出用了它导出时那把口令（ADR-0002 D6："独立口令，不复用库口令"）。
+    ///
+    /// 这不是"口令太弱"，而是**暴露面**问题：导出件会被写进 U 盘、发到别处、写在便签上，
+    /// 而它一旦用了库口令，暴露的就是能打开用户整库的那把。
+    #[error("the export passphrase must differ from the passphrase it is exported from")]
+    SharedPassphrase,
     /// 打不开：口令错**或**文件不是个库。
     #[error("not a database: wrong passphrase or corrupt file")]
     NotADatabase,
@@ -293,14 +311,24 @@ fn apply_key(conn: &Connection, passphrase: &mut Passphrase) -> Result<(), Store
 
 /// 送完密钥后读一次库，把"口令不对"这件事**逼到眼前**。
 fn probe_unlocked(conn: &Connection) -> Result<(), StoreError> {
-    match conn.query_row(PROBE_SQL, [], |row| row.get::<_, i64>(0)) {
-        Ok(_) => Ok(()),
-        Err(rusqlite::Error::SqliteFailure(err, _))
-            if err.code == rusqlite::ErrorCode::NotADatabase =>
+    conn.query_row(PROBE_SQL, [], |row| row.get::<_, i64>(0))
+        .map_err(as_database_error)
+        .map(|_| ())
+}
+
+/// 把"读这一页失败"翻成 [`StoreError`] 的说法：`SQLITE_NOTADB` = 口令错 / 不是个库。
+///
+/// 两处用它：解锁探针（[`probe_unlocked`]）与明文导出那条**裸读**路径
+/// （`export::open_plaintext` —— 拿一个加密件喂给它就是这个错误）。抽成函数是因为
+/// 两处必须给出同一个说法：用户看到的那句话决定他下一步做什么（重新输口令 vs 换文件）。
+pub(crate) fn as_database_error(err: rusqlite::Error) -> StoreError {
+    match err {
+        rusqlite::Error::SqliteFailure(inner, _)
+            if inner.code == rusqlite::ErrorCode::NotADatabase =>
         {
-            Err(StoreError::NotADatabase)
+            StoreError::NotADatabase
         }
-        Err(err) => Err(StoreError::Sqlite(err)),
+        other => StoreError::Sqlite(other),
     }
 }
 
