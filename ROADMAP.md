@@ -74,9 +74,12 @@
 - [x] 前端 xterm + WebGL 渲染，字节流不进 React state
       验收：终端由 canvas 渲染；无 per-chunk 组件重渲染
       → [plan 0203](./docs/plans/archive/0203-xterm-webgl-render.md)
-- [ ] **真正退出零残留**（窗口关闭退出 / app 重载 / panic 三条路径）
-      验收：三条路径退出后都没有残留子进程（托盘语义见阶段 3）
-      → [plan 0204](./docs/plans/0204-exit-zero-residue.md)
+- [x] **真正退出零残留（能跑代码的两条路径）**：关窗口退出 / panic 都显式回收会话
+      验收：两条路径退出后（含**忽略 SIGHUP** 的子进程）零残留 —— E2E 实测
+      → [plan 0204](./docs/plans/archive/0204-exit-zero-residue.md)
+- [ ] **被 SIGKILL 的退出路径也零残留**（`tauri dev` 重编译重启 / `kill -9`）
+      验收：重载后上一轮会话的**忽略 SIGHUP 的子进程**也不残留（现状：会残留）
+      → [plan 0205](./docs/plans/0205-sigkill-exit-residue.md)
 
 ---
 

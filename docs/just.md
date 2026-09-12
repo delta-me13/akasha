@@ -36,7 +36,7 @@
 | `just fmt` | rustfmt 格式化（`--all` = workspace 全成员） | 转发 |
 | `just fmt-check` | 只检查格式，不改文件 | 转发 |
 | `just test` | 单元测试（cargo-nextest），**workspace 全成员** | 转发 |
-| `just test-e2e` | E2E：真 app 上的验收（契约 + 交互）。**自包含** —— 已有 app（`just dev`）就复用，没有就自己起 Vite + app，跑完收掉；跳过的用例会把原因打出来 | 转发 |
+| `just test-e2e` | E2E：真 app 上的验收（契约 + 交互）。**自包含** —— 已有 app（`just dev`）就复用，没有就自己起 Vite + app，跑完收掉；跳过的用例会把原因打出来。目标**按 `E2E_TARGETS` 的顺序逐个串行跑**（`cargo test` 一次收多个 `--test` 时是自己按名字排序的）；`exit_residue` 会关掉 app，**只在自起 app 时真跑** | 转发 |
 | `just bench` | 吞吐基线（criterion）。**不是门禁**，用于改动前后对比 | 转发 |
 | `just deny` | 依赖门禁：许可证 / 漏洞 / 来源（需联网） | 转发 |
 | `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |
@@ -131,6 +131,7 @@ just deny-offline                       # 新依赖的许可证要过门禁
 | 缺 webkit2gtk 之类的系统库 | `just syscheck` 会指出来。Arch 系：`sudo pacman -S webkit2gtk-4.1` |
 | app 起不来，或 Victauri 连不上 | `just test-e2e` 会自己起 app（手动起用 `just dev`）；失败时它会打印 app 日志尾部（完整日志在 `$TMPDIR/akasha-e2e-app.log`）。再用 `just doctor` 确认连的是本项目 |
 | `just test-e2e` 说 Vite 起不来 | 它探的是 `localhost` —— vite 默认只监听 `[::1]`，拿 `127.0.0.1` 探会得到"起不来"的假象（`STATUS.md` 坑 #40）。日志：`$TMPDIR/akasha-e2e-vite.log` |
+| E2E 里"敲命令"之后屏幕没反应 | 先看是不是把 shell **挂住**了：敲进终端的那一行必须 fish / bash / sh 都成立（`(cmd) &` 在 fish 里是**命令替换**，会一直等下去 —— 坑 #41）。症状是**所有**敲命令的用例一起超时，很容易误判成前端坏了 |
 | `just ready` 有一步红了 | 看结尾提示的那一步，或 `.just-ready-fail.log` |
 | 改了配方但 `just --list` 没显示 | 检查缩进（配方体必须是 tab 或统一缩进），以及是否写在了对的 justfile 里 |
 | 改了 `src-tauri/crates/` 下的文件，app 却不重编译 | 先确认它**确实在 `src-tauri/` 里面**（tauri CLI 默认只监听 `src-tauri`）。成员若被放到它外面（例如仓库根的 `src-tauri/crates/`），必须另配监听范围，否则开发循环**静默失效** —— 见 `STATUS.md` 坑 #21 |
