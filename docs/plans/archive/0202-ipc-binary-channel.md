@@ -107,12 +107,23 @@ impl<T: Serialize> IpcResponse for T      // ← blanket impl，Vec<u8> 也命�
 ```
 open_session → 1
 write_session → true
-✅ raw 通道送达 11383949 字节，分 181 批（等待耗时 1651 ms）
+✅ raw 通道送达 11179553 字节，分 170 批（等待耗时 1433 ms）
+帧类型：ArrayBuffer（JSON 帧 0 个）
 ```
 
-181 批 / 11.38 MB ≈ 63 KiB 每批 —— 与 plan 0201 的 64 KiB 容量触发吻合，
-说明"逐块交付"没有回来（用例里也钉了断言：`batches < bytes / 1024`）。
-1.65 s 的等待里绝大部分是 `yes` 在往 PTY 里写 10 MB，不是这条通道。
+（另一次运行：11 383 949 字节 / 181 批 / 1651 ms。字节数与批次数会随 `yes` 的进度
+小幅浮动 —— 判据是"≥10 MB 且批次数远小于字节数/1024"，不是那几个绝对值。）
+
+~63 KiB 每批 —— 与 plan 0201 的 64 KiB 容量触发吻合，说明"逐块交付"没有回来
+（用例里钉了断言：`batches < bytes / 1024`）。等待时间绝大部分是 `yes` 在往 PTY 里写
+10 MB，不是这条通道。
+
+**帧类型也要断言，不能只看字节数**：`number[]` 的 `byteLength` 是 `undefined`，
+但一旦有人"顺手"改成 `Channel<Vec<u8>>`，字节数在**别的方式**下照样能对上 ——
+所以用例直接数"JSON 帧"并要求为 0。这个哨兵不是多余的：上游
+[PR #13268](https://github.com/tauri-apps/tauri/pull/13268) 修过一次回归 ——
+**小消息**（<1 KiB）的 raw 帧曾变成 `number[]` 而不是 `ArrayBuffer`。
+本机 2.11.5 实测：大包（走 fetch 通道）与小包（<1 KiB 走 eval）都是 `ArrayBuffer`。
 
 ### 顺手修掉的两个坑（都不是本 plan 的目标，但不修走不下去）
 

@@ -24,7 +24,8 @@
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + **gen-types-check** + docs-check） | 退出码 **0**，6/6 全绿 |
 | `just test` | **45 tests run: 45 passed**（`akasha` 11 + `akasha-core` 8 + `akasha-pty` 26） |
-| **会话 E2E**（`VICTAURI_E2E=1 cargo test --test session_channel`） | **1 passed**：真 app + 真 PTY，`yes \| head -c 10000000` 的 **11 383 949 字节分 181 批**送达 JS，全程无错误 |
+| **会话 E2E**（`VICTAURI_E2E=1 cargo test --test session_channel`） | **1 passed**：真 app + 真 PTY，`yes \| head -c 10000000` 的 **11 179 553 字节分 170 批**送达 JS，
+**帧类型 = `ArrayBuffer`（JSON 帧 0 个）**，全程无错误 |
 | `just gen-types` / `just gen-types-check` | 生成 `src/ipc/bindings.ts`；比对通过（生成物已提交） |
 | `just bench`（criterion，配方 #20） | 52.7 GiB/s（容量路径）/ 14.1 ns 每批 / 9.64 GiB/s（含线程与 channel） |
 | `just check` / `just clippy`（`--workspace --all-targets`） | 退出码 **0** |
@@ -57,7 +58,8 @@
 | 二进制落点 | `src-tauri/target/debug/akasha`（另有代码生成工具 `gen-types`，故必须 `default-run`，坑 #29） |
 | 增量重编译 | 6.09–6.26s（纯逻辑 crate 改动同样触发） |
 | 出字节路径 | PTY read → 合批（64 KiB / 16 ms）→ `Channel<InvokeResponseBody>` **raw** → JS `ArrayBuffer` |
-| 大输出实测 | 11.38 MB / **181 批**（≈63 KiB 每批）/ 1.65 s（其中绝大部分是 `yes` 在写 PTY，不是通道） |
+| 大输出实测 | 11.18 MB / **170 批**（≈63 KiB 每批）/ 1.43 s（绝大部分是 `yes` 在写 PTY，不是通道） |
+| 前端收到的帧 | **`ArrayBuffer`**（实测；不是 `number[]`）。小包（<1 KiB）走 eval、大包走 fetch 通道，两者都是 ArrayBuffer |
 | 合批参数 | `max_bytes` = 64 KiB、`max_delay` = 16 ms（`BatchPolicy::DEFAULT`，唯一来源） |
 | 合批吞吐（release） | 容量路径 52.7 GiB/s；每批开销 14.1 ns/批；端到端 9.64 GiB/s（复跑浮动 <3%） |
 | 前提条件 | **需要能写 `$HOME`**；沙箱内会刷 `dconf-CRITICAL` 与 WebKit 缓存 hard-link 告警，但 app 仍正常起窗口 |
@@ -195,6 +197,9 @@
     `Channel<String>` 还要多一次 base64。**规范原文（§3.2 旧版）把这种写法当成"正确做法"，
     连 plan 一起抄错了** —— 真正走 raw 的只有 `Channel<InvokeResponseBody>` +
     `InvokeResponseBody::Raw`（JS 侧收到 `ArrayBuffer`）。现在由 `no-string-pty-channel` 拦下。
+    ⚠️ **别只看字节数验收**：上游 [PR #13268](https://github.com/tauri-apps/tauri/pull/13268)
+    修过一次回归 —— 小消息（<1 KiB）的 raw 帧曾变成 `number[]`。用例里要数"JSON 帧 == 0"，
+    否则类型退化时数字依然对得上。
 32. **`u64` 不能直接过 IPC**：生成器拒绝导出 BigInt 风格类型（精度），而
     `dangerously_cast_bigints_to_number` 是**全局**开关，会让将来每个 `u64` 字段都失去保护。
     改用壳层 `u32` 句柄 + **checked** 转换 —— 截断不是"数字变小"，是**把用户的按键送进另一个会话**。

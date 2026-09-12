@@ -29,11 +29,20 @@ fn skip_unless_e2e() -> bool {
 const OPEN_AND_WATCH: &str = r#"
 (() => {
   const internals = window.__TAURI_INTERNALS__;
-  const probe = { bytes: 0, batches: 0, text: "", handle: null, error: null, closed: false };
+  const probe = {
+    bytes: 0, batches: 0, text: "", handle: null, error: null, closed: false,
+    // 帧的**类型**也要盯：raw 通道应当收到二进制。若退化成 `number[]`
+    // （tauri#13138 那种回归），字节数依然"对"，但整条路已经变成 JSON 序列化 ——
+    // 只数字节数是抓不到这件事的。
+    jsonFrames: 0, frameType: null,
+  };
   window.__akashaProbe = probe;
 
   const id = internals.transformCallback((raw) => {
-    const buf = raw.message; // raw 通道 → ArrayBuffer（若退化成 JSON 数组，这里会是 number[]）
+    const buf = raw.message;
+    if (buf instanceof ArrayBuffer) probe.frameType = "ArrayBuffer";
+    else if (ArrayBuffer.isView(buf)) probe.frameType = buf.constructor.name;
+    else { probe.frameType = typeof buf; probe.jsonFrames += 1; }
     probe.bytes += buf.byteLength;
     probe.batches += 1;
     probe.text += new TextDecoder().decode(new Uint8Array(buf));
@@ -163,13 +172,31 @@ async fn raw_channel_carries_ten_megabytes() {
             .unwrap_or_else(|| "?".into())
     );
 
-    // 4. 合批确实在工作：批次数量必须**远小于**字节数 —— 逐字节 emit 会在这里露馅。
+    // 4. 帧是**二进制**而不是 JSON 数组（tauri#13138 那类回归的哨兵）。
+    let json_frames = number(
+        &client
+            .eval_js("window.__akashaProbe.jsonFrames")
+            .await
+            .unwrap(),
+    );
+    let frame_type = client
+        .eval_js("window.__akashaProbe.frameType")
+        .await
+        .map(|v| payload(&v).as_str().unwrap_or("?").to_string())
+        .unwrap_or_else(|_| "?".into());
+    eprintln!("帧类型：{frame_type}（JSON 帧 {json_frames} 个）");
+    assert_eq!(
+        json_frames, 0,
+        "raw 通道退化成 JSON 数组了（帧类型 {frame_type}）—— 这正是 no-string-pty-channel 守的东西"
+    );
+
+    // 5. 合批确实在工作：批次数量必须**远小于**字节数 —— 逐字节 emit 会在这里露馅。
     assert!(
         batches > 0 && batches < after / 1024,
         "{after} 字节只分了 {batches} 批，合批没生效？"
     );
 
-    // 5. 收尾：显式关闭（后端 kill + wait 收尸）。
+    // 6. 收尾：显式关闭（后端 kill + wait 收尸）。
     client
         .eval_js(
             r#"window.__TAURI_INTERNALS__.invoke("close_session", { handle: window.__akashaProbe.handle }).then(() => { window.__akashaProbe.closed = true; return true; }).catch((e) => { window.__akashaProbe.error = String(e); return false; })"#,
