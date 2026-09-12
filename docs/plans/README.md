@@ -109,8 +109,8 @@
 
 | 编号 | 标题 | 状态 | 前置 / 展开时机 | 文件 |
 |---|---|---|---|---|
-| 0501 | 写 ADR-0003（SSH 栈与资源模型） | 未开始 | 阶段 5 开工前 | [0501](./0501-adr-0003-ssh-stack.md) |
-| 0502 | `src-tauri/crates/akasha-ssh`：连接 + 认证 | 未规划（骨架） | 展开时机：plan 0501 定案后 | [0502](./0502-ssh-connect-auth.md) |
+| 0501 | 写 ADR-0003（SSH 栈与资源模型） | 已完成（2026-09-12：ADR-0003 进入「实现中」，调研结论带版本号与出处） | 阶段 5 开工前 | [0501](./archive/0501-adr-0003-ssh-stack.md) |
+| 0502 | `src-tauri/crates/akasha-ssh`：连接 + 认证 | 未规划（骨架） | 展开时机：plan 0501 已完成（ADR-0003 实现中） | [0502](./0502-ssh-connect-auth.md) |
 | 0503 | `direct-tcpip` 原语 | 未规划（骨架） | 展开时机：plan 0502 之后 | [0503](./0503-direct-tcpip-primitive.md) |
 | 0504 | `~/.ssh/config` 受限子集导入 | 未规划（骨架） | 展开时机：plan 0502 之后 | [0504](./0504-ssh-config-subset-import.md) |
 | 0505 | known_hosts 校验与缓存 | 未规划（骨架） | 展开时机：plan 0502 之后 | [0505](./0505-known-hosts.md) |
