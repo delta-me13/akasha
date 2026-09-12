@@ -51,7 +51,7 @@ pub fn start_early(sessions: &Sessions) -> Startup {
         Ok(exe) => exe,
         Err(err) => {
             return Startup::Down {
-                reason: format!("拿不到自己的可执行文件路径：{err}"),
+                reason: format!("current_exe failed: {err}"),
             };
         }
     };
@@ -62,7 +62,7 @@ pub fn start_early(sessions: &Sessions) -> Startup {
             Startup::Up { pid }
         }
         Err(err) => Startup::Down {
-            reason: format!("{err}（exe = {}）", exe.display()),
+            reason: format!("spawn failed: {err}; exe = {}", exe.display()),
         },
     }
 }
@@ -73,13 +73,11 @@ pub fn start_early(sessions: &Sessions) -> Startup {
 /// "看门狗没起来"这件事在 app 里完全看不出来（只有 plan 0205 的用例会红）。
 pub fn report(startup: &Startup) {
     match startup {
-        Startup::Up { pid } => tracing::info!(
-            watchdog = ?pid,
-            "看门狗已启动：app 被 SIGKILL（`tauri dev` 重载 / `kill -9` / `kill -TERM`）时由它收掉会话"
-        ),
-        Startup::Down { reason } => tracing::warn!(
-            reason = %reason,
-            "看门狗：启动失败，SIGKILL 路径会留下残留（见 plan 0205）"
-        ),
+        Startup::Up { pid } => match pid {
+            Some(pid) => tracing::info!(pid, "watchdog started"),
+            // 拿不到 pid 不等于没起来（平台差异），所以照样报"已启动"，只是不带字段。
+            None => tracing::info!("watchdog started"),
+        },
+        Startup::Down { reason } => tracing::warn!(reason = %reason, "watchdog failed to start"),
     }
 }

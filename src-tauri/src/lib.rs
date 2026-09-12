@@ -3,7 +3,7 @@ pub mod bindings;
 pub mod session;
 pub mod watchdog;
 
-use session::Sessions;
+use session::{Sessions, ShutdownReport};
 
 /// 模板留下的探针命令：用来验证 IPC 通道本身是通的（`docs/STATUS.md` 的 IPC 端到端检查）。
 ///
@@ -71,21 +71,26 @@ pub fn run() {
         if let tauri::RunEvent::Exit = event {
             // 这一条比看门狗**更早、更精确**（进程还活着，能逐个 kill + wait 收尸），
             // 所以两条路径不是二选一：能跑代码的时候跑这里，跑不了的时候才轮到看门狗。
-            let report = sessions.shutdown_all();
-            if report.is_clean() {
-                tracing::info!(
-                    shut_down = report.shut_down,
-                    "退出：会话已全部显式回收（kill + wait）"
-                );
-            } else {
-                tracing::error!(
-                    shut_down = report.shut_down,
-                    failures = ?report.failures,
-                    "退出：有会话没能回收"
-                );
-            }
+            log_reclaim(&sessions.shutdown_all(), "exit");
         }
     });
+}
+
+/// 收尾结果的一条汇总：**数字进字段，每个会话的细节在 `shutdown_all` 里各自记**
+/// （这里不 `?` 打 `failures` —— 那是把 `Vec<(u32, String)>` 的 `Debug` 倒进日志）。
+///
+/// 形态规则见 `docs/logging.md`；`trigger` 取值是稳定的字面量（`exit` / `panic`）。
+fn log_reclaim(report: &ShutdownReport, trigger: &'static str) {
+    if report.is_clean() {
+        tracing::info!(reclaimed = report.shut_down, trigger, "sessions reclaimed");
+    } else {
+        tracing::error!(
+            reclaimed = report.shut_down,
+            failed = report.failures.len(),
+            trigger,
+            "sessions not reclaimed"
+        );
+    }
 }
 
 /// panic 路径的回收（`AGENTS.md` §3.3 表格里"panic → 回收"那一格）。
@@ -103,12 +108,7 @@ fn install_panic_reclaim(sessions: Sessions) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         previous(info);
-        let report = sessions.shutdown_all();
-        tracing::error!(
-            shut_down = report.shut_down,
-            failures = ?report.failures,
-            "panic：已尽力回收会话"
-        );
+        log_reclaim(&sessions.shutdown_all(), "panic");
         std::process::abort();
     }));
 }

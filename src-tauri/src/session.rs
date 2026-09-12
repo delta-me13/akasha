@@ -189,7 +189,7 @@ impl Sessions {
     /// 更要紧的是它说明**有第三个地方在悄悄接另一条管道**，那必须被看见。
     pub fn attach_watchdog(&self, watchdog: SessionWatchdog) {
         if self.watchdog.set(Arc::new(watchdog)).is_err() {
-            tracing::warn!("看门狗：已经挂过一个了，这一次忽略");
+            tracing::warn!(reason = "already-attached", "watchdog attach ignored");
         }
     }
 
@@ -209,7 +209,7 @@ impl Sessions {
             return;
         };
         if let Err(err) = watchdog.watch(leader) {
-            tracing::warn!(leader, %err, "看门狗：登记会话失败（这条会话少一道兜底）");
+            tracing::warn!(leader, %err, "watchdog registration failed");
         }
     }
 
@@ -219,7 +219,7 @@ impl Sessions {
             return;
         };
         if let Err(err) = watchdog.forget(leader) {
-            tracing::warn!(leader, %err, "看门狗：撤销登记失败（端到端退出时会再收一次）");
+            tracing::warn!(leader, %err, "watchdog deregistration failed");
         }
     }
 
@@ -354,13 +354,13 @@ impl Sessions {
         let status = match live.transport.shutdown() {
             Ok(status) => status,
             Err(err) => {
-                tracing::warn!(handle, session = live.id.get(), %err, "会话结束：收尾失败（仍然摘牌）");
+                tracing::warn!(handle, session = live.id.get(), %err, "session reap failed");
                 None
             }
         };
 
         if let Err(err) = inner.registry.close(live.id) {
-            tracing::warn!(handle, session = live.id.get(), %err, "会话结束：撤销登记失败");
+            tracing::warn!(handle, session = live.id.get(), %err, "session unregister failed");
         }
         // 撤销看门狗登记排在**收尾之后**（`SessionWatchdog::forget` 的理由），且在**锁外**
         // —— 写管道可能阻塞。
@@ -405,6 +405,8 @@ impl Sessions {
             Ok(mut inner) => inner.live.drain().collect(),
             Err(err) => {
                 // 中毒：拿不到清单。**不 panic** —— 退出路径上 panic 会把证据一起丢掉。
+                // 这条失败在下面没有对应的会话，所以**在这里**记：退出路径的汇总行只报数量。
+                tracing::error!(%err, "session table unavailable");
                 report.failures.push((0, format!("会话表不可用：{err}")));
                 return report;
             }
@@ -417,15 +419,10 @@ impl Sessions {
                     report.shut_down += 1;
                     // 收干净了才撤销登记：失败的那些留着，让看门狗在 EOF 时再试一次。
                     self.forget(live.leader);
-                    tracing::info!(
-                        handle,
-                        session = live.id.get(),
-                        ?status,
-                        "退出：会话已显式回收"
-                    );
+                    log_ended("session reclaimed", handle, live.id, &status);
                 }
                 Err(err) => {
-                    tracing::error!(handle, session = live.id.get(), %err, "退出：会话回收失败");
+                    tracing::error!(handle, session = live.id.get(), %err, "session reclaim failed");
                     report.failures.push((handle, err.to_string()));
                 }
             }
@@ -436,7 +433,7 @@ impl Sessions {
         if let Ok(mut inner) = self.inner.lock() {
             for id in ids {
                 if let Err(err) = inner.registry.close(id) {
-                    tracing::warn!(session = id.get(), %err, "退出：撤销登记失败");
+                    tracing::warn!(session = id.get(), %err, "session unregister failed");
                 }
             }
         }
@@ -546,24 +543,46 @@ fn retire_and_report(sessions: &Sessions, app: &AppHandle, handle: SessionHandle
         // 已经被人收走了（用户点 × / 退出路径）—— 静默：这不是异常，是两条路撞在一起。
         Ok(None) => return,
         Err(err) => {
-            tracing::warn!(handle, %err, "会话结束：收尾失败");
+            tracing::warn!(handle, %err, "session retire failed");
             return;
         }
     };
 
-    tracing::info!(
-        handle,
-        session = retired.id.get(),
-        ?retired.status,
-        "会话自己结束：已收掉并从登记簿摘牌"
-    );
+    log_ended("session retired", handle, retired.id, &retired.status);
 
     let status = retired.status.map(|status| status.to_string());
     let event = SessionEnded { handle, status };
     if let Err(err) = app.emit(SessionEnded::NAME, event) {
         // 前端可能已经走了（窗口销毁 / webview 没了）。后端该收的已经收完了，
         // 发不出去不影响"零残留"这条判据。
-        tracing::warn!(handle, %err, "会话结束：事件发不出去");
+        tracing::warn!(event = SessionEnded::NAME, %err, "event emit failed");
+    }
+}
+
+/// 会话收尾成功的一条记录：**消息是常量，结局进字段**。
+///
+/// 结局分两支（正常退出码 / 被信号终止），字段也跟着分两支 —— [`ExitStatus`] 的
+/// `Display` 是给用户看的中文、`Debug` 会带上 `Some(ExitStatus::Code(..))` 包装，
+/// 两个都不适合当日志字段。形态规则见 `docs/logging.md`。
+fn log_ended(
+    event: &'static str,
+    handle: SessionHandle,
+    session: SessionId,
+    status: &Option<ExitStatus>,
+) {
+    match status {
+        Some(ExitStatus::Code(code)) => {
+            tracing::info!(
+                handle,
+                session = session.get(),
+                exit_code = *code,
+                "{event}"
+            );
+        }
+        Some(ExitStatus::Signal(signal)) => {
+            tracing::info!(handle, session = session.get(), signal = %signal, "{event}");
+        }
+        None => tracing::info!(handle, session = session.get(), "{event}"),
     }
 }
 
