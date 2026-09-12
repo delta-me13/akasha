@@ -52,7 +52,8 @@ test:
 # 所以它必须排最后 —— 放前面会让后面几个目标连不上 app。
 # 也正因为这样，下面**逐个目标各跑一条 `cargo test`**：`cargo test` 一次收多个 `--test`
 # 时是按**目标名字母序**跑的，不是按你写的顺序（`exit_residue` 会第一个跑）。
-E2E_TARGETS := "smoke integration session_channel terminal_render exit_residue"
+# `tab_close` 只是**多开一个标签页再关掉它**，不关 app，所以它可以排在 `exit_residue` 前面。
+E2E_TARGETS := "smoke integration session_channel terminal_render tab_close exit_residue"
 
 # **不需要真 app** 的集成测试（显式清单，理由写在各自的文件头）。
 #

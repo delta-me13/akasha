@@ -57,12 +57,14 @@ fn text(value: &serde_json::Value) -> String {
 }
 
 /// 把一行送进 xterm 的隐藏 textarea（同 `terminal_render.rs`：这是**真实**输入路径）。
+///
+/// ⚠️ 取的是**当前活动标签页**里的那个 textarea（plan 0305）：多标签之后"最后一个"
+/// 不再唯一，而活动面里那个才与 `window.__akashaTerminal` 指同一个终端。
 fn type_js(line: &str) -> String {
     let literal = serde_json::to_string(line).expect("文本无法转成 JS 字符串字面量");
     format!(
         r#"(() => {{
-  const all = document.querySelectorAll('.xterm-helper-textarea');
-  const textarea = all[all.length - 1];
+  const textarea = document.querySelector('.tab-pane.is-active .xterm-helper-textarea');
   if (!textarea) return false;
   textarea.focus();
   textarea.dispatchEvent(new InputEvent('input', {{ data: {literal}, inputType: 'insertText' }}));

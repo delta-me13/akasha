@@ -81,11 +81,14 @@ fn text(value: &serde_json::Value) -> String {
 /// 为什么不直接调命令：`onData` 之后的每一段（编码、IPC、PTY）都是被测对象，
 /// 绕过 `onData` 等于把要验的那一段从测试里删掉。xterm 用 `input` 事件取文本
 /// （可打印字符走这条路，功能键才走 keydown），所以这里造一个 `InputEvent`。
+///
+/// ⚠️ 取的是**当前活动标签页**里的那个 textarea（plan 0305）：多标签之后"第一个"
+/// 不再唯一，而活动面里那个才与 `window.__akashaTerminal` 指同一个终端。
 fn type_js(line: &str) -> String {
     let literal = serde_json::to_string(line).expect("文本无法转成 JS 字符串字面量");
     format!(
         r#"(() => {{
-  const textarea = document.querySelector('.xterm-helper-textarea');
+  const textarea = document.querySelector('.tab-pane.is-active .xterm-helper-textarea');
   if (!textarea) return false;
   textarea.focus();
   textarea.dispatchEvent(new InputEvent('input', {{ data: {literal}, inputType: 'insertText' }}));
