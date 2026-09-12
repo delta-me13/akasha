@@ -38,6 +38,34 @@ ignore = true
 multiple-versions = "warn"
 wildcards = "deny"
 
+# ── P1 的永久门禁：不依赖任何 OS 凭据库 ──────────────────────────────────────
+#
+# `scope.md` §1 的 P1（"凭据由本程序自己保管"）明确否决了 `keyring` 这一类方案。
+# 它本来写在 ROADMAP 的验收里（"无任何 `keyring` 类依赖"，plan 0402）—— 但一次性的
+# `cargo tree` 检查只在那一天成立，所以落成**常驻禁令**：由 `just deny-offline` 一直守着，
+# 而 `deny-offline` 已经在本地的 `just ready` 与 CI 里。
+#
+# 为什么不禁 `security-framework` / `windows` / `dbus`：它们是**通用**平台绑定
+# （TLS、窗口、IPC 都要用），P1 禁的是"把凭据交给操作系统的凭据库"这件事。
+# 禁一个通用 crate 会把将来的 TLS 工作一起挡掉，那不是这条约束的意思。
+#
+# 名单里的两类：`keyring` 是入口（`keyring` v4 的默认特性会拉进
+# `zbus-secret-service-keyring-store`），其余是各平台的后端 —— 列全是因为**它们能被绕过
+# 入口单独依赖**，而多一个名字的成本是零。
+# ⚠️ 名字不是猜的：`cargo add --dry-run keyring` 列出的特性名就是上游的实际命名。
+deny = [
+    "keyring",
+    "secret-service",
+    "linux-keyutils",
+    "dbus-secret-service",
+    "zbus-secret-service-keyring-store",
+    "dbus-secret-service-keyring-store",
+    "linux-keyutils-keyring-store",
+    "apple-native-keyring-store",
+    "windows-native-keyring-store",
+    "android-native-keyring-store",
+]
+
 [sources]
 # 只允许 crates.io：挡住被投毒的同名 git 依赖。
 unknown-registry = "deny"
