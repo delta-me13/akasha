@@ -9,7 +9,7 @@
 - **影响范围**：数据文件格式（库文件 / 导出文件）、密钥派生与解锁路径、数据目录里的文件清单、
   四套池的物理组织、Bitwarden 离线缓存
 - **关联**：[plan 0400](../plans/archive/0400-adr-0002-secret-storage.md)（本文就是它的产出）、
-  [plan 0401](../plans/0401-sqlcipher-open.md) – [plan 0405](../plans/0405-portability-verify.md)（从本文取实现约束）
+  [plan 0401](../plans/archive/0401-sqlcipher-open.md) – [plan 0405](../plans/0405-portability-verify.md)（从本文取实现约束）
 - **取代**：无
 - **出处**：[`scope.md`](../scope.md) §1（P1 / P2）、§3、§6、§7；[`portable.md`](../portable.md) §2
 
@@ -129,9 +129,10 @@ PBKDF2-HMAC-SHA512（256,000 次）派生出 256 位库密钥；盐由 SQLCipher
 - 口令只以**字节缓冲**存在于内存，生命周期限于解锁/建库那一次调用；不进 `String`、
   不进配置文件、不进环境变量、**不作为命令行参数**（会进 `ps` 与 shell 历史）、
   **永远不进日志**（`docs/logging.md` 的字段表里没有这一项，将来也不加）。
-- **空口令在应用层被拒绝**。SQLCipher 里"空 key"的语义是**关闭加密**（`KEY ''` 就是官方
-  用来导出明文库的写法）—— 所以一次校验疏漏的后果是"看起来有口令、其实是明文库"，
-  而对这个文件没有任何补救手段。空 key 只允许出现在**用户显式选择明文导出**的那一条路径上。
+- **空口令在应用层被拒绝**。机制（§7 实测，2026-09-12）：`sqlite3_key()` 在长度为 0 时
+  **直接返回 `SQLITE_ERROR`、根本不挂 codec**，而**连接随后照常可用** —— 于是"没检查返回值"
+  的后果就是得到一个**明文库**，且之后每一步都"成功"。空 key 只允许出现在**用户显式选择
+  明文导出**的那条 `ATTACH … KEY ''` 路径上（那里"不加密"正是本意）。
 - **没有找回机制**：口令丢失 = 数据不可恢复。没有恢复码、没有后门、没有"官方帮你开"。
 
 **理由与权衡**：这些是 P1（不依赖 OS keychain）的直接后果 —— 唯一能保管的秘密就是用户的口令，
@@ -286,18 +287,27 @@ PBKDF2-HMAC-SHA512（256,000 次）派生出 256 位库密钥；盐由 SQLCipher
 
 ---
 
-## 7. 待实测（plan 0401 展开时必须先跑这些，别当成已确认）
+## 7. 实测结果（plan 0401 跑完，2026-09-12）
 
-- [ ] `PRAGMA cipher_settings` 的**实际输出** —— 证明参数就是 §3 D2 写的那一套，而不是"文档说默认如此"
-- [ ] `sqlite3_key` 经 `rusqlite::ffi` 可用；并记下 `libsqlite3-sys` 版本对应的 SQLCipher 版本
-      （本机 registry 缓存里 `libsqlite3-sys 0.30.1` 的 `upgrade_sqlcipher.sh` 写的是 **4.5.7**）
-- [ ] **错误口令**的确切报错形态（预期 `file is not a database` / `SQLITE_NOTADB`）
-- [ ] **空口令**走 `sqlite3_key` 的后果（预期：得到一个**未加密**的库）—— D5 的应用层校验正是为了拦它
-- [ ] 明文导出（`ATTACH … KEY ''`）与导入的 round-trip；确认 `user_version` 确实不被传递
-- [ ] `akasha.db` 里 grep 不到明文私钥（ROADMAP 的判据）
-- [ ] 一次 `rekey` 之后盐是否变化（决定 §5.2 的时序）
+契约测试落在 `src-tauri/crates/akasha-store/tests/sqlcipher_contract.rs` —— 上游换版本时它们该红，
+而不是让本文里的一段推断悄悄失效。
 
----
+| 要实测的 | 实测结果 |
+|---|---|
+| `PRAGMA cipher_settings` 的实际输出 | 一列 `pragma`，每行 `PRAGMA <名> = <值>;`；取值与 D2 **完全一致**（`kdf_iter = 256000`、`cipher_page_size = 4096`、`HMAC_SHA512`、`PBKDF2_HMAC_SHA512`），且 `journal_mode` 就是 `delete`（D8） |
+| `sqlite3_key` 经 `rusqlite::ffi` 可用 + 版本 | 可用（`rusqlite 0.32.1` → `libsqlite3-sys 0.30.1` → **SQLCipher 4.5.7 community**，与预期一致）；provider `openssl`、**OpenSSL 3.6.3**（`openssl-src 300.6.1+3.6.3`，vendored） |
+| 错误口令的报错形态 | `SqliteFailure(Error { code: NotADatabase, extended_code: 26 }, Some("file is not a database"))` —— 与预期一致 |
+| 空口令走 `sqlite3_key` 的后果 | ⚠️ **与预期不同**：`sqlite3_key_v2` 在 `nKey == 0` 时直接 `return SQLITE_ERROR`、**根本不挂 codec**；而**连接随后照常可用** → 得到一个明文库。见 D5 与 §10 |
+| 明文导出的 round-trip + `user_version` | 通过；`user_version` **确实不传递**（源库 7 → 导出 0），源库自身不受影响（D7 的前提成立：导出时必须显式写版本） |
+| `.db` 里 grep 不到明文私钥 | 8192 字节的库里 **0** 命中；头部不是 `SQLite format 3`；对照组的空 key 库 **1** 命中（说明这条 grep 真的能搜到东西） |
+| `rekey` 之后盐是否变化 | **不变**（前 16 字节逐字节相同）→ §5.2 的第 1 / 第 3 步顺序不变，不需要退到"导出再写回"的搬家路径 |
+
+**额外实测（不在原清单里，但影响实现）**：
+
+- **库文件权限**：SQLite 自己建出来是 **644**，不是 0600 —— D12 那条不是装饰，得显式设。
+- **rusqlite 的版本不是我们选的**：`victauri-plugin` 已依赖 `rusqlite ^0.32`，而 `libsqlite3-sys`
+  带 `links = "sqlite3"`，cargo 不允许同一原生库出现两个版本（实测直接被拒）。
+  好在 features 取并集，全 app 只有一个 sqlite，且是我们指定的 SQLCipher 那一支。
 
 ## 8. 复审条件
 
@@ -330,5 +340,6 @@ PBKDF2-HMAC-SHA512（256,000 次）派生出 256 位库密钥；盐由 SQLCipher
 实现中就地修订本文时，每次在这里记一行（日期 + 改了什么 + 为什么）。
 **定案之后本节只读** —— 定案的条件是 plan 0401–0405 全部完成。
 
-（尚无 —— 第一次修订从这里开始。plan 0401 的实测清单（§7）跑完之后大概率会有第一条：
-那 7 项现在全是"预期"，而其中任何一项与预期不符都要回到对应决策上改。）
+| 日期 | 改了什么 | 为什么 |
+|---|---|---|
+| 2026-09-12 | **D5** 那句"空 key 的语义是关闭加密"改成实测机制：`sqlite3_key()` 长度为 0 时返回 `SQLITE_ERROR` 且**不挂 codec**，连接照常可用（所以是"得到明文库"而不是"静默关掉加密"） | plan 0401 的实测（§7）与预期不符。**结论没变**（空口令仍必须在应用层拒绝、仍只放行明文导出那一条路），但危险点更尖锐：错误是**返回值**，不看它就会写出明文库，而后面每步都"成功"。顺带把 `KEY ''`（ATTACH，正当用法）与主库空 key 两条路径分开写清楚 |
