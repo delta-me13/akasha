@@ -312,7 +312,8 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 ## 6. 结构护栏（ast-grep 从"搜索"升级为"约束执行"）
 
 - 配置：根目录 `sgconfig.yml`，规则目录 `.ast-grep/rules/`。
-- `just lint` 包含 `ast-grep scan`；本地与 CI 都跑（CI 见 `.github/workflows/ci.yml`）。
+- `just lint` 包含 `ast-grep scan`（真代码）与 `ast-grep test`（规则自己的正反例）；
+  本地与 CI 都跑（CI 见 `.github/workflows/ci.yml`）。
 - **规则与它守护的代码同 PR 落地**：规则先红、代码补上后转绿。
 - 计划的规则清单（按需逐条添加）：
 
@@ -345,6 +346,14 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 > ⚠️ **改了规则的 `files:` / `ignores:` 之后要重跑一次负例**（目录搬家、crate 改名都算）：
 > 路径写错的表现是"不匹配任何文件"，即**静默失效** —— `ast-grep scan` 照样退出码 0。
 
+- **规则自己的正反例是回归测试，不是一次性探针**：仓库里有 `rule-tests/`（每条规则一个
+  文件：`valid` = 不许命中、`invalid` = 必须命中；基线在 `rule-tests/__snapshots__/`），
+  由 `just lint` 里的 **`ast-grep test`** 跑。改了规则就跟着改测例；基线变了先看差异对不对，
+  再用 `ast-grep test -U` 更新 —— **那份差异就是"规则行为变了"的评审点**。
+  ⚠️ **它不覆盖 `files:` / `ignores:`**（测例不是真实路径下的文件），所以上面那条
+  "真实路径探针"仍要手工做一次。两者一正一侧：`ast-grep test` 守**规则逻辑**，
+  真实路径探针守**路径范围**。
+
 ---
 
 ## 7. 测试与验收（Definition of Done）
@@ -373,8 +382,8 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 ### DoD：一条命令 + 两件机器查不了的事
 
 ```bash
-just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline
-             # + gen-types-check + docs-check
+just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
+             # + deny-offline + gen-types-check + docs-check
 ```
 
 `just ready` 就是**可执行的 DoD**。能在命令里表达的验收标准，不要写成散文 ——
