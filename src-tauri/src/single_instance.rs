@@ -91,7 +91,7 @@ fn on_second_instance(app: &AppHandle<Wry>, _args: Vec<String>, _cwd: String) {
 fn activate(app: &AppHandle<Wry>) {
     let Some(window) = app.get_webview_window(MAIN_LABEL) else {
         // 正常路径上不会发生：窗口是**隐藏**不是销毁（plan 0302），它一直在。
-        tracing::warn!(label = MAIN_LABEL, "window activation target missing");
+        tracing::warn!(window = MAIN_LABEL, "window activation target missing");
         return;
     };
     report_step("unminimize", window.unminimize());

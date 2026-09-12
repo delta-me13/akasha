@@ -51,7 +51,20 @@
 | `event` | 发不出去的事件名 | str |
 | `err` | 错误本体，用 `%err`（Display） | 错误类型 |
 
+应用级（配置 / 托盘 / 单实例）：
+
+| 字段 | 含义 | 取值 |
+|---|---|---|
+| `window` | 窗口 label —— **唯一**表示"哪个窗口"的字段 | str |
+| `close_behavior` | 配置里写的行为 | `tray` / `exit` |
+| `close_action` | **判据实际决定**的动作（与 `close_behavior` 不同 = 降级了，例如托盘建不起来） | `hide` / `exit` |
+| `path` | 配置文件路径（取不到就**不写**这个字段） | str |
+| `activations` | 本进程被第二个实例叫起来的次数 | u64 |
+| `step` | 多步动作里失败的那一步 | `unminimize` / `show` / `focus` |
+
 - 命名：`snake_case`、名词 + 单位（`exit_code` / `leader`），不加 `ctx_` / `my_` 前缀。
+- **一个概念一个字段名**：同一个意思不许换名字（窗口一律 `window`，别再写 `label` / `win`）——
+  换了名，一次 grep 就变成两次，而漏掉的那次不会有任何提示。
 - **拿不到就不写这个字段**（`watchdog started` 不带 `pid`），**不填 0 / `unknown` 顶替** ——
   字段值不撒谎，比字段齐更重要。
 - 二选一的字段（`exit_code` / `signal`）用分支写；`ExitStatus` 的 `Display` 是**给界面看的中文**、
