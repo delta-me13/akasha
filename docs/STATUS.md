@@ -51,13 +51,14 @@
 | ↑ 本轮新增 | 3 条 `Sessions::retire` 单测：收干净（含撤销兜底登记）/ **幂等** / 收尸失败**也摘牌** |
 | `just test-e2e`（自包含：起 Vite + app → 逐个目标 → 收尾） | 退出码 **0**，**10 个用例全绿**：`smoke` 3 / `integration` 2 / `session_channel` 1 / `terminal_render` 2 / `tab_close` 1 / `exit_residue` 1 |
 | ↑ **关标签页 = 立刻丢弃会话**（0305，真 UI 点击） | ✅ 两个忽略 SIGHUP 的探针 → 点 `+` / 切换 / 点 `×`：探针 A 在 **83–93 ms** 内消失、**不需要第二次点击**；探针 B 仍在且屏幕内容还在；关掉最后一个 → 空状态 + 探针 B 也被丢；再开一个仍可交互 |
-| ↑ **敲 `exit` → 标签页跟着关**（0306，反方向） | ✅ `在终端里敲 exit：标签页自己关掉（app 仍在）`；app 日志：`会话自己结束：已收掉并从登记簿摘牌 handle=8 session=8 retired.status=Some(Code(0))`；随后再开一个标签页可交互 |
+| ↑ **敲 `exit` → 标签页跟着关**（0306，反方向） | ✅ `在终端里敲 exit：标签页自己关掉（app 仍在）`；app 日志：`session retired handle=8 session=8 exit_code=0`；随后再开一个标签页可交互 |
 | ↑ 退出零残留（0204/0205，未退化） | ✅ `app 已退出（pid 428）`；`✅ 零残留：忽略 SIGHUP 的 2153 已随会话被收掉` |
 | ↑ 终端判据（未退化） | `renderer = webgl`、canvas 2 块、DOM 行容器 **0** 个；8 MB 分 **134 批**、之后仍可交互；`WEBGL_lose_context` 后退到 canvas **且屏幕内容保留** |
 | ↑ 会话判据（未退化） | raw 通道 10.4 MB / 159 批，帧类型 = `ArrayBuffer`（JSON 帧 **0**）；收尾帧 1 个、console 零异常 |
 | `pnpm build`（tsc + vite build） | 退出码 0；产物 **843 kB / gzip 231 kB**；生产包里 `akashaTerminal` / `activateProbe` / `mockIPC` 命中数 **0** |
 | `just gen-types` / `just gen-types-check` | 本轮生成了**第一个事件**（`events.sessionEnded` / `SessionEnded` 类型），产物已提交 |
 | `just check` / `just clippy`（`--workspace --all-targets`） | 退出码 **0** |
+| ↑ 日志用语（`no-non-ascii-log-message`） | 规则负例已验（应命中的中文消息 2 处命中；诱饵"不在 `tracing` 里的中文字符串"与 `tests/` 探针 **0** 命中）；全仓 `ast-grep scan` 退出码 **0**；16 处日志调用全部改成英文事件名 + 结构化字段 |
 | `just deny-offline` | `bans ok, licenses ok, sources ok`（本轮**没有新增依赖**：事件手写 `impl`，不引 `derive` 特性） |
 | `just docs-check` | 三部分全过（ROADMAP **54** 条目在 3 行内 / plan **47** 份 ≤200 行且索引一致） |
 | `ast-grep scan` | 退出码 **0**；**四条**规则均已用正负例验证 |
@@ -119,7 +120,21 @@
   ③ 会话自己结束时**窗口是隐藏的** —— 事件照样要送到前端（现在走 `AppHandle::emit`，不依赖窗口可见）
 - [ ] **正式 UI**：等设计稿（见上面「UI 现状」）—— 没有验收标准，故**不进 ROADMAP**
 
-### 本轮完成（plan 0306：会话自己结束 = 收掉它 + 关掉那个标签页）
+### 本轮完成（日志用语规范化：消息 = 事件名，变量进字段）
+
+- [x] 16 处 `tracing` 调用改成**英文小写事件名 + 结构化字段**：`session retired` `handle= session= exit_code=`
+  / `sessions reclaimed` `reclaimed= trigger=` / `watchdog registration failed` `leader= err=`
+- [x] 去掉三处 **`Debug` 泄漏**：`watchdog=Some(524494)` / `retired.status=Some(Code(0))` /
+  `failures=[(1, "…")]`。前两个展开成 `pid=` / `exit_code=`（新增 `session.rs::log_ended`，被信号带走时改记
+  `signal=`），集合改成 `failed=<数量>`，**每个会话的细节各自成行**（原先只有汇总行带着整个 `Vec`）
+- [x] 消息里的"为什么"（为什么起看门狗、为什么要收尸、`见 plan 0205`…）全部退回**注释**
+- [x] 规范持久化：[`AGENTS.md`](../AGENTS.md) §3.4 硬规则 + [`docs/logging.md`](./logging.md) 展开
+  （形态/字段词汇/级别/反面例子/边界）
+- [x] 机器拦一半：ast-grep 规则 `no-non-ascii-log-message`（负例一对验过，见上表）
+- [ ] **未覆盖**：`signal` 字段的值仍是**本地化**的（实跑证据里是 `signal=已杀死`）——
+  来自 portable-pty 的 `libc::strsignal`，编号已被它丢掉（坑 #59）。要动依赖，**另起工作项**
+
+### 上一轮完成（plan 0306：会话自己结束 = 收掉它 + 关掉那个标签页）
 
 - [x] `Sessions::retire(handle)`：摘牌 + 显式收尸 + `registry.close` + 撤销兜底登记；
   **幂等**（用户点 × 与 shell 自己退出可能撞在一起）、**不半途而废**（收尸失败也摘牌）
@@ -130,15 +145,11 @@
 - [x] 规范：`AGENTS.md` §3.3（事件表加一行 + "同生命期，两个方向"）、
   **§4.0 前端是验证壳层**；`docs/scope.md` §1.3（UI 现状）+ §5.6（反方向）
 
-### 上一轮完成（plan 0305：关闭终端标签页 = 立刻丢弃该 Session）
-
-- [x] 标签栏 + 多标签宿主（保持挂载、`visibility: hidden`）+ `×` 按 `kind` 渲染
-- [x] `activateProbe`（探针跟活动面走）；拆渲染面兜异常 + 清理顺序"先交会话、后拆面"（坑 #50）
-- [x] **发现并修掉**：丢过 WebGL 上下文的终端在 `term.dispose()` 时抛异常 → 关一个标签页
-  会把整棵树卸载成空白，且会话回收被跳过
-
 ### 更早
 
+- [x] **plan 0305**（关闭终端标签页 = 立刻丢弃该 Session）：标签栏 + 多标签宿主（保持挂载、
+  `visibility: hidden`）+ `×` 按 `kind` 渲染；拆渲染面兜异常 + 清理顺序"先交会话、后拆面"
+  （**发现并修掉**：丢过 WebGL 上下文的终端在 `term.dispose()` 时抛异常 → 整棵树被卸载，会话回收被跳过，坑 #50）
 - [x] **plan 0205 / 0204 / 0203 / 0202 / 0201 / 0107 / CI 去 Gitea 化 + 布局收口**
   （见 git 历史与各自的 `docs/plans/archive/`）
 
@@ -159,6 +170,7 @@
   在**同一个 bash 调用**里才能同时读到 app 与测试（坑 #33）。
 - **文档三级粒度**：`ROADMAP.md`（判据）→ `docs/plans/TTxx-*`（手段）→ 本文件的坑（痕迹）。
   完成的 plan **整份移入 `docs/plans/archive/`**（不拼接、不追加）。
+  规范之外的两份"展开"：`docs/logging.md`（日志形态）、`docs/just.md`（命令清单）。
 - 命令入口分两处：项目级在根 `justfile`，crate 级在 `src-tauri/justfile`。
   **权威清单在 `docs/just.md` §2**（21 个配方），由 `just docs-check` 强制同步。
 
@@ -243,3 +255,17 @@
 56. **接线一次的回调必须走 `ref`**：`attachTerminal` 只在挂载时接到回调（`useEffect(…, [])`），
     而调用方每次渲染都给一个新箭头函数（它闭包着**当时**的列表）—— 直接接会走进过期闭包，
     表现是"晚发生的会话事件处理错了"（本轮是"标签页关不掉"，且只在多标签时出现）。
+57. **日志消息里的"括号解释"会自己长大**：`A：B（因为 C，见 plan D）` 这种写法一旦开了头，
+    下一轮就往里加一句。同一个病根有三个样子：**括号里解释**、**在日志里引用文档**、
+    **`?opt` / `?vec` 把 `Debug` 倒进字段**（`Some(Code(0))` / `[(1, "…")]`）。
+    正解是**消息只放事件名、变量进字段**（[`logging.md`](./logging.md)）—— 注意机器只拦得住
+    "消息里有非 ASCII"这一半，剩下的一半只能靠 review。
+58. **`tauri-plugin-log` 默认 formatter 的时间戳只到秒**（`[日期][时间][target][级别]`），
+    且级别在 target 之后。排查"谁先谁后"时不够用 —— 本仓库**没有**自定义 formatter，
+    多进程（app + 看门狗）的日志顺序靠事件本身判断，别靠时间戳。
+59. **`signal` 字段的值是本地化的**：portable-pty 0.9 的信号名取自 `libc::strsignal`
+    （其 `src/lib.rs:215`，按 `LC_MESSAGES` 本地化 —— zh_CN 下 `SIGKILL` 写成 `已杀死`，
+    C locale 下是 `Killed`），而且**信号编号在它内部就被丢掉**，公开 API 拿不回 `SIGKILL`。
+    已知修法：把 `nix`（**已经在依赖树里** —— portable-pty 用的就是它）升为 `akasha-pty` 的直接依赖，
+    用 `Signal::iterator()` + `as_str()` 反查；顺带好处是 `ExitStatus` 的界面文案也不再随 locale 变。
+    属于**要动依赖**的决定，尚未做。
