@@ -18,11 +18,16 @@
 //!
 //! **范围**：只有数据结构与路由语义。不含任何后端实现（PTY 在 plan 0105）、
 //! 不含持久化（阶段 4）、不引入 async runtime（本步只立模型）。
+//!
+//! 配置模型（[`Config`]）也在这里：它同样只是**判据**（配置 × 环境 → 行为），
+//! 不是实现 —— 读文件（以及将来要写的那一份）都属于 app 侧（plan 0303）。
 
+mod config;
 mod event;
 mod registry;
 mod session;
 
+pub use config::{CloseAction, CloseBehavior, Config};
 pub use event::SessionEvent;
 pub use registry::SessionRegistry;
 pub use session::{SessionError, SessionId, SessionKind};

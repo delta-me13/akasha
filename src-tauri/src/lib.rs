@@ -1,9 +1,12 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 pub mod bindings;
+pub mod config;
+pub mod lifecycle;
 pub mod session;
 pub mod tray;
 pub mod watchdog;
 
+use akasha_core::CloseBehavior;
 use session::{Sessions, ShutdownReport};
 
 /// 模板留下的探针命令：用来验证 IPC 通道本身是通的（`docs/STATUS.md` 的 IPC 端到端检查）。
@@ -52,26 +55,53 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(sessions.clone())
         .invoke_handler(builder.invoke_handler())
-        .plugin(victauri_plugin::init())
+        // 比 `victauri_plugin::init()` 只多注册一个 probe：**关窗语义**（plan 0302/0303）。
+        // 它给 E2E 一个"这台机器该验隐藏、还是该显式跳过"的判据（`AGENTS.md` §7：
+        // 观察后端状态用 probe 读，不靠 grep 日志反推）。
+        // `build()` 只在 port / 容量这类配置非法时失败，而这里全是默认值 —— 与
+        // `victauri_plugin::init()` 内部的 `expect` 是同一条保证（默认配置永远合法）。
+        .plugin(
+            victauri_plugin::VictauriBuilder::new()
+                .probe("lifecycle", lifecycle::snapshot)
+                .build()
+                .expect("default Victauri configuration is always valid"),
+        )
         // 到这一步日志插件已经就绪 —— 看门狗的成败终于有人看得到（`Startup` 的理由）。
         .setup(move |app| {
             watchdog::report(&startup);
             // ⚠️ 事件必须在 setup 里挂上：`tauri-specta` 的 `Builder::invoke_handler`
             // 只覆盖命令，事件缺了这一步会在**发**的时候 panic（`EventRegistry not found`）。
             builder.mount_events(app);
-            // 托盘在窗口与会话表都就绪之后建。返回"可用吗" —— plan 0302 拿它决定
-            // "关窗口 = 隐藏还是真关掉"（没有托盘就没有能叫回窗口的地方）。本步还没有消费者。
-            let _tray_ready = tray::setup(app.handle());
+            // 关窗语义的两个输入在这里定下来。**顺序有讲究**：先读配置、再建托盘、
+            // 最后登记 —— 判据要同时看这两样，而"托盘建成没有"只有 `tray::setup` 的
+            // 返回值知道，事后没人能再问出来。
+            let config = config::load(app.handle());
+            let tray_ready = tray::setup(app.handle());
+            let lifecycle = lifecycle::record(config.close_behavior, tray_ready);
+            // 配置要"收托盘"、但这台机器上**建不起托盘** → 实际动作降级为"直接退出"
+            //（§3.3 那条规则要求把降级之后的行为一起定下来）。这是用户能直接看见的
+            // 行为差异，所以记 warn，不是 debug。
+            if lifecycle.close_behavior() == CloseBehavior::Tray && !lifecycle.tray_ready() {
+                tracing::warn!(
+                    close_action = lifecycle.close_action().as_str(),
+                    "close behavior degraded"
+                );
+            }
             Ok(())
         })
+        .on_window_event(lifecycle::on_window_event)
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
     app.run(move |_handle, event| {
         // ⚠️ 只挂 `Exit`（**不可回头**的那一刻），**不挂** `ExitRequested`：
-        // 阶段 3 的"点叉收托盘"正是在 `ExitRequested` 里 `prevent_exit` 的
-        //（plan 0301/0302）。在那里收会话 = "窗口收进托盘、终端却全被杀掉"，
-        // 与托盘语义正好相反 —— 所以回收点必须晚于"退出已成定局"。
+        //
+        //   * 在 `ExitRequested` 里收会话是错的：那一刻**还可能被 `prevent_exit` 拦回来**
+        //     （托盘模式下就是如此），于是"窗口收进托盘、终端却全被杀掉" —— 与托盘语义相反。
+        //   * 也**不**在那里 `prevent_exit`：`AppHandle::exit()`（托盘菜单的"退出"走它）
+        //     **同样会触发 `ExitRequested`** —— 拦它等于把唯一的退出入口也拦掉。
+        //     而关窗那条路已经在 `CloseRequested` 里拦下（`lifecycle` 的 `prevent_close`），
+        //     窗口根本不会被销毁，轮不到这里兜。见 plan 0302 的实施记录。
         if let tauri::RunEvent::Exit = event {
             // 这一条比看门狗**更早、更精确**（进程还活着，能逐个 kill + wait 收尸），
             // 所以两条路径不是二选一：能跑代码的时候跑这里，跑不了的时候才轮到看门狗。
