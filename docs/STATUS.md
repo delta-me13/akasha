@@ -9,9 +9,10 @@
 ## 一句话
 
 **阶段 2「端到端最小终端」5/5 完成**；**阶段 3「托盘与应用生命周期」6/6 完成**。
-**阶段 4「存储与凭据池」在做（2/7）**：ADR-0002（机密存储与可搬迁）**已进入「实现中」**，
-第一块落地 **SQLCipher 加密库能开**（plan 0401）**已完成** —— 库里是密文、错误口令打不开、
-ADR-0002 §7 的 7 项实测全部跑完（原先全是"预期"）。下一步是 plan 0402（口令 → KDF）。
+**阶段 4「存储与凭据池」在做（3/7）**：ADR-0002（机密存储与可搬迁）**已进入「实现中」**。
+已落地两块：**SQLCipher 加密库能开**（plan 0401）、**口令只从一条路进来并能真的验证它**
+（plan 0402）—— 后者拆开了"打开"与"新建"（原来在没有文件的路径上**任何口令都能开**），
+并把"无 `keyring` 类依赖"变成**常驻门禁**。下一步是 plan 0403（四套池的 CRUD）。
 
 **点叉的语义由配置 × 托盘共同决定**（plan 0302 + 0303）：
 
@@ -70,10 +71,10 @@ ADR-0002 §7 的 7 项实测全部跑完（原先全是"预期"）。下一步�
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全绿** |
-| `just test` | **106 tests run: 106 passed**（`akasha` 45 + `akasha-pty` 37 + `akasha-core` 15 + **`akasha-store` 9**） |
-| ↑ 本轮新增 | **9 条**：`akasha-store` 的 SQLCipher 契约测试（参数集 / 版本 / 错误口令 / 空 key / 明文导出与 `user_version` / grep 不到明文 / 0600 权限 / `rekey` 后盐不变） |
-| ↑ **加密库两条判据（plan 0401）** | ✅ **错误口令打不开**：`SqliteFailure(Error { code: NotADatabase, extended_code: 26 }, Some("file is not a database"))`（正确口令仍打得开，说明这条判据不是因为"文件本来就坏"）；✅ **`.db` 里 grep 不到明文私钥**：8192 字节的库 **0** 命中、头部不是 `SQLite format 3`，而对照的空 key 库 **1** 命中（证明这条 grep 真的能搜到东西） |
-| ↑ **ADR-0002 §7 的 7 项实测** | ✅ SQLCipher **4.5.7 community**（provider `openssl` / **OpenSSL 3.6.3**，vendored）；`kdf_iter = 256000`、`cipher_page_size = 4096`、`HMAC_SHA512`、`PBKDF2_HMAC_SHA512`、`journal_mode = delete`；`sqlcipher_export` **不传** `user_version`（7 → 0）；`rekey` 后**盐不变**。⚠️ **一处与 ADR 预期不符**：空 key 是"`sqlite3_key` 返回 `SQLITE_ERROR` 且不挂 codec、连接照常可用"（不是"静默关掉加密"）—— 已回改 D5 并记入 §10 |
+| `just test` | **119 tests run: 119 passed**（`akasha` 45 + `akasha-pty` 37 + `akasha-core` 15 + **`akasha-store` 22**） |
+| ↑ 本轮新增 | **13 条**：`Passphrase` 类型 3 条（空值造不出来 / `Debug` 不含口令 / 任意字节）、`passphrase_contract` 6 条（只认那一把 / `NoVault` / 不覆盖 / 0 字节可建 / 版本校验 / `vault_path`）、`passphrase_on_disk` 2 条（数据目录 0 命中 + **扫描器对照**）、`sqlcipher_contract` 2 条（盐 = 文件头且每库不同 / 内存安全关不掉） |
+| ↑ **两条判据（plan 0402）** | ✅ **无 `keyring` 类依赖**：`deny.toml` 的 `[bans] deny` 常驻禁令 + `just deny-offline` 一直守着（负例验过：临时加 `keyring` → `bans FAILED` 并逐个报出）；✅ **口令不以任何形式落盘**：标记口令跑完 `create` + 解锁 + 解锁失败后，递归扫数据目录 **0 命中**，而对照目录的诱饵文件 **1 命中**（证明扫描器不是坏在原地） |
+| ↑ **一处推翻隐含假设的实测（plan 0402）** | ⚠️ **文件不存在或 0 字节时，任何口令都能"打开"** —— 库里没有东西可解、KDF 根本没跑（**~0.19 ms**，真实解锁 **~105 ms**）。于是 0401 的 `open()` 在"新建"这条路上**没有验证过口令**。已拆成 `open`（没有就 `NoVault`）/ `create`（**永不覆盖**，写 `user_version = 1` 把口令钉进文件） |
 | `just test-e2e`（自包含：起 Vite + app → **两段** → 收尾） | 退出码 **0**，**13 个用例全绿**：`smoke` 3 / `integration` 2 / `session_channel` 1 / `terminal_render` 2 / `tab_close` 1 / `window_close` 1 / **`single_instance` 2** / `exit_residue` 1 |
 | ↑ **单实例（0304，Linux 实测）** | ✅ probe `{"activations":0,"registered":true}`、日志 `single instance registered`；`window manage hide` → `visible=false`；再起同一个二进制 → **150–205 ms** 后 `exit=0`、`activations=1`、`visible=true`；进程表只剩 app + 它的看门狗；**藏起来之前的屏幕内容仍在**（是原来那个窗口） |
 | ↑ **单实例降级（0304）** | ✅ `unset DBUS_SESSION_BUS_ADDRESS` + runtime dir 里没有 `bus` → 日志 `single instance unavailable`、probe `{"registered":false}`，**窗口照常起来**（降级不挡启动） |
@@ -87,7 +88,7 @@ ADR-0002 §7 的 7 项实测全部跑完（原先全是"预期"）。下一步�
 | ↑ 会话判据（未退化） | raw 通道 10.73 MB / 164 批；收尾帧 1 个、console 零异常 |
 | `pnpm build`（tsc + vite build） | 退出码 0；产物 **843 kB / gzip 231 kB**；生产包里 `akashaTerminal` / `activateProbe` / `mockIPC` 命中数 **0**（本轮未改前端，数字沿用） |
 | `just check` / `just clippy`（`--workspace --all-targets`） | 退出码 **0** |
-| `just deny-offline` | `bans ok, licenses ok, sources ok`。本轮新增 3 个包（`akasha-store` / `openssl-src` / `openssl-sys`）**没有新增任何许可证放行** —— 它们都是 MIT / Apache-2.0 |
+| `just deny-offline` | `bans ok, licenses ok, sources ok`。⚠️ 本轮**发现并修好了一个盲区**：cargo-deny 默认只把 manifest 指向的包当图根（本仓库 workspace root 同时是真实包 `akasha`），于是 `crates/*` 里尚无人依赖的成员**连同它独有的整棵子树都不在图里** —— `[bans] deny` 写 `keyring` 也静默不生效。加 `--workspace` 后图 **580 → 583**，负例立刻从 `bans ok` 变成 `bans FAILED`。**这同时补上一个先于本轮的洞**：`akasha-store` 的 vendored OpenSSL 此前从未被许可证门禁看过 |
 | `just docs-check` | 三部分全过（ROADMAP 条目在 3 行内 / plan ≤200 行且索引一致） |
 | `ast-grep scan` | 退出码 **0**；**六条**规则均已用正负例验证（本轮新增 `no-unsafe-outside-store`，用"真 unsafe 命中 / akasha-store 里的同类不命中 / 注释与字符串里的 unsafe 不命中"三例验过才删探针） |
 | `cargo tree -p akasha-core` \| `grep -c tauri` | **0**（分层成立；单实例与配置载体都只在 app 包里） |
@@ -145,8 +146,9 @@ ADR-0002 §7 的 7 项实测全部跑完（原先全是"预期"）。下一步�
 | 前端渲染器 | **WebGL**（WebKitGTK + MESA 软件栈下仍拿到 WebGL2）；`canvas` 元素 2 块；DOM 渲染器未启用 |
 | 大输出实测 | 11.18 MB / 170 批（0202）；11.28 MB / 168 批（0204）；10.80 MB / 162 批（0205）；10.41 MB / 159 批（0305）；10.36 MB / 159 批（0302/0303）；10.73 MB / 164 批（0304） |
 | 前端产物 | 843 kB（gzip 231 kB） |
-| **存储层（新）** | `akasha-store`：**全仓库唯一允许出现 `unsafe` 的 crate**（送口令进 `sqlite3_key()`，ADR-0002 D4），由 workspace 的 `unsafe_code = "deny"` + `.ast-grep/rules/no-unsafe-outside-store.yml` 两层守。`open(path, passphrase)` = 空口令先拒 → `Connection::open` → `sqlite3_key`（**打开后第一件事**）→ 读一次 `sqlite_master` 逼口令错暴露 → chmod 0600。**还没有被 app 依赖**（plan 0403 才接） |
-| **库文件的磁盘事实** | `akasha.db`（ADR-0002 D1，与 `config.json` 同目录）；SQLCipher 4.5.7 + vendored OpenSSL 3.6.3；SQLite **自己建出来是 644**，我们显式收紧到 **600**；不带 `-wal` / `-shm`（D8，`journal_mode` 保持 `delete`） |
+| **存储层（新）** | `akasha-store`：**全仓库唯一允许出现 `unsafe` 的 crate**（送口令进 `sqlite3_key()`，ADR-0002 D4），由 workspace 的 `unsafe_code = "deny"` + `.ast-grep/rules/no-unsafe-outside-store.yml` 两层守。**两条路**：`create(path, &Passphrase)` = 有内容就 `VaultExists`（永不覆盖）→ 建库 → 送密钥 → 写 `user_version = 1`；`open(path, &Passphrase)` = 不存在的/0 字节就 `NoVault` → 送密钥 → 读一次 `sqlite_master` 逼口令错暴露 → **校验 `user_version`**。两条路都收 0600。**还没有被 app 依赖**（plan 0403 才接） |
+| **口令（新）** | `Passphrase` 类型 = 口令在进程里的唯一形态：空值**造不出来**、`Debug` 只打 `<redacted>`、无 `Display`/`Serialize`、`expose()` 只对本 crate 可见、**不实现 `Clone`**。本 crate 没有任何日志设施，也没有 argv / 环境变量 / 配置读取口 —— 口令只能作为 `&Passphrase` 参数进来。**不做内存擦除**（`zeroize`），理由写在 `src/passphrase.rs` 文档里（边界是"文件是密文"） |
+| **库文件的磁盘事实** | `akasha.db`（ADR-0002 D1，与 `config.json` 同目录）；SQLCipher 4.5.7 + vendored OpenSSL 3.6.3；`user_version = 1` 是格式权威（`!= 1` 一律拒绝，**含 0**）；盐 16 字节随机、就在文件头前 16 字节（`PRAGMA cipher_salt` 逐字节相同）；SQLite **自己建出来是 644**，我们显式收紧到 **600**；不带 `-wal` / `-shm`（D8，`journal_mode` 保持 `delete`）；解锁代价 **~105 ms**（256,000 次 PBKDF2-HMAC-SHA512）。`cipher_memory_security = ON` 是**进程级、只能开不能关** |
 | 合批参数 | `max_bytes` = 64 KiB、`max_delay` = 16 ms（`BatchPolicy::DEFAULT`，唯一来源） |
 | CSP | `csp`：`default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:`；`devCsp` 多一个 `ws://localhost:1420 http://localhost:1420` |
 | capabilities | 仍只有 `core:default` + `opener:default`（+测试用的 `victauri`）。**托盘、配置与单实例都没有加任何 permission** —— 它们全在 Rust 侧，前端碰不到（最小权限，§4.3） |
@@ -158,12 +160,13 @@ ADR-0002 §7 的 7 项实测全部跑完（原先全是"预期"）。下一步�
   - 0205 的看门狗生命周期仍然 = 一个 app 实例（ADR-0005 §6 的复审条件之一）；
   - 0305/0306 的前提 ② "关最后一个标签页 = 空状态"在"窗口隐藏"成为常态之后是否仍然合适
     （前提 ① 已由 `window_close` 守住，③ 已有实测支撑）。
-- [ ] **下一步 = plan 0402**（[口令 → KDF → 库密钥](./plans/0402-passphrase-kdf.md)）。
-  库能开之后要定的是"口令怎么进来、怎么保证不落盘"：KDF 照抄 ADR-0002 D3（用 SQLCipher
-  原生的那一套，不自己写），交付面是**无任何 `keyring` 类依赖**（`cargo tree` 可证）
-  与"口令不出现在磁盘 / 命令行 / 环境变量 / 日志里"。
-- [ ] **ADR-0002 §10 已有第一条修订**（空 key 的真实机制，见上）—— 这是三态里
-  「实现中可改」的第一次使用。0402–0405 再撞到与决策不符的实测时照同样办法：
+- [ ] **下一步 = plan 0403**（[四套池的 CRUD](./plans/0403-pools-crud.md)）。库与口令这两条路
+  已经打通，接着是**表建在哪**（`create()` 现在只写版本号、一列都不建；且 `open()` 已经会校验
+  `!= 1` 一律拒绝 —— 别把 `user_version = 1` 当成"库还没初始化"的标志，那条入口 plan 0402 关掉了）、
+  四套池的 round-trip、以及**把 `akasha-store` 接进 app**（`AGENTS.md` §7 那条"真实路径走通"
+  第一次有对象）。
+- [ ] **ADR-0002 §10 已有 5 条修订**（空 key 的真实机制、空口令改成类型不变量、D4 的顺序措辞、
+  D7 的 `< 1` 改拒绝、§6 的内存安全分类）—— 三态里「实现中可改」的用法已经成型：
   **先改 ADR、记一行，再往下写代码**。
 - [ ] **ADR-0002 转「已定案」**（阶段 4 的 plan 0401–0405 全部完成时）——
   ROADMAP 阶段 4 末尾新增的条目。**加它的理由**：不定个时间点，它会永远停在"实现中"，
@@ -173,7 +176,30 @@ ADR-0002 §7 的 7 项实测全部跑完（原先全是"预期"）。下一步�
   **13 个用例全绿**（含两段配置）；剩 CI 三平台格子（同上）
 - [ ] **正式 UI**：等设计稿（见上面「UI 现状」）—— 没有验收标准，故**不进 ROADMAP**
 
-### 本轮完成（plan 0401：SQLCipher 打开加密库）
+### 本轮完成（plan 0402：口令 → KDF → 库密钥）
+
+**判据是两条**：无任何 `keyring` 类依赖、口令不以任何形式落盘。
+
+- [x] **`Passphrase` 类型**：空口令从"打开函数里的一个 if"升级成**类型不变量** ——
+      空值造不出来、`Debug` 只打 `<redacted>`、没有 `Display`/`Serialize`、
+      `expose()` 只对本 crate 可见。于是 D5 那句"不进日志"不是纪律而是**写不出来**
+- [x] **`open` / `create` 拆开**（本步最要紧的一条）：实测发现**文件不存在或 0 字节时任何口令
+      都能"打开"** —— 空的库里没有东西可解、KDF 根本没跑，所以 0401 的 `open()` 在"新建"这条路上
+      **没有验证过口令**，还把这把错口令当成了创建口令。现在 `create` 用 `user_version = 1`
+      把口令钉进文件（文件随即从 0 变成 4096 字节），`open` 只开已有的库、并校验版本
+- [x] **`cipher_memory_security = ON`**（ADR-0002 §6 的"建议开"）：让 SQLCipher 的密钥材料
+      在释放时被擦除。实测它是**进程级、只能开不能关**，且排在 `sqlite3_key` **之前**更优 ——
+      §6 与 D4 的措辞据此改精确（各记一行 §10）
+- [x] **判据 ① 落成常驻门禁**：`deny.toml` 的 `[bans] deny`（`keyring` + 各平台后端）——
+      不再是一次性的 `cargo tree` 检查
+- [x] **顺带修好门禁的盲区**（不在原计划里）：cargo-deny 默认只把 manifest 指向的包当图根，
+      `crates/*` 里尚无人依赖的成员**连同它独有的整棵子树都不在图里**。加 `--workspace`
+      之后负例才真的红，同时补上一个先于本轮的洞（vendored OpenSSL 从未被许可证门禁看过）
+- [x] **ADR-0002 新增 4 条 §10 修订**（D5 类型化 / D4 顺序措辞 / D7 的 `<1` 改拒绝 / §6 内存安全）
+- [x] 门禁：`just ready` **6/6**；`just test` **119 passed**；`just deny-offline`
+      `bans ok, licenses ok, sources ok`（这次真的覆盖 `crates/*` 独有的子树）
+
+### 上一轮完成（plan 0401：SQLCipher 打开加密库）
 
 **判据是两条**：用错误口令打不开库、`.db` 文件里搜不到明文密钥 —— 两条都做成了**具名测试**，
 fixture 故意落在 `target/store-contract/`（不是 tempdir），因为"库里没有明文"是**安全声明**，
@@ -446,3 +472,25 @@ plan 0400 归档。
 74. **`PRAGMA cipher_settings` 的输出是一列 `pragma` 行**（每行 `PRAGMA kdf_iter = 256000;`），
     不是"参数名 / 值"两列 —— 照文档想象去 `query_row` 会一个字段都取不到。
     解析 pragma 结果时按"列名 + 行"通用处理，别硬编码形状。
+75. **cargo-deny 的图根是"manifest 指向的那个包"，不是整个 workspace**（上游：
+    "that crate will be the sole root … only other workspace members that are
+    dependencies of that workspace crate will be included"）。本仓库 workspace root 同时是
+    真实包 `akasha`，于是 `crates/*` 里**尚无人依赖的成员连同它独有的整棵子树都在图外** ——
+    症状是**静默失效**：`deny.toml` 里 `[bans] deny = ["keyring"]` 照样报 `bans ok`。
+    正解是给 cargo-deny 加 `--workspace`，而且它必须放在 `check` **之前**（顶层参数）。
+    诊断手法：`cargo deny -L debug … | grep 'filtered'` 会列出所有被筛掉的包。
+76. **"0 字节的库"不是"空库"，是"还没有密钥"**：SQLCipher 的盐与密钥校验值只在**第一次写页**
+    时落盘，在那之前文件是 0 字节，而 `SELECT count(*) FROM sqlite_master` 在空文件上**照样成功**
+    （没有东西可解，KDF 根本没跑，实测 ~0.19 ms vs 真实解锁 ~105 ms）。所以
+    **"打开"与"新建"必须是两条路**：把创建藏在 `open` 里，等于在新建路径上不验证口令，
+    而且会把这把错口令当成创建口令。写一句 `PRAGMA user_version = 1` 就能让文件实体化并钉住口令。
+77. **`cipher_memory_security` 是进程级、单向的**：上游 `sqlcipher_set_mem_security` 的实现是
+    `if(on) { … }`（设 `OFF` 既不报错也不生效），而 `sqlcipher_mem_security_on` 是静态变量
+    （**不是**连接级）。它读回来的值还是 `on && executed` 的合取 —— 所以测试里只能断言
+    "我们打开过之后读回来是 1"，**不能**断言"默认是 0"（同进程里前一个连接开过就是 1）。
+    另外：它能排在 `sqlite3_key` **之前**（不读库），而排在前面才有意义（codec context 里
+    那份口令副本才落在安全分配器上）。
+78. **模块内的 `#[cfg(test)] mod tests` 也要自己 `allow(clippy::unwrap_used)`**：
+    workspace 把它设成 warn 而 `just clippy` 带 `-D warnings`，集成测试文件顶部的
+    `#![allow(...)]` **管不到** lib 里的测试模块（症状：`just ready` 红在 clippy、
+    报的却是"test profile"里的 unwrap）。写法是在 `mod tests {` 之后紧跟一行 `#![allow(...)]`。

@@ -29,3 +29,10 @@
 - [ ] 「## 验收命令」：round-trip 单测 + 一条"库里没有绝对路径"的检查
 - [ ] 确认 `config.json` 与库文件在**同一个数据目录**（库的落点由 ADR-0002 D1 定）；
       **不并入库** —— 这一条曾写作"此时应并入"，已被 D11 推翻
+- [ ] **表建在哪**：plan 0402 之后 `create()` 只写 `PRAGMA user_version = 1`（**一列都不建**），
+      且 `open()` 已经会校验版本（`!= 1` 一律拒绝，**包括 0**）。所以建表语句要么进 `create()`，
+      要么另起一个"建表并只在空库上跑一次"的入口 —— **不要**把 `user_version = 1`
+      当成"库还没初始化"的标志（plan 0402 把那条入口关掉了，理由见 ADR-0002 §10 的 D7 行）
+- [ ] 接进 app：`akasha/Cargo.toml` 依赖 `akasha-store`，数据目录由 `src-tauri/src/config.rs`
+      现有那套（便携目录 / OS 目录）决定，库文件用 `akasha_store::vault_path()`。
+      ⚠️ 同时也是 `AGENTS.md` §7 里"IaaS 真实路径走通"那条第一次有对象的地方

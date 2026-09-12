@@ -118,9 +118,9 @@
 - [x] `rusqlite` + **SQLCipher**（`bundled-sqlcipher-vendored-openssl`）
       验收：用错误口令打不开库；`.db` 文件里搜不到明文密钥
       → [plan 0401](./docs/plans/archive/0401-sqlcipher-open.md)
-- [ ] 口令 → KDF → 库密钥（**不依赖 OS keychain**，见 `scope.md` §1）
+- [x] 口令 → KDF → 库密钥（**不依赖 OS keychain**，见 `scope.md` §1）
       验收：无任何 `keyring` 类依赖
-      → [plan 0402](./docs/plans/0402-passphrase-kdf.md)
+      → [plan 0402](./docs/plans/archive/0402-passphrase-kdf.md)
 - [ ] 四套池的 CRUD：密钥 / ssh 配置 / serial 配置 / 端口转发规则
       验收：各自的 round-trip 单测通过；**库里不存绝对路径**（P2）
       → [plan 0403](./docs/plans/0403-pools-crud.md)
