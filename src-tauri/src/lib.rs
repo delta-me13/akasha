@@ -89,6 +89,26 @@ pub fn run() {
         // 到这一步日志插件已经就绪 —— 看门狗与单实例的成败终于有人看得到
         //（两者的 `Startup` 都是同一个理由）。
         .setup(move |app| {
+            // 便携模式下**数据目录写不进去** → 拒绝启动（`docs/portable.md` §4 第 3 条）。
+            //
+            // 为什么是拒绝而不是替他退回 OS 目录：那个目录本身就是"我要便携"的标记，
+            // 替他决定就等于把数据写到他看不见的地方 —— 他拔了 U 盘才发现。
+            // ⚠️ **只在这条路上拒绝**：退回 OS 目录的那条路上"写不了"仍然只是降级
+            //（配置读不到就取默认值，`config::load`），那从来不是用户的明确要求。
+            //
+            // 位置选在 `.setup()` 的开头：此时各插件的 setup 已经跑过（日志出口就绪，
+            // 这条错误才**说得出来**），而窗口与托盘还没建（拒绝是"什么都没发生"地退出）。
+            // 退出码见 `config::EXIT_NOT_WRITABLE`，E2E 按它判定。
+            if let Some(dir) = config::portable_data_dir()
+                && let Err(err) = config::require_writable(&dir)
+            {
+                tracing::error!(
+                    %err,
+                    path = %dir.display(),
+                    "portable data dir not writable"
+                );
+                std::process::exit(config::EXIT_NOT_WRITABLE);
+            }
             watchdog::report(&startup);
             single_instance::report(&instance);
             // ⚠️ 事件必须在 setup 里挂上：`tauri-specta` 的 `Builder::invoke_handler`

@@ -75,6 +75,10 @@ test:
 test-e2e:
     just --justfile {{SRC}}/justfile test-e2e
 
+# 可搬迁性：把 bin 所在文件夹搬走之后数据还在吗（自己起 app，见 src-tauri/justfile）
+portable:
+    just --justfile {{SRC}}/justfile portable
+
 # 吞吐基线（criterion）。**不是门禁** —— 它是用于改动前后对比的基线
 bench:
     just --justfile {{SRC}}/justfile bench

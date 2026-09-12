@@ -18,6 +18,11 @@
 //! * 文件不存在 / `{}` → 全部取默认值；
 //! * **多余的字段是错误**（`deny_unknown_fields`）：`close_behaviour` 这种拼错
 //!   若被静默忽略，用户会以为配置生效了 —— 那是最难查的一类"配置不生效"。
+//!
+//! ⚠️ 本模块同时是**数据目录从哪来**的唯一落点（下面 [`data_dir`] 的三条），
+//! 而这两件事的错误处理**方向相反**：配置读不出来**降级**（可选能力），
+//! 而**用户明确要的便携目录写不进去则拒绝启动**（[`require_writable`]，plan 0405）——
+//! 替他决定写到哪里，正是"数据在哪"这件事最不能静默的地方。
 
 use std::path::{Path, PathBuf};
 
@@ -32,6 +37,29 @@ pub const PORTABLE_DIR: &str = "akasha-data";
 
 /// 配置文件名（数据目录内）。
 pub const FILE_NAME: &str = "config.json";
+
+/// 判"这个目录能不能写"用的探针文件名（写完立刻删掉）。
+///
+/// 带点前缀是为了让它一眼就是我们的东西；用 `create`（不是 `create_new`）打开，
+/// 所以上一次崩溃留下的残骸不会让 app 起不来。
+const WRITE_PROBE: &str = ".akasha-writable";
+
+/// 便携目录存在但写不进去时的**退出码**（`portable.md` §4 第 3 条）。
+///
+/// 单独定一个非零值是为了让它**可断言**：`2` = "我拒绝启动，因为你要的便携目录写不了"。
+/// E2E 用例按这个值判定，所以别改成 1（1 是"起崩了"的通用值，分不开两件事）。
+pub const EXIT_NOT_WRITABLE: i32 = 2;
+
+/// 便携目录写不进去。
+///
+/// 单独一个类型是为了让"这条规则"在签名上看得见：返回裸 `std::io::Error` 的话，
+/// 调用方（`lib.rs` 的启动路径）看不出失败的是哪条判据。
+#[derive(Debug, thiserror::Error)]
+#[error("not writable: {source}")]
+pub struct NotWritable {
+    #[source]
+    source: std::io::Error,
+}
 
 /// 配置读不出来的两种情形。
 ///
@@ -76,6 +104,16 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
     })
 }
 
+/// bin 同目录里那个便携数据目录（`portable.md` §4 第 1 条）——
+/// **只在这个目录确实存在时**才是 `Some`（存在就是"要便携"的标记，见 [`PORTABLE_DIR`]）。
+///
+/// 抽成函数是为了让 [`data_dir`] 与 [`portable_data_dir`] 用**同一个**表达式判断：
+/// 两处各写一遍 `join` + `is_dir`，迟早会有一处先改。
+fn portable_dir(exe_dir: Option<&Path>) -> Option<PathBuf> {
+    let dir = exe_dir?.join(PORTABLE_DIR);
+    dir.is_dir().then_some(dir)
+}
+
 /// 数据目录（`docs/portable.md` §4 的三条，按顺序）：
 ///
 /// 1. bin 同目录存在 [`PORTABLE_DIR`] → 用它（用户明确要便携）；
@@ -89,9 +127,44 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
 /// 拆成纯函数（输入是 exe 目录与 OS 目录）是为了让第 1 条能被单测钉住：
 /// 便携分支是"搬走文件夹数据还在"（P2）的实现处，它不该只靠手测。
 fn data_dir(exe_dir: Option<&Path>, os_dir: Option<PathBuf>) -> Option<PathBuf> {
-    match exe_dir.map(|dir| dir.join(PORTABLE_DIR)) {
-        Some(portable) if portable.is_dir() => Some(portable),
-        _ => os_dir,
+    portable_dir(exe_dir).or(os_dir)
+}
+
+/// 本进程可执行文件所在的目录。
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+}
+
+/// 本进程 bin 同目录的便携数据目录（存在才有）。
+///
+/// 与 [`data_dir_of`] 分开是因为**启动时的可写性检查只针对便携这条**：
+/// 退回 OS 目录那条路上"写不了"仍然只是降级（配置用默认值），不该拦启动。
+pub fn portable_data_dir() -> Option<PathBuf> {
+    portable_dir(exe_dir().as_deref())
+}
+
+/// 便携目录**可写吗** —— 判定方式是**真的写一个探针文件**，不是看 mode 位。
+///
+/// 为什么不用 mode 位：它看不出 ACL、只读挂载、squashfs 这类"位是好的、写就是不行"
+/// 的情形，而这一条的判据恰恰是"写不进去"。
+/// 代价是启动路径上多一次写盘 —— 只发生在**用户明确要便携**的那条路上，
+/// 而且探针文件紧接着就删掉（删不掉不算失败：那只是残骸）。
+pub fn require_writable(dir: &Path) -> Result<(), NotWritable> {
+    let probe = dir.join(WRITE_PROBE);
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&probe)
+    {
+        Ok(file) => {
+            drop(file);
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(source) => Err(NotWritable { source }),
     }
 }
 
@@ -101,11 +174,8 @@ fn data_dir(exe_dir: Option<&Path>, os_dir: Option<PathBuf>) -> Option<PathBuf> 
 /// （ADR-0002 D1）—— 分两个目录的话，"搬走文件夹"就只搬走一半。
 /// 谁放什么由各自的模块决定（配置在 [`FILE_NAME`]，库在 `akasha_store::vault_path`）。
 pub fn data_dir_of(app: &AppHandle<Wry>) -> Option<PathBuf> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf));
     let os_dir = app.path().app_data_dir().ok();
-    data_dir(exe_dir.as_deref(), os_dir)
+    data_dir(exe_dir().as_deref(), os_dir)
 }
 
 /// 数据目录里配置文件的路径。
@@ -263,6 +333,70 @@ mod tests {
     #[test]
     fn no_directory_at_all_is_none() {
         assert_eq!(data_dir(None, None), None);
+    }
+
+    /// 便携目录**存在**与"算出来的路径"是同一个判断（[`portable_dir`]）——
+    /// 启动时的可写性检查用的就是它，两处不能各写一遍。
+    #[test]
+    fn the_portable_dir_is_reported_only_when_it_exists() {
+        let exe_dir = scratch("portable-presence");
+        let portable = exe_dir.join(PORTABLE_DIR);
+
+        assert_eq!(
+            portable_dir(Some(&exe_dir)),
+            None,
+            "目录还不存在时不该说\"要便携\"——这时 app 该退回 OS 数据目录"
+        );
+
+        std::fs::create_dir_all(&portable).expect("建便携数据目录");
+        assert_eq!(portable_dir(Some(&exe_dir)), Some(portable.clone()));
+        assert_eq!(
+            portable_dir(None),
+            None,
+            "连 exe 目录都取不到时没有便携目录可言"
+        );
+
+        let _ = std::fs::remove_dir_all(&exe_dir);
+    }
+
+    /// 可写的目录必须**通过**（正对照：少了它，下面那条"不可写被拒"分不清
+    /// "检查在工作"与"检查把什么都拒了"）。
+    #[test]
+    fn a_writable_dir_passes_and_leaves_no_probe_behind() {
+        let dir = scratch("writable");
+
+        require_writable(&dir).expect("刚建的目录当然可写");
+
+        assert_eq!(
+            std::fs::read_dir(&dir).expect("读目录").count(),
+            0,
+            "探针文件必须删掉，别在用户的数据目录里留东西"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 写不进去的目录必须被**判**出来。
+    ///
+    /// 造"不可写"的方式是**结构性**的：把探针指到一个普通文件底下 —— `ENOTDIR`
+    /// 连 root 也绕不过去，所以这条判据与本机权限、文件系统、平台**都无关**。
+    /// （用 `chmod 500` 造的话，以 root 跑或在不理会 mode 位的文件系统上就造不出来，
+    /// 那条路留给 `tests/portable.rs`：它要的是**app 真的看见一个不可写目录**，
+    /// 那里可以显式跳过并写明原因。）
+    #[test]
+    fn a_dir_that_cannot_be_written_is_refused() {
+        let dir = scratch("under-a-file");
+        let file = dir.join("regular-file");
+        std::fs::write(&file, b"").expect("放一个普通文件");
+
+        let err =
+            require_writable(&file.join("under-a-file")).expect_err("文件底下的路径建不出探针");
+        assert!(
+            err.to_string().contains("not writable"),
+            "错误要说清是哪条判据：{err}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

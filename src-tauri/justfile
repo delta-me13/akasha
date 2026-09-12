@@ -73,6 +73,14 @@ E2E_TARGETS_EXIT := "exit_residue"
 # 不碰 Victauri），进 E2E 只会白起一套 Vite + app，而 `just test` 才是它该在的地方。
 E2E_NO_APP := "session_watchdog"
 
+# **自己起 app** 的集成测试（同样只登记，不放进 `test-e2e` 的目标清单）。
+#
+# 为什么要单列：`portable` 验的是"把 bin 所在文件夹搬走"，所以它把二进制**复制**进
+# 临时布局、在 A 起一次、搬成 B、在 B 再起一次。它**不能**与 `run_targets` 那套
+# 共用一个 app —— 单实例（plan 0304）会让第二份自己退掉。它由下面的 `portable`
+# 配方跑（`test-e2e` 的自起分支在第三段调用同一个配方）。
+E2E_SELF_APP := "portable"
+
 # E2E：真 app 上的验收（契约 + 交互）。用 cargo test 而非 nextest —— 用例共享一个真 app，必须串行。
 #
 # **自包含**：已经有 app 在跑（`just dev`）就复用它；没有就自己起一套，跑完收掉。
@@ -95,6 +103,10 @@ E2E_NO_APP := "session_watchdog"
 #      这条**可移植**的刺激：不需要托盘宿主，CI（xvfb）上照样成立。
 # 那个配置文件属于我们起的这一次运行：开始前备份、跑完还原（见 `restore_config`），
 # 别把开发者的便携配置吃掉。
+#
+# ⚠️ **第三段 = 可搬迁性**（`portable` 配方，plan 0405）：它自己复制二进制、自己起 app，
+# 所以**必须**在两段之后、且此时**没有**别的 app 在跑。复用一个开发者的 app 时**跳过**
+# 并打印原因（单实例会让那一段起的第二份自己退掉），想验就单独跑 `just portable`。
 #
 # ⚠️ **两段都要先保证便携数据目录存在**（`mkdir -p "$cfg_dir"`）：便携目录不在时 app 会
 # 按 `portable.md` §4 第 2 条退回 **OS 数据目录** —— 于是两段其实跑在不同的数据目录里，
@@ -182,9 +194,9 @@ test-e2e:
       t=$(basename "$f" .rs); \
       known=0; \
       case " {{E2E_TARGETS}} {{E2E_TARGETS_EXIT}} " in *" $t "*) known=1 ;; esac; \
-      case " {{E2E_NO_APP}} " in *" $t "*) known=1 ;; esac; \
+      case " {{E2E_NO_APP}} {{E2E_SELF_APP}} " in *" $t "*) known=1 ;; esac; \
       if [ "$known" = 0 ]; then \
-        echo "❌ tests/$t.rs 不在 E2E_TARGETS / E2E_TARGETS_EXIT / E2E_NO_APP 里 —— 加进其中一处，并写清理由"; rc=1; \
+        echo "❌ tests/$t.rs 不在 E2E_TARGETS / E2E_TARGETS_EXIT / E2E_NO_APP / E2E_SELF_APP 里 —— 加进其中一处，并写清理由"; rc=1; \
       fi; \
     done; \
     [ "$rc" = 0 ] || exit 1; \
@@ -204,6 +216,8 @@ test-e2e:
     if app_port >/dev/null 2>&1; then \
       echo "→ 复用已在运行的 app（不启动、也不收尾；配置是它启动时读的那一份）"; \
       run_targets "{{E2E_TARGETS}} {{E2E_TARGETS_EXIT}}"; \
+      echo "→ 跳过第三段（可搬迁性）：那个复用的 app 还在跑，而本段要自己起第二份 ——"; \
+      echo "  单实例（plan 0304）会让它自己退掉。想验这条就单独跑 just portable（先把 app 关掉）。"; \
     else \
       if curl -s -o /dev/null -m 2 "$vite_url"; then \
         echo "→ 复用已在运行的 Vite（1420）"; \
@@ -236,6 +250,8 @@ test-e2e:
       start_app "$tmp/akasha-e2e-app2.log"; \
       run_targets "{{E2E_TARGETS_EXIT}}"; \
       stop_app; \
+      echo "── 第三段：可搬迁性（把 bin 搬到别处之后，数据还在吗）"; \
+      just portable || rc=1; \
     fi; \
     if [ "$rc" != 0 ]; then \
       for l in "$tmp/akasha-e2e-app1.log" "$tmp/akasha-e2e-app2.log" "$tmp/akasha-e2e-app.log"; do \
@@ -243,6 +259,70 @@ test-e2e:
       done; \
     fi; \
     exit $rc
+
+# ── 可搬迁性 ────────────────────────────────────────────────────────────────
+
+# 可搬迁性：把 **bin 所在文件夹整个搬走**，数据还在吗（`docs/portable.md` §5 的五步）。
+#
+# 判据是 ROADMAP 那一句："移动整个文件夹后重启，原有主机 / 密钥 / 规则都在"——
+# **只验证"能开"不算过**（搬家后能开但规则全丢，正是"库里存了绝对路径"的典型症状）。
+# 所以用例在 A 起一次（app 自己把库建在便携目录里）→ 收干净 → 灌四套池 → 搬成 B →
+# 在 B 再起一次，用 app 自己的命令读回四套池，最后用库函数逐项比对内容。
+# 顺带验同一条规则的另一半：便携目录**不可写**时启动即报错（`portable.md` §4 第 3 条）。
+#
+# ⚠️ **这一段自己起 app**（把二进制复制进临时布局）：被测的是"数据目录从 bin 推导"，
+# 而 `test-e2e` 那个 app 跑在 `target/debug/` 里 —— 构建目录搬不动。于是它
+# **不能与别的 akasha 同时跑**：单实例（plan 0304）会让第二份自己退掉，症状看起来
+# 像"可搬迁性坏了"。这里先查一遍并说清该关掉什么。
+# （`just test-e2e` 的自起分支在第三段调用本配方，那时它自己的 app 已经收掉了。）
+#
+# ⚠️ 用例各自起进程，**必须串行**（`--test-threads=1`）。
+portable:
+    @set -uo pipefail; \
+    tmp="${TMPDIR:-${TEMP:-/tmp}}"; \
+    disc="$tmp/victauri"; \
+    vite_url="http://localhost:1420/"; \
+    vite_pid=""; \
+    pid_alive() { \
+      case "$(uname -s 2>/dev/null || echo unknown)" in \
+        MINGW*|MSYS*|CYGWIN*) tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1" ;; \
+        *) kill -0 "$1" 2>/dev/null ;; \
+      esac; \
+    }; \
+    stop() { \
+      case "$(uname -s 2>/dev/null || echo unknown)" in \
+        MINGW*|MSYS*|CYGWIN*) taskkill //F //PID "$1" >/dev/null 2>&1 || true ;; \
+        *) kill "$1" 2>/dev/null || true ;; \
+      esac; \
+    }; \
+    cleanup() { \
+      if [ -n "$vite_pid" ]; then stop "$vite_pid"; wait "$vite_pid" 2>/dev/null; fi; \
+      return 0; \
+    }; \
+    trap cleanup EXIT; \
+    if [ -d "$disc" ]; then \
+      for d in "$disc"/*/; do \
+        [ -f "${d}port" ] || continue; \
+        p=${d%/}; p=${p##*/}; \
+        pid_alive "$p" || continue; \
+        curl -s -o /dev/null -m 2 "http://127.0.0.1:$(cat "${d}port" 2>/dev/null)/" || continue; \
+        echo "❌ 已经有一个 akasha 在跑（pid $p）——单实例（plan 0304）会让本配方起的第二份自己退掉，"; \
+        echo "   症状看起来像\"可搬迁性坏了\"。先把那个 app 关掉（just dev 起的也是它）再跑。"; \
+        exit 1; \
+      done; \
+    fi; \
+    if curl -s -o /dev/null -m 2 "$vite_url"; then \
+      echo "→ 复用已在运行的 Vite（1420）"; \
+    else \
+      echo "→ 起 Vite（1420）"; \
+      ( cd .. && exec ./node_modules/.bin/vite ) >"$tmp/akasha-portable-vite.log" 2>&1 & \
+      vite_pid=$!; \
+      for _ in $(seq 1 60); do curl -s -o /dev/null -m 1 "$vite_url" && break; sleep 1; done; \
+      if ! curl -s -o /dev/null -m 2 "$vite_url"; then \
+        echo "❌ Vite 起不来（日志：$tmp/akasha-portable-vite.log）"; exit 1; \
+      fi; \
+    fi; \
+    VICTAURI_E2E=1 cargo test --test portable -- --test-threads=1 --nocapture
 
 # ── 性能基线 ────────────────────────────────────────────────────────────────
 
