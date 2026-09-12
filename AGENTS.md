@@ -193,6 +193,15 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 - 错误：`thiserror` 分域定义；command 一律返回 `Result<T, E>`，`E: Serialize`。
 - 日志：`tracing` 结构化日志 + `tauri-plugin-log` 文件轮转。
   **禁止 `println!` / `eprintln!`**（ast-grep 强制）。
+- **日志消息是事件名，不是说明文**（展开与自查表：[`docs/logging.md`](./docs/logging.md)）：
+  - **英文、小写、常量** —— `session retired` / `watchdog registration failed`。
+    一种事件一个 grep 模式；**变量一律进字段**（`handle=8 exit_code=0`），不拼进消息。
+  - **不写"为什么"**：原因、后果（"否则…"）、命令、示例、plan 号都进注释或文档。
+    "括号里塞一句解释"是这条规则最常被违反的样子。
+  - **不把 `Debug` 倒进字段**：`?opt` 会打 `Some(Code(0))`、`?vec` 会打整个集合。
+    要打就展开成值、分两支，或只打 `len()` —— 数字进字段，细节各自成行。
+  - 字段值**不撒谎**：拿不到就不写这个字段，不填 `0` / `unknown` 顶替。
+  - `no-non-ascii-log-message` 拦"消息里有非 ASCII"这一半（§6）。
 - 敏感内容（用户键入的终端输入）**默认不落盘**，debug 级需显式开关。
 - `unsafe`：默认禁止；确有必要时须 `// SAFETY:` 注释 + 单测覆盖。
 
@@ -268,6 +277,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | `no-std-command-bypass` | 绕过 `akasha-pty` 直接用 `std::process::Command` |
 | `no-string-pty-channel` ✅ 已落地 | PTY 字节流走 `Channel<Vec<u8>>` / `Channel<String>`（其实是 JSON 数组）而不是 raw 通道（§3.2） |
 | `no-ui-vocab-in-types` ✅ 已落地 | `src-tauri/crates/**` 与 `src-tauri/src/**` 类型名中的 `Tab`/`Pane`/`Window`/`View`（见 §3.1 命名规则） |
+| `no-non-ascii-log-message` ✅ 已落地 | `tracing::*!` 的消息里的非 ASCII 字符（消息必须是英文短语，§3.4） |
 
 > 现阶段这些规则尚**未全部创建** —— 每条规则应与它守护的代码一起落地，
 > 否则只是噪音。新增规则时同步更新上表。
@@ -344,6 +354,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline
 | `docs/scope.md` | **产品预备有什么**：能力清单、非目标、已识别风险、**命名约定** | 偶尔变（只增删能力条目） |
 | `docs/portable.md` | **可搬迁性怎么落地**：要求、数据目录、验证方法 | 随实测变 |
 | `docs/bitwarden.md` | **Bitwarden 集成的展开**：许可证、条目字段、指纹语义 | 随上游版本与实测变 |
+| `docs/logging.md` | **日志怎么写**：消息形态（含反面例子）、字段词汇、级别 | 几乎不变 |
 | `docs/STATUS.md` | 现在在哪 | **每次会话覆盖写，不追加** |
 | `docs/adr/NNNN-*.md` | 为什么这样定 | **不可变**，只追加"被 NNNN 取代" |
 | `docs/plans/TTxx-*.md` | 这次怎么做（一个工作项一个文件） | 进行中就地修改；**完成后整份移入 `docs/plans/archive/`** |
