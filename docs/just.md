@@ -36,7 +36,7 @@
 | `just fmt` | rustfmt 格式化（`--all` = workspace 全成员） | 转发 |
 | `just fmt-check` | 只检查格式，不改文件 | 转发 |
 | `just test` | 单元测试（cargo-nextest），**workspace 全成员** | 转发 |
-| `just test-e2e` | E2E：真 app 上的验收（契约 + 交互）。**自包含** —— 已有 app（`just dev`）就复用，没有就自己起 Vite + app，跑完收掉；跳过的用例会把原因打出来。**自起时跑两段**（关窗语义由数据目录里的配置决定、只在启动时读）：**两段都先在 bin 同目录备好便携数据目录**（没有它 app 会退回 OS 数据目录，两段就跑在不同的目录里，第二段写的配置也就读不到），第一段没有配置文件 = 收托盘（`window_close` 在这里有判据），第二段写 `close_behavior=exit` 再起一次 app（`exit_residue` 的退出刺激），配置文件跑完还原。目标按 `E2E_TARGETS` / `E2E_TARGETS_EXIT` 的顺序逐个串行跑（`cargo test` 一次收多个 `--test` 时是按名字排序的）；guard 要求 `tests/*.rs` 出现在这两个清单**或** `E2E_NO_APP`（后者 = 不需要真 app 的集成测试，理由写在各自文件头） | 转发 |
+| `just test-e2e` | E2E：真 app 上的验收（契约 + 交互）。**自包含** —— 已有 app（`just dev`）就复用，没有就自己起 Vite + app，跑完收掉；跳过的用例会把原因打出来。**自起时跑三段**：前两段验关窗语义（它由数据目录里的配置决定、只在启动时读）——**两段都先在 bin 同目录备好便携数据目录**（没有它 app 会退回 OS 数据目录，两段就跑在不同的目录里，第二段写的配置也就读不到），第一段没有配置文件 = 收托盘（`window_close` 在这里有判据），第二段写 `close_behavior=exit` 再起一次 app（`exit_residue` 的退出刺激），配置文件跑完还原；**第三段就是 `just portable`**（可搬迁性 —— 它自己复制 bin、自己起 app，所以只能在此时没有别的 akasha 时跑）。目标按 `E2E_TARGETS` / `E2E_TARGETS_EXIT` 的顺序逐个串行跑（`cargo test` 一次收多个 `--test` 时是按名字排序的）；guard 要求 `tests/*.rs` 出现在 **`E2E_TARGETS` / `E2E_TARGETS_EXIT` / `E2E_NO_APP` / `E2E_SELF_APP`** 四处之一（后两者分别 = 不需要真 app、自己起 app 的集成测试，理由写在各自文件头） | 转发 |
 | `just bench` | 吞吐基线（criterion）。**不是门禁**，用于改动前后对比 | 转发 |
 | `just portable` | 可搬迁性：把 **bin 所在文件夹整个搬走**之后数据还在吗（`docs/portable.md` §5 的五步，外加 §4 第 3 条"便携目录不可写就拒绝启动"）。**自己起 app** —— 把二进制复制进临时布局，在 A 起一次、搬成 B、再起一次，两次都用 app 自己的命令读回四套池，并用库函数逐项比对内容。⚠️ **不能与别的 akasha 同时跑**：单实例（plan 0304）会让它起的第二份自己退掉，所以先查一遍并说清该关掉什么；Vite 复用或自起（与 `just test-e2e` 同一套做法）。`just test-e2e` 的自起分支在**第三段**调用它，复用别人的 app 时那一段显式跳过并打印原因 | 转发 |
 | `just deny` | 依赖门禁：许可证 / 漏洞 / 来源（需联网）。⚠️ 带 `--workspace`，理由见下 | 转发 |
@@ -147,7 +147,7 @@ plan 0402 就是踩到这个才发现的（加 `--workspace` 后图 580 → 583 
 | `just: command not found` | 工具没装。`just tools`（走 `mise.toml`），或 `cargo install just` |
 | 提示找不到 `Cargo.toml` | 你在根目录跑了 crate 级命令。用根转发（`just check`），或 `cd src-tauri` |
 | 缺 webkit2gtk 之类的系统库 | `just syscheck` 会指出来。Arch 系：`sudo pacman -S webkit2gtk-4.1` |
-| app 起不来，或 Victauri 连不上 | `just test-e2e` 会自己起 app（手动起用 `just dev`）；失败时它会打印 app 日志尾部（完整日志在 `$TMPDIR/akasha-e2e-app1.log` / `-app2.log`，两段各一份）。再用 `just doctor` 确认连的是本项目 |
+| app 起不来，或 Victauri 连不上 | `just test-e2e` 会自己起 app（手动起用 `just dev`）；失败时它会打印 app 日志尾部（前两段的完整日志在 `$TMPDIR/akasha-e2e-app1.log` / `-app2.log`；第三段那个 app 的日志归 `just portable` 自己，在它的临时布局里、跑完随布局一起删）。再用 `just doctor` 确认连的是本项目 |
 | `just test-e2e` 说 Vite 起不来 | 它探的是 `localhost` —— vite 默认只监听 `[::1]`，拿 `127.0.0.1` 探会得到"起不来"的假象（`STATUS.md` 坑 #40）。日志：`$TMPDIR/akasha-e2e-vite.log` |
 | E2E 里"敲命令"之后屏幕没反应 | 先看是不是把 shell **挂住**了：敲进终端的那一行必须 fish / bash / sh 都成立（`(cmd) &` 在 fish 里是**命令替换**，会一直等下去 —— 坑 #41）。症状是**所有**敲命令的用例一起超时，很容易误判成前端坏了 |
 | `just ready` 有一步红了 | 看结尾提示的那一步，或 `.just-ready-fail.log` |

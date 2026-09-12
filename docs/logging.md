@@ -58,7 +58,7 @@
 | `window` | 窗口 label —— **唯一**表示"哪个窗口"的字段 | str |
 | `close_behavior` | 配置里写的行为 | `tray` / `exit` |
 | `close_action` | **判据实际决定**的动作（与 `close_behavior` 不同 = 降级了，例如托盘建不起来） | `hide` / `exit` |
-| `path` | 配置文件路径（取不到就**不写**这个字段） | str |
+| `path` | 本地路径：配置文件（`config loaded` / `config not found`）或**便携数据目录**（`portable data dir not writable`）。取不到就**不写**这个字段 | str |
 | `activations` | 本进程被第二个实例叫起来的次数 | u64 |
 | `step` | 多步动作里失败的那一步 | `unminimize` / `show` / `focus` |
 

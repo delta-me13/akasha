@@ -444,7 +444,7 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
   我们这一份被擦零；更紧的做法（raw body）要前端手写裸 `invoke`，见 ADR-0002 §7.5。
 - 库文件是**唯一真相源**，不是缓存；**四套池与 BW 缓存都在同一个库文件里**（`akasha.db`）。
 - **库里不存绝对路径**（P2）。
-- **取证值的理由与否决路见 [ADR-0002](./adr/0002-secret-storage.md)**（实现中）：KDF 参数与盐的
+- **取证值的理由与否决路见 [ADR-0002](./adr/0002-secret-storage.md)**（**已定案**）：KDF 参数与盐的
   存放位置、**不启用 WAL**、导出容器的格式与版本字段、口令经 C API 送入库、空口令必须被拒。
   本节只留结论 —— 那些是数据文件格式，改它们要迁移用户数据。
 
@@ -503,7 +503,7 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
 Linux 装到 `/usr/bin`、Windows 装到 `Program Files`。
 
 **方案**：可搬迁**由标记触发**，而非无条件。
-- bin 同目录存在数据目录（或便携标记文件）→ 用它
+- bin 同目录存在数据目录（**目录本身就是标记** —— 不再有第二个标记文件）→ 用它
 - 否则 → 退回 OS 标准数据目录
 - 便携模式下若检测到**不可写** → **启动即明确报错**（已实现，plan 0405：一条 error +
   退出码 2；判定方式是写一个探针文件，不看 mode 位）
