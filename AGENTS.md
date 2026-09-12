@@ -144,8 +144,12 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 ### 3.2 数据流与背压（终端应用的成败点）
 
-- PTY 读出的字节流**必须走二进制通道**：`tauri::ipc::Channel<Vec<u8>>` 或 raw body。
-  默认 JSON IPC 会把字节流序列化成数组/字符串，吞吐直接崩。
+- PTY 读出的字节流**必须走 raw 通道**：`Channel<InvokeResponseBody>` +
+  `InvokeResponseBody::Raw(bytes)`（JS 侧收到 `ArrayBuffer`）。
+  ⚠️ **`Channel<Vec<u8>>` 不是二进制通道** —— tauri 有
+  `impl<T: Serialize> IpcResponse for T` 这条 blanket impl，所以它发出去的是
+  "六万多个数字的 JSON 数组"，与默认 JSON IPC 是同一条慢路。
+  由 `.ast-grep/rules/no-string-pty-channel.yml` 强制（§6）。
 - **合批后再发**：read loop 按「≥16ms 或 ≥64KiB」聚合一次，禁止逐字节 / 逐行 emit。
 - **绝不假设 UTF-8**：字节流可以被切在任意多字节序列中间。解码只能在 VT 层做，
   且必须容忍"半个字符"；跨 IPC 只传 `&[u8]`。
@@ -208,9 +212,13 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 - 用 `tauri-specta`（+ `specta-typescript`）从 Rust command/event **生成**
   `src/ipc/bindings.ts`；该文件为生成物，**禁止手改**。
-- 任何新增/修改 command 或 event 后**必须**跑 `just gen-types` 并提交产物差异。
+- 任何新增/修改 command 或 event 后**必须**跑 `just gen-types` 并提交产物差异 ——
+  **`just ready` 里的 `gen-types-check` 会比对生成物是否已提交**（没提交就红）。
 - 前端只允许通过 `src/ipc/` 的包装函数调后端，不出现裸命令名字符串。
-- CI 校验：重跑 `just gen-types` 后 `git diff --exit-code` 必须为空。
+- ⚠️ **一处刻意的手写**：raw 字节通道那条命令的参数在生成物里只能是 `string`
+  （`InvokeResponseBody` 没有 `specta::Type`，生成器写不出它的 TS 类型），
+  所以"怎么建频道、怎么把 `ArrayBuffer` 变成字节"留在 `src/ipc/session.ts`。
+  手写的**只有这一段**，签名仍来自生成物 —— 别把它当成"可以手写第二份签名"的先例。
 
 ---
 
@@ -228,7 +236,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | `no-unwrap-in-commands` | command / 长驻任务中的 `unwrap()` |
 | `no-tauri-in-core-crates` ✅ 已落地 | `src-tauri/crates/**` 里 `use tauri::` |
 | `no-std-command-bypass` | 绕过 `akasha-pty` 直接用 `std::process::Command` |
-| `no-string-pty-channel` | PTY 字节流走 `Channel<String>` 而非 `Channel<Vec<u8>>` |
+| `no-string-pty-channel` ✅ 已落地 | PTY 字节流走 `Channel<Vec<u8>>` / `Channel<String>`（其实是 JSON 数组）而不是 raw 通道（§3.2） |
 | `no-ui-vocab-in-types` ✅ 已落地 | `src-tauri/crates/**` 与 `src-tauri/src/**` 类型名中的 `Tab`/`Pane`/`Window`/`View`（见 §3.1 命名规则） |
 
 > 现阶段这些规则尚**未全部创建** —— 每条规则应与它守护的代码一起落地，
@@ -262,7 +270,8 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 ### DoD：一条命令 + 两件机器查不了的事
 
 ```bash
-just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline + docs-check
+just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline
+             # + gen-types-check + docs-check
 ```
 
 `just ready` 就是**可执行的 DoD**。能在命令里表达的验收标准，不要写成散文 ——
@@ -274,8 +283,8 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline + 
       ⚠️ "收托盘"状态下**存在子进程是预期行为**（见 §3.3），不是泄漏。
 
 改过 command/event 时额外一条：新 command 应在 `get_registry` 中可见，
-`detect_ghost_commands` 无新增 `confirmed_ghosts`；`just gen-types` 后 `git diff` 为空
-（接入 tauri-specta 后纳入 `ready`，见 ROADMAP 阶段 3）。
+`detect_ghost_commands` 无新增 `confirmed_ghosts`；生成物必须已提交
+（`gen-types-check` 已纳入 `ready`，见 §5）。
 涉及终端输出解析时，补一个 `insta` 快照。
 
 ### Victauri 使用纪律
@@ -350,7 +359,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline + 
 
 - 约定式提交：`feat|fix|refactor|perf|test|docs|chore|build(scope): 摘要`。
 - 一个提交一件事；**规范文件、CI、格式化等大范围改动单独提交**。
-- 提交前跑 `just ready`（fmt-check + lint + test + deny-offline + docs-check）—— 见 §7。
+- 提交前跑 `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check）—— 见 §7。
 - 不要提交：`node_modules/`、`dist/`、`target/`、生成的 `gen/schemas`。
 - **要提交**：`Cargo.lock` / `pnpm-lock.yaml`（这是应用不是库，锁文件必须进仓库）。
 - 大文件（图标除外）不进 git。
@@ -398,7 +407,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline + 
   漏了会让 `crates/*` 的 check / clippy / test **完全不被执行**，而 `just ready` 照样全绿
   （坑 #20）。`cargo fmt --all` 是例外（`--all` 本来就指全 workspace）。
 
-**完整命令清单（全部 20 个配方 + 用途 + 典型工作流 + 排错）见
+**完整命令清单（全部 21 个配方 + 用途 + 典型工作流 + 排错）见
 [`docs/just.md`](./docs/just.md) §2。** 新增或改名配方时必须同步那里 ——
 `just docs-check` 强制要求：**每个配方都必须在 `docs/just.md` 里出现**，
 且两份文档提到的命令都必须真实存在。该校验已纳入 `just ready` 与 CI。
