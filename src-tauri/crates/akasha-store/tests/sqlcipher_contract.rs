@@ -104,7 +104,7 @@ fn hex(bytes: &[u8]) -> String {
 #[test]
 fn cipher_settings_reports_adr_parameters() {
     let db = fixture_dir("cipher-settings").join("akasha.db");
-    let conn = create(&db, &pass(PASSPHRASE)).unwrap();
+    let conn = create(&db, &mut pass(PASSPHRASE)).unwrap();
 
     let settings = dump_pragma(&conn, "PRAGMA cipher_settings");
     println!("PRAGMA cipher_settings:\n{settings}");
@@ -141,7 +141,7 @@ fn cipher_settings_reports_adr_parameters() {
 #[test]
 fn cipher_version_is_sqlcipher_4() {
     let db = fixture_dir("cipher-version").join("akasha.db");
-    let conn = create(&db, &pass(PASSPHRASE)).unwrap();
+    let conn = create(&db, &mut pass(PASSPHRASE)).unwrap();
 
     // 能读到 cipher_version 本身就说明链的是 SQLCipher 而不是裸 SQLite
     // （裸 SQLite 上这个 PRAGMA 报错）。ADR-0002 §7 要求记下实际版本与构建出的 OpenSSL。
@@ -161,7 +161,7 @@ fn cipher_version_is_sqlcipher_4() {
     let not_a_db = fixture_dir("not-a-database").join("plain.db");
     fs::write(&not_a_db, b"SQLite format 3\0not really a database").unwrap();
     assert!(matches!(
-        open(&not_a_db, &pass(PASSPHRASE)).unwrap_err(),
+        open(&not_a_db, &mut pass(PASSPHRASE)).unwrap_err(),
         StoreError::NotADatabase
     ));
 }
@@ -174,7 +174,7 @@ fn wrong_passphrase_cannot_open() {
     let db = dir.join("akasha.db");
 
     {
-        let conn = create(&db, &pass(PASSPHRASE)).unwrap();
+        let conn = create(&db, &mut pass(PASSPHRASE)).unwrap();
         conn.execute_batch("CREATE TABLE key_pool(secret TEXT);")
             .unwrap();
     }
@@ -190,12 +190,12 @@ fn wrong_passphrase_cannot_open() {
     println!("raw error = {raw_err:?}");
     drop(raw);
 
-    let err = open(&db, &pass(b"wrong passphrase")).unwrap_err();
+    let err = open(&db, &mut pass(b"wrong passphrase")).unwrap_err();
     println!("StoreError = {err}");
     assert!(matches!(err, StoreError::NotADatabase), "实际是 {err:?}");
 
     // 正确口令仍然打得开 —— 否则这条判据可能只是因为"这个文件本来就打不开"
-    open(&db, &pass(PASSPHRASE)).unwrap();
+    open(&db, &mut pass(PASSPHRASE)).unwrap();
 }
 
 // ── 4. 空口令：应用层拦下，且理由不是猜测 ──────────────────────────────────
@@ -215,7 +215,7 @@ fn empty_passphrase_refused_before_touching_file() {
     assert!(!db.exists(), "空口令不该在磁盘上留下任何东西");
 
     // 反面（否则上面那条断言可能只是"构造函数永远失败"）：非空造得出来，`create` 也认它
-    let _conn = create(&db, &pass(b"x")).unwrap();
+    let _conn = create(&db, &mut pass(b"x")).unwrap();
     assert!(db.exists());
 }
 
@@ -263,7 +263,7 @@ fn plaintext_export_roundtrip_and_user_version_not_copied() {
     let db = dir.join("akasha.db");
     let out = dir.join("export-plain.db");
 
-    let conn = create(&db, &pass(PASSPHRASE)).unwrap();
+    let conn = create(&db, &mut pass(PASSPHRASE)).unwrap();
     conn.execute_batch(&format!(
         "CREATE TABLE key_pool(secret TEXT); INSERT INTO key_pool VALUES ('{SECRET}');"
     ))
@@ -312,7 +312,7 @@ fn plaintext_secret_not_found_in_db_file() {
     let db = dir.join("akasha.db");
 
     {
-        let conn = create(&db, &pass(PASSPHRASE)).unwrap();
+        let conn = create(&db, &mut pass(PASSPHRASE)).unwrap();
         conn.execute_batch(&format!(
             "CREATE TABLE key_pool(secret TEXT); INSERT INTO key_pool VALUES ('{SECRET}');"
         ))
@@ -355,7 +355,7 @@ fn open_restricts_file_to_owner() {
     println!("sqlite 默认建出的权限 = {default_mode:o}");
 
     let db = dir.join("akasha.db");
-    let _conn = create(&db, &pass(PASSPHRASE)).unwrap();
+    let _conn = create(&db, &mut pass(PASSPHRASE)).unwrap();
     let hardened = fs::metadata(&db).unwrap().permissions().mode() & 0o777;
     println!("经 create() 之后的权限 = {hardened:o}");
     assert_eq!(hardened, 0o600, "D12：库文件应当是 0600");
@@ -373,7 +373,7 @@ fn rekey_keeps_content_and_reports_salt_behaviour() {
     let dir = fixture_dir("rekey");
     let db = dir.join("akasha.db");
 
-    let conn = create(&db, &pass(PASSPHRASE)).unwrap();
+    let conn = create(&db, &mut pass(PASSPHRASE)).unwrap();
     conn.execute_batch(&format!(
         "CREATE TABLE key_pool(secret TEXT); INSERT INTO key_pool VALUES ('{SECRET}');"
     ))
@@ -407,14 +407,14 @@ fn rekey_keeps_content_and_reports_salt_behaviour() {
 
     // 真正要守住的不变量：换口令之后**新口令能开、旧口令不能**，且内容还在
     {
-        let conn = open(&db, &pass(NEW_PASSPHRASE)).unwrap();
+        let conn = open(&db, &mut pass(NEW_PASSPHRASE)).unwrap();
         let secret: String = conn
             .query_row("SELECT secret FROM key_pool", [], |r| r.get(0))
             .unwrap();
         assert_eq!(secret, SECRET);
     }
     assert!(matches!(
-        open(&db, &pass(PASSPHRASE)).unwrap_err(),
+        open(&db, &mut pass(PASSPHRASE)).unwrap_err(),
         StoreError::NotADatabase
     ));
 }
@@ -429,8 +429,8 @@ fn cipher_salt_is_the_file_header_and_differs_per_vault() {
 
     // 同一个口令建两个库。D2 说盐是"16 字节随机、存于库文件头部前 16 字节"，
     // 而"随机"与"在头部"这两半都只在**两个库对比**时才看得出来。
-    let conn_a = create(&a, &pass(PASSPHRASE)).unwrap();
-    let conn_b = create(&b, &pass(PASSPHRASE)).unwrap();
+    let conn_a = create(&a, &mut pass(PASSPHRASE)).unwrap();
+    let conn_b = create(&b, &mut pass(PASSPHRASE)).unwrap();
     let salt_a = text_pragma(&conn_a, "PRAGMA cipher_salt");
     let salt_b = text_pragma(&conn_b, "PRAGMA cipher_salt");
     println!("salt a = {salt_a}\nsalt b = {salt_b}");
@@ -460,7 +460,7 @@ fn cipher_salt_is_the_file_header_and_differs_per_vault() {
 #[test]
 fn memory_security_can_be_enabled_but_never_turned_off() {
     let dir = fixture_dir("memory-security");
-    let conn = create(&dir.join("akasha.db"), &pass(PASSPHRASE)).unwrap();
+    let conn = create(&dir.join("akasha.db"), &mut pass(PASSPHRASE)).unwrap();
 
     // 我们的打开路径本来就开了它（ADR-0002 §6 的"建议开"），所以建库之后读回来应当是 "1"。
     // ⚠️ 读回来的是 `on && executed` 的合取（`executed` = 安全分配器被用过至少一次），

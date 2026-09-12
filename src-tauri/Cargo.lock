@@ -82,6 +82,7 @@ dependencies = [
 name = "akasha-store"
 version = "0.1.0"
 dependencies = [
+ "memsafe",
  "rusqlite",
  "thiserror 2.0.20",
 ]
@@ -2570,6 +2571,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "memsafe"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bcf2b4d7a25d60474415c3ed174d37baac2881182484cce3cd765536e17301cf"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]

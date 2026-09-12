@@ -16,6 +16,8 @@
 //!    字符串形式要么报错要么被改写。
 //! 2. **空口令不可表示**（D5）—— 不是"打开函数里有个 if"，而是 [`Passphrase`] 造不出空值。
 //!    空 key 送进 `sqlite3_key()` 的后果是**得到一个明文库**（D5 / §7 实测）。
+//!    口令本体还放在**受保护的一页内存**里（`mlock` + 静止态 `PROT_NONE` + 不进 core dump），
+//!    读取是一次需要 `&mut` 的提权动作 —— 见 [`Passphrase`] 的模块文档与 plan 0406。
 //! 3. **不设任何 `cipher_*` / `kdf_iter` 参数**（D2）—— 全取 SQLCipher 4 的默认值。
 //!    非默认值必须每次打开都重新声明，那就得有个地方存它，等于把已否掉的"旁挂文件"
 //!    换个名字请回来。唯一的例外是 `cipher_memory_security`：它不写进文件，见 §6。
@@ -37,7 +39,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, ffi};
 
-pub use passphrase::Passphrase;
+pub use passphrase::{MAX_LEN, Passphrase};
 
 /// 库文件名（ADR-0002 D1）：四套池与 Bitwarden 缓存**同一个**文件。
 ///
@@ -69,10 +71,16 @@ pub enum StoreError {
     /// 弱口令由用户自己承担，空口令则是"加密悄悄没了"。
     #[error("empty passphrase refused: an empty SQLCipher key disables encryption")]
     EmptyPassphrase,
-    /// 口令比 `i32::MAX` 还长（`sqlite3_key` 的长度参数是 `c_int`）。现实中到不了，
-    /// 但它让"长度转换失败"不必退化成 `unwrap`（`AGENTS.md` §0 禁止）。
-    #[error("passphrase longer than i32::MAX bytes")]
-    PassphraseTooLong,
+    /// 口令比受保护页还长（[`MAX_LEN`] 字节）。**不是截断**：截断会让"口令错了"
+    /// 变成一件没人能解释的事。
+    #[error("passphrase longer than the {max}-byte protected page")]
+    PassphraseTooLong { max: usize },
+    /// 要不到一块能锁住的受保护内存（`mlock` / `mmap` 被拒）。
+    ///
+    /// ⚠️ 上游 `memsafe` **没有降级路径**：这条错误意味着解锁**不能进行**，
+    /// 而不是"悄悄不锁"。取舍见 ADR-0002 §10。
+    #[error("cannot protect passphrase memory: {0}")]
+    MemoryProtection(#[from] memsafe::error::MemoryError),
     /// `sqlite3_key` 自己返回了非 `SQLITE_OK`。正常情况下它总是返回 OK ——
     /// 口令对不对要到第一条语句才知道，所以这条分支是"意外状态"，不是正常失败路径。
     #[error("sqlite3_key returned {0}")]
@@ -115,7 +123,10 @@ pub fn vault_path(data_dir: &Path) -> PathBuf {
 /// 返回的连接已经解好锁：密钥送进去了、已经成功读过一次 `sqlite_master`、
 /// `user_version` 也校验过了。调用方拿到它就等于拿到了一个能用的库，
 /// 不需要（也不应该）自己再设密钥。
-pub fn open(path: &Path, passphrase: &Passphrase) -> Result<Connection, StoreError> {
+///
+/// `passphrase` 是 `&mut`：读口令是一次需要独占的**提权动作**（它在受保护页里，
+/// 见 [`Passphrase`]），交出 `&mut` 等于把那次提权的窗口借出去。
+pub fn open(path: &Path, passphrase: &mut Passphrase) -> Result<Connection, StoreError> {
     if file_len(path)? == 0 {
         return Err(StoreError::NoVault(path.to_path_buf()));
     }
@@ -137,7 +148,7 @@ pub fn open(path: &Path, passphrase: &Passphrase) -> Result<Connection, StoreErr
 /// 为什么"写一句版本号"就等于"钉住口令"：SQLCipher 的盐与密钥校验值都只在**第一次写页**
 /// 时落盘（连带生成 16 字节随机盐）。在那之前文件是空的，任何口令都能打开它 ——
 /// 这正是 §实施记录里那条实测。
-pub fn create(path: &Path, passphrase: &Passphrase) -> Result<Connection, StoreError> {
+pub fn create(path: &Path, passphrase: &mut Passphrase) -> Result<Connection, StoreError> {
     if file_len(path)? > 0 {
         return Err(StoreError::VaultExists(path.to_path_buf()));
     }
@@ -151,7 +162,7 @@ pub fn create(path: &Path, passphrase: &Passphrase) -> Result<Connection, StoreE
 
 /// 送密钥前后的固定三步。两条路（打开 / 新建）用的是**同一段** ——
 /// 复制成两份，迟早有一份会少一步（少的那一步的表现是"库打不开"）。
-fn unlock(conn: &Connection, passphrase: &Passphrase) -> Result<(), StoreError> {
+fn unlock(conn: &Connection, passphrase: &mut Passphrase) -> Result<(), StoreError> {
     enable_memory_security(conn)?;
     apply_key(conn, passphrase)?;
     probe_unlocked(conn)
@@ -187,13 +198,19 @@ fn enable_memory_security(conn: &Connection) -> Result<(), StoreError> {
 /// 这里**没有**空口令分支：空值造不出来（[`Passphrase::new`]），所以这个函数收到的一定
 /// 是非空字节。这就是"应用层拒绝"从 if 升级成类型之后的样子 —— 少一条永远不该走的分支。
 #[allow(unsafe_code)] // 全仓库唯一的 unsafe 单点，见下面 SAFETY 与 ADR-0002 D4
-fn apply_key(conn: &Connection, passphrase: &Passphrase) -> Result<(), StoreError> {
-    let bytes = passphrase.expose();
-    let len = i32::try_from(bytes.len()).map_err(|_| StoreError::PassphraseTooLong)?;
+fn apply_key(conn: &Connection, passphrase: &mut Passphrase) -> Result<(), StoreError> {
+    // `expose()` 拿到的是一次**提权窗口**：`bytes` 只在它活着时有效，drop 之后
+    // 那块页在 Unix 上立刻回到 `PROT_NONE`。所以密钥必须在本次调用里送完。
+    let bytes = passphrase.expose()?;
+    // 上限由 `passphrase.rs` 的 `const _: () = assert!(MAX_LEN <= i32::MAX)` 保证，
+    // 这条分支不可达；留 `try_from` 而不是 `as` 是为了不引入静默截断。
+    let len =
+        i32::try_from(bytes.len()).map_err(|_| StoreError::PassphraseTooLong { max: MAX_LEN })?;
 
     // SAFETY: ① `conn.handle()` 返回本连接持有的 `*mut sqlite3`，在 `conn` 存活期间一直有效，
-    // 而 `conn` 在这里活着（借用而非复制）；② `bytes` 的 ptr/len 在本次调用期间有效，
-    // 且 `sqlite3_key` 只读它——它把密钥复制进自己的缓冲区，调用返回后不持有这个指针；
+    // 而 `conn` 在这里活着（借用而非复制）；② `bytes` 的 ptr/len 在本次调用期间有效
+    // （它指向受保护页，窗口由 `bytes` 这个守卫持有），且 `sqlite3_key` 只读它 ——
+    // 它把密钥复制进自己的缓冲区，调用返回后不持有这个指针；
     // ③ 调用发生在 `Connection::open` 之后、任何**读库**的语句之前（本函数之上只有一句
     // 不读库的 pragma，之下才是 `PROBE_SQL`）。
     // 单测覆盖见 `tests/`：错误口令打不开、正确口令打得开、空口令在类型层就被拦。

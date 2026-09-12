@@ -67,7 +67,7 @@ fn passphrase_never_reaches_the_data_directory() {
 
     // ① 建库（口令在这一刻进入 SQLCipher 的 KDF）
     {
-        let conn = create(&db, &pass(MARKER)).unwrap();
+        let conn = create(&db, &mut pass(MARKER)).unwrap();
         conn.execute_batch(&format!(
             "CREATE TABLE key_pool(secret TEXT); INSERT INTO key_pool VALUES ('{SECRET}');"
         ))
@@ -75,14 +75,14 @@ fn passphrase_never_reaches_the_data_directory() {
     }
     // ② 正常解锁一次
     {
-        let conn = open(&db, &pass(MARKER)).unwrap();
+        let conn = open(&db, &mut pass(MARKER)).unwrap();
         let n: i64 = conn
             .query_row("SELECT count(*) FROM key_pool", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1);
     }
     // ③ 解锁**失败**一次 —— 错误路径是秘密最容易漏进日志的地方
-    let err = open(&db, &pass(OTHER)).unwrap_err();
+    let err = open(&db, &mut pass(OTHER)).unwrap_err();
     assert!(matches!(err, StoreError::NotADatabase), "实际是 {err:?}");
 
     // 先确认扫描对象存在、非空：否则"0 命中"可能只是因为没有东西可扫

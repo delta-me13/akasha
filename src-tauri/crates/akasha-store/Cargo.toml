@@ -33,6 +33,21 @@ publish = false
 # features 取并集 —— `bundled-sqlcipher` 本身就包含 `bundled`，两者并存是设计内的组合。
 rusqlite = { version = "0.32.1", features = ["bundled-sqlcipher-vendored-openssl"] }
 thiserror = "2.0.20"
+# 口令的**内存防护**（plan 0406）：把口令放进一整页受保护内存，而不是普通堆。
+# 上游做的是我们自己写不动的那几件系统调用（源码逐条核过，见 `src/passphrase.rs` 的文档）：
+# Unix 静止态 `PROT_NONE`（读也要临时提权）、`mlock`（不进 swap）、
+# Linux 的 `MADV_DONTDUMP`（不进 core dump）与 `MADV_WIPEONFORK`、释放时逐字节 volatile 擦零，
+# **并且把调用方那个源 `Vec<u8>` 也擦零** —— 那是普通 `zeroize` 用法最容易漏掉的一份副本。
+#
+# 选 `Secret<[u8; N]>` 而不是 `MemSafe<Vec<u8>>`：后者只保护 `Vec` 的 24 字节头，
+# 真正的字节还在普通堆上（上游文档把这条叫 "the `MemSafe<Vec<u8>>` pitfall"）。
+#
+# 代价照实记：① 依赖只有 `libc` / `winapi`，但它是**年轻的小库**（2025-02 首发、三个 owner、
+# 759 行），所以它的 bug 就是我们的 bug —— 这是本 crate 里唯一一处"安全属性押在第三方实现上"，
+# 判据与复核条件在 plan 0406 与 ADR-0002 §10；② 平台间不对称：Windows 静止态是
+# `PAGE_READONLY`（可读），macOS 没有 DONTDUMP / WIPEONFORK；
+# ③ `mlock` 失败会让构造**直接失败**（上游没有降级路径），见 `StoreError::MemoryProtection`。
+memsafe = "1.0.2"
 
 [lints]
 # 继承全 workspace 的 lint（`unsafe_code = "deny"` 也在这里来的）。
