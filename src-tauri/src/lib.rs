@@ -53,8 +53,11 @@ pub fn run() {
         .invoke_handler(builder.invoke_handler())
         .plugin(victauri_plugin::init())
         // 到这一步日志插件已经就绪 —— 看门狗的成败终于有人看得到（`Startup` 的理由）。
-        .setup(move |_app| {
+        .setup(move |app| {
             watchdog::report(&startup);
+            // ⚠️ 事件必须在 setup 里挂上：`tauri-specta` 的 `Builder::invoke_handler`
+            // 只覆盖命令，事件缺了这一步会在**发**的时候 panic（`EventRegistry not found`）。
+            builder.mount_events(app);
             Ok(())
         })
         .build(tauri::generate_context!())

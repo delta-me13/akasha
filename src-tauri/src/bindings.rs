@@ -9,20 +9,25 @@
 //! 2. `just gen-types`（`src/bin/gen-types.rs`）重跑生成物并提交差异；
 //! 3. `just gen-types-check` 在门禁里比对生成物是否已提交（防"改了 Rust 忘了生成"）。
 
-use tauri_specta::{Builder, collect_commands};
+use tauri_specta::{Builder, collect_commands, collect_events};
 
 /// 收集全部 command / event 的生成器。
 ///
 /// 同一份 builder 既给 app 当 `invoke_handler`，也给 `just gen-types` 导出 TS ——
 /// **只有一份清单**，所以生成物与运行期分发不可能对不上。
+///
+/// ⚠️ 事件比命令多一步：`Builder::mount_events` 必须在 `.setup()` 里调用（见 `lib.rs`），
+/// 否则**发事件时会 panic**（`EventRegistry not found`）—— 命令没有这个问题。
 pub fn builder() -> Builder<tauri::Wry> {
-    Builder::<tauri::Wry>::new().commands(collect_commands![
-        crate::greet,
-        crate::session::open_session,
-        crate::session::write_session,
-        crate::session::resize_session,
-        crate::session::close_session,
-    ])
+    Builder::<tauri::Wry>::new()
+        .commands(collect_commands![
+            crate::greet,
+            crate::session::open_session,
+            crate::session::write_session,
+            crate::session::resize_session,
+            crate::session::close_session,
+        ])
+        .events(collect_events![crate::session::SessionEnded])
 }
 
 /// 生成物的落点，**相对 manifest 而不是相对 cwd** —— 从哪个目录跑都落到同一个地方。

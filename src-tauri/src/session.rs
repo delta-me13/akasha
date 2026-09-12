@@ -28,11 +28,13 @@ use std::thread::JoinHandle;
 use akasha_core::{SessionId, SessionKind, SessionRegistry};
 use akasha_pty::watchdog::SessionWatchdog;
 use akasha_pty::{
-    Batch, BatchPolicy, PtyTransport, TerminalSize, Transport, TransportError, spawn_batcher,
+    Batch, BatchPolicy, ExitStatus, PtyTransport, TerminalSize, Transport, TransportError,
+    spawn_batcher,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody, JavaScriptChannelId};
-use tauri::{State, Webview};
+use tauri::{AppHandle, Emitter, State, Webview};
+use tauri_specta::Event;
 
 /// 前端 raw 字节频道的句柄。
 ///
@@ -144,6 +146,37 @@ impl ShutdownReport {
     pub fn is_clean(&self) -> bool {
         self.failures.is_empty()
     }
+}
+
+/// 一个会话**自己**结束了：载体（PTY 里的 shell）退出 —— 用户敲了 `exit`、shell 崩了、
+/// PTY 被关掉。总之**不是**"用户关掉了标签页"那条路。
+///
+/// 前端据此关掉对应的标签页：标签页与会话**同生命期**（`docs/scope.md` §5.6），两个方向都要
+/// 成立 —— 关标签页 → 丢弃会话（plan 0305）；会话自己走 → 标签页跟着走（本步）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEnded {
+    /// 哪个会话结束了。前端按它找要关掉的那个标签页。
+    pub handle: SessionHandle,
+    /// 结局的可读描述（`None` = 这个载体不报结局，或收尾时出了岔子 —— 见 `retire`）。
+    pub status: Option<String>,
+}
+
+// 为什么**手写**这个 impl 而不是 `#[derive(tauri_specta::Event)]`：derive 来自
+// `tauri-specta-macros`，只在 `derive` 特性下被引入 —— 为一个"一个常量 + 其余全默认方法"
+// 的 trait 多拉一个 proc-macro 依赖（还要过 deny 的许可证门禁）不划算。trait 的其余方法
+// 都有默认实现，所以这里写的就是全部。
+impl tauri_specta::Event for SessionEnded {
+    const NAME: &'static str = "session_ended";
+}
+
+/// [`Sessions::retire`] 的产物。
+#[derive(Debug)]
+pub struct Retired {
+    /// 会话在注册表里的名字。
+    pub id: SessionId,
+    /// 载体的结局（`None` = 载体不报结局，或收尸失败 —— 后者只记日志）。
+    pub status: Option<ExitStatus>,
 }
 
 impl Sessions {
@@ -297,6 +330,49 @@ impl Sessions {
         Ok(())
     }
 
+    /// 一个会话**自己结束了**（载体的输出流断了：用户在终端里敲了 `exit`、shell 崩了、
+    /// PTY 被关掉）：收尾 + 摘牌 + 撤销兜底登记，并交出它的结局。
+    ///
+    /// 与 [`Self::close`] 的关系：**做的事一样**（显式 kill + wait 收尸、摘牌、撤销登记），
+    /// 区别只在**触发者**与**调用点** —— `close` 是"用户要求关"（IPC 命令，要报错给前端），
+    /// `retire` 是"它自己走了"（后台线程观测到输出流结束，没有人在等结果）。
+    ///
+    /// 因此两条性质是必须的：
+    ///
+    /// * **幂等**：用户点 `×` 与 shell 自己退出可能几乎同时发生，两边都会走到这里。
+    ///   已经摘过牌就返回 `Ok(None)`，不报错 —— 这不是失败，是"已经有人收过了"。
+    /// * **不半途而废**：它已经结束了，任何一步失败都只记日志、继续把牌摘掉。
+    ///   留着一条"查不到、但还活着"的登记，比收尸失败本身糟得多。
+    pub fn retire(&self, handle: SessionHandle) -> Result<Option<Retired>, IpcError> {
+        let mut inner = self.lock()?;
+        let Some(mut live) = inner.live.remove(&handle) else {
+            return Ok(None); // 已经被人收走了（用户关标签页 / 退出路径）—— 幂等
+        };
+
+        // 收尸：载体其实已经结束了，这一步是为 `wait`（不留僵尸）与"会话里还有别人"兜底
+        // —— 例如用户 `exit` 了、但会话里还有一个忽略 SIGHUP 的后台作业。
+        let status = match live.transport.shutdown() {
+            Ok(status) => status,
+            Err(err) => {
+                tracing::warn!(handle, session = live.id.get(), %err, "会话结束：收尾失败（仍然摘牌）");
+                None
+            }
+        };
+
+        if let Err(err) = inner.registry.close(live.id) {
+            tracing::warn!(handle, session = live.id.get(), %err, "会话结束：撤销登记失败");
+        }
+        // 撤销看门狗登记排在**收尾之后**（`SessionWatchdog::forget` 的理由），且在**锁外**
+        // —— 写管道可能阻塞。
+        drop(inner);
+        self.forget(live.leader);
+
+        Ok(Some(Retired {
+            id: live.id,
+            status,
+        }))
+    }
+
     /// 当前活着的会话数（测试与将来的诊断用）。
     pub fn len(&self) -> usize {
         self.lock().map(|inner| inner.live.len()).unwrap_or(0)
@@ -411,9 +487,13 @@ pub fn forward(
 /// 打开一个终端会话，输出经 `channel` 以 **raw 字节**送出。
 ///
 /// 返回的 id 是前端后续 `write_session` / `resize_session` / `close_session` 要用的句柄。
+///
+/// 会话**自己结束**时（用户在终端里敲了 `exit`、shell 崩了、PTY 被关掉）由一条收尾线程
+/// 负责：收掉它 + 发 [`SessionEnded`] 让前端关掉那个标签页。
 #[tauri::command]
 #[specta::specta]
 pub fn open_session(
+    app: AppHandle,
     webview: Webview,
     channel: RawChannel,
     state: State<'_, Sessions>,
@@ -429,13 +509,62 @@ pub fn open_session(
     let transport = PtyTransport::spawn_default(TerminalSize::DEFAULT)?;
     let (handle, batches) = state.register(transport, BatchPolicy::DEFAULT)?;
 
-    forward(batches, move |batch| {
+    let pump = forward(batches, move |batch| {
         // 发不出去只可能是前端已经走了（频道已 drop）—— 那条流没有意义了，
         // 但**不要**在这里关会话：关不关由用户/退出路径决定（plan 0204）。
         let _ = channel.send(InvokeResponseBody::Raw(batch.bytes));
     });
 
+    // 输出流结束 = 这个会话自己结束了。为什么要**等 `forward` 收工**再去收尾：
+    // 它结束就意味着最后一批已经交给频道了 —— 收尾（以及随后的 `SessionEnded` 事件）
+    // 排在那之后，前端才不会"先收到会话结束、后收到最后一段输出"。
+    //
+    // 为什么不在原地收尾：`forward` 的线程要在流结束的那一瞬退出，而收尾里有一次
+    // `wait`（收尸）—— 混在一起会让"最后一批送达"被收尾时长拖住。
+    let sessions = Sessions::clone(&state);
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("akasha-session-retire".into())
+        .spawn(move || {
+            let _ = pump.join();
+            retire_and_report(&sessions, &app, handle);
+        })
+        .map_err(|err| IpcError::Internal {
+            message: format!("收尾线程起不来：{err}"),
+        })?;
+
     Ok(handle)
+}
+
+/// 会话结束后要做的两件事：**后端收尾** + **告诉前端**。
+///
+/// 抽成函数只是为了让收尾线程的本体保持三行；真正的语义在 [`Sessions::retire`] 里
+/// （幂等、不半途而废），那部分有单测。
+fn retire_and_report(sessions: &Sessions, app: &AppHandle, handle: SessionHandle) {
+    let retired = match sessions.retire(handle) {
+        Ok(Some(retired)) => retired,
+        // 已经被人收走了（用户点 × / 退出路径）—— 静默：这不是异常，是两条路撞在一起。
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(handle, %err, "会话结束：收尾失败");
+            return;
+        }
+    };
+
+    tracing::info!(
+        handle,
+        session = retired.id.get(),
+        ?retired.status,
+        "会话自己结束：已收掉并从登记簿摘牌"
+    );
+
+    let status = retired.status.map(|status| status.to_string());
+    let event = SessionEnded { handle, status };
+    if let Err(err) = app.emit(SessionEnded::NAME, event) {
+        // 前端可能已经走了（窗口销毁 / webview 没了）。后端该收的已经收完了，
+        // 发不出去不影响"零残留"这条判据。
+        tracing::warn!(handle, %err, "会话结束：事件发不出去");
+    }
 }
 
 /// 把用户输入（按键字节）送进会话。
@@ -871,6 +1000,102 @@ mod tests {
             control_lines(&written),
             vec!["+1003"],
             "失败的会话不得被撤销登记"
+        );
+    }
+
+    // ── plan 0306：会话**自己**结束（敲 exit）时的收尾 ──────────────────────
+
+    #[test]
+    fn retiring_a_self_ended_session_reaps_it_and_unregisters_it() {
+        // "自己结束"这条路上没人等结果，所以它必须**自己**把三件事做完：
+        // 收尸（不留僵尸）、摘牌（两张表一起）、撤销兜底登记（否则端到端退出时
+        // 会对着一个复用掉的 pid 再发一次 SIGKILL）。
+        let log = ControlLog(Arc::new(Mutex::new(Vec::new())));
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let (sessions, written) = watchdog_with(&log);
+
+        let (handle, _batches) = sessions
+            .register(
+                Recording::new(&trace, "a", false).leader(2001),
+                BatchPolicy::DEFAULT,
+            )
+            .expect("登记失败");
+        assert_eq!(control_lines(&written), vec!["+2001"]);
+
+        let retired = sessions
+            .retire(handle)
+            .expect("retire 不该失败")
+            .expect("会话还在，应当被收掉");
+
+        assert_eq!(retired.id.get(), 1);
+        assert_eq!(retired.status, Some(ExitStatus::Code(0)));
+        assert_eq!(shutdown_count(&trace), 1, "自己结束也要显式收尸");
+        assert!(
+            sessions.is_empty() && sessions.registered() == 0,
+            "两张表必须一起摘干净"
+        );
+        assert_eq!(
+            control_lines(&written),
+            vec!["+2001", "-2001"],
+            "收干净之后要撤销兜底登记"
+        );
+    }
+
+    #[test]
+    fn retiring_twice_is_a_no_op_not_an_error() {
+        // 用户点 × 与 shell 自己退出可能几乎同时发生 —— 两条路都会走到 retire。
+        let log = ControlLog(Arc::new(Mutex::new(Vec::new())));
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let (sessions, _written) = watchdog_with(&log);
+        let (handle, _batches) = sessions
+            .register(
+                Recording::new(&trace, "a", false).leader(2002),
+                BatchPolicy::DEFAULT,
+            )
+            .expect("登记失败");
+
+        sessions
+            .retire(handle)
+            .expect("第一次 retire 失败")
+            .expect("应当收掉");
+        assert!(
+            sessions
+                .retire(handle)
+                .expect("第二次 retire 不该报错")
+                .is_none(),
+            "已经收过的会话再收一次是空操作"
+        );
+        assert_eq!(shutdown_count(&trace), 1, "不得重复收尸");
+
+        // 从没登记过的句柄同理：不是错误。
+        assert!(sessions.retire(4242).expect("未知句柄不该报错").is_none());
+    }
+
+    #[test]
+    fn a_failed_reap_still_unregisters_the_ended_session() {
+        // **不半途而废**：会话已经结束了，收尸失败只该记日志 —— 留着一条
+        // "查不到、其实已经死了"的登记比收尸失败本身糟得多。
+        let log = ControlLog(Arc::new(Mutex::new(Vec::new())));
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let (sessions, written) = watchdog_with(&log);
+        let (handle, _batches) = sessions
+            .register(
+                Recording::new(&trace, "bad", true).leader(2003),
+                BatchPolicy::DEFAULT,
+            )
+            .expect("登记失败");
+
+        let retired = sessions
+            .retire(handle)
+            .expect("收尸失败不该让 retire 报错")
+            .expect("仍然要摘牌");
+
+        assert_eq!(retired.status, None, "收尸失败时没有结局可报");
+        assert!(sessions.is_empty() && sessions.registered() == 0);
+        assert_eq!(
+            control_lines(&written),
+            vec!["+2003", "-2003"],
+            "失败也要撤销登记：它已经不存在了"
         );
     }
 }
