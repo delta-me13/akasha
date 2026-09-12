@@ -54,6 +54,14 @@ test:
 # 时是按**目标名字母序**跑的，不是按你写的顺序（`exit_residue` 会第一个跑）。
 E2E_TARGETS := "smoke integration session_channel terminal_render exit_residue"
 
+# **不需要真 app** 的集成测试（显式清单，理由写在各自的文件头）。
+#
+# 为什么要有这个清单：下面的 guard 会把"tests/ 里没接进 `test-e2e` 的目标"判红
+# （坑 #36：生成了但没人跑），但有些集成测试本来就**不碰 app** —— 例如
+# `session_watchdog`：它只把 app 二进制以看门狗身份再跑一次（没有窗口、没有 IPC、
+# 不碰 Victauri），进 E2E 只会白起一套 Vite + app，而 `just test` 才是它该在的地方。
+E2E_NO_APP := "session_watchdog"
+
 # E2E：真 app 上的验收（契约 + 交互）。用 cargo test 而非 nextest —— 用例共享一个真 app，必须串行。
 #
 # **自包含**：已经有 app 在跑（`just dev`）就复用它；没有就自己起一套，跑完收掉。
@@ -102,9 +110,12 @@ test-e2e:
     for f in tests/*.rs; do \
       [ -e "$f" ] || continue; \
       t=$(basename "$f" .rs); \
-      case " {{E2E_TARGETS}} " in *" $t "*) ;; \
-        *) echo "❌ tests/$t.rs 没接进 test-e2e —— 加进 E2E_TARGETS，或说明它为什么不需要真 app"; rc=1 ;; \
-      esac; \
+      known=0; \
+      case " {{E2E_TARGETS}} " in *" $t "*) known=1 ;; esac; \
+      case " {{E2E_NO_APP}} " in *" $t "*) known=1 ;; esac; \
+      if [ "$known" = 0 ]; then \
+        echo "❌ tests/$t.rs 既不在 E2E_TARGETS 也不在 E2E_NO_APP —— 加进其中一处，并写清理由"; rc=1; \
+      fi; \
     done; \
     [ "$rc" = 0 ] || exit 1; \
     app_port() { \
