@@ -5,6 +5,7 @@ pub mod lifecycle;
 pub mod session;
 pub mod single_instance;
 pub mod tray;
+pub mod vault;
 pub mod watchdog;
 
 use akasha_core::CloseBehavior;

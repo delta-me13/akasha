@@ -95,13 +95,22 @@ fn data_dir(exe_dir: Option<&Path>, os_dir: Option<PathBuf>) -> Option<PathBuf> 
     }
 }
 
-/// 数据目录里配置文件的路径。
-fn config_path(app: &AppHandle<Wry>) -> Option<PathBuf> {
+/// 这台机器上**生效的**数据目录（便携目录优先，见 [`data_dir`]）。
+///
+/// 公开它是因为数据目录不止放配置文件：加密库也落在**同一个**目录里
+/// （ADR-0002 D1）—— 分两个目录的话，"搬走文件夹"就只搬走一半。
+/// 谁放什么由各自的模块决定（配置在 [`FILE_NAME`]，库在 `akasha_store::vault_path`）。
+pub fn data_dir_of(app: &AppHandle<Wry>) -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
     let os_dir = app.path().app_data_dir().ok();
-    data_dir(exe_dir.as_deref(), os_dir).map(|dir| dir.join(FILE_NAME))
+    data_dir(exe_dir.as_deref(), os_dir)
+}
+
+/// 数据目录里配置文件的路径。
+fn config_path(app: &AppHandle<Wry>) -> Option<PathBuf> {
+    data_dir_of(app).map(|dir| dir.join(FILE_NAME))
 }
 
 /// 读配置。**永不失败**：任何问题都落回默认值，并留下一条能定位原因的日志。
@@ -254,5 +263,26 @@ mod tests {
     #[test]
     fn no_directory_at_all_is_none() {
         assert_eq!(data_dir(None, None), None);
+    }
+
+    #[test]
+    fn the_vault_and_the_config_file_share_a_directory() {
+        // ADR-0002 D1：库与 `config.json` 在**同一个**数据目录里 —— 搬迁时它们要么
+        // 一起走、要么一起留。这条判据的机器可查部分就是"父目录相同"。
+        let exe_dir = scratch("shared-dir");
+        let portable = exe_dir.join(PORTABLE_DIR);
+        std::fs::create_dir_all(&portable).expect("建便携数据目录");
+
+        let dir = data_dir(Some(&exe_dir), None).expect("便携目录生效");
+        let config = dir.join(FILE_NAME);
+        let vault = akasha_store::vault_path(&dir);
+
+        assert_eq!(config.parent(), vault.parent());
+        assert_eq!(
+            vault.file_name().and_then(|name| name.to_str()),
+            Some(akasha_store::STORE_FILE_NAME)
+        );
+
+        let _ = std::fs::remove_dir_all(&exe_dir);
     }
 }

@@ -22,6 +22,7 @@ pub fn builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             crate::greet,
+            crate::vault::vault_status,
             crate::session::open_session,
             crate::session::write_session,
             crate::session::resize_session,

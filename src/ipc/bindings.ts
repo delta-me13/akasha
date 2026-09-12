@@ -13,6 +13,13 @@ export const commands = {
 	 */
 	greet: (name: string) => __TAURI_INVOKE<string>("greet", { name }),
 	/**
+	 *  库在哪、建过没有。**只读元数据**：不打开库、不创建目录、不要口令。
+	 * 
+	 *  它**不记日志**：那是一个查询（前端可能反复调），而日志留给状态**变化** ——
+	 *  这里没有变化，只有"此刻是什么"。
+	 */
+	vaultStatus: () => typedError<VaultStatus, VaultError>(__TAURI_INVOKE("vault_status")),
+	/**
 	 *  打开一个终端会话，输出经 `channel` 以 **raw 字节**送出。
 	 * 
 	 *  返回的 id 是前端后续 `write_session` / `resize_session` / `close_session` 要用的句柄。
@@ -86,6 +93,56 @@ export type SessionEnded = {
 	handle: number,
 	/**  结局的可读描述（`None` = 这个载体不报结局，或收尾时出了岔子 —— 见 `retire`）。 */
 	status: string | null,
+};
+
+/**
+ *  库文件的状态。**与 `akasha_store::VaultState` 分开**：这是 IPC 类型（要生成 TS），
+ *  而存储 crate 不该为了生成 TS 去依赖被 app 钉住版本的 `specta`。
+ * 
+ *  两边的映射写成穷尽 `match`（下面的 `From`）：存储层加了状态，**这里编译不过** ——
+ *  而不是悄悄少一个分支，让前端在一个它不认识的值上做默认动作。
+ */
+export type State = 
+/**  文件不存在：还没有建过。 */
+"missing" | 
+/**
+ *  文件在但是 **0 字节**：还没有密钥落在那里（这种文件用什么口令都能"打开"，
+ *  见 ADR-0002 §7）。与 `Missing` 分开是因为用户的下一步动作不同。
+ */
+"empty" | 
+/**  有内容。能不能打开是解锁那一步的事（plan 0407）。 */
+"present";
+
+/**
+ *  取库的状态时可能出的错。
+ * 
+ *  与 `IpcError` 分开：域不同，前端能据此做的动作也不同（这里是"环境没准备好"，
+ *  而不是"某个会话坏了"）。
+ */
+export type VaultError = 
+/**
+ *  连数据目录都取不到（既没有便携目录，OS 数据目录也解析失败）。
+ * 
+ *  ⚠️ **不退回 OS 目录**（`portable.md` §2 第 3 条）：用户以为数据在 U 盘上、
+ *  实际落在本地磁盘，比"明确报错"坏得多。
+ */
+{ kind: "noDataDir" } | 
+/**  看文件状态这一步失败了（权限 / IO）。 */
+{ kind: "io"; detail: {
+	message: string,
+} };
+
+/**  `vault_status` 的返回。 */
+export type VaultStatus = {
+	/**
+	 *  库文件的路径（ADR-0002 D1：与 `config.json` 同一个数据目录）。
+	 * 
+	 *  它**是**绝对路径，而这与 P2 第 2 条（"库里不存绝对路径"）不冲突：那条禁止的是
+	 *  **把路径存进库**（搬家后会静默失效），而这是运行时算出来给用户看的 ——
+	 *  顺带回答"我的数据到底在哪"（`portable.md` §4）。
+	 */
+	path: string,
+	state: State,
 };
 
 /* Tauri Specta runtime */

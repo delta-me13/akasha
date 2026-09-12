@@ -51,6 +51,7 @@ test:
 # ⚠️ **顺序有意义**：清单的顺序就是执行顺序，而它们**共用同一个 app**。
 # `tab_close` 只是多开一个标签页再关掉它（不关 app），`window_close` 关掉窗口再显示回来
 # （也不关 app），`single_instance` 藏起窗口再让第二个实例把它叫回来（同样不关 app），
+# `vault_status` 只读一次文件元数据（什么都不改），
 # `exit_residue` 会把 app 关掉 —— 所以它排在**另一段**的最后。
 #
 # ⚠️ **两段，两套配置**（plan 0302 + 0303）：关窗语义由数据目录里的 `config.json` 决定，
@@ -58,7 +59,7 @@ test:
 #   * 第一段（本清单）：没有配置文件 = 默认"收托盘" → `window_close` 有判据；
 #   * 第二段（`E2E_TARGETS_EXIT`）：写 `close_behavior=exit` 再起一次 app → `exit_residue`
 #     拿到的就是"关窗即退出"这条**可移植**的刺激（不需要托盘宿主，CI 上照样成立）。
-E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance"
+E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status"
 
 # 需要 `close_behavior=exit` 的目标：**只能**在第二段跑（见上）。
 E2E_TARGETS_EXIT := "exit_residue"
@@ -93,6 +94,11 @@ E2E_NO_APP := "session_watchdog"
 #      这条**可移植**的刺激：不需要托盘宿主，CI（xvfb）上照样成立。
 # 那个配置文件属于我们起的这一次运行：开始前备份、跑完还原（见 `restore_config`），
 # 别把开发者的便携配置吃掉。
+#
+# ⚠️ **两段都要先保证便携数据目录存在**（`mkdir -p "$cfg_dir"`）：便携目录不在时 app 会
+# 按 `portable.md` §4 第 2 条退回 **OS 数据目录** —— 于是两段其实跑在不同的数据目录里，
+# 而第二段写进去的 `close_behavior` 也就读不到；更糟的是第一段会读到 OS 目录里**上一次**
+# 留下的配置（"关窗即退出"），让 `window_close` 莫名其妙地红。
 test-e2e:
     @set -uo pipefail; \
     tmp="${TMPDIR:-${TEMP:-/tmp}}"; \
@@ -216,6 +222,7 @@ test-e2e:
         echo "→ 便携数据目录里已有配置，先备份（跑完还原）：$cfg_file"; \
       fi; \
       [ -d "$cfg_dir" ] || made_dir=1; \
+      mkdir -p "$cfg_dir" || exit 1; \
       rm -f "$cfg_file"; \
       export AKASHA_E2E_OWNS_APP=1; \
       echo "── 第一段：默认配置（关窗 = 收托盘）"; \

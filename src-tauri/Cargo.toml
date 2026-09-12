@@ -116,6 +116,13 @@ specta-typescript = "=0.0.12"
 # `wildcards = "deny"` 会把这种依赖直接判红（"2 wildcard dependencies"）。
 akasha-core = { version = "0.1.0", path = "crates/akasha-core" }
 akasha-pty = { version = "0.1.0", path = "crates/akasha-pty" }
+# 存储层（plan 0403）。⚠️ 加它同时**修好了一个门禁盲点**：cargo-deny 把 manifest 指向的包
+# 当作**唯一的图根**，所以在这个依赖出现之前，`akasha-store` 连同它独有的整棵子树
+# （vendored OpenSSL）根本不在依赖图里 —— 那时 `bans`/`licenses` 对它一声不响。
+# 现在它进图了，`--workspace` 那道保险也有了独立的意义（见 docs/just.md §2）。
+# 本步只用了它的两样东西：落点（`vault_path`）与状态（`vault_state`）——
+# 解锁生命周期（谁持有 `Connection`、口令从哪来、何时抹掉）是 plan 0407。
+akasha-store = { version = "0.1.0", path = "crates/akasha-store" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # 只为了 single_instance.rs 里的**一条判据**：会话总线连得上吗。
