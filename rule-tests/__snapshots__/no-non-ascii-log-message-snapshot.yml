@@ -1,0 +1,22 @@
+id: no-non-ascii-log-message
+snapshots:
+  tracing::error!("便携数据目录不可写");:
+    labels:
+    - source: '"便携数据目录不可写"'
+      style: primary
+      start: 16
+      end: 45
+    - source: tracing::error!("便携数据目录不可写")
+      style: secondary
+      start: 0
+      end: 46
+  tracing::warn!("会话结束");:
+    labels:
+    - source: '"会话结束"'
+      style: primary
+      start: 15
+      end: 29
+    - source: tracing::warn!("会话结束")
+      style: secondary
+      start: 0
+      end: 30

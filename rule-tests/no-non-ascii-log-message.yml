@@ -1,0 +1,8 @@
+id: no-non-ascii-log-message
+valid:
+  - "tracing::warn!(\"config not found\");"
+  - "tracing::info!(handle = 8, \"session retired\");"
+  - "let _ = \"普通中文字符串，不在 tracing 宏里\";"
+invalid:
+  - "tracing::warn!(\"会话结束\");"
+  - "tracing::error!(\"便携数据目录不可写\");"

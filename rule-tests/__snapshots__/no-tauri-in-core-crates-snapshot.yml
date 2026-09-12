@@ -1,0 +1,20 @@
+id: no-tauri-in-core-crates
+snapshots:
+  fn f() { let _ = tauri::Manager::app_handle; }:
+    labels:
+    - source: tauri::Manager::app_handle
+      style: primary
+      start: 17
+      end: 43
+  use tauri::Manager;:
+    labels:
+    - source: tauri::Manager
+      style: primary
+      start: 4
+      end: 18
+  use tauri::{Manager, Wry};:
+    labels:
+    - source: use tauri::{Manager, Wry};
+      style: primary
+      start: 0
+      end: 26

@@ -1,0 +1,20 @@
+id: no-unsafe-outside-store
+snapshots:
+  fn f() { let _ = unsafe { 1 }; }:
+    labels:
+    - source: unsafe
+      style: primary
+      start: 17
+      end: 23
+  unsafe fn g() {}:
+    labels:
+    - source: unsafe
+      style: primary
+      start: 0
+      end: 6
+  unsafe impl Send for X {}:
+    labels:
+    - source: unsafe
+      style: primary
+      start: 0
+      end: 6

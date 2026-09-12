@@ -1,0 +1,14 @@
+id: no-println
+snapshots:
+  eprintln!("boom");:
+    labels:
+    - source: eprintln!("boom")
+      style: primary
+      start: 0
+      end: 17
+  println!("boom");:
+    labels:
+    - source: println!("boom")
+      style: primary
+      start: 0
+      end: 16

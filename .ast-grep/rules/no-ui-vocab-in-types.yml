@@ -11,6 +11,13 @@ note: |
 
   只拦**类型声明**（struct / enum / union / trait / type 别名），不拦对第三方类型的**引用**：
   `use tauri::Window;` 在 src-tauri/src/ 里是正当用法，本规则不会命中它。
+
+  ⚠️ **按"词"匹配，不是按子串**（原来写的是裸 `(Tab|Pane|Window|View)` —— 那会把
+  `Table` / `Panel` / `Viewport` 一起拦下，而它们都是另一批词）。名字按 CamelCase 的
+  词边界判：前一个字符不是大写字母，后一个字符不是小写字母，即
+  `(^|[^A-Z])(Tab|Pane|Window|View)([^a-z]|$)`。于是
+  `NegTabProbe` / `TabItem` / `MyWindowSpec` / `WindowLike` 命中，
+  `Table` / `Panel` / `Viewport` / `Previewer` 不命中。
 files:
   - "src-tauri/crates/**/*.rs"
   - "src-tauri/src/**/*.rs"
@@ -24,4 +31,4 @@ rule:
   # 只看声明的**名字**，不看函数体与文档注释 —— 注释里讨论 "Tab" 是正当的。
   has:
     field: name
-    regex: "(Tab|Pane|Window|View)"
+    regex: "(^|[^A-Z])(Tab|Pane|Window|View)([^a-z]|$)"

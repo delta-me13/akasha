@@ -101,10 +101,17 @@ gen-types-check:
 
 # ── 组合门禁（跨越根与 crate，所以只能在根定义）──────────────────────────────
 
-# lint = clippy（crate 级）+ ast-grep scan（仓库级，读根 sgconfig.yml）
+# lint = clippy（crate 级）+ ast-grep scan（仓库级，读根 sgconfig.yml）+ ast-grep test
+#
+# 两个 ast-grep 步骤守的是不同的东西，别合并：
+#   * `scan` 扫**真代码**——规则有没有被违反；
+#   * `test` 跑 `rule-tests/` 里的**正例 / 反例**——规则自己还对不对（改窄了、改宽了、
+#     正则写错了都在这儿现形）。⚠️ 它**不覆盖 `files:` / `ignores:`**（测例不是真实路径
+#     下的文件）：改路径范围时要按 AGENTS.md §6 用真实路径的探针复核一次。
 lint:
     just clippy
     ast-grep scan
+    ast-grep test
 
 # 默认安静：每步一行 + 耗时；失败时把该步输出倒出来（超长则首尾各 40 行并落盘）。
 # 为什么需要这个壳：cargo deny 对 Tauri 这种依赖树会打 5000+ 行「重复版本」警告，

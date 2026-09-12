@@ -32,7 +32,7 @@
 | `just ready` | **提交前跑这一个**：全部门禁（安静聚合，失败才倾倒） | 根组合 |
 | `just check` | 类型检查（含 tests / benches），**workspace 全成员** | 转发 |
 | `just clippy` | clippy，警告即错误，**workspace 全成员** | 转发 |
-| `just lint` | clippy + `ast-grep scan`（结构性护栏） | 根组合 |
+| `just lint` | clippy + `ast-grep scan` + `ast-grep test`（结构护栏：**真代码**有没有违规 / **规则自己**还对不对） | 根组合 |
 | `just fmt` | rustfmt 格式化（`--all` = workspace 全成员） | 转发 |
 | `just fmt-check` | 只检查格式，不改文件 | 转发 |
 | `just test` | 单元测试（cargo-nextest），**workspace 全成员** | 转发 |

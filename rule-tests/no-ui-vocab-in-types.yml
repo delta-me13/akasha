@@ -1,0 +1,19 @@
+# 只拦**类型声明**，且按 CamelCase 的**词边界**匹配（不是子串）——
+# `Table` / `Panel` / `Viewport` 是另一批词，不许误伤。
+id: no-ui-vocab-in-types
+valid:
+  - "struct Previewer;"
+  - "struct Table;"
+  - "struct TableMeta;"
+  - "struct Panel;"
+  - "struct Viewport;"
+  - "use tauri::Window;"
+  - "fn f(w: Window) { let _ = w; }"
+  - "// struct TabProbe; ← 注释里不算"
+invalid:
+  - "struct NegTabProbe;"
+  - "struct TabItem;"
+  - "enum PaneKind {}"
+  - "trait WindowLike {}"
+  - "type ViewAlias = u32;"
+  - "struct MyWindowSpec;"

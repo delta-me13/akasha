@@ -1,0 +1,58 @@
+id: no-string-pty-channel
+snapshots:
+  'fn f(c: Channel<String>) { let _ = c; }':
+    labels:
+    - source: Channel<String>
+      style: primary
+      start: 8
+      end: 23
+    - source: Channel
+      style: secondary
+      start: 8
+      end: 15
+    - source: <String>
+      style: secondary
+      start: 15
+      end: 23
+  'fn f(c: Channel<Vec<u32>>) { let _ = c; }':
+    labels:
+    - source: Channel<Vec<u32>>
+      style: primary
+      start: 8
+      end: 25
+    - source: Channel
+      style: secondary
+      start: 8
+      end: 15
+    - source: <Vec<u32>>
+      style: secondary
+      start: 15
+      end: 25
+  'fn f(c: Channel<Vec<u8>>) { let _ = c; }':
+    labels:
+    - source: Channel<Vec<u8>>
+      style: primary
+      start: 8
+      end: 24
+    - source: Channel
+      style: secondary
+      start: 8
+      end: 15
+    - source: <Vec<u8>>
+      style: secondary
+      start: 15
+      end: 24
+  'fn f(c: tauri::ipc::Channel<Vec<u8>>) { let _ = c; }':
+    labels:
+    - source: tauri::ipc::Channel<Vec<u8>>
+      style: primary
+      start: 8
+      end: 36
+    - source: tauri::ipc::Channel
+      style: secondary
+      start: 8
+      end: 27
+    - source: <Vec<u8>>
+      style: secondary
+      start: 27
+      end: 36

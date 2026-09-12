@@ -1,0 +1,10 @@
+# 规则逻辑的回归测试（AGENTS.md §6）。⚠️ 本机制**不检查 `files:` / `ignores:`** ——
+# 那两样要用真实路径下的探针复核（见 §6 的说明）。
+id: no-println
+valid:
+  - "tracing::info!(\"session retired\");"
+  - "let _ = \"println!(\\\"在字符串里\\\")\";"
+  - "// println!(\"只在注释里\");"
+invalid:
+  - "println!(\"boom\");"
+  - "eprintln!(\"boom\");"
