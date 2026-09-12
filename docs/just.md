@@ -36,7 +36,7 @@
 | `just fmt` | rustfmt 格式化（`--all` = workspace 全成员） | 转发 |
 | `just fmt-check` | 只检查格式，不改文件 | 转发 |
 | `just test` | 单元测试（cargo-nextest），**workspace 全成员** | 转发 |
-| `just test-e2e` | E2E，需要 app 正在运行（先 `just dev`） | 转发 |
+| `just test-e2e` | E2E：真 app 上的验收（契约 + 交互）。**自包含** —— 已有 app（`just dev`）就复用，没有就自己起 Vite + app，跑完收掉；跳过的用例会把原因打出来 | 转发 |
 | `just bench` | 吞吐基线（criterion）。**不是门禁**，用于改动前后对比 | 转发 |
 | `just deny` | 依赖门禁：许可证 / 漏洞 / 来源（需联网） | 转发 |
 | `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |
@@ -83,6 +83,13 @@ just ready        # 全绿再提交
 just dev-web      # 浏览器里迭代，Vite HMR 最快
 ```
 
+**跑 E2E**（真 app 上的契约与交互验收）
+```bash
+just test-e2e     # 自包含：已有 app（just dev）就复用，没有就自己起 Vite + app，跑完收掉
+```
+跳过的用例会把原因打出来（例如 Wayland 下截不了窗口）——**跳过不是"过了"**，
+所以输出里一定要看得见它。
+
 **改 IPC（command / event）**
 1. 先 `just dev`（app 得跑着，Victauri 才能连）
 2. 改完跑 `just gen-types`，**提交生成的类型差异**
@@ -122,7 +129,8 @@ just deny-offline                       # 新依赖的许可证要过门禁
 | `just: command not found` | 工具没装。`just tools`（走 `mise.toml`），或 `cargo install just` |
 | 提示找不到 `Cargo.toml` | 你在根目录跑了 crate 级命令。用根转发（`just check`），或 `cd src-tauri` |
 | 缺 webkit2gtk 之类的系统库 | `just syscheck` 会指出来。Arch 系：`sudo pacman -S webkit2gtk-4.1` |
-| app 起不来，或 Victauri 连不上 | app 必须先跑（`just dev`）；再用 `just doctor` 确认连的是本项目 |
+| app 起不来，或 Victauri 连不上 | `just test-e2e` 会自己起 app（手动起用 `just dev`）；失败时它会打印 app 日志尾部（完整日志在 `$TMPDIR/akasha-e2e-app.log`）。再用 `just doctor` 确认连的是本项目 |
+| `just test-e2e` 说 Vite 起不来 | 它探的是 `localhost` —— vite 默认只监听 `[::1]`，拿 `127.0.0.1` 探会得到"起不来"的假象（`STATUS.md` 坑 #40）。日志：`$TMPDIR/akasha-e2e-vite.log` |
 | `just ready` 有一步红了 | 看结尾提示的那一步，或 `.just-ready-fail.log` |
 | 改了配方但 `just --list` 没显示 | 检查缩进（配方体必须是 tab 或统一缩进），以及是否写在了对的 justfile 里 |
 | 改了 `src-tauri/crates/` 下的文件，app 却不重编译 | 先确认它**确实在 `src-tauri/` 里面**（tauri CLI 默认只监听 `src-tauri`）。成员若被放到它外面（例如仓库根的 `src-tauri/crates/`），必须另配监听范围，否则开发循环**静默失效** —— 见 `STATUS.md` 坑 #21 |
@@ -171,7 +179,7 @@ CI（`.github/workflows/ci.yml`，GitHub Actions 一份）三个 job：
 |---|---|
 | `checks-linux` | **就是本地那一条 `just ready`** —— 门禁只有一处定义 |
 | `checks-other` | Windows / macOS 上只跑 `just check`（挡 cfg 分支错误） |
-| `e2e` | Ubuntu + xvfb 起真实 app，跑 Victauri 冒烟与集成测试 |
+| `e2e` | 三平台矩阵（Linux/xvfb + macOS + Windows），三格跑的**都**是本地那条 `just test-e2e` |
 
 同一分支上来了新推送，**上一次没跑完的运行会被取消**（`main` 除外）——
 所以连着推几次只跑完最后一次，这是刻意的成本开关。
