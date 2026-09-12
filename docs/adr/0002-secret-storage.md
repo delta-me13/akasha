@@ -7,7 +7,7 @@
 - **日期**：2026-09-12
 - **决策者**：cyrene
 - **影响范围**：数据文件格式（库文件 / 导出文件）、密钥派生与解锁路径、数据目录里的文件清单、
-  四套池的物理组织、Bitwarden 离线缓存
+  四套池的物理组织、Bitwarden 离线缓存、**内存中机密的防护手段**（D13）
 - **关联**：[plan 0400](../plans/archive/0400-adr-0002-secret-storage.md)（本文就是它的产出）、
   [plan 0401](../plans/archive/0401-sqlcipher-open.md) – [plan 0405](../plans/0405-portability-verify.md)（从本文取实现约束）
 - **取代**：无
@@ -52,6 +52,7 @@ KDF 用什么参数、盐放哪、导出文件长什么样、Bitwarden 缓存的
 | D10 | BW 离线缓存"同级" = **同一个库、同一把锁**；不复制 `bw` 自己的 appdata | `scope.md` §7 + 本 ADR 定值 |
 | D11 | 明文配置（`config.json`）**不入库** —— 解锁之前就要能回答"关窗怎么办" | 本 ADR 新增（并否决 plan 0403 前置检查里的"并入"设想） |
 | D12 | 库文件权限 0600（unix，尽力而为）；便携目录不可写时**明确报错** | `portable.md` §2 第 3 条 + §4 |
+| D13 | **内存中长住的机密统一经 `memsafe` 的受保护页**（`Secret<[u8; N]>`），不自己写 `mlock` / `mprotect` / `VirtualLock` 封装 | 本 ADR 新增（plan 0406 之后定为通则）+ `scope.md` §1 |
 
 ---
 
@@ -249,6 +250,51 @@ SQLCipher 自己拦截、不读库，而排在 `sqlite3_key` 之前才能让 cod
 **理由**：静默退回的后果是"用户以为数据在 U 盘上，实际在本地磁盘；他拔了 U 盘，数据没了，
 而他不知道"—— 这正是 P2 存在的理由。
 
+### D13 内存中的机密统一经 `memsafe` 的受保护页
+
+**决定**：进程里**长住**的机密 —— 口令、私钥、会话令牌、Bitwarden 主密码与 `BW_SESSION` ——
+一律放在 `memsafe::Secret<[u8; N]>`（同一族的 `MemSafe<T>` 用于非机密的内存防护）的受保护页里：
+`mlock` + 静止态 `PROT_NONE`（Windows 是只读）+ Linux 的 `MADV_DONTDUMP` / `MADV_WIPEONFORK`
++ 释放时 volatile 擦零 + 源缓冲擦零。**不自己写** `mlock` / `mprotect` / `VirtualLock` 的封装。
+
+**理由**：这件事的难点不在密码学，而在**平台**。Unix 的 `mmap` + `mprotect` + `mlock` + `madvise`
+与 Windows 的 `VirtualAlloc` + `VirtualProtect` + `VirtualLock` 是三套东西，再叠上 macOS 缺
+`MADV_DONTDUMP` / `MADV_WIPEONFORK` 的分支 —— 自研意味着两百来行 `cfg` 分叉加一堆 `unsafe`，
+而 `AGENTS.md` §3.4 那条"`unsafe` 只许出现在 `akasha-store`"正是靠**不自己写这种东西**守住的。
+本仓库今天有 Linux 与 Windows 在矩阵里、macOS 在类型检查里，四平台是目标（§12）。
+
+**实测过它真的跨平台**（plan 0406）：`memsafe` 为 `x86_64-pc-windows-msvc` 与
+`aarch64-apple-darwin` 都**编得过**（`cargo check --target …`，不是读 `cfg` 猜的）；
+Linux 上的四条防护见 §7.2。⚠️ "编得过"不等于"在那些平台上也做了同样的事" ——
+下表就是差在哪。
+
+**"防护足够"的判据**（不是"它号称安全"）：四条**会红**的测试 ——
+① 进程级 `VmLck` 涨；② 那一页静止态没有任何权限位；③ `VmFlags` 含 `dd`；④ 含 `wf`。
+**每新增一个用途都要按这张表再验一遍**：`N` 不同、生命期不同，"那一页是我们的"这个识别方式
+与验证点都会变。
+
+**已知不足（照实记，别把安全说大）**：
+
+| 不足 | 后果 |
+|---|---|
+| Windows 静止态是 `PAGE_READONLY`（可读） | 同进程内的越界读在 Windows 上仍读得到 |
+| macOS 没有 `MADV_DONTDUMP` / `MADV_WIPEONFORK` | "不进 core dump"与"fork 后清零"只在 Linux 成立 |
+| `/proc/<pid>/mem` 的读走 `FOLL_FORCE` | 能在**本进程里执行代码**的人照样读得到（§7.2 有实测，且有一条测试钉住它） |
+| 上游是年轻的小库（2025-02 首发、759 行、三个 owner） | 它的 bug 就是我们的 bug；复核条件见 §8 |
+| `mlock` 失败 → **构造失败**（上游无降级路径） | 结果是"解锁明确失败"而不是"静默不锁"；这条怎么呈现给用户由 plan 0403 定 |
+| 只能放固定大小的 `[u8; N]` | 变长机密（比如几 KB 的 PEM）要选一个够大的 `N`；**上限必须显式定义**，超了报错而不是截断 |
+
+**不适用**：可以公开的数据；以及**已经整体加密**的东西（库文件、导出文件）——
+它们的安全边界是"文件是密文"，在内存里再套一层不改变任何结论。
+
+**否决的路**：
+
+| 方案 | 为什么不选 |
+|---|---|
+| **自己写 `mlock` / `mprotect` 封装** | 见上"理由"：三套 syscall + `cfg` 分叉 + 新增一处 `unsafe`，换来的只是"少一个依赖"。真要换回自研，触发条件是 §8 那次复核 |
+| **只靠 `zeroize`**（擦一个缓冲） | 挡不住 core dump、swap、fork —— 这三条恰好是真实发生过的泄露路径（plan 0402 当时的判断，已被 0406 推翻） |
+| **靠 `cipher_memory_security` 一把梭** | 它只管 SQLCipher 自己分配的内存（§6）；口令在我们的进程里，不归它管。两者是**互补**的两层，不是二选一 |
+
 ---
 
 ## 4. 被否掉的整条路线
@@ -404,5 +450,6 @@ SQLCipher 自己拦截、不读库，而排在 `sqlite3_key` 之前才能让 cod
 | 2026-09-12 | **D5** 再加一条：空口令的拒绝从"打开函数里的一个分支"升级成**类型不变量**（`Passphrase::new` 是唯一构造口，空值造不出来；`Debug` 只打 `<redacted>`，没有 `Display`/`Serialize`） | plan 0402。写进 D5 是因为它改变了这条决定的**保证方式**：原来的保证是"每条路径都记得检查"，现在是"没有路径需要记得" |
 | 2026-09-12 | **D4** 的措辞由"`sqlite3_key` 必须是打开之后的**第一个**操作"改成"必须**先于任何会读页的操作**" | plan 0402 实测：`PRAGMA cipher_memory_security = ON` 排在它前面既合法（不读库）又更优（`sqlite3_key` 复制的口令副本因此落在安全分配器上）。原措辞把一个**字面顺序**当成了安全要求，而真正的要害是"先于读页" |
 | 2026-09-12 | **D7** 的 `< 1` 由"走迁移"改成**拒绝** | plan 0402 实现时发现"0 = 待迁移"是个入口：v1 之前没有版本，非空文件里出现 0 说明它不是本程序的库（明文库更早就以 `NotADatabase` 失败）。"走迁移"是留给将来 v2 读 v1 的规则，不是给 0 留的 |
+| 2026-09-12 | 新增 **D13**：内存中长住的机密（口令 / 私钥 / 会话令牌 / BW 主密码与 `BW_SESSION`）统一经 `memsafe` 的受保护页，不自己写 `mlock`/`mprotect`/`VirtualLock` 封装；并把「防护足够」的判据（四条会红的测试）与六条已知不足写成表 | 用户裁定：后续这类安全统一用 `memsafe`，前提是防护足够 —— 而「足够」必须可判，所以判据与不足都写进正文。选它的实质理由是**跨平台**（三套 syscall + macOS 分支 = 两百来行 `cfg` 与新增 `unsafe`），已实测它在 Windows / macOS 目标上编得过 |
 | 2026-09-12 | **D5** 的内存立场改写：口令从「普通堆上的一块 `Vec<u8>`」改成**一整页受保护内存**（`mlock` + 静止态 `PROT_NONE` + `MADV_DONTDUMP` + `MADV_WIPEONFORK` + volatile 擦零 + 源缓冲擦零，`memsafe::Secret<[u8; N]>`，plan 0406）；同时把边界写进正文（`/proc/self/mem` 仍读得到、Windows 只读、macOS 无 `dd`） | 0402 当时明确「不做内存擦除」，理由是「擦一个缓冲不改变威胁模型」。**那句事实没错，结论被推翻**：口令是唯一能解开整库的东西、生命期跨多次解锁，而 core dump / swap / fork 是真实发生过的泄露路径 —— 那正是 `mlock` 与 `dd`/`wf` 挡得住的东西，与「擦一个缓冲」不是一回事 |
 | 2026-09-12 | **§6** 把 `cipher_memory_security` 从"连接级开关（默认关、可开关）"改成"**进程级全局、只能开不能关**"，并把"实测后记进 plan 0401"改成 plan 0402 的 §7.1 | 实测 + 上游源码：`sqlcipher_set_mem_security(int on)` 的实现是 `if(on) { … }`（关不掉），`sqlcipher_mem_security_on` 是静态变量（进程级）。照原文理解会以为"可以按连接开、也可以关回去" |
