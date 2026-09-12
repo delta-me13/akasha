@@ -120,7 +120,7 @@
 | `pnpm build`（tsc + vite build） | 退出码 0；产物 **843 kB / gzip 231 kB**（本轮未改前端，数字沿用） |
 | `just deny-offline` | `bans ok, licenses ok, sources ok`（`--workspace` 已加，补上了"未被人依赖的成员不在图里"那个盲区） |
 | `just docs-check` | 全过（ROADMAP 条目在 3 行内且无代码块 / plan ≤200 行且索引一致） |
-| `ast-grep scan` | 退出码 **0**；**六条规则全部用探针重验了一遍**（正例 **10 条命中** / 诱饵 **0 条误报**，逐条对账见「本轮完成」）。诱饵覆盖"注释里的同名文本 / 字符串里的 `unsafe` / `Channel<u32>` / `struct Previewer` / store 里真 unsafe"这几类。⚠️ **重验抓到一个真漏洞**：`no-string-pty-channel` 漏掉限定路径写法（坑 #101） |
+| `ast-grep scan` + `ast-grep test`（同一行：**真代码** / **规则自己**） | 都退出 **0**。六条规则走了**两道**：先按 §6 用真实路径探针重验（正例 **10 命中** / 诱饵 **0 误报**），再把正反例固化成 `rule-tests/`（6 个文件 + `__snapshots__/`；删掉快照从零重建后 **6 passed**），由 `just lint` 里的 `ast-grep test` 跑。**这一轮抓到两处规则缺陷**：`no-string-pty-channel` 漏限定路径写法（坑 #101）、`no-ui-vocab-in-types` 按子串误伤 `Table` / `Panel` / `Viewport`（坑 #103） |
 | **三条 unsafe 注释 lint**（本轮新增的强制，`just lint` 的 clippy 那一步） | 退出码 **0**；三条各用一个探针证明**它们真的会红**：`undocumented_unsafe_blocks` → 把 `apply_key` 的 `// SAFETY:` 改名即报（**私有函数也报**）；`unnecessary_safety_comment` → 在安全语句上挂一条 `// SAFETY:` 即报；`unnecessary_safety_doc` → 给安全函数加 `/// # Safety` 即报。探针跑完即撤，仓库里不留 |
 | **文档一致性与正确性核查**（本轮：核对了 17 份文档 —— 规范 1 + 顶层 2 + `docs/` 7 + ADR 5 + plan 索引与在办 plan 2，逐处改掉过时说法） | ✅ 相对链接 **231 条全部可解析**；`cargo nextest list --workspace` 逐 crate 计数与本文的 **58 / 37 / 15 / 76 = 186** 一致；`unsafe` **3 处**（库 1 + 它的契约测试 2，都带 `// SAFETY:`）；`BatchPolicy::DEFAULT` = 64 KiB + 16 ms、`MAX_LEN` = 256、`MAX_JUMP_DEPTH` = 32、私钥页 16384 字节逐条对上代码 |
 | `cargo tree -p akasha-core` \| `grep -c tauri` | **0**（分层成立） |
@@ -245,8 +245,14 @@
 - [x] **六条 ast-grep 规则逐一重验**：把正例与诱饵放进规则 `files:` 覆盖的**真实路径**
   （`src-tauri/src/probe_rule_check.rs` 等）跑 `ast-grep scan --json`，逐条对账
   **10 命中 / 0 误报**，跑完即删。**重验抓到一个漏网**：`no-string-pty-channel` 的
-  `^Channel$` 漏掉 `tauri::ipc::Channel<Vec<u8>>`（坑 #101），已改成 `(^|::)Channel$`
-  并补上整数 `Vec` 的其余宽度
+  `^Channel$` 漏掉 `tauri::ipc::Channel<Vec<u8>>`（坑 #101）
+- [x] **正反例固化成回归测试**：`rule-tests/`（每条规则一个文件 + `__snapshots__/` 基线）
+  由 `just lint` 里的 `ast-grep test` 跑 —— "规则必须用负例验证过"从散文变成门禁。
+  ⚠️ 它**不覆盖** `files:` / `ignores:`（坑 #104），路径范围仍靠真实路径探针
+- [x] **又抓到一处规则缺陷**：`no-ui-vocab-in-types` 的裸子串正则会误伤 `Table` / `Panel` /
+  `Viewport`（另一批词）；改成 CamelCase **词边界** `(^|[^A-Z])(Tab|Pane|Window|View)([^a-z]|$)`
+  （坑 #103），并在测例里把 `Table`/`Panel`/`Viewport` 定为 valid、`TabItem`/`MyWindowSpec`
+  定为 invalid
 - [x] **工具偏好成文**（`AGENTS.md` §2）：找代码按「`ast-grep` → rust-analyzer MCP →
   最后才是 `grep` / `read`」挑，理由（token 与语义，附本次的实测例子）写在里面
 - [x] 门禁：`just ready` **6/6**（lint 3s / test 58s —— 因 `Cargo.toml` 变了而全量重编）
@@ -313,6 +319,9 @@
 - **文档三级粒度**：`ROADMAP.md`（判据）→ `docs/plans/TTxx-*`（手段）→ 本文件的坑（痕迹）。
 - 命令入口分两处：项目级在根 `justfile`，crate 级在 `src-tauri/justfile`；
   **权威清单在 `docs/just.md` §2**，由 `just docs-check` 强制同步。
+- **规则测试在哪**：`rule-tests/`（每条规则一个文件 + `__snapshots__/` 基线），
+  由 `just lint` 里的 `ast-grep test` 跑；⚠️ 它**不覆盖** `files:` / `ignores:` ——
+  改路径范围仍要按 `AGENTS.md` §6 用真实路径探针复核一次（坑 #104）。
 
 ## 踩过的坑（避免重复踩）
 
@@ -452,3 +461,12 @@
     "规则在工作"与"规则范围写窄了"，只放诱饵分不清"规则在工作"与"什么都没匹配到"。
     ⚠️ 探针放错路径时，`files:` 即使写错也照样全绿 —— 那正是最该抓到的失败。
     跑完用 `--json` 逐条对账（本轮：正例 10 条命中 / 诱饵 0 条），然后删掉探针。
+103. **"词汇表"规则里，词边界是规则的一部分**：`no-ui-vocab-in-types` 原来的裸
+    `(Tab|Pane|Window|View)` 是**子串**匹配，于是 `Table` / `Panel` / `Viewport` 一起被拦
+    （它们是另一批词，却会让规则看起来"很严"）。改成 CamelCase 词边界
+    `(^|[^A-Z])(Tab|Pane|Window|View)([^a-z]|$)` 之后：`Table`/`Panel`/`Viewport` 放行，
+    `TabItem`/`NegTabProbe`/`MyWindowSpec` 照样命中。**误报会让人把规则整个关掉，比漏报更伤。**
+104. **`ast-grep test` 只测规则逻辑，不测 `files:` / `ignores:`**（实测：测例不是真实路径
+    下的文件，路径范围被完全忽略）。而且 `invalid` 用例要 `__snapshots__/` 基线 ——
+    改规则后用 `ast-grep test -U` 更新，**那份差异就是"规则行为变了"的评审点**。
+    路径范围仍要按 §6 用真实路径探针复核；两者是左右手，不是替代关系。
