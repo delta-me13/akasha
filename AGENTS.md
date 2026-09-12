@@ -229,7 +229,9 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
   - **`/// # Safety` 是文档节**：`unsafe fn` / `unsafe trait` 必须有，写明
     **调用方 / 实现方要遵守什么契约**。`# Safety` 是"要求"，`// SAFETY:` 是
     "我已经满足了它"的举证 —— 内核专门提醒过这对概念最容易混。
-  - 两者都用**英文**、句首大写、句末句号（内核的注释规则）；中文解释放普通注释或 ADR。
+  - 标签本身必须**大写、紧跟冒号**：`// SAFETY:` / `# Safety`（clippy 认的就是这两个
+    字面量）；**解释用仓库的注释语言写（中文可以）**，句末收尾。⚠️ 内核注释里的"英文、
+    句首大写"是**它自己的语种约定**，不属于 unsafe 规范 —— 不要一起搬过来。
   - 由 `just lint` 里 clippy 那一步的三条 lint 强制（内核的 Makefile 里也是这三条）：
     `undocumented_unsafe_blocks`（该写没写）、`unnecessary_safety_comment`（写在了安全块上）、
     `unnecessary_safety_doc`（`# Safety` 挂在了安全函数上）。它们**也查私有项**，
