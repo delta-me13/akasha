@@ -63,7 +63,10 @@ impl PtyTransport {
         })
     }
 
-    /// 子进程 pid（诊断与将来的进程管理用）。不放进 `Transport`：SSH / serial 没有这个概念。
+    /// 子进程 pid（诊断与将来的进程管理用）。
+    ///
+    /// 语义上它就是**会话首进程**，所以 `Transport::session_leader()` 直接返回它；
+    /// 这一个留在 `PtyTransport` 上是给"只想看 pid"的调用方用的。
     pub fn process_id(&self) -> Option<u32> {
         self.child.process_id()
     }
@@ -108,6 +111,12 @@ impl Transport for PtyTransport {
             }
             None => Ok(None),
         }
+    }
+
+    /// PTY 的会话首进程就是这个 shell（`portable-pty` 在 `pre_exec` 里 `setsid()` 了）。
+    /// 看门狗与 [`Self::shutdown`] 都靠它认会话 —— 两处必须是同一个 pid。
+    fn session_leader(&self) -> Option<u32> {
+        self.process_id()
     }
 
     fn shutdown(&mut self) -> Result<Option<ExitStatus>, TransportError> {

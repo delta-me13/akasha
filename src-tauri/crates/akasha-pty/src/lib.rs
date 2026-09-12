@@ -17,6 +17,9 @@
 //!    （`nohup` / `trap "" HUP` / 守护化的）会活下来 —— [`PtyTransport::shutdown`]
 //!    会先把**整个会话**收掉再收尸，理由与平台差异见 `teardown` 模块（plan 0204）。
 //!
+//! 还有**一条路径谁都没机会跑代码**：`tauri dev` 的重编译重启是 SIGKILL（plan 0205）。
+//! 那一条靠 [`watchdog`]：另起一个进程读一条管道，app 一死就由它把登记过的会话全部收掉。
+//!
 //! 本 crate **不含**：IPC（plan 0202）、前端（阶段 2）、`Session` 模型（已在 `akasha-core`）。
 //! 它只管"字节怎么进出载体"，外加把输出合批成 [`Batch`]（[`spawn_batcher`]）。
 //!
@@ -36,6 +39,7 @@ mod shell;
 mod teardown;
 pub mod testing;
 mod transport;
+pub mod watchdog;
 
 pub use batcher::{Batch, BatchPolicy, OutputBatcher, Trigger, spawn_batcher};
 pub use pty::PtyTransport;

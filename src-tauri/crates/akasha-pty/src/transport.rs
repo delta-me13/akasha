@@ -150,6 +150,17 @@ pub trait Transport: Send {
         Ok(None)
     }
 
+    /// 本载体背后**本地进程**的会话首进程 pid（没有就是 `None`）。
+    ///
+    /// 它存在的理由只有一条：`tauri dev` 的重编译重启是 SIGKILL，进程里没有任何代码
+    /// 会执行 —— 那种时候只能靠 [`crate::watchdog`] 拿这个 pid 去收掉**整个会话**
+    /// （`AGENTS.md` §3.3 的"真正退出"那一格，见 plan 0205）。
+    ///
+    /// 默认 `None`：内存载体与将来的纯网络后端没有本地进程可收。
+    fn session_leader(&self) -> Option<u32> {
+        None
+    }
+
     /// 收尾：**显式结束并收尸**，返回结局（不具备 `exit_status` 能力的载体返回 `Ok(None)`）。
     ///
     /// `Ok(None)` **不是在说"成功"**，而是在说"这个载体没有结局可报"。
