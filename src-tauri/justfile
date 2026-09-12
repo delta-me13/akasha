@@ -48,12 +48,19 @@ test:
 # 否则它会像坑 #36 那样"生成了但没人跑"，而 `just ready` 照样全绿。
 # 运行时这条清单由下面的 guard 与 `tests/*.rs` 对账。
 #
-# ⚠️ **顺序有意义**：`exit_residue` 会**关掉被测 app**（它验的就是"退出之后零残留"），
-# 所以它必须排最后 —— 放前面会让后面几个目标连不上 app。
-# 也正因为这样，下面**逐个目标各跑一条 `cargo test`**：`cargo test` 一次收多个 `--test`
-# 时是按**目标名字母序**跑的，不是按你写的顺序（`exit_residue` 会第一个跑）。
-# `tab_close` 只是**多开一个标签页再关掉它**，不关 app，所以它可以排在 `exit_residue` 前面。
-E2E_TARGETS := "smoke integration session_channel terminal_render tab_close exit_residue"
+# ⚠️ **顺序有意义**：清单的顺序就是执行顺序，而它们**共用同一个 app**。
+# `tab_close` 只是多开一个标签页再关掉它（不关 app），`window_close` 关掉窗口再显示回来
+# （也不关 app），`exit_residue` 会把 app 关掉 —— 所以它排在**另一段**的最后。
+#
+# ⚠️ **两段，两套配置**（plan 0302 + 0303）：关窗语义由数据目录里的 `config.json` 决定，
+# 而它**只在启动时读**。所以：
+#   * 第一段（本清单）：没有配置文件 = 默认"收托盘" → `window_close` 有判据；
+#   * 第二段（`E2E_TARGETS_EXIT`）：写 `close_behavior=exit` 再起一次 app → `exit_residue`
+#     拿到的就是"关窗即退出"这条**可移植**的刺激（不需要托盘宿主，CI 上照样成立）。
+E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close"
+
+# 需要 `close_behavior=exit` 的目标：**只能**在第二段跑（见上）。
+E2E_TARGETS_EXIT := "exit_residue"
 
 # **不需要真 app** 的集成测试（显式清单，理由写在各自的文件头）。
 #
@@ -74,15 +81,26 @@ E2E_NO_APP := "session_watchdog"
 # 平台能力差异由用例自己**显式跳过并写明原因**（Wayland 截不了窗口等），
 # 多平台覆盖面交给 CI 矩阵（AGENTS.md §12）。
 #
-# ⚠️ **自己起的 app 才允许被用例关掉**：`exit_residue` 走的就是"关窗口 = 真退出"，
+# ⚠️ **自己起的 app 才允许被用例关掉**：`exit_residue` 走的就是"关窗 = 真退出"，
 # 而它只在 `AKASHA_E2E_OWNS_APP=1`（= 下面这条自起分支）时才真跑，复用别人的 app 时
 # 显式跳过并打印原因。`owns_app` 只在自起分支里被设置，别把它挪到外面去。
+#
+# ⚠️ **自起分支跑两段**（plan 0302 + 0303）：关窗语义由数据目录里的 `config.json` 决定，
+# 而它**只在启动时读**，所以两段各起一次 app：
+#   1. 第一段（没有配置文件 = 默认"收托盘"）→ `window_close` 在这里有判据；
+#   2. 第二段（写 `close_behavior=exit`）→ `exit_residue` 拿到的就是"关窗即退出"
+#      这条**可移植**的刺激：不需要托盘宿主，CI（xvfb）上照样成立。
+# 那个配置文件属于我们起的这一次运行：开始前备份、跑完还原（见 `restore_config`），
+# 别把开发者的便携配置吃掉。
 test-e2e:
     @set -uo pipefail; \
     tmp="${TMPDIR:-${TEMP:-/tmp}}"; \
     disc="$tmp/victauri"; \
     vite_url="http://localhost:1420/"; \
-    vite_pid=""; app_pid=""; cargo_pid=""; \
+    vite_pid=""; app_pid=""; cargo_pid=""; rc=0; \
+    touched=0; made_dir=0; saved_cfg=""; \
+    cfg_dir="${CARGO_TARGET_DIR:-target}/debug/akasha-data"; \
+    cfg_file="$cfg_dir/config.json"; \
     pid_alive() { \
       case "$(uname -s 2>/dev/null || echo unknown)" in \
         MINGW*|MSYS*|CYGWIN*) tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1" ;; \
@@ -100,22 +118,65 @@ test-e2e:
       while pid_alive "$1" && [ "$i" -lt 20 ]; do sleep 0.5; i=$((i + 1)); done; \
       return 0; \
     }; \
-    cleanup() { \
+    run_targets() { \
+      for t in $1; do \
+        echo "── E2E: $t ──"; \
+        VICTAURI_E2E=1 cargo test --no-fail-fast --test "$t" -- --test-threads=1 --nocapture || rc=1; \
+      done; \
+    }; \
+    start_app() { \
+      cargo build --package akasha || exit 1; \
+      before=$(ls "$disc" 2>/dev/null | tr '\n' ' '); \
+      echo "→ 起 app（debug 构建，走 devUrl；日志 $1）"; \
+      cargo run --quiet --package akasha >"$1" 2>&1 & \
+      cargo_pid=$!; \
+      app_pid=""; \
+      for _ in $(seq 1 120); do \
+        for d in "$disc"/*/; do \
+          [ -f "${d}port" ] || continue; \
+          p=${d%/}; p=${p##*/}; \
+          case " $before " in *" $p "*) continue ;; esac; \
+          app_pid=$p; break; \
+        done; \
+        [ -n "$app_pid" ] && break; \
+        pid_alive "$cargo_pid" || break; \
+        sleep 1; \
+      done; \
+      if [ -z "$app_pid" ]; then \
+        echo "❌ app 没起来（日志：$1）"; tail -n 20 "$1"; exit 1; \
+      fi; \
+    }; \
+    stop_app() { \
       [ -n "$cargo_pid" ] && { stop "$cargo_pid"; wait "$cargo_pid" 2>/dev/null; }; \
       [ -n "$app_pid" ] && { stop "$app_pid"; reap "$app_pid"; }; \
+      cargo_pid=""; app_pid=""; \
+      return 0; \
+    }; \
+    restore_config() { \
+      [ "$touched" = 1 ] || return 0; \
+      if [ -n "$saved_cfg" ]; then \
+        cp "$saved_cfg" "$cfg_file"; \
+      else \
+        rm -f "$cfg_file"; \
+        [ "$made_dir" = 1 ] && rmdir "$cfg_dir" 2>/dev/null; \
+      fi; \
+      return 0; \
+    }; \
+    cleanup() { \
+      stop_app; \
       [ -n "$vite_pid" ] && { stop "$vite_pid"; reap "$vite_pid"; }; \
+      restore_config; \
       return 0; \
     }; \
     trap cleanup EXIT; \
-    rc=0; \
     for f in tests/*.rs; do \
       [ -e "$f" ] || continue; \
       t=$(basename "$f" .rs); \
       known=0; \
-      case " {{E2E_TARGETS}} " in *" $t "*) known=1 ;; esac; \
+      case " {{E2E_TARGETS}} {{E2E_TARGETS_EXIT}} " in *" $t "*) known=1 ;; esac; \
       case " {{E2E_NO_APP}} " in *" $t "*) known=1 ;; esac; \
       if [ "$known" = 0 ]; then \
-        echo "❌ tests/$t.rs 既不在 E2E_TARGETS 也不在 E2E_NO_APP —— 加进其中一处，并写清理由"; rc=1; \
+        echo "❌ tests/$t.rs 不在 E2E_TARGETS / E2E_TARGETS_EXIT / E2E_NO_APP 里 —— 加进其中一处，并写清理由"; rc=1; \
       fi; \
     done; \
     [ "$rc" = 0 ] || exit 1; \
@@ -133,9 +194,9 @@ test-e2e:
       return 1; \
     }; \
     if app_port >/dev/null 2>&1; then \
-      echo "→ 复用已在运行的 app（不启动、也不收尾）"; \
+      echo "→ 复用已在运行的 app（不启动、也不收尾；配置是它启动时读的那一份）"; \
+      run_targets "{{E2E_TARGETS}} {{E2E_TARGETS_EXIT}}"; \
     else \
-      owns_app=1; \
       if curl -s -o /dev/null -m 2 "$vite_url"; then \
         echo "→ 复用已在运行的 Vite（1420）"; \
       else \
@@ -147,33 +208,30 @@ test-e2e:
           echo "❌ Vite 起不来（日志：$tmp/akasha-e2e-vite.log）"; exit 1; \
         fi; \
       fi; \
-      cargo build --package akasha || exit 1; \
-      before=$(ls "$disc" 2>/dev/null | tr '\n' ' '); \
-      echo "→ 起 app（debug 构建，走 devUrl）"; \
-      cargo run --quiet --package akasha >"$tmp/akasha-e2e-app.log" 2>&1 & \
-      cargo_pid=$!; \
-      for _ in $(seq 1 120); do \
-        for d in "$disc"/*/; do \
-          [ -f "${d}port" ] || continue; \
-          p=${d%/}; p=${p##*/}; \
-          case " $before " in *" $p "*) continue ;; esac; \
-          app_pid=$p; break; \
-        done; \
-        [ -n "$app_pid" ] && break; \
-        pid_alive "$cargo_pid" || break; \
-        sleep 1; \
-      done; \
-      if [ -z "$app_pid" ]; then \
-        echo "❌ app 没起来（日志：$tmp/akasha-e2e-app.log）"; tail -n 20 "$tmp/akasha-e2e-app.log"; exit 1; \
+      touched=1; \
+      if [ -f "$cfg_file" ]; then \
+        saved_cfg="$tmp/akasha-e2e-config.json"; \
+        cp "$cfg_file" "$saved_cfg"; \
+        echo "→ 便携数据目录里已有配置，先备份（跑完还原）：$cfg_file"; \
       fi; \
+      [ -d "$cfg_dir" ] || made_dir=1; \
+      rm -f "$cfg_file"; \
+      export AKASHA_E2E_OWNS_APP=1; \
+      echo "── 第一段：默认配置（关窗 = 收托盘）"; \
+      start_app "$tmp/akasha-e2e-app1.log"; \
+      run_targets "{{E2E_TARGETS}}"; \
+      stop_app; \
+      echo "── 第二段：close_behavior=exit（关窗 = 直接退出）"; \
+      mkdir -p "$cfg_dir" || exit 1; \
+      printf '{"close_behavior":"exit"}\n' > "$cfg_file" || exit 1; \
+      start_app "$tmp/akasha-e2e-app2.log"; \
+      run_targets "{{E2E_TARGETS_EXIT}}"; \
+      stop_app; \
     fi; \
-    if [ -n "${owns_app:-}" ]; then export AKASHA_E2E_OWNS_APP=1; fi; \
-    for t in {{E2E_TARGETS}}; do \
-      echo "── E2E: $t ──"; \
-      VICTAURI_E2E=1 cargo test --no-fail-fast --test "$t" -- --test-threads=1 --nocapture || rc=1; \
-    done; \
-    if [ "$rc" != 0 ] && [ -f "$tmp/akasha-e2e-app.log" ]; then \
-      echo "—— app 日志尾部（$tmp/akasha-e2e-app.log）——"; tail -n 20 "$tmp/akasha-e2e-app.log"; \
+    if [ "$rc" != 0 ]; then \
+      for l in "$tmp/akasha-e2e-app1.log" "$tmp/akasha-e2e-app2.log" "$tmp/akasha-e2e-app.log"; do \
+        if [ -f "$l" ]; then echo "—— app 日志尾部（$l）——"; tail -n 20 "$l"; fi; \
+      done; \
     fi; \
     exit $rc
 

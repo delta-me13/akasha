@@ -3,8 +3,12 @@
 //! ⚠️ 这条用例**会把被测 app 关掉**，所以只在"app 是 `just test-e2e` 自己起的"时候跑
 //! （配方会设 `AKASHA_E2E_OWNS_APP=1`）；复用一个 `just dev` 的 app 时它**显式跳过**并
 //! 写明原因 —— 跑一次 E2E 就把别人开着的开发 app 关掉，是比"少一个用例"糟得多的事。
-//! 配方还保证这条用例**真的排在最后**（`cargo test` 对多个 `--test` 目标是按名字
-//! 排序的，不是按你写的顺序 —— 所以配方改成逐个目标串行跑）。
+//! 配方还保证它跑在**第二段**（`E2E_TARGETS_EXIT`：先写 `close_behavior=exit` 再起 app），
+//! 因为关窗的默认语义是**隐藏**（plan 0302）——那是第一段的对象。
+//!
+//! ⚠️ **这条用例同时是"配置真的被读到"的证据**（plan 0303）：配置文件没生效的话，关窗只会
+//! 把窗口藏起来、进程照旧活着，下面的断言会在 30s 后红。也就是说它一箭双雕，而这是**顺带**
+//! 得到的：刺激（关窗）没变，变的只是"关窗之后该发生什么"由配置说了算。
 //!
 //! 探针取的是**最坏情况**：一个明确忽略 SIGHUP 的进程（`trap "" HUP`）。内核在 PTY
 //! 挂断时发的那轮 SIGHUP 对它无效，`Child::kill()` 也够不着它 —— 实测（plan 0204 的
@@ -191,6 +195,8 @@ async fn closing_the_window_leaves_no_child_behind() {
     eprintln!("app = {app_pid}；端口 = {port}；探针 = {probe:?}");
 
     // ── 走**真实退出路径**：关窗口 ──────────────────────────────────────────
+    // 本用例的退出刺激**没变**（还是关窗），变的是"关窗之后该发生什么"现在由配置说了算
+    // （plan 0303 的 `close_behavior=exit`，配方在第二段写进数据目录）。
     let closed = client
         .call_tool(
             "window",
@@ -201,7 +207,9 @@ async fn closing_the_window_leaves_no_child_behind() {
 
     assert!(
         waits_until(Duration::from_secs(30), || !alive(app_pid)),
-        "app {app_pid} 在关窗口之后 30s 还活着"
+        "app {app_pid} 在关窗口之后 30s 还活着 —— 要么这次运行的配置不是 close_behavior=exit\
+         （关窗的默认语义是隐藏，plan 0302，那种情况配方会跳过本用例），\
+         要么数据目录里的配置文件没被读到"
     );
     eprintln!("app 已退出（pid {app_pid}）");
 
