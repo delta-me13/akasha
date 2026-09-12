@@ -17,5 +17,16 @@ portable-pty = "0.9.0"
 # AGENTS.md §3.4：错误用 thiserror 分域定义。
 thiserror = "2"
 
+[dev-dependencies]
+# 吞吐基线（`just bench`）。**不新增依赖**：workspace 里本来就有它 —— `akasha` 的
+# dev-dependencies 已经拉了同一个版本，所以这里只是把已有的那份也借给本 crate。
+criterion = "0.8.2"
+
+# 用 criterion 自己的 harness（`harness = false`）：libtest 的 `#[bench]` 只在 nightly 上，
+# 而且它既没有基线对比也没有统计。
+[[bench]]
+name = "batching"
+harness = false
+
 [lints]
 workspace = true

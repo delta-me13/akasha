@@ -132,8 +132,8 @@ pub trait Transport: Send {
     /// 同一个载体的两个读端会**互相偷字节**，于是输出随机丢一段 ——
     /// 那种 bug 不报错、不可复现，只在读端数量上出错。API 直接让它写不出来。
     ///
-    /// 取走后怎么读（线程、合批、背压）是调用方的事 —— 本 crate 不偷偷起线程，
-    /// 合批属于 plan 0201。
+    /// 取走后怎么读（线程、合批、背压）是调用方的事 —— 本 crate 不**偷偷**起线程，
+    /// 合批要用就显式调 [`crate::spawn_batcher`]。
     fn output_stream(&mut self) -> Option<Box<dyn Read + Send>>;
 
     /// 调整窗口尺寸。**默认返回 [`TransportError::Unsupported`]** —— 具备该能力的载体覆写它

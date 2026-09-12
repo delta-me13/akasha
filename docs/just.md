@@ -37,6 +37,7 @@
 | `just fmt-check` | 只检查格式，不改文件 | 转发 |
 | `just test` | 单元测试（cargo-nextest），**workspace 全成员** | 转发 |
 | `just test-e2e` | E2E，需要 app 正在运行（先 `just dev`） | 转发 |
+| `just bench` | 吞吐基线（criterion）。**不是门禁**，用于改动前后对比 | 转发 |
 | `just deny` | 依赖门禁：许可证 / 漏洞 / 来源（需联网） | 转发 |
 | `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |
 | `just gen-types` | Rust command/event → `src/ipc/bindings.ts`（待接入 tauri-specta） | 转发 |
@@ -56,7 +57,7 @@ justfile                 ← 你在这里敲命令（项目级 + 转发）
                                             ↓
 src-tauri/justfile       ← crate 级命令真正实现的地方
     check / clippy / fmt / fmt-check / watch
-    test / test-e2e / deny / deny-offline / gen-types
+    test / test-e2e / bench / deny / deny-offline / gen-types
 ```
 
 **为什么要分两个**：just 用 **justfile 所在目录**作为配方的工作目录。

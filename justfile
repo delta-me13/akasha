@@ -75,6 +75,10 @@ test:
 test-e2e:
     just --justfile {{SRC}}/justfile test-e2e
 
+# 吞吐基线（criterion）。**不是门禁** —— 它是用于改动前后对比的基线
+bench:
+    just --justfile {{SRC}}/justfile bench
+
 # 依赖门禁：许可证 + 漏洞 + 来源（advisories 需联网）
 deny:
     just --justfile {{SRC}}/justfile deny

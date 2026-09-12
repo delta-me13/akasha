@@ -49,6 +49,14 @@ test:
 test-e2e:
     VICTAURI_E2E=1 cargo test --test smoke --test integration -- --test-threads=1
 
+# ── 性能基线 ────────────────────────────────────────────────────────────────
+
+# 吞吐基线（criterion）。**不是门禁**（AGENTS.md §7）：MB/s 随机器与编译器版本浮动，
+# 拿它当通过条件只会得到一条随机红的流水线。用途是**改动前后对比**。
+# 基线数字记在 plan 与 docs/STATUS.md。
+bench:
+    cargo bench --workspace
+
 # ── 依赖门禁 ────────────────────────────────────────────────────────────────
 
 # 许可证 + 漏洞 + 来源。advisories 需要联网拉 RustSec 数据库

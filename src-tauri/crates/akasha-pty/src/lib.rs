@@ -14,8 +14,8 @@
 //! 3. **shutdown 必须显式 kill + wait 收尸**，`drop` 不能代替（`AGENTS.md` §3.3）。
 //!    所以本 crate **没有** `Drop` 实现 —— 那会让"忘记收尸"变成静默成功。
 //!
-//! 本 crate **不含**：输出合批（plan 0201）、IPC（plan 0202）、前端（阶段 2）、
-//! `Session` 模型（已在 `akasha-core`）。它只管"字节怎么进出载体"。
+//! 本 crate **不含**：IPC（plan 0202）、前端（阶段 2）、`Session` 模型（已在 `akasha-core`）。
+//! 它只管"字节怎么进出载体"，外加把输出合批成 [`Batch`]（[`spawn_batcher`]）。
 //!
 //! ```no_run
 //! use akasha_pty::{PtyTransport, TerminalSize, Transport};
@@ -27,11 +27,13 @@
 //! # Ok::<(), akasha_pty::TransportError>(())
 //! ```
 
+mod batcher;
 mod pty;
 mod shell;
 pub mod testing;
 mod transport;
 
+pub use batcher::{Batch, BatchPolicy, OutputBatcher, Trigger, spawn_batcher};
 pub use pty::PtyTransport;
 pub use shell::ShellLaunch;
 pub use transport::{Capabilities, ExitStatus, TerminalSize, Transport, TransportError};
