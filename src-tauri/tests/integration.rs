@@ -50,7 +50,12 @@ async fn command_greet() {
     }
     let mut client = VictauriClient::discover().await.unwrap();
 
-    let result = client.invoke_command("greet", None).await;
+    // ⚠️ 生成器当初写的是 `invoke_command("greet", None)`，而 `greet` 需要 `name` ——
+    // 于是这条用例**一直**是红的（它不在 `ready` 里，而 `just test-e2e` 要真 app，
+    // 谁都没跑过它）。按本文件开头的 "Adapt each test" 补上参数。
+    let result = client
+        .invoke_command("greet", Some(serde_json::json!({ "name": "akasha" })))
+        .await;
     assert!(
         result.is_ok(),
         "greet should respond without error: {:?}",
