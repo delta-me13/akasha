@@ -221,6 +221,13 @@ export function installDevBackend(): void {
         if (!shells.delete(handle)) throw new Error(`会话 ${handle} 不存在（已关闭或未打开）`);
         return null;
       }
+      // dev-web 里没有 Rust 的事件系统。会话事件（`session_ended`）**不模拟** ——
+      // 模拟后端不会自己退出（见 FakeShell 的 `exit`）。这两个分支只要让
+      // `events.sessionEnded.listen(...)` 能成功返回，别让它抛在"打开一个终端"这条路上。
+      case "plugin:event|listen":
+        return 0;
+      case "plugin:event|unlisten":
+        return null;
       default:
         throw new Error(`dev-web 模拟后端没有实现命令 ${cmd}`);
     }

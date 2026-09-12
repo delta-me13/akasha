@@ -15,6 +15,12 @@ interface TerminalPaneProps {
    * 它的唯一用途是"用户切到这个标签页时把键盘焦点与验收探针交给它"。
    */
   readonly active: boolean;
+  /**
+   * 这个面的会话**自己**结束了（终端里敲了 `exit` / shell 崩了）。
+   *
+   * 壳层收到就关掉这个标签页 —— 标签页与会话同生命期（`docs/scope.md` §5.6）。
+   */
+  onSessionEnded(): void;
 }
 
 /**
@@ -24,10 +30,18 @@ interface TerminalPaneProps {
  * 命令式闭包里直接进了 xterm 的写入缓冲。这个组件从 `attachTerminal` 拿到的
  * 只有"连接状态"和"渲染器种类"，没有任何一条路径会把终端字节交给 `setState`。
  */
-export function TerminalPane({ active }: TerminalPaneProps) {
+export function TerminalPane({ active, onSessionEnded }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
   const [renderer, setRenderer] = useState<RendererKind | null>(null);
+
+  // ⚠️ 会话结束的回调**必须走 ref**：`attachTerminal` 只在挂载时接一次线（依赖是 `[]`），
+  // 而 `App` 每次渲染都会传一个新的箭头函数（它闭包着**当时**的标签页列表）。
+  // 直接接那个函数的话，晚一点才结束的会话会走到一份过期闭包里 —— 表现是"标签页关不掉"。
+  const endedRef = useRef(onSessionEnded);
+  useEffect(() => {
+    endedRef.current = onSessionEnded;
+  }, [onSessionEnded]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -36,6 +50,7 @@ export function TerminalPane({ active }: TerminalPaneProps) {
     return attachTerminal(host, {
       onStatus: (kind, detail) => setStatus({ kind, detail }),
       onRenderer: setRenderer,
+      onEnded: () => endedRef.current(),
     });
   }, []);
 

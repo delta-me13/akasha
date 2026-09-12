@@ -17,6 +17,12 @@ export type TerminalStatus = "connecting" | "open" | "error";
 export interface TerminalHandlers {
   onStatus(status: TerminalStatus, detail?: string): void;
   onRenderer(kind: RendererKind): void;
+  /**
+   * 会话**自己**结束了（终端里敲了 `exit` / shell 崩了）：壳层据此关掉这个标签页。
+   *
+   * ⚠️ 它**不是**"用户关了标签页"那条路（0305）—— 那条路走的是下面的清理函数。
+   */
+  onEnded(): void;
 }
 
 /**
@@ -88,7 +94,14 @@ export function attachTerminal(host: HTMLElement, handlers: TerminalHandlers): (
   refit(); // 首帧也算一次：初始尺寸可能就是最终尺寸
 
   handlers.onStatus("connecting");
-  void openTerminalSession((bytes) => surface.write(bytes))
+  void openTerminalSession(
+    (bytes) => surface.write(bytes),
+    // 会话自己结束 → 交回壳层（关标签页）。`disposed` 之后不再回调：那时这个面已经没人要了，
+    // 而"关标签页"会由清理函数负责。
+    () => {
+      if (!disposed) handlers.onEnded();
+    },
+  )
     .then((opened) => {
       if (disposed) {
         // React StrictMode 在 dev 里会"挂载 → 卸载 → 再挂载"。这次会话已经没人要了 ——

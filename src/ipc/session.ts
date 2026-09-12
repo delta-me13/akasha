@@ -11,7 +11,7 @@
 //   2. 除了这里，前端不许在别处出现裸 `invoke("字符串命令名")`（`AGENTS.md` §0 绝对禁止 #1）。
 
 import { Channel } from "@tauri-apps/api/core";
-import { commands, type IpcError } from "./bindings";
+import { commands, events, type IpcError } from "./bindings";
 
 /** 后端返回的错误，原样带着 [`IpcError`] 的结构抛出（调用方多半只是显示它）。 */
 export class IpcInvokeError extends Error {
@@ -49,6 +49,69 @@ export interface TerminalSession {
   close(): Promise<void>;
 }
 
+// ── 会话**自己**结束（plan 0306）──────────────────────────────────────────────
+//
+// 用户在终端里敲 `exit`、shell 崩了、PTY 被关掉 —— 这些都是"会话自己走了"，
+// 与"用户关掉标签页"（plan 0305）方向相反。后端收掉它之后发一个事件，前端据此关掉
+// 那个标签页（标签页与会话**同生命期**，`docs/scope.md` §5.6）。
+//
+// 为什么这件事必须由**事件**来说：官方 `Channel` 收到收尾帧（`{index, end:true}`）时
+// 只把回调注销掉（`cleanupCallback`），**不会**通知 `onmessage` —— 前端光看字节通道
+// 是看不出"流结束了"的。
+
+/** 已经结束、但还没有人订阅的会话。见 [`subscribeSessionEnded`] 里的窄窗口说明。 */
+const endedBeforeSubscribe = new Set<number>();
+
+/** `handle → 关心它结束的回调`。 */
+const endedHandlers = new Map<number, Set<() => void>>();
+
+let listenerStarted = false;
+
+/**
+ * 起**一个**全局监听，按 `handle` 分发给订阅者。
+ *
+ * 为什么不让每个面板各 `listen` 一次：事件的寻址是"哪个**会话**"，不是"哪个面板"——
+ * 分发规则只该有一处，否则将来加事件时每个面板都要重新对一遍。
+ */
+function ensureListening(): void {
+  if (listenerStarted) return;
+  listenerStarted = true;
+  void events.sessionEnded.listen((event) => {
+    const { handle } = event.payload;
+    const handlers = endedHandlers.get(handle);
+    if (!handlers || handlers.size === 0) {
+      // 窄窗口：会话一开起来就立刻结束（shell 起不来就会这样），事件可能**早于**订阅到达。
+      // 先记下来，订阅时补发 —— 否则那个标签页会留在界面上，里面是一个死终端。
+      endedBeforeSubscribe.add(handle);
+      return;
+    }
+    for (const handler of [...handlers]) handler();
+  });
+}
+
+/**
+ * 订阅"这个会话自己结束了"，返回退订函数。
+ *
+ * 事件若在订阅**之前**就到了（见 [`ensureListening`]），这里立刻回调一次。
+ */
+function subscribeSessionEnded(handle: number, handler: () => void): () => void {
+  if (endedBeforeSubscribe.delete(handle)) {
+    handler();
+    return () => {};
+  }
+  let handlers = endedHandlers.get(handle);
+  if (!handlers) {
+    handlers = new Set();
+    endedHandlers.set(handle, handlers);
+  }
+  handlers.add(handler);
+  ensureListening();
+  return () => {
+    handlers.delete(handler);
+    if (handlers.size === 0) endedHandlers.delete(handle);
+  };
+}
+
 /**
  * 打开一个本地终端会话，输出**逐批**交给 `onBatch`。
  *
@@ -57,6 +120,8 @@ export interface TerminalSession {
  */
 export async function openTerminalSession(
   onBatch: (bytes: Uint8Array) => void,
+  /** 这个会话**自己**结束了（敲 `exit` / shell 崩了）—— 壳层据此关掉它的标签页。 */
+  onEnded: () => void,
 ): Promise<TerminalSession> {
   // 频道收的是 **ArrayBuffer**：后端发的是 `InvokeResponseBody::Raw`。
   // 若哪天有人把它改成 `Channel<Vec<u8>>`，这里收到的会变成 number[] ——
@@ -68,17 +133,30 @@ export async function openTerminalSession(
   if (opened.status === "error") throw new IpcInvokeError(opened.error);
   const handle = opened.data;
 
+  // 会话结束之后**一律不再发命令**：后端已经把它摘牌收掉了，再发只会收到 `NotFound` ——
+  // 那不是错误，是"它已经走了"。所以这里记住这件事，让 write / resize / close 变成空操作。
+  let ended = false;
+  const unsubscribe = subscribeSessionEnded(handle, () => {
+    if (ended) return;
+    ended = true;
+    onEnded();
+  });
+
   return {
     handle,
     async write(bytes: Uint8Array) {
+      if (ended) return;
       const result = await commands.writeSession(handle, Array.from(bytes));
       if (result.status === "error") throw new IpcInvokeError(result.error);
     },
     async resize(cols: number, rows: number) {
+      if (ended) return;
       const result = await commands.resizeSession(handle, cols, rows);
       if (result.status === "error") throw new IpcInvokeError(result.error);
     },
     async close() {
+      unsubscribe();
+      if (ended) return; // 后端已经收过尾了：再发 close_session 只会收到 NotFound
       const result = await commands.closeSession(handle);
       if (result.status === "error") throw new IpcInvokeError(result.error);
     },

@@ -83,8 +83,14 @@ function App() {
             aria-hidden={tab.key !== active}
           >
             {/* ⚠️ 所有标签页都**保持挂载**（`active` 只用来交焦点）：卸载 = 关会话，
-                见 `closeTab`。非活动的那个由 CSS 隐藏 —— 用 `visibility`，不是 `display`。 */}
-            <TerminalPane active={tab.key === active} />
+                见 `closeTab`。非活动的那个由 CSS 隐藏 —— 用 `visibility`，不是 `display`。
+
+                会话**自己**结束时（终端里敲了 `exit`）走的是同一条关标签页路径：
+                后端收掉它 + 发事件 → 这里 `closeTab`。 */}
+            <TerminalPane
+              active={tab.key === active}
+              onSessionEnded={() => closeTab(tab.key)}
+            />
           </div>
         ))}
         {tabs.length === 0 && (
