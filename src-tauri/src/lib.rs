@@ -3,6 +3,7 @@ pub mod bindings;
 pub mod config;
 pub mod lifecycle;
 pub mod session;
+pub mod single_instance;
 pub mod tray;
 pub mod watchdog;
 
@@ -37,6 +38,15 @@ pub fn run() {
     //（运行期分发），也喂 `just gen-types`（生成 TS）。分成两份必然漂移。
     let builder = bindings::builder();
 
+    // 单实例（plan 0304）：第二个实例唤起已有窗口，而不是各跑一套。
+    //
+    // 注册在**最前面**（上游 README 也是这么要求的：插件的 setup 在 `build()` 里按注册
+    // 顺序跑）—— 第二个实例走到自己这一步就该退，不该先去建日志、连 portal。
+    // ⚠️ "第二个实例不会先闪一个窗口"**与顺序无关**：全部插件的 setup 都跑在窗口创建
+    //（`RunEvent::Ready`）之前。注册不上去时这里回 `None`（Linux 上没有会话总线，
+    // 见该模块），app 照常启动，只是**可以多开**。
+    let (instance, instance_plugin) = single_instance::start();
+
     // 会话表要**共享**给退出钩子与 panic hook —— tauri 的 `State` 只借给命令用。
     // `Sessions` 内部是 `Arc`，clone 出来的是同一份表。
     //
@@ -50,25 +60,33 @@ pub fn run() {
     let startup = watchdog::start_early(&sessions);
     install_panic_reclaim(sessions.clone());
 
-    let app = tauri::Builder::default()
+    let mut app_builder = tauri::Builder::default();
+    if let Some(plugin) = instance_plugin {
+        app_builder = app_builder.plugin(plugin);
+    }
+
+    let app = app_builder
         .plugin(logger())
         .plugin(tauri_plugin_opener::init())
         .manage(sessions.clone())
         .invoke_handler(builder.invoke_handler())
-        // 比 `victauri_plugin::init()` 只多注册一个 probe：**关窗语义**（plan 0302/0303）。
-        // 它给 E2E 一个"这台机器该验隐藏、还是该显式跳过"的判据（`AGENTS.md` §7：
-        // 观察后端状态用 probe 读，不靠 grep 日志反推）。
+        // 比 `victauri_plugin::init()` 只多注册两个 probe：**关窗语义**（plan 0302/0303）
+        // 与**单实例**（plan 0304）。它们给 E2E 一个"这台机器该验哪条、还是该显式跳过"
+        // 的判据（`AGENTS.md` §7：观察后端状态用 probe 读，不靠 grep 日志反推）。
         // `build()` 只在 port / 容量这类配置非法时失败，而这里全是默认值 —— 与
         // `victauri_plugin::init()` 内部的 `expect` 是同一条保证（默认配置永远合法）。
         .plugin(
             victauri_plugin::VictauriBuilder::new()
                 .probe("lifecycle", lifecycle::snapshot)
+                .probe("single_instance", single_instance::snapshot)
                 .build()
                 .expect("default Victauri configuration is always valid"),
         )
-        // 到这一步日志插件已经就绪 —— 看门狗的成败终于有人看得到（`Startup` 的理由）。
+        // 到这一步日志插件已经就绪 —— 看门狗与单实例的成败终于有人看得到
+        //（两者的 `Startup` 都是同一个理由）。
         .setup(move |app| {
             watchdog::report(&startup);
+            single_instance::report(&instance);
             // ⚠️ 事件必须在 setup 里挂上：`tauri-specta` 的 `Builder::invoke_handler`
             // 只覆盖命令，事件缺了这一步会在**发**的时候 panic（`EventRegistry not found`）。
             builder.mount_events(app);
