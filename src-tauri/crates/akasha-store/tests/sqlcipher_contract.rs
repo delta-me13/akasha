@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use akasha_store::{StoreError, open};
+use akasha_store::{Passphrase, StoreError, create, open};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, ffi};
 
@@ -27,6 +27,12 @@ use rusqlite::{Connection, ffi};
 const PASSPHRASE: &[u8] = b"correct horse battery staple";
 const NEW_PASSPHRASE: &[u8] = b"another correct horse battery staple";
 const SECRET: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nakasha-contract-fixture\n-----END OPENSSH PRIVATE KEY-----\n";
+
+/// 把字节包成口令。`Passphrase` 刻意不实现 `Clone`，所以每个用例各自造一份 ——
+/// 口令的副本只有一个来源，多一个就得回答"为什么要多这一个"（ADR-0002 D5）。
+fn pass(bytes: &[u8]) -> Passphrase {
+    Passphrase::new(bytes.to_vec()).unwrap()
+}
 
 /// 每例一个干净目录；`target/store-contract/` 下的产物**故意留着**给人工复核。
 fn fixture_dir(name: &str) -> PathBuf {
@@ -83,12 +89,22 @@ fn dump_pragma(conn: &Connection, pragma: &str) -> String {
     out
 }
 
+/// 取一条单列文本 PRAGMA 的取值。
+fn text_pragma(conn: &Connection, pragma: &str) -> String {
+    conn.query_row(pragma, [], |row| row.get(0)).unwrap()
+}
+
+/// 字节 → 小写十六进制（`cipher_salt` 的格式）。
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 // ── 1. 参数集就是 ADR-0002 D2 写的那一套 ─────────────────────────────────────
 
 #[test]
 fn cipher_settings_reports_adr_parameters() {
     let db = fixture_dir("cipher-settings").join("akasha.db");
-    let conn = open(&db, PASSPHRASE).unwrap();
+    let conn = create(&db, &pass(PASSPHRASE)).unwrap();
 
     let settings = dump_pragma(&conn, "PRAGMA cipher_settings");
     println!("PRAGMA cipher_settings:\n{settings}");
@@ -125,7 +141,7 @@ fn cipher_settings_reports_adr_parameters() {
 #[test]
 fn cipher_version_is_sqlcipher_4() {
     let db = fixture_dir("cipher-version").join("akasha.db");
-    let conn = open(&db, PASSPHRASE).unwrap();
+    let conn = create(&db, &pass(PASSPHRASE)).unwrap();
 
     // 能读到 cipher_version 本身就说明链的是 SQLCipher 而不是裸 SQLite
     // （裸 SQLite 上这个 PRAGMA 报错）。ADR-0002 §7 要求记下实际版本与构建出的 OpenSSL。
@@ -145,7 +161,7 @@ fn cipher_version_is_sqlcipher_4() {
     let not_a_db = fixture_dir("not-a-database").join("plain.db");
     fs::write(&not_a_db, b"SQLite format 3\0not really a database").unwrap();
     assert!(matches!(
-        open(&not_a_db, PASSPHRASE).unwrap_err(),
+        open(&not_a_db, &pass(PASSPHRASE)).unwrap_err(),
         StoreError::NotADatabase
     ));
 }
@@ -158,7 +174,7 @@ fn wrong_passphrase_cannot_open() {
     let db = dir.join("akasha.db");
 
     {
-        let conn = open(&db, PASSPHRASE).unwrap();
+        let conn = create(&db, &pass(PASSPHRASE)).unwrap();
         conn.execute_batch("CREATE TABLE key_pool(secret TEXT);")
             .unwrap();
     }
@@ -174,12 +190,12 @@ fn wrong_passphrase_cannot_open() {
     println!("raw error = {raw_err:?}");
     drop(raw);
 
-    let err = open(&db, b"wrong passphrase").unwrap_err();
+    let err = open(&db, &pass(b"wrong passphrase")).unwrap_err();
     println!("StoreError = {err}");
     assert!(matches!(err, StoreError::NotADatabase), "实际是 {err:?}");
 
     // 正确口令仍然打得开 —— 否则这条判据可能只是因为"这个文件本来就打不开"
-    open(&db, PASSPHRASE).unwrap();
+    open(&db, &pass(PASSPHRASE)).unwrap();
 }
 
 // ── 4. 空口令：应用层拦下，且理由不是猜测 ──────────────────────────────────
@@ -189,10 +205,18 @@ fn empty_passphrase_refused_before_touching_file() {
     let dir = fixture_dir("empty-passphrase");
     let db = dir.join("akasha.db");
 
-    let err = open(&db, b"").unwrap_err();
-    assert!(matches!(err, StoreError::EmptyPassphrase), "实际是 {err:?}");
-    // "在碰文件之前"是可断言的：文件根本没被建出来
+    // plan 0402：这道校验从 `open` 里的一个分支升级成**类型不变量** ——
+    // 空口令不是"调用时被拒绝"，而是**根本造不出来**，所以没有哪条调用路径能忘记检查它。
+    assert!(matches!(
+        Passphrase::new(Vec::new()),
+        Err(StoreError::EmptyPassphrase)
+    ));
+    // "不碰文件"因此是更强的意思：这条路径**走不到文件系统**
     assert!(!db.exists(), "空口令不该在磁盘上留下任何东西");
+
+    // 反面（否则上面那条断言可能只是"构造函数永远失败"）：非空造得出来，`create` 也认它
+    let _conn = create(&db, &pass(b"x")).unwrap();
+    assert!(db.exists());
 }
 
 #[test]
@@ -239,7 +263,7 @@ fn plaintext_export_roundtrip_and_user_version_not_copied() {
     let db = dir.join("akasha.db");
     let out = dir.join("export-plain.db");
 
-    let conn = open(&db, PASSPHRASE).unwrap();
+    let conn = create(&db, &pass(PASSPHRASE)).unwrap();
     conn.execute_batch(&format!(
         "CREATE TABLE key_pool(secret TEXT); INSERT INTO key_pool VALUES ('{SECRET}');"
     ))
@@ -288,7 +312,7 @@ fn plaintext_secret_not_found_in_db_file() {
     let db = dir.join("akasha.db");
 
     {
-        let conn = open(&db, PASSPHRASE).unwrap();
+        let conn = create(&db, &pass(PASSPHRASE)).unwrap();
         conn.execute_batch(&format!(
             "CREATE TABLE key_pool(secret TEXT); INSERT INTO key_pool VALUES ('{SECRET}');"
         ))
@@ -331,9 +355,9 @@ fn open_restricts_file_to_owner() {
     println!("sqlite 默认建出的权限 = {default_mode:o}");
 
     let db = dir.join("akasha.db");
-    let _conn = open(&db, PASSPHRASE).unwrap();
+    let _conn = create(&db, &pass(PASSPHRASE)).unwrap();
     let hardened = fs::metadata(&db).unwrap().permissions().mode() & 0o777;
-    println!("经 open() 之后的权限 = {hardened:o}");
+    println!("经 create() 之后的权限 = {hardened:o}");
     assert_eq!(hardened, 0o600, "D12：库文件应当是 0600");
     assert_ne!(
         default_mode, 0o600,
@@ -349,7 +373,7 @@ fn rekey_keeps_content_and_reports_salt_behaviour() {
     let dir = fixture_dir("rekey");
     let db = dir.join("akasha.db");
 
-    let conn = open(&db, PASSPHRASE).unwrap();
+    let conn = create(&db, &pass(PASSPHRASE)).unwrap();
     conn.execute_batch(&format!(
         "CREATE TABLE key_pool(secret TEXT); INSERT INTO key_pool VALUES ('{SECRET}');"
     ))
@@ -383,14 +407,78 @@ fn rekey_keeps_content_and_reports_salt_behaviour() {
 
     // 真正要守住的不变量：换口令之后**新口令能开、旧口令不能**，且内容还在
     {
-        let conn = open(&db, NEW_PASSPHRASE).unwrap();
+        let conn = open(&db, &pass(NEW_PASSPHRASE)).unwrap();
         let secret: String = conn
             .query_row("SELECT secret FROM key_pool", [], |r| r.get(0))
             .unwrap();
         assert_eq!(secret, SECRET);
     }
     assert!(matches!(
-        open(&db, PASSPHRASE).unwrap_err(),
+        open(&db, &pass(PASSPHRASE)).unwrap_err(),
         StoreError::NotADatabase
     ));
+}
+
+// ── 9. plan 0402：盐在文件头，且每个库各不同（D2 的直接证据）───────────────
+
+#[test]
+fn cipher_salt_is_the_file_header_and_differs_per_vault() {
+    let dir = fixture_dir("cipher-salt");
+    let a = dir.join("a.db");
+    let b = dir.join("b.db");
+
+    // 同一个口令建两个库。D2 说盐是"16 字节随机、存于库文件头部前 16 字节"，
+    // 而"随机"与"在头部"这两半都只在**两个库对比**时才看得出来。
+    let conn_a = create(&a, &pass(PASSPHRASE)).unwrap();
+    let conn_b = create(&b, &pass(PASSPHRASE)).unwrap();
+    let salt_a = text_pragma(&conn_a, "PRAGMA cipher_salt");
+    let salt_b = text_pragma(&conn_b, "PRAGMA cipher_salt");
+    println!("salt a = {salt_a}\nsalt b = {salt_b}");
+
+    assert_eq!(salt_a.len(), 32, "盐应当是 16 字节的十六进制：{salt_a}");
+    assert!(salt_a.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_ne!(
+        salt_a, salt_b,
+        "同一个口令建的两个库拿到了同一个盐 —— 盐不是随机生成的，D2/D3 要重看"
+    );
+
+    // "存于文件头部前 16 字节"是可断言的：`cipher_salt` 与文件头逐字节相同
+    let head_a = hex(&fs::read(&a).unwrap()[..16]);
+    assert_eq!(salt_a, head_a, "盐没落在文件头前 16 字节");
+    assert_eq!(salt_b, hex(&fs::read(&b).unwrap()[..16]));
+
+    // 口令相同、盐不同 → 密文必须不同。两个文件逐字节相同说明盐根本没参与派生。
+    assert_ne!(
+        fs::read(&a).unwrap(),
+        fs::read(&b).unwrap(),
+        "两个库的字节完全相同：盐没有参与密钥派生"
+    );
+}
+
+// ── 10. plan 0402：内存安全是**进程级**，且只能开不能关（§6 的更正依据）────
+
+#[test]
+fn memory_security_can_be_enabled_but_never_turned_off() {
+    let dir = fixture_dir("memory-security");
+    let conn = create(&dir.join("akasha.db"), &pass(PASSPHRASE)).unwrap();
+
+    // 我们的打开路径本来就开了它（ADR-0002 §6 的"建议开"），所以建库之后读回来应当是 "1"。
+    // ⚠️ 读回来的是 `on && executed` 的合取（`executed` = 安全分配器被用过至少一次），
+    // 所以这条断言同时说明"确实开了"和"确实在走那个分配器"。
+    assert_eq!(
+        text_pragma(&conn, "PRAGMA cipher_memory_security"),
+        "1",
+        "内存安全没生效 —— 上游 sqlcipher_init_memmethods 可能没装上包装分配器"
+    );
+
+    // **关不掉**：上游 `sqlcipher_set_mem_security` 的实现是 `if(on) { … }`，
+    // 设 OFF 既不报错也没有效果。§6 原写的"连接级开关"两半都不对（进程级 + 单向），
+    // 这条断言就是那个更正的护栏。
+    conn.execute_batch("PRAGMA cipher_memory_security = OFF")
+        .unwrap();
+    assert_eq!(
+        text_pragma(&conn, "PRAGMA cipher_memory_security"),
+        "1",
+        "居然关得掉了：ADR-0002 §6 把这条写成\"可开关的连接级设置\"就又不算错了，回去改"
+    );
 }
