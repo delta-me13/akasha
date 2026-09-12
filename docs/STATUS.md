@@ -120,7 +120,7 @@
 | `pnpm build`（tsc + vite build） | 退出码 0；产物 **843 kB / gzip 231 kB**（本轮未改前端，数字沿用） |
 | `just deny-offline` | `bans ok, licenses ok, sources ok`（`--workspace` 已加，补上了"未被人依赖的成员不在图里"那个盲区） |
 | `just docs-check` | 全过（ROADMAP 条目在 3 行内且无代码块 / plan ≤200 行且索引一致） |
-| `ast-grep scan` | 退出码 **0**；**六条**规则均已用正负例验证（本轮改了 `no-unsafe-outside-store` 的 note，`files:` / `ignores:` 没动，所以不必重跑负例；此前被 `no-println` 拦了一次，见坑 #94） |
+| `ast-grep scan` | 退出码 **0**；**六条规则全部用探针重验了一遍**（正例 **10 条命中** / 诱饵 **0 条误报**，逐条对账见「本轮完成」）。诱饵覆盖"注释里的同名文本 / 字符串里的 `unsafe` / `Channel<u32>` / `struct Previewer` / store 里真 unsafe"这几类。⚠️ **重验抓到一个真漏洞**：`no-string-pty-channel` 漏掉限定路径写法（坑 #101） |
 | **三条 unsafe 注释 lint**（本轮新增的强制，`just lint` 的 clippy 那一步） | 退出码 **0**；三条各用一个探针证明**它们真的会红**：`undocumented_unsafe_blocks` → 把 `apply_key` 的 `// SAFETY:` 改名即报（**私有函数也报**）；`unnecessary_safety_comment` → 在安全语句上挂一条 `// SAFETY:` 即报；`unnecessary_safety_doc` → 给安全函数加 `/// # Safety` 即报。探针跑完即撤，仓库里不留 |
 | **文档一致性与正确性核查**（本轮：核对了 17 份文档 —— 规范 1 + 顶层 2 + `docs/` 7 + ADR 5 + plan 索引与在办 plan 2，逐处改掉过时说法） | ✅ 相对链接 **231 条全部可解析**；`cargo nextest list --workspace` 逐 crate 计数与本文的 **58 / 37 / 15 / 76 = 186** 一致；`unsafe` **3 处**（库 1 + 它的契约测试 2，都带 `// SAFETY:`）；`BatchPolicy::DEFAULT` = 64 KiB + 16 ms、`MAX_LEN` = 256、`MAX_JUMP_DEPTH` = 32、私钥页 16384 字节逐条对上代码 |
 | `cargo tree -p akasha-core` \| `grep -c tauri` | **0**（分层成立） |
@@ -242,6 +242,13 @@
   内核自己的语种约定，不属于 unsafe 规范（第一版搬多了，见坑 #100）
 - [x] **强制**：`just lint` 的 clippy 那一步加三条（内核 Makefile 里就是这三条），
   负例见上表（"探针一改名就红"）
+- [x] **六条 ast-grep 规则逐一重验**：把正例与诱饵放进规则 `files:` 覆盖的**真实路径**
+  （`src-tauri/src/probe_rule_check.rs` 等）跑 `ast-grep scan --json`，逐条对账
+  **10 命中 / 0 误报**，跑完即删。**重验抓到一个漏网**：`no-string-pty-channel` 的
+  `^Channel$` 漏掉 `tauri::ipc::Channel<Vec<u8>>`（坑 #101），已改成 `(^|::)Channel$`
+  并补上整数 `Vec` 的其余宽度
+- [x] **工具偏好成文**（`AGENTS.md` §2）：找代码按「`ast-grep` → rust-analyzer MCP →
+  最后才是 `grep` / `read`」挑，理由（token 与语义，附本次的实测例子）写在里面
 - [x] 门禁：`just ready` **6/6**（lint 3s / test 58s —— 因 `Cargo.toml` 变了而全量重编）
 
 ### 上一轮完成（plan 0405：可搬迁性验证 + ADR-0002 定案）
@@ -437,3 +444,11 @@
     `// SAFETY:` 紧贴块前说明"为什么 sound"、`# Safety` 写明契约。第一版把
     "英文、句首大写、句末句号"也一起搬了过来，而那只是内核注释本来就写英文。
     结论：**解释写中文**（与本仓库其余注释一致），只把**标签字面量**钉死（clippy 认它）。
+101. **断言型正则要按"节点实际文本"写，不是按心里那个短名字**：`^Channel$` 匹配不到
+    `tauri::ipc::Channel<Vec<u8>>` —— 那个 `type` 节点的文本是**整条路径**。写成
+    `(^|::)Channel$` 才拦得住。教训：规则的正例必须覆盖**真实写法**（限定路径、类型别名、
+    泛型嵌套）；只测最顺手的写法，等于给规则留了一个静默的缺口。
+102. **探针必须放进规则 `files:` 覆盖的真实路径，且正例与诱饵都要有**：只放正例分不清
+    "规则在工作"与"规则范围写窄了"，只放诱饵分不清"规则在工作"与"什么都没匹配到"。
+    ⚠️ 探针放错路径时，`files:` 即使写错也照样全绿 —— 那正是最该抓到的失败。
+    跑完用 `--json` 逐条对账（本轮：正例 10 条命中 / 诱饵 0 条），然后删掉探针。
