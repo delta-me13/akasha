@@ -354,6 +354,11 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
 ### 5.5 实现注意
 
 - Linux 托盘需要 **`libayatana-appindicator3`**（系统库，已在 CI 的 apt 依赖里）。
+  ⚠️ 加载是**运行时 dlopen**，顺序为 `libayatana-appindicator3.so.1` → `libappindicator3.so.1`
+  —— 只装了后者（2012 年的老库）的机器也能起，但那是**不支持的那条路**（坑 #61）。
+- Linux 上**图标要落盘**：`tray-icon` 会写到 `$XDG_RUNTIME_DIR/tray-icon/<name>.png`
+  （只读 runtime dir / 容器里写不了）。所以托盘属于**可选能力**：建不起来只该记一条日志，
+  且此时**不能**把"关窗口"做成隐藏 —— 否则窗口再也叫不回来（坑 #60）。
 - 隐藏窗口 vs 销毁窗口：**必须用隐藏**。这不只是"更简单" —— 见 §2.2：
   销毁窗口会连带销毁所有 Session，按「连接 = Session 生命周期」的规则**立刻关掉全部隧道**，
   直接抵消托盘的意义。附带好处是 webview 状态（xterm 回滚缓冲）得以保留。

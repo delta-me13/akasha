@@ -46,7 +46,7 @@
 | `exit_code` | 正常退出的退出码 | `u32` |
 | `signal` | 终止会话的信号名（与 `exit_code` **二选一**；上游给的显示名，见 §6） | str |
 | `reclaimed` / `failed` | 退出路径上收掉 / 没收掉的会话数 | usize |
-| `trigger` | 哪条退出路径 | `exit` / `panic` |
+| `trigger` | 哪条退出路径 | `exit` / `panic` / `tray` |
 | `reason` | 自造的变体或失败原因 | 稳定字面量 |
 | `event` | 发不出去的事件名 | str |
 | `err` | 错误本体，用 `%err`（Display） | 错误类型 |

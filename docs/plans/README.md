@@ -85,8 +85,8 @@
 
 | 编号 | 标题 | 状态 | 前置 | 文件 |
 |---|---|---|---|---|
-| 0301 | 托盘图标 + 菜单 | 未开始 | plan 0204 | [0301](./0301-tray-icon-menu.md) |
-| 0302 | 隐藏而非销毁窗口 | 未开始 | plan 0301 | [0302](./0302-hide-not-destroy.md) |
+| 0301 | 托盘图标 + 菜单 | 已完成（Linux 实测：注册 / 菜单 / 退出零残留） | plan 0204 | [0301](./archive/0301-tray-icon-menu.md) |
+| 0302 | 隐藏而非销毁窗口 | 未开始（**与 0303 同时落地**，理由见 0301 实施记录） | plan 0301 | [0302](./0302-hide-not-destroy.md) |
 | 0303 | 关闭行为可配置 | 未开始 | plan 0302 | [0303](./0303-close-behavior-config.md) |
 | 0304 | 单实例 | 未开始 | plan 0302 | [0304](./0304-single-instance.md) |
 | 0305 | 关闭终端标签页 = 立刻丢弃该 Session | 已完成 | plan 0204 | [0305](./archive/0305-tab-close-discards-session.md) |
