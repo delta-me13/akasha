@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
 use akasha_core::{SessionId, SessionKind, SessionRegistry};
@@ -94,7 +94,9 @@ impl From<TransportError> for IpcError {
 struct Live {
     /// 注册表里的名字。存在这里是为了 `close` 时能撤销登记 —— 不靠 `u64` 重建。
     id: SessionId,
-    transport: PtyTransport,
+    /// 载体。**装箱成 trait 对象**：一来 `shutdown_all` 要用假载体测调用序列
+    /// （plan 0204 的验收），二来阶段 5/6 的 SSH / 隧道要装进同一个 map。
+    transport: Box<dyn Transport>,
 }
 
 #[derive(Default)]
@@ -104,9 +106,30 @@ struct Inner {
 }
 
 /// 全部终端会话。由 tauri 作为 `State` 持有（`Send + Sync`）。
-#[derive(Default)]
+///
+/// `inner` 是 `Arc` 的：**退出钩子与 panic hook 也要拿到同一份会话表**，而 tauri 的
+/// `State` 只借给命令用（`AGENTS.md` §3.3：真正退出时必须能把子进程全收掉）。
+/// `Clone` 出来的是同一个 `Arc`，不是两份表。
+#[derive(Default, Clone)]
 pub struct Sessions {
-    inner: Mutex<Inner>,
+    inner: Arc<Mutex<Inner>>,
+}
+
+/// 一次"全部回收"的结果。**给日志与测试用**，不是控制流。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ShutdownReport {
+    /// 显式 kill + wait 收掉的会话数。
+    pub shut_down: usize,
+    /// 收不掉的会话（句柄 + 原因）。**退出路径上不抛异常** —— 抛出去只会把
+    /// 证据和剩下的会话一起丢掉。
+    pub failures: Vec<(SessionHandle, String)>,
+}
+
+impl ShutdownReport {
+    /// 是否一个不剩、且没有失败。
+    pub fn is_clean(&self) -> bool {
+        self.failures.is_empty()
+    }
 }
 
 impl Sessions {
@@ -124,9 +147,9 @@ impl Sessions {
     /// 返回的句柄是**过 IPC 的表示**（[`SessionHandle`]）：`SessionId` 不许在
     /// `akasha-core` 之外构造（那是它的设计意图），所以壳层只用它的 checked 投影，
     /// 真伪由注册表判定 —— 不存在的句柄一律 [`IpcError::NotFound`]。
-    pub fn register(
+    pub fn register<T: Transport + 'static>(
         &self,
-        mut transport: PtyTransport,
+        mut transport: T,
         policy: BatchPolicy,
     ) -> Result<(SessionHandle, Receiver<Batch>), IpcError> {
         // 先取走读端：载体允许读端只被取走一次（防两个读端互相偷字节）。
@@ -144,7 +167,13 @@ impl Sessions {
                 message: err.to_string(),
             })?;
         let handle = Self::handle(id)?;
-        inner.live.insert(handle, Live { id, transport });
+        inner.live.insert(
+            handle,
+            Live {
+                id,
+                transport: Box::new(transport),
+            },
+        );
         // 锁只保护"谁存在"，读循环在锁外跑 —— 否则一次阻塞的读就冻住整个 app。
         drop(inner);
         Ok((handle, spawn_batcher(output, policy)))
@@ -200,6 +229,70 @@ impl Sessions {
     /// 当前活着的会话数（测试与将来的诊断用）。
     pub fn len(&self) -> usize {
         self.lock().map(|inner| inner.live.len()).unwrap_or(0)
+    }
+
+    /// 注册表里登记着的会话数（诊断用）。它和 [`Self::len`] **必须一致** ——
+    /// 两张表分叉就说明有会话"查得到、却没人管"（或反过来）。
+    pub fn registered(&self) -> usize {
+        self.lock().map(|inner| inner.registry.len()).unwrap_or(0)
+    }
+
+    /// **真正退出时**把全部会话收掉：逐个显式 `shutdown()`（kill + wait 收尸），再摘牌。
+    ///
+    /// 为什么不能靠 `Drop`（`AGENTS.md` §3.3）：进程退出时析构**不保证执行**，
+    /// 而"谁负责收尸"一旦交给析构，就再也分不清"收干净了"与"忘了收"。
+    ///
+    /// 顺序与理由：
+    ///
+    /// 1. **先把清单整份搬出来，再逐个收**：收一个会话会 `wait`（阻塞），
+    ///    握着锁 wait 会让并发的命令一起卡住（甚至死锁）。
+    /// 2. 逐个 `shutdown()` —— 载体自己保证"kill + wait 收尸"，PTY 还会额外把
+    ///    **整个会话**收掉（见 `akasha_pty` 的 `teardown`）。
+    /// 3. 收尾再摘牌：`registry` 与 `live` 两张表一起清空，不留"查得到但已经死了"的登记。
+    ///
+    /// 幂等：第二次调用时清单已经空了，什么都不做（退出路径可能被触发多次）。
+    pub fn shutdown_all(&self) -> ShutdownReport {
+        let mut report = ShutdownReport::default();
+
+        let drained: Vec<(SessionHandle, Live)> = match self.inner.lock() {
+            Ok(mut inner) => inner.live.drain().collect(),
+            Err(err) => {
+                // 中毒：拿不到清单。**不 panic** —— 退出路径上 panic 会把证据一起丢掉。
+                report.failures.push((0, format!("会话表不可用：{err}")));
+                return report;
+            }
+        };
+
+        let mut ids = Vec::with_capacity(drained.len());
+        for (handle, mut live) in drained {
+            match live.transport.shutdown() {
+                Ok(status) => {
+                    report.shut_down += 1;
+                    tracing::info!(
+                        handle,
+                        session = live.id.get(),
+                        ?status,
+                        "退出：会话已显式回收"
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(handle, session = live.id.get(), %err, "退出：会话回收失败");
+                    report.failures.push((handle, err.to_string()));
+                }
+            }
+            // 回收失败**也要摘牌**：留着它只会在退出路径上被重复失败一遍。
+            ids.push(live.id);
+        }
+
+        if let Ok(mut inner) = self.inner.lock() {
+            for id in ids {
+                if let Err(err) = inner.registry.close(id) {
+                    tracing::warn!(session = id.get(), %err, "退出：撤销登记失败");
+                }
+            }
+        }
+
+        report
     }
 
     /// 是否一个会话都没有。
@@ -305,6 +398,7 @@ pub fn close_session(handle: SessionHandle, state: State<'_, Sessions>) -> Resul
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use akasha_pty::ExitStatus;
     use akasha_pty::ShellLaunch;
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
@@ -429,5 +523,119 @@ mod tests {
             got.extend_from_slice(&chunk);
         }
         assert_eq!(got, b"first second");
+    }
+
+    // ── plan 0204：退出路径的显式回收 ────────────────────────────────────────
+
+    /// 记流水账的假载体。存在的理由：`shutdown_all` 要验的是**调用序列**
+    /// （每个会话恰好一次 shutdown、之后句柄失效），而这在有真进程时看不清楚。
+    struct Recording {
+        log: Arc<Mutex<Vec<String>>>,
+        name: &'static str,
+        fail: bool,
+        closed: bool,
+    }
+
+    impl Recording {
+        fn new(log: &Arc<Mutex<Vec<String>>>, name: &'static str, fail: bool) -> Self {
+            Self {
+                log: Arc::clone(log),
+                name,
+                fail,
+                closed: false,
+            }
+        }
+    }
+
+    impl Transport for Recording {
+        fn write(&mut self, _bytes: &[u8]) -> Result<(), TransportError> {
+            if self.closed {
+                return Err(TransportError::Closed);
+            }
+            Ok(())
+        }
+
+        fn output_stream(&mut self) -> Option<Box<dyn std::io::Read + Send>> {
+            // 立刻 EOF 的读端：合批线程马上收工，测试不必再管它。
+            Some(Box::new(std::io::empty()))
+        }
+
+        fn shutdown(&mut self) -> Result<Option<ExitStatus>, TransportError> {
+            self.log
+                .lock()
+                .expect("流水账锁中毒")
+                .push(format!("{}:shutdown", self.name));
+            self.closed = true;
+            if self.fail {
+                return Err(TransportError::Unsupported("shutdown"));
+            }
+            Ok(Some(ExitStatus::Code(0)))
+        }
+    }
+
+    fn shutdown_count(log: &Arc<Mutex<Vec<String>>>) -> usize {
+        log.lock()
+            .expect("流水账锁中毒")
+            .iter()
+            .filter(|line| line.ends_with(":shutdown"))
+            .count()
+    }
+
+    #[test]
+    fn shutdown_all_collects_every_session_exactly_once() {
+        let sessions = Sessions::default();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (first, _a) = sessions
+            .register(Recording::new(&log, "a", false), BatchPolicy::DEFAULT)
+            .expect("登记 a 失败");
+        let (second, _b) = sessions
+            .register(Recording::new(&log, "b", false), BatchPolicy::DEFAULT)
+            .expect("登记 b 失败");
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions.registered(), 2, "两张表必须同步");
+
+        let report = sessions.shutdown_all();
+
+        assert_eq!(report.shut_down, 2, "两个会话都该被显式收掉");
+        assert!(report.is_clean(), "不该有失败：{:?}", report.failures);
+        assert_eq!(shutdown_count(&log), 2, "每个会话**恰好**收一次");
+        assert!(
+            sessions.is_empty() && sessions.registered() == 0,
+            "两张表一起清空"
+        );
+        assert!(
+            matches!(sessions.close(first), Err(IpcError::NotFound { .. })),
+            "收完之后旧句柄必须失效"
+        );
+        assert!(matches!(
+            sessions.write(second, b"x"),
+            Err(IpcError::NotFound { .. })
+        ));
+
+        // 幂等：退出路径可能被触发不止一次（关窗口 + 进程退出），第二次必须是空操作。
+        let again = sessions.shutdown_all();
+        assert_eq!(again.shut_down, 0);
+        assert_eq!(shutdown_count(&log), 2, "重复调用不得再收一遍");
+    }
+
+    #[test]
+    fn a_failing_shutdown_is_reported_and_still_unregistered() {
+        let sessions = Sessions::default();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (bad, _bad_rx) = sessions
+            .register(Recording::new(&log, "bad", true), BatchPolicy::DEFAULT)
+            .expect("登记失败");
+        let (_good, _good_rx) = sessions
+            .register(Recording::new(&log, "good", false), BatchPolicy::DEFAULT)
+            .expect("登记失败");
+
+        let report = sessions.shutdown_all();
+
+        assert_eq!(report.shut_down, 1);
+        assert_eq!(report.failures.len(), 1, "失败必须被**报出来**，不是吞掉");
+        assert_eq!(report.failures[0].0, bad);
+        assert!(!report.is_clean());
+        // 收不掉也摘牌：留着它只会在退出路径上被重复失败一遍。
+        assert!(sessions.is_empty() && sessions.registered() == 0);
     }
 }

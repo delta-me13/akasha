@@ -80,7 +80,9 @@ victauri-plugin = "0.8.8"
 portable-pty = "0.9.0"
 vte = "0.15.0"
 thiserror = "2.0.20"
-tracing = "0.1.44"
+# `log-always` 让 tracing 事件同时产出 `log` 记录 —— app 里没有 tracing subscriber，
+# 没有这个特性，`tracing::info!` 的回收记录会静默消失（plan 0204 的"证据"就没了）。
+tracing = { version = "0.1.44", features = ["log-always"] }
 tracing-subscriber = "0.3.23"
 tauri-plugin-log = "2.9.1"
 # IPC 类型边界（AGENTS.md §5）：Rust 声明 → 生成 src/ipc/bindings.ts。
