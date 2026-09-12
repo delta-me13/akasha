@@ -215,11 +215,26 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
   macOS 缺的分支，自研等于两百来行 `cfg` 加一处新 `unsafe`。
   ⚠️ 它的防护**有明确边界**（Windows 静止只读、macOS 没有 `dd`/`wf`、`/proc/self/mem` 仍读得到），
   所以**新增一个用途就要按 ADR-0002 D13 那张判据表重验一遍**，别只说"用了 memsafe"。
-- `unsafe`：默认禁止；确有必要时须 `// SAFETY:` 注释 + 单测覆盖。
-  **只有 `src-tauri/crates/akasha-store/` 允许出现它**（把口令送进 SQLCipher 的 C API，
-  ADR-0002 D4）—— 由 `.ast-grep/rules/no-unsafe-outside-store.yml` 强制，放宽它等于改架构。
-  ⚠️ 上一条（机密的防护交给 `memsafe`）正是这条能守住的**前提之一**：没人在自己代码里
-  手写平台 syscall。
+- `unsafe`：默认禁止；**只有 `src-tauri/crates/akasha-store/` 允许出现它**（把口令送进
+  SQLCipher 的 C API，ADR-0002 D4）—— 由 `.ast-grep/rules/no-unsafe-outside-store.yml` 强制，
+  放宽它等于改架构。⚠️ 上一条（机密的防护交给 `memsafe`）正是这条能守住的**前提之一**：
+  没人在自己代码里手写平台 syscall。
+- **`unsafe` 的注释按 Linux 内核的 Rust 规范写**（依据：内核
+  `Documentation/rust/coding-guidelines.rst` —— 它把下面两件事分得很清楚，
+  **不能互相替代、也不许只写其一**）：
+  - **`// SAFETY:` 是注释，不是文档**：紧贴**每一个** `unsafe` 块 / `unsafe impl` / `unsafe fn`
+    之前，说明**为什么这段代码是 sound**（哪条前置条件被满足了、句柄与指针为什么有效）。
+    内核的原话是"they explain why the code inside the block is correct/sound" ——
+    所以它不写"这里不安全"这类同义反复，也不留 `TODO` 占位。
+  - **`/// # Safety` 是文档节**：`unsafe fn` / `unsafe trait` 必须有，写明
+    **调用方 / 实现方要遵守什么契约**。`# Safety` 是"要求"，`// SAFETY:` 是
+    "我已经满足了它"的举证 —— 内核专门提醒过这对概念最容易混。
+  - 两者都用**英文**、句首大写、句末句号（内核的注释规则）；中文解释放普通注释或 ADR。
+  - 由 `just lint` 里 clippy 那一步的三条 lint 强制（内核的 Makefile 里也是这三条）：
+    `undocumented_unsafe_blocks`（该写没写）、`unnecessary_safety_comment`（写在了安全块上）、
+    `unnecessary_safety_doc`（`# Safety` 挂在了安全函数上）。它们**也查私有项**，
+    所以单点 `unsafe` 跑不掉 —— 判据与实测见 `docs/STATUS.md`。
+  - 单测覆盖要求不变。
 
 ---
 
@@ -294,7 +309,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | `no-string-pty-channel` ✅ 已落地 | PTY 字节流走 `Channel<Vec<u8>>` / `Channel<String>`（其实是 JSON 数组）而不是 raw 通道（§3.2） |
 | `no-ui-vocab-in-types` ✅ 已落地 | `src-tauri/crates/**` 与 `src-tauri/src/**` 类型名中的 `Tab`/`Pane`/`Window`/`View`（见 §3.1 命名规则） |
 | `no-non-ascii-log-message` ✅ 已落地 | `tracing::*!` 的消息里的非 ASCII 字符（消息必须是英文短语，§3.4） |
-| `no-unsafe-outside-store` ✅ 已落地 | `src-tauri/crates/akasha-store/` 之外的 `unsafe`（唯一单点，§3.4） |
+| `no-unsafe-outside-store` ✅ 已落地 | `src-tauri/crates/akasha-store/` 之外的 `unsafe`（**唯一放行的 crate**；`// SAFETY:` 与 `# Safety` 怎么写见 §3.4） |
 
 > 现阶段这些规则尚**未全部创建** —— 每条规则应与它守护的代码一起落地，
 > 否则只是噪音。新增规则时同步更新上表。
@@ -322,7 +337,8 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 > **E2E 的入口是 `just test-e2e`** —— 自包含：已有 app（`just dev`）就复用，没有就自己起
 > Vite + app，跑完收掉。不要手写 `VICTAURI_E2E=1 cargo test …` 那一串：目标清单、串行、
-> 平台能力跳过与收尾都在配方里。**新增 E2E 目标必须加进配方的 `E2E_TARGETS`** ——
+> 平台能力跳过与收尾都在配方里。**新增 E2E 目标必须加进配方里对应的清单**
+> （`E2E_TARGETS` / `E2E_TARGETS_EXIT` / `E2E_NO_APP` / `E2E_SELF_APP`）——
 > 漏了它会直接红（那正是"生在门禁外、于是没人跑"的教训）。
 > 平台跑不了的用例要**显式跳过并写明原因**（例如 Wayland 下拿不到原生窗口句柄），
 > 多平台覆盖面交给 CI 矩阵。
