@@ -263,6 +263,13 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | 性能基线 | `criterion` | 解析与写路径吞吐 | 否 |
 | 集成 / E2E | `victauri-test` + `VICTAURI_E2E=1` | IPC 契约、前后端一致性 | **是** |
 
+> **E2E 的入口是 `just test-e2e`** —— 自包含：已有 app（`just dev`）就复用，没有就自己起
+> Vite + app，跑完收掉。不要手写 `VICTAURI_E2E=1 cargo test …` 那一串：目标清单、串行、
+> 平台能力跳过与收尾都在配方里。**新增 E2E 目标必须加进配方的 `E2E_TARGETS`** ——
+> 漏了它会直接红（那正是"生在门禁外、于是没人跑"的教训）。
+> 平台跑不了的用例要**显式跳过并写明原因**（例如 Wayland 下拿不到原生窗口句柄），
+> 多平台覆盖面交给 CI 矩阵。
+
 > **性能基线不是门禁**：MB/s 随机器、编译器版本与是否插电而变，拿它当通过条件
 > 只会得到一条随机红、且很快没人信的红线。基线**数字**记进 plan 与 `docs/STATUS.md`，
 > 用途是改动前后对比（入口 `just bench`）。
@@ -420,7 +427,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline
 ## 12. CI：只维护 GitHub Actions 一份
 
 `.github/workflows/ci.yml` 是**唯一**的工作流文件（三个 job：Linux 完整门禁 /
-Windows + macOS 类型检查 / Linux E2E）。**不要为别的 forge 加兼容层** ——
+Windows + macOS 类型检查 / **三平台 E2E 矩阵**）。**不要为别的 forge 加兼容层** ——
 曾做过"一份工作流同时喂 Gitea 与 GitHub"，代价是整份工作流被压在两边**共有的子集**里；
 2026-09-11 评估后放弃，那份约束清单与放弃理由见
 [`docs/plans/0102`](./docs/plans/0102-ci-platform-matrix.md)。
@@ -428,7 +435,8 @@ Windows + macOS 类型检查 / Linux E2E）。**不要为别的 forge 加兼容�
 - **门禁只有一处定义**：CI 里跑的必须**就是**本地那一条 `just ready`，不要在 workflow 里
   另写 cargo 命令 —— 两处必然分叉，而分叉的方向总是"CI 比本地松"。
 - **完整门禁只在 Linux 跑一次**（fmt / clippy / docs-check 的结论与平台无关）：
-  矩阵跑三遍只是把时间乘三。Windows / macOS 只做类型检查，用来挡 cfg 分支错误。
+  矩阵跑三遍只是把时间乘三。**类型检查**在 Windows / macOS 再跑一份，用来挡 cfg 分支错误；
+  **E2E 反过来要三平台都跑** —— 平台差异（原生窗口句柄、进程判活与收尾）正是它的对象。
   **出包不在 CI 的目标内**（需要真实主机：WiX / NSIS / WebView2 bootstrapper 都不行）。
 - **E2E 只 `needs` Linux 那条 job**：平台类型检查与 E2E 是**互相独立**的信号，
   串成一条链只会让"Windows 红了"顺带吃掉 E2E 的结论。
