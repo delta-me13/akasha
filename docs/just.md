@@ -38,7 +38,7 @@
 | `just test` | 单元测试（cargo-nextest），**workspace 全成员** | 转发 |
 | `just test-e2e` | E2E：真 app 上的验收（契约 + 交互）。**自包含** —— 已有 app（`just dev`）就复用，没有就自己起 Vite + app，跑完收掉；跳过的用例会把原因打出来。**自起时跑两段**（关窗语义由数据目录里的配置决定、只在启动时读）：第一段没有配置文件 = 收托盘（`window_close` 在这里有判据），第二段写 `close_behavior=exit` 再起一次 app（`exit_residue` 的退出刺激），配置文件跑完还原。目标按 `E2E_TARGETS` / `E2E_TARGETS_EXIT` 的顺序逐个串行跑（`cargo test` 一次收多个 `--test` 时是按名字排序的）；guard 要求 `tests/*.rs` 出现在这两个清单**或** `E2E_NO_APP`（后者 = 不需要真 app 的集成测试，理由写在各自文件头） | 转发 |
 | `just bench` | 吞吐基线（criterion）。**不是门禁**，用于改动前后对比 | 转发 |
-| `just deny` | 依赖门禁：许可证 / 漏洞 / 来源（需联网） | 转发 |
+| `just deny` | 依赖门禁：许可证 / 漏洞 / 来源（需联网）。⚠️ 带 `--workspace`，理由见下 | 转发 |
 | `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |
 | `just gen-types` | Rust command/event → `src/ipc/bindings.ts`（生成物，**禁止手改**） | 转发 |
 | `just gen-types-check` | 生成物是否与 Rust 侧一致（改了 IPC 忘了生成就红） | 转发 |
@@ -124,6 +124,20 @@ just deny-offline                       # 新依赖的许可证要过门禁
 而它是 warn 级、永远不会让门禁失败 —— 在成功的运行里那全是噪音，会把真正的错误淹掉。
 
 想看细节就**单跑那一步**（`just deny-offline` / `just lint` / `just test`），输出是完整的。
+
+### 为什么 `deny` / `deny-offline` 必须带 `--workspace`
+
+cargo-deny 默认只把 **manifest 指向的那个包**当作依赖图的根。本仓库的 workspace root
+（`src-tauri/Cargo.toml`）同时是一个真实包（`akasha`），于是**只有 `akasha` 依赖得到的成员**
+才进图 —— `crates/*` 里尚未被 app 依赖的成员，连同它们**独有的整棵子树**，都在图外。
+
+这不是"少查一点"，而是**静默失效**：`deny.toml` 的 `[bans] deny` 里写 `keyring`，
+如果 `keyring` 唯一的来路（当时是 `akasha-store`）不在图里，门禁会照样报 `bans ok`。
+plan 0402 就是踩到这个才发现的（加 `--workspace` 后图 580 → 583 个 crate，
+负例立刻从 `bans ok` 变成 `bans FAILED`）。
+
+⚠️ 位置也有讲究：`--workspace` 是**顶层参数**，必须在 `check` **之前**
+（`cargo deny --workspace … check bans`），放在后面会被当成未知参数直接报错。
 
 ## 6. 出问题了
 

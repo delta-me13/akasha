@@ -245,14 +245,29 @@ bench:
     cargo bench --workspace
 
 # ── 依赖门禁 ────────────────────────────────────────────────────────────────
+#
+# ⚠️ `--workspace` **不能省**，而且必须放在 `check` **之前**（它是顶层参数）。
+#
+# 为什么：cargo-deny 默认把「manifest 指向的那个包」当作**唯一的图根**（上游原话：
+# "that crate will be the sole root of the crate graph, meaning only other workspace
+# members that are dependencies of that workspace crate will be included"）。本仓库的
+# workspace root 同时是一个真实包（`akasha`），于是**只有 `akasha` 依赖得到的成员**
+# 才进图 —— `crates/*` 里尚未被 app 依赖的成员连同它们**独有的整棵子树**都在图外。
+#
+# 后果不是"少查一点"，而是**静默失效**：`[bans] deny` 里写 `keyring` 也一声不响地不生效，
+# 因为它唯一的来路（`akasha-store`）根本不在图里（plan 0402 实测：不加这个参数时
+# `bans ok`，加上之后 `bans FAILED … keyring → akasha-store`）。
+#
+# 这一条同时补上了一个**先于 0402 存在的洞**：`akasha-store` 的 vendored OpenSSL
+# （`openssl-src` / `openssl-sys`）此前从未被许可证门禁看过一眼。
 
 # 许可证 + 漏洞 + 来源。advisories 需要联网拉 RustSec 数据库
 deny:
-    cargo deny --config deny.toml check
+    cargo deny --workspace --config deny.toml check
 
 # 同上但跳过需要联网的 advisories，离线可用
 deny-offline:
-    cargo deny --config deny.toml check licenses bans sources
+    cargo deny --workspace --config deny.toml check licenses bans sources
 
 # ── 类型边界 ────────────────────────────────────────────────────────────────
 
