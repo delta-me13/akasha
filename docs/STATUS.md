@@ -9,16 +9,19 @@
 ## 一句话
 
 **阶段 2「端到端最小终端」5/5 完成**；**阶段 3「托盘与应用生命周期」6/6 完成**。
-**阶段 4「存储与凭据池」在做（6/9）**：ADR-0002（机密存储与可搬迁）**已进入「实现中」**。
-已落地六块：**SQLCipher 加密库能开**（plan 0401）、**口令只从一条路进来，而且能真的验证它**
+**阶段 4「存储与凭据池」在做（7/9）**：ADR-0002（机密存储与可搬迁）**已进入「实现中」**。
+已落地七块：**SQLCipher 加密库能开**（plan 0401）、**口令只从一条路进来，而且能真的验证它**
 （0402 —— 拆开了"打开"与"新建"，原来在没有文件的路径上**任何口令都能开**）、
 **口令在内存里也受保护**（0406）、**四套池能增删改查**（0403 —— v1 的四张表、不变量写在库自己身上、
 私钥读出来进受保护页）、**库里的东西拿得出去也放得回来**（0404 —— 加密导出可在另一目录还原；
-明文导出有两道**写进实现**的门槛；dump 结构上不含私钥）。
+明文导出有两道**写进实现**的门槛；dump 结构上不含私钥）、
+**解锁与锁定是一条完整的生命周期**（0407 —— 谁持有解好的库、口令从哪来、什么时候锁、锁定时抹掉什么；
+真 app 上实测 `VmLck` **0 → 192 → 0 kB**）。
 
-**下一步是 plan 0407（解锁与锁定的生命周期）→ 0405（可搬迁性验证）**：
-0405 要在真 app 上"把文件夹搬走、断言内容还在"，而那需要先有"解锁 → 写池 → 退出"这条真路径，
-所以 0407 排在它前面（ROADMAP 的条目顺序本来也是 0407 在前）。
+**下一步是 plan 0405（可搬迁性验证）**：`mv` 整个文件夹 → 启动 → 断言"原有主机/密钥/规则都在"
+（只验证"能开"不算过），外加 `portable.md` §4 第 3 条（便携目录不可写要**明确报错**）。
+它现在有真路径可用了：`vault_unlock` 能解库并读出四套池各有多少行 —— 那正是"搬家后内容还在"
+要的那一步。搬完这一项，**ADR-0002 就可以转「已定案」**（条件：plan 0401–0405 全部完成）。
 
 **点叉的语义由配置 × 托盘共同决定**（plan 0302 + 0303）：
 
@@ -77,16 +80,27 @@
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全绿** |
-| `just test` | **171 tests run: 171 passed**（`akasha` 47 + `akasha-pty` 37 + `akasha-core` 15 + **`akasha-store` 72**） |
-| ↑ 本轮新增 | **11 条**（plan 0404）：加密导出 → **另一目录还原后逐字段一致**（1）、导出件本身就是库 + 覆盖用户点名的路径 + 0600（2）、加密件 0 命中 vs 明文件 1 命中的对照（2）、门槛三条（逐字短语 7 个近似输入 / 文件名自曝 / 独立口令）（3）、失败不留半成品（1）、还原不覆盖（1）、dump 一密不泄（1） |
-| ↑ **加密导出可在另一目录还原**（plan 0404 判据 ①） | ✅ 源库四套池写满 → 导出到 B 目录（**独立口令**）→ 还原到 C 目录（**新口令**）→ `open` 后 `dump` **逐字段相等**（`[1,3,1,2]` 行）；私钥也在；用导出那把与源库那把都**打不开** |
-| ↑ **导出件就是库**（D6 自包含） | ✅ 不还原也能用导出口令 `open`；导出**不动源库**（原口令仍开、内容不变） |
-| ↑ **明文导出的两道门槛**（plan 0404 判据 ②） | ✅ 短语"逐字"用 **7 个近似输入**试探（空串 / 前缀 / 首尾空格 / 多一个句号 / 少一个字 / 全大写英文）全被拒，逐字敲对才放行；文件名不含 `plain` → 拒绝且**目标路径上什么都没有**（连 `…partial` 都没有）；门槛通过后写出的确实是明文：**裸 sqlite 读得到私钥** |
-| ↑ **不泄密（含对照组）** | ✅ 加密导出件整体 grep 明文私钥标记 **0 命中**（头部是随机字节，不是 `SQLite format 3`）；**同数据的明文件 1 命中** —— 证明这条 grep 真的搜得到东西。`dump::to_text()` 同样 **0 命中** |
-| ↑ **独立口令**（D6） | ✅ 导出用库口令 → `SharedPassphrase` 且不写文件；还原时目标口令与来源相同 → 同样拒绝 |
-| ↑ **失败不留半成品**（含负例） | ✅ 把目标指到一个**已存在的目录**（改名那一步必失败）→ 目标不变、`…partial` 不在；`find target/store-pools -name '*.partial'` = **0**。⚠️ 这条判据**用负例验过**：把 `discard()` 临时改成空操作 → 该用例立刻变红（否则"文件不在"可能只是因为失败发生得更早） |
-| ↑ **导出件的权限**（D12） | ✅ 加密件与明文件都是 **600**、**从头就是**（预建 0600 空文件再 ATTACH，而不是先按 umask 建出来再 chmod）；覆盖一个 0644 的旧文件之后仍是 600 |
-| `just test-e2e`（自包含：起 Vite + app → **两段** → 收尾） | 退出码 **0**，**14 个用例通过**（其中 `window_close` 内部**显式跳过**：这台机器 `tray_ready=false` → 关窗语义降级为退出，它只验"隐藏"那条路并打印了判据）：`smoke` 3 / `integration` 2 / `session_channel` 1 / `terminal_render` 2 / `tab_close` 1 / `single_instance` **2** / `vault_status` 1 / `exit_residue` 1。**本轮 app 侧没改动**（本步只在 `akasha-store` 里加东西），跑它是为了确认没退化 |
+| `just test` | **180 tests run: 180 passed**（`akasha` 52 + `akasha-pty` 37 + `akasha-core` 15 + **`akasha-store` 76**） |
+| ↑ 本轮新增 | **8 条**：`akasha-store` 4 条（plan 0407 的生命周期与内存扫描）+ `akasha` 4 条（`vault` 的映射与建/开判据单测） |
+| ↑ **锁定之后进程内存里一处机密都不多**（plan 0407 判据） | ✅ 把**整个进程内存**（匿名段，含 `---p`）扫一遍找那两串字节：口令 `1 → 2 → 2 → 1` 处、派生密钥 `3 → 1` 处。**解锁期间多出来的那一处正好是 `---p` 受保护页**；丢掉连接之后派生密钥一处不剩 |
+| ↑ ↑ **带正对照**（否则这条是永真式，坑 #87） | ✅ 两条扫描用例都要求"解锁期间必须比基线**多**扫到" —— 少了它，"锁上之后 0 命中"与"扫描器根本没在工作"是同一条绿。⚠️ 扫描器本身栽过两次（坑 #90/#91），都写在用例的文档里 |
+| ↑ **`VmLck` 走一个来回** | ✅ 库层：`0 → 4（只有口令页）→ 152（解锁中）→ 4（丢掉连接）→ 0 kB`，`---p` 段数同时回落；重新 `open` 那条路也是 `4 → 172 → 4`。**真 app 上：`0 → 192 → 0 kB`**（测试进程自己读 `/proc/<pid>/status`，不是 app 自报） |
+| ↑ **`cipher_memory_security` 的擦零是实测的**（不是"上游这么说"） | ✅ 派生密钥是用 `openssl` CLI 按 SQLCipher 4 的默认参数（PBKDF2-HMAC-SHA512 / 256000 / 16 字节盐）**独立算出来**的：连接活着时扫到 2 处（SQLCipher 的），drop 之后**一处不剩**。机制可逐行核对：`sqlcipher_mem_malloc/free` 每次分配 `mlock`、每次释放先擦零再 `munlock` |
+| ↑ **推翻一处想当然：SQLCipher 不留口令本体** | ✅ 解锁期间口令**只**多出一处（受保护页）—— 它手里只有派生密钥。ADR-0002 §7.5 的副本清单因此少了一行 |
+| ↑ **真路径：解锁 → 读一次池 → 锁定**（`just test-e2e` 新增 `vault_unlock`） | ✅ `vault_status` 报 `missing`/`unlocked:false` → 造库（每套池一行）→ `vault_unlock` 返回 `{"keys":1,"hosts":1,"serials":1,"forwards":1}` → `VmLck` 涨到 192 → `vault_lock` → **回落到 0** → 错误口令被拒**且仍然锁着** → 锁上之后还能再解开 |
+| ↑ 建 / 开的选择 | ✅ `Missing`/`Empty` → **建**，`Present` → **开**（单测钉住三种状态各走哪条路；存储层那两条路仍然是分开的，没有"打不开就建"的兜底） |
+| ↑ `mlock` 失败变成**用户能懂的一句话** | ✅ `内存锁不住（mlock 失败），出于安全拒绝解锁：<操作系统的原话>` —— 不把上游那层 `Memory error:` 包装丢给用户（单测用真的 `StoreError::MemoryProtection` 钉住） |
+| ↑ 本轮新增 | **8 条**：`akasha-store` 4 条（plan 0407 的生命周期与内存扫描）+ `akasha` 4 条（`vault` 的映射与建/开判据单测） |
+| ↑ **锁定之后进程内存里一处机密都不多**（plan 0407 判据） | ✅ 把**整个进程内存**（匿名段，含 `---p`）扫一遍找那两串字节：口令 `1 → 2 → 2 → 1` 处、派生密钥 `3 → 1` 处。**解锁期间多出来的那一处正好是 `---p` 受保护页**；丢掉连接之后派生密钥一处不剩 |
+| ↑ ↑ **带正对照**（否则这条是永真式，坑 #87） | ✅ 两条扫描用例都要求"解锁期间必须比基线**多**扫到" —— 少了它，"锁上之后 0 命中"与"扫描器根本没在工作"是同一条绿。⚠️ 扫描器本身栽过两次（坑 #90/#91），都写在用例的文档里 |
+| ↑ **`VmLck` 走一个来回** | ✅ 库层：`0 → 4（只有口令页）→ 152（解锁中）→ 4（丢掉连接）→ 0 kB`，`---p` 段数同时回落；重新 `open` 那条路也是 `4 → 172 → 4`。**真 app 上：`0 → 192 → 0 kB`**（测试进程自己读 `/proc/<pid>/status`，不是 app 自报） |
+| ↑ **`cipher_memory_security` 的擦零是实测的**（不是"上游这么说"） | ✅ 派生密钥是用 `openssl` CLI 按 SQLCipher 4 的默认参数（PBKDF2-HMAC-SHA512 / 256000 / 16 字节盐）**独立算出来**的：连接活着时扫到 2 处（SQLCipher 的），drop 之后**一处不剩**。机制可逐行核对：`sqlcipher_mem_malloc/free` 每次分配 `mlock`、每次释放先擦零再 `munlock` |
+| ↑ **推翻一处想当然：SQLCipher 不留口令本体** | ✅ 解锁期间口令**只**多出一处（受保护页）—— 它手里只有派生密钥。ADR-0002 §7.5 的副本清单因此少了一行 |
+| ↑ **真路径：解锁 → 读一次池 → 锁定**（`just test-e2e` 新增 `vault_unlock`） | ✅ `vault_status` 报 `missing`/`unlocked:false` → 造库（每套池一行）→ `vault_unlock` 返回 `{"keys":1,"hosts":1,"serials":1,"forwards":1}` → `VmLck` 涨到 192 → `vault_lock` → **回落到 0** → 错误口令被拒**且仍然锁着** → 锁上之后还能再解开 |
+| ↑ 建 / 开的选择 | ✅ `Missing`/`Empty` → **建**，`Present` → **开**（单测钉住三种状态各走哪条路；存储层那两条路仍然是分开的，没有"打不开就建"的兜底） |
+| ↑ `mlock` 失败变成**用户能懂的一句话** | ✅ `内存锁不住（mlock 失败），出于安全拒绝解锁：<操作系统的原话>` —— 不把上游那层 `Memory error:` 包装丢给用户（单测用真的 `StoreError::MemoryProtection` 钉住） |
+| ↑ 导出与还原（plan 0404，上一轮） | 加密导出可在另一目录还原（逐字段一致）；明文导出两道门槛（逐字短语 7 个近似输入 / 文件名自曝 / 独立口令）；不泄密带对照组（**0 命中 vs 1 命中**）；失败不留半成品（负例验过）；导出件 **600**。细节在 [archive/0404](./plans/archive/0404-dump-export.md) |
+| `just test-e2e`（自包含：起 Vite + app → **两段** → 收尾） | 退出码 **0**，**15 个用例通过**（其中 `window_close` 内部**显式跳过**：这台机器 `tray_ready=false` → 关窗语义降级为退出，它只验"隐藏"那条路并打印了判据）：`smoke` 3 / `integration` 2 / `session_channel` 1 / `terminal_render` 2 / `tab_close` 1 / `single_instance` **2** / `vault_status` 1 / **`vault_unlock` 1** / `exit_residue` 1 |
 | ↑ **`vault_status` 真路径（plan 0403，未退化）** | ✅ `{"path":"…/src-tauri/target/debug/akasha-data/akasha.db","state":"missing"}`；父目录名是 `akasha-data` 且它是 **bin 同目录**（P2 的落点判据在真路径上） |
 | ↑ **§7 的 registry 那一条：当前不可满足**（实测，见坑 #82） | `get_registry` 回 **`[]`** —— 本仓库的命令**都没有 `#[inspectable]`**；`detect_ghost_commands` 的 `reliability` 是 **low**。**替代证据**是真路径上的 `invoke_command` 成功。用 REST 兜底问到的（沙箱里 MCP 连不到另一个 bash 命名空间里的 app，坑 #33） |
 | ↑ 单实例（0304，Linux 实测，本轮复跑） | ✅ probe `{"registered":true}`；`window manage hide` → 再起同一个二进制 → **204.8 ms** 后 `exit=0`、`activations=1`、`visible=true` |
@@ -105,9 +119,19 @@
 
 ## 待验证（本地跑不了 / 沙箱跑不了）
 
-- **导出与还原还没有真路径**：本轮只到 `akasha-store` 的库函数 + 契约测试，
-  **没有 IPC 命令**（"谁持有解好的连接、口令从哪来"是 plan 0407，定了才接得上）。
-  所以 `AGENTS.md` §7 那条"真路径走通"这一轮**没有对象**。
+- **解锁 / 锁定还没有界面**：命令、状态、生命周期都在了（plan 0407），但界面上**没有能输口令的地方**
+  （设计稿未定，`AGENTS.md` §4.0）。今天的真路径证据来自 E2E 的 `invoke_command`；
+  "用户点得到的那条路"要等 UI。
+- **口令经 IPC 的两份副本够不着**：tauri 的请求体缓冲与 `serde_json::Value` 在这一次调用之后被
+  free 而**不擦**（ADR-0002 §7.5 的边界）。我们这一份（`PassphraseInput` → `Passphrase::new`）
+  被擦零。更紧的做法是 raw body，代价是前端手写裸 `invoke` —— 记为后续，不在 0407 里做。
+- **`mlock` 失败那条路只有单测**：本机 `RLIMIT_MEMLOCK` 是 8 MB，造不出真的失败；
+  用户文案是用一个**真的** `StoreError::MemoryProtection` 钉住的，但没有"把 `mlock` 弄失败"的端到端证据。
+- **内存扫描只在 Linux、只扫匿名段**：`/proc/self/maps|mem` 的读走 `FOLL_FORCE`（Linux 专有）；
+  文件支撑的段不扫（机密不可能落在只读的库文件映射里）。派生密钥那条用例在 `openssl` CLI
+  缺席时**显式跳过并打印原因**，不静默通过。
+- **导出与还原还没有 IPC 命令**：库层的函数与契约测试都在（plan 0404），
+  但"导出成哪个文件、确认短语怎么问"要等文件选择器与确认界面（设计稿未定）。
 - **明文导出的确认界面不存在**：门槛在库层（逐字短语 + 文件名自曝），没有 UI 能点。
   接 UI 时要证明的是"**界面上没有一条路能在没有短语的情况下导出明文**"。
 - **权限位（0600）只在 unix 上有判据**：Windows 没有等价物（D12 如实记为不做）。
@@ -133,13 +157,13 @@
 |---|---|
 | workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` / **`akasha-store`** |
 | 二进制落点 | `src-tauri/target/debug/akasha`（另有代码生成工具 `gen-types`，故必须 `default-run`，坑 #29） |
-| 后端模块 | `bindings` / `session` / `tray` / `config`（载体 + **数据目录**）/ `lifecycle` / `single_instance` / **`vault`（库的落点与状态）** / `watchdog` |
+| 后端模块 | `bindings` / `session` / `tray` / `config`（载体 + **数据目录**）/ `lifecycle` / `single_instance` / **`vault`（库的落点、状态与解锁生命周期）** / `watchdog` |
 | **关窗语义** | 判据 = `akasha-core::CloseAction::decide(close_behavior, tray_ready)`；app 侧 `CloseRequested` → **先 `hide()`、成功才 `prevent_close()`**。**不挂 `RunEvent::ExitRequested`**（理由见 `lib.rs` 注释与坑 #65） |
 | **单实例** | 插件注册在**第一个插件位**；唤起 = `unminimize()` → `show()` → `set_focus()` **三步无条件都做**；`available()` 在 Linux 上 = 会话总线连得上 |
 | **配置** | `<数据目录>/config.json`，`{"close_behavior":"tray"\|"exit"}`；`serde_json` + `deny_unknown_fields`；**只读不写**；在 `.setup()` 里读一次 |
 | **数据目录** | bin 同目录存在 `akasha-data/` → 用它（便携）；否则 `app_data_dir()`。**不自动创建**。开发构建里便携目录 = `src-tauri/target/debug/akasha-data` |
 | **系统托盘** | 图标 = `bundle.icon` 那张；Linux 上落盘到 `$XDG_RUNTIME_DIR/tray-icon/…`；菜单 id 是稳定字面量（`window.toggle` / `tunnels` / `tunnels.empty` / `app.quit`）；**会话表一变整份重建** |
-| **probe** | `lifecycle` → `{"close_behavior":…,"tray_ready":…,"close_action":…}`；`single_instance` → `{"registered":bool,"activations":n}`。**库没有 probe**：状态本身就是一条命令，再加一个只会多一条观察路径、不多一点信息 |
+| **probe** | `lifecycle` → `{"close_behavior":…,"tray_ready":…,"close_action":…}`；`single_instance` → `{"registered":bool,"activations":n}`。**库没有 probe**：状态本身就是命令（`vault_status`），再加一个只会多一条观察路径、不多一点信息。⚠️ 也**不靠探针自报**来验"锁定时内存还回去了"：那条判据由测试进程自己去读 `/proc/<pid>/status` 的 `VmLck` |
 | 出字节路径 | PTY read → 合批（64 KiB / 16 ms）→ `Channel<InvokeResponseBody>` **raw** → JS `ArrayBuffer` → `term.write` |
 | 前端结构与布局 | `src/tabs/TabStrip.tsx` + `src/App.tsx`（多面**同时挂载**、非活动的 `visibility: hidden` 叠放）+ `src/terminal/` + `src/ipc/` |
 | **关闭一个标签页** | 移除 → React 卸载该面 → `attachTerminal` 清理（**先** `close_session`，**后** `surface.dispose()`）→ `Sessions::close` → `Transport::shutdown()` → 撤销看门狗登记。**实测 79–93 ms** |
@@ -154,59 +178,55 @@
 | **口令** | `Passphrase` = 口令在进程里的唯一形态：空值**造不出来**、**没有 `Debug`**（`{:?}` 是编译错误）、无 `Display`/`Serialize`、`expose()` 只对本 crate 可见、**不实现 `Clone`**；本体住在 `memsafe::Secret` 的一整页**受保护内存**里（`mlock` + 静止态 `PROT_NONE` + `dd` + `wf`，读它要 `&mut` = 一次提权动作） |
 | **导出与还原（新）** | `export::to_encrypted(source, 源口令, dest, 导出口令)`：**两把口令相同 → `SharedPassphrase`**（D6 的"独立口令"）；`export::to_plaintext(source, dest, PlaintextAck)`：只收**那个凭据**，且文件名必须含 `plain`（大小写不敏感），否则**什么都不写**；`export::restore` / `restore_plaintext`：还原 = **替换**，只写进空的库槽（有内容 → `VaultExists`）。三段式：预建 **0600** 的 `…partial`（同目录）→ `ATTACH DATABASE ?1 AS export KEY ?2`（**口令走绑定参数**，不进 SQL 文本）→ `sqlcipher_export` → **显式写 `user_version = 1`**（不传递，D7）→ `DETACH` → **原子改名**；写完再用真读者 `open` 自检一次 |
 | **dump（新）** | `dump::dump(&conn)` → `Dump { format_version, keys, hosts, serials, forwards }` + `row_counts()` + `to_text()`。**结构上不含私钥**（`Key` 里没有那个字段 —— 0403 定的，到这一层成了免费的性质），因为诊断的输出会进日志与 issue |
-| **库文件的磁盘事实** | `akasha.db`（ADR-0002 D1，与 `config.json` 同目录）；建库后 **36864 字节 = 9 页**；SQLCipher 4.5.7 + vendored OpenSSL 3.6.3 + 内嵌 SQLite **3.46**；`user_version = 1` 是格式权威（`!= 1` 一律拒绝，**含 0**），**且要四张表都在**；盐 16 字节随机、就在文件头前 16 字节；SQLite 自己建出来是 **644**，我们显式收紧到 **600**；不带 `-wal` / `-shm`（D8）；解锁代价 **~105 ms**。`cipher_memory_security` 是**进程级、只能开不能关** |
+| **库文件的磁盘事实** | `akasha.db`（ADR-0002 D1，与 `config.json` 同目录）；建库后 **36864 字节 = 9 页**；SQLCipher 4.5.7 + vendored OpenSSL 3.6.3 + 内嵌 SQLite **3.46**；`user_version = 1` 是格式权威（`!= 1` 一律拒绝，**含 0**），**且要四张表都在**；盐 16 字节随机、就在文件头前 16 字节；SQLite 自己建出来是 **644**，我们显式收紧到 **600**；不带 `-wal` / `-shm`（D8）；解锁代价 **~105 ms**（KDF），所以解锁命令是 `async` + `spawn_blocking`。`cipher_memory_security` 是**进程级、只能开不能关**；它让 SQLCipher **每次分配 `mlock`、每次释放先擦零再 `munlock`** —— 解锁期间 `VmLck` 的大头是它（152 kB 里 148 kB），连接一 drop 就还回去 |
+| **解锁与锁定（新）** | app 侧 `Vault { unlocked: Mutex<Option<Unlocked>> }`，`Unlocked { conn, passphrase }` —— **同生共死**（"锁定"只有一种写法）。`vault_unlock`：`Missing`/`Empty` → 建、`Present` → 开，返回四套池行数（`u32`，checked 转换）；已经解开 → `AlreadyUnlocked`（**不替换**）。`vault_lock` → 返回"刚才真锁上了一个吗"（幂等）。**只有显式锁**：关窗/退出不锁、无空闲超时。锁定时把两半显式 drop（连接的 SQLCipher 分配被擦零 + 口令页 `munmap`） |
+| **口令经 IPC 进来的形态（新）** | `PassphraseInput`（newtype，`Deserialize` + `specta(transparent)` → TS `string`）：**没有 `Debug`/`Clone`**，唯一出路是 `into_bytes()`，缓冲由 `memsafe` 擦零。⚠️ tauri 自己那两份（请求体 + `serde_json::Value`）够不着（ADR-0002 §7.5） |
 | **导出件的磁盘事实（新）** | 加密件与明文件都是 **36864 字节 / 600**；加密件头部是随机字节，**明文件头部是 `SQLite format 3\0`**（`文件里 grep 得到私钥` 是它"明文"的定义）；两者都带 `user_version = 1` |
 | 合批参数 | `max_bytes` = 64 KiB、`max_delay` = 16 ms（`BatchPolicy::DEFAULT`，唯一来源） |
 | CSP | `default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:`；`devCsp` 多一个 `ws://localhost:1420 http://localhost:1420` |
-| capabilities | 仍只有 `core:default` + `opener:default`（+测试用的 `victauri`）。**托盘、配置、单实例、库都没有加任何 permission** —— 全在 Rust 侧，前端碰不到（最小权限，§4.3） |
+| capabilities | 仍只有 `core:default` + `opener:default`（+测试用的 `victauri`）。**托盘、配置、单实例都没有加任何 permission**（全在 Rust 侧，前端碰不到，最小权限 §4.3）；库的三条命令（`vault_status` / `vault_unlock` / `vault_lock`）是**我们自己的 command**，不需要 ACL permission —— 前端能调的只有这三条，而它们不接受任何能指定路径 / 文件的参数 |
 | 前提条件 | **需要能写 `$HOME`**；托盘另需能写 `$XDG_RUNTIME_DIR`、单实例另需会话总线（否则各自只降级、不影响启动）。导出另需目标目录可写（那正是它报错的地方） |
 
 ## 进行中 / 下一步
 
-- [ ] **下一步 = plan 0407**（[解锁与锁定的生命周期](./plans/0407-unlock-lifecycle.md)，骨架）：
-  谁持有解好的 `Connection`、口令从哪来、锁定时抹什么、并发。**为什么是它**：0405 要在真 app 上
-  验证"搬家后数据还在"，而那需要"解锁 → 写池 → 退出"这条真路径；再往后（阶段 5 的 SSH）也全都要它。
-  ⚠️ 展开时要处理三件已经攒下的事：`mlock` 失败（`Passphrase::new` 直接报错 —— 要变成用户能懂的一句话）、
-  口令进 IPC 的那些副本（反序列化缓冲 / `String`）怎么处置、以及**导出那条"独立口令"检查需要
-  在解锁窗口内能取到库口令**（plan 0404 留下的约束）。
-- [ ] **然后是 plan 0405**（[可搬迁性验证](./plans/0405-portability-verify.md)）：`mv` → 启动 →
-  断言内容一致，外加 `portable.md` §4 第 3 条"便携目录不可写就明确报错"（D12 的落地项，尚未实现）。
+- [ ] **下一步 = plan 0405**（[可搬迁性验证](./plans/0405-portability-verify.md)，骨架）：`mv` 整个文件夹 →
+  启动 → 断言"原有主机/密钥/规则都在"（**只验证"能开"不算过**），外加 `portable.md` §4 第 3 条
+  "便携目录不可写就明确报错"（D12 的落地项，尚未实现）。
+  **为什么现在做得了**：`vault_unlock` 会解库并返回四套池各有多少行 —— 那就是"搬家后内容还在"要的那一步；
+  之前它没有真路径（写池的命令还没有，所以 E2E 造数据仍然直接调库函数）。
 - [ ] **阶段 3 收口后的两条复核**（托盘时代带来的前提变化，都还没做）：
   - 0205 的看门狗生命周期仍然 = 一个 app 实例（ADR-0005 §6 的复审条件之一）；
   - 0305/0306 的前提 ② "关最后一个标签页 = 空状态"在"窗口隐藏"成为常态之后是否仍然合适。
-- [ ] **ADR-0002 转「已定案」**（阶段 4 的 plan 0401–0405 全部完成时）。**加它的理由**：不定个时间点，
-  它会永远停在"实现中"，而"不可修改"这份约束也就永远不会生效。
+- [ ] **ADR-0002 转「已定案」**（阶段 4 的 plan 0401–0405 全部完成时 —— 现在只剩 0405）。**加它的理由**：
+  不定个时间点，它会永远停在"实现中"，而"不可修改"这份约束也就永远不会生效。
 - [~] **plan 0102（CI 平台矩阵）**：本地部分完成，最终判据 = **推上去三个 job 全绿**，卡在没有 remote
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测，剩 CI 三平台格子
 - [ ] **正式 UI**：等设计稿（见上面「UI 现状」）—— 没有验收标准，故**不进 ROADMAP**
 
-### 本轮完成（plan 0404：dump 与导出）
+### 本轮完成（plan 0407：解锁与锁定的生命周期）
 
-**判据是两条**：加密导出可在另一目录导入还原；明文导出路径有**显式确认门槛**。
-两条都做成了会红的测试（11 条），并且**先量再写**。
+**判据是 ROADMAP 那一句**：解锁 → 读一次池 → 锁定之后**进程里不留机密**（`VmLck` 回落到解锁前）。
+做成了**会红的测试**（库层 4 条 + app 单测 4 条 + 真路径 1 条），而且**先量再写**。
 
-- [x] **先量再写**（四条探针，写完即删）：`ATTACH … KEY ?` **吃绑定参数**（TEXT / BLOB 都吃）→
-  口令不必进 SQL 文本（与 D4 同一条理由）；空 key **参数**与 `KEY ''` **等价**（不挂 codec）→
-  D6 的"同一段代码"成立，**不需要**第二条实现路径；预建 0600 空文件能当 ATTACH 目标 →
-  导出件**从头**就是 0600；附挂库的 `user_version` 可以写、且**必须**写（D7）
-- [x] **门槛写进实现**（不是文档里的措辞）：明文导出只收 `PlaintextAck`，它**没有 `Default`**、
-  不从 `bool` 造，唯一的构造口要求**逐字**敲对一句后果说明；文件名还必须含 `plain` ——
-  两条都不过就**一个字节都不写**。"逐字"用 **7 个近似输入**验过（空串 / 前缀 / 空格 / 句号 / 少字 / 英文）
-- [x] **独立口令是硬要求**：导出与还原两条路上"两把口令相同"都拒绝（D6）。代价照实记：
-  调用方得在解锁窗口内拿得到库口令，这条作为**约束交给 0407**
-- [x] **"什么都没留下"这类判据要有负例**：把 `discard()` 临时改成空操作 → 用例变红，
-  才算证明它测的是"改名失败之后"的清理（坑 #87）
-- [x] **不泄密带对照组**：加密件 grep 明文私钥 **0** 命中、同数据的明文件 **1** 命中 ——
-  少了对照组，"0 命中"分不清是"真没泄"还是"扫描器坏了"。dump 也是 0 命中
-- [x] **多做了一个 `restore_plaintext`**（不在原计划里）：只导出明文而没有回程，明文件就只能是
-  "给别的工具读的死路"；回程复用同一个读者与同一个写者，不新增恢复路径
-- [x] **顺手把一处重复翻译抽出来**：`as_database_error`（"哪一页读不出来" → `NotADatabase`）——
-  解锁探针与明文件的裸读必须给出**同一句话**，否则用户看到的措辞决定他下一步做什么
-- [x] 门禁：`just ready` **6/6**；`just test` **171 passed**（`akasha-store` 61 → **72**）；
-  `just test-e2e` **退出码 0**（14 个通过；本轮 app 侧未改，跑它是确认没退化）
+- [x] **先量再写**（探针写完即删）：把**整个进程内存**扫一遍找口令与派生密钥 —— 为此现学了两条测量纪律
+  （坑 #90：扫描器自己的读缓冲就住在它要扫的地址空间里；坑 #91：给"大段"设上限会让该看见的副本落在窗口外）
+- [x] **判据有正对照**：解锁期间必须比基线**多**扫到 —— 否则"锁上之后 0 命中"与"扫描器没在工作"是同一条绿
+- [x] **量出三件原先是"上游这么说"的事**：口令在锁定时一处不剩；**SQLCipher 不留口令本体**（只有派生密钥）；
+  `cipher_memory_security` 的"释放时擦零"真的发生（`sqlcipher_mem_malloc/free` 每次 `mlock` / 擦零 + `munlock`）
+- [x] **四个问题各有结论**：谁持有（一个 `Mutex<Option<Unlocked>>`，连接与口令同生共死）、
+  口令从哪来（`PassphraseInput` → `into_bytes()` → `Passphrase::new`，我们那一份被擦零；够不着的那两份照实记）、
+  什么时候锁（**只有显式锁**：关窗不锁、退出不锁、不做空闲超时）、并发（第二个拿到 `AlreadyUnlocked`）
+- [x] **`mlock` 失败变成一句人话**：`内存锁不住（mlock 失败），出于安全拒绝解锁：<OS 的原话>`，
+  并且**不把上游那层包装**（`Memory error:`）丢给用户
+- [x] **真路径**：新增 E2E `vault_unlock`（`just test-e2e` 的清单里）—— 测试进程**自己**读 app 的
+  `/proc/<pid>/status`，所以那个 `0 → 192 → 0 kB` 不是 app 自报的数字
+- [x] 门禁：`just ready` **6/6**；`just test` **180 passed**（`akasha-store` 72 → **76**）；
+  `just test-e2e` **退出码 0**（15 个通过）
 
 ### 更早（各 plan 的细节在 `docs/plans/archive/` 里，这里只留结果）
 
+- [x] **plan 0404**：dump 与导出 / 还原（加密导出可在另一目录还原；明文导出两道**写进实现**的门槛；
+  不泄密带对照组的 grep）；细节在 [archive/0404](./plans/archive/0404-dump-export.md)
 - [x] **plan 0403**：v1 的四张表 + 四套池 CRUD；不变量写进库（`STRICT` / `CHECK` / 外键 `RESTRICT`，D14）；
   P2 从散文变成两条判据（列名不许像路径 + 任何值不许提到数据目录，且是**现场枚举**表与列）；
   私钥按 D13 判据表重验（16384 字节那一页 / `VmLck` +16 kB / `drop` 后 `munmap`）；`vault_status` 上真路径
@@ -228,8 +248,10 @@
 - **四个 crate 的分工**：`akasha-core`（Session 模型 + 配置模型与判据，**零 Tauri 依赖**）、
   `akasha-pty`（`Transport` + portable-pty + 合批 + `teardown` + **`watchdog`**）、
   **`akasha-store`**（库的打开 / 创建 / 四套池 / dump / 导出与还原 —— 唯一允许 `unsafe` 的地方；
-  **app 依赖它**，但只用"落点与状态"两样）、`akasha`（app 包 = IPC 薄壳 + 托盘 + 配置 + 关窗语义 +
-  单实例 + 退出钩子 + 看门狗接线 + 事件 + 代码生成 bin）。
+  **app 依赖它**，但只用"落点、状态与解锁"三样 —— 注意它把 `Connection` 再导出了一遍，
+  那是为了让 app 不必依赖某个 `rusqlite` 版本，不是给它开一条绕开四套池直接写 SQL 的路）、
+  `akasha`（app 包 = IPC 薄壳 + 托盘 + 配置 + 关窗语义 + 单实例 + 退出钩子 + 看门狗接线 + 事件 +
+  **库的解锁状态**（`vault::Vault`）+ 代码生成 bin）。
 - **前端四层**：`src/ipc/`（唯一允许碰后端）、`src/tabs/`、`src/terminal/`、`src/App.tsx`。
 - **调试白屏**：Victauri 的 `logs {action:"console"}`；读不到"模块执行期就抛错"的失败 ——
   那时临时往 `index.html` 塞 `window.onerror` 钩子（坑 #35）。⚠️ **React 的 effect 清理函数里抛错
@@ -242,6 +264,9 @@
   `config not found` / `config invalid` / `close behavior degraded`。
 - **调试"库里有什么"**：`akasha_store::dump::dump(&conn)`（**不含私钥**）；导出 / 还原的落点与权限
   看 `target/store-pools/` 下留下的真文件（契约测试**故意不删**它们）。
+- **调试"锁上了没有 / 锁的时候还回了什么"**：`vault_status` 的 `unlocked`；日志里 `vault created` /
+  `vault unlocked` / `vault locked` / `vault unlock failed`；内存那一半看
+  `akasha-store/tests/unlock_lifecycle.rs` 的扫描（它会打印每一处命中的地址与段权限）。
 - **文档三级粒度**：`ROADMAP.md`（判据）→ `docs/plans/TTxx-*`（手段）→ 本文件的坑（痕迹）。
 - 命令入口分两处：项目级在根 `justfile`，crate 级在 `src-tauri/justfile`；
   **权威清单在 `docs/just.md` §2**，由 `just docs-check` 强制同步。
@@ -282,7 +307,9 @@
 31. **`Channel<Vec<u8>>` 不是二进制通道** —— 真正走 raw 的只有
     `Channel<InvokeResponseBody>` + `InvokeResponseBody::Raw`。**别只看字节数验收**：
     小消息（<1 KiB）的 raw 帧曾变成 `number[]`，用例里要数"JSON 帧 == 0"。
-32. **`u64` 不能直接过 IPC**：改用壳层 `u32` 句柄 + **checked** 转换。
+32. **`u64` 不能直接过 IPC**：改用壳层 `u32` 句柄 + **checked** 转换。⚠️ 被生成器拒绝的是
+    **一整类**（`usize` / `isize` / `i64` / `u64` / `i128` / `u128`）—— plan 0407 又撞了一次
+    （四套池的行数、`PassphraseTooLong.max`），两次都写成 checked 转换而不是 `as`。
 33. **沙箱里 E2E 必须与 app 在**同一次** bash 调用内**（每次调用都是独立的 bwrap）。
 34. **`pkill -f <模式>` 会匹配到自己** —— 用 `pkill -f '[v]ite'` 或按 PID/进程组杀。
 35. **`@xterm/addon-unicode11` 需要 `allowProposedApi: true`** —— 不开的话 `loadAddon` 抛在
@@ -364,3 +391,15 @@
     一份会漂移的代码（漂移方向总是"明文那条少一个校验"）。先量一下 `ATTACH … KEY ?` 吃不吃绑定参数、
     空 key 参数算不算 `KEY ''` —— 两条实测把这件事变成了"同一段代码，只是 key 给空"。
     同理，口令要经**绑定参数**进 `ATTACH`：文本形式与 D4 拒绝 `PRAGMA key = '…'` 是同一个理由。
+90. **扫描器自己就住在它要扫的地址空间里**：第一版"整进程内存找口令"每次分配一块 64 MiB 的读缓冲，
+    而那块缓冲**也在被扫的段里** —— 数字里混进了它自己的拷贝，而且越扫越多。正解：**缓冲复用 + 读完即擦**，
+    并且**针要真随机**（运行期算出来的固定序列会跟内存里别的东西撞上，基线里就冒出十几处命中，
+    于是分不出"我们的缓冲区"与"别处"）。
+91. **给"要扫的段"设上限 = 让该看见的副本落在窗口外**：按 8 MiB 截断时，SQLCipher 的 codec 副本
+    正好在一个更大的段里 —— 扫描器"什么都没扫到"，而用例照样绿（坑 #87 的同一类：**漏扫与没泄是同一条绿**）。
+    正解是**按"是不是匿名段"过滤**（文件支撑的只读映射里不可能有我们的机密）而不是按大小，
+    并且用**正对照**（解锁期间必须多扫到）兜住"扫少了"。
+92. **解锁期间 `VmLck` 涨的**大头不是我们那一页**：`cipher_memory_security = ON` 会把 SQLite 的分配器
+    换成 `sqlcipher_mem_malloc/free` —— 每次分配 `mlock`、每次释放先擦零再 `munlock`。
+    实测口令页只占 4 kB，而解锁中有 152 kB。看到数字涨到几十上百 kB 别去翻 `memsafe`，
+    那是 SQLCipher 自己锁的（目录见 ADR-0002 §7.5）。

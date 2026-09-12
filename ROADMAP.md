@@ -127,9 +127,9 @@
 - [x] 四套池的 CRUD：密钥 / ssh 配置 / serial 配置 / 端口转发规则
       验收：各自的 round-trip 单测通过；**库里不存绝对路径**（P2）
       → [plan 0403](./docs/plans/archive/0403-pools-crud.md)
-- [ ] **解锁与锁定的生命周期**：谁持有解好的库、口令从哪来、锁定时抹掉什么
+- [x] **解锁与锁定的生命周期**：谁持有解好的库、口令从哪来、锁定时抹掉什么
       验收：解锁 → 读一次池 → 锁定之后进程里不留机密（`VmLck` 回落到解锁前）
-      → [plan 0407](./docs/plans/0407-unlock-lifecycle.md)
+      → [plan 0407](./docs/plans/archive/0407-unlock-lifecycle.md)
 - [x] dump 与导出（可选加密；明文导出必须二次确认）
       验收：加密导出可在另一目录导入还原；明文导出路径有显式确认门槛
       → [plan 0404](./docs/plans/archive/0404-dump-export.md)

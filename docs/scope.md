@@ -423,9 +423,10 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
 
 | 项 | 决定 |
 |---|---|
-| 引擎 | SQLite（`rusqlite`），**同步 API + 专用线程**，不用 `sqlx`（SQLCipher 支持弱） |
+| 引擎 | SQLite（`rusqlite`），**同步 API**（不引入异步数据库层）：慢的那一段——口令 → KDF——挪出 UI 线程，其余都在一个 `Mutex` 后面独占使用 |
 | 加密 | **SQLCipher**，feature `bundled-sqlcipher-vendored-openssl`（vendored 是必须的：否则交叉编译撞系统 OpenSSL） |
 | 密钥来源 | **用户口令 → KDF → 库密钥**（因为 P1 排除了 OS keychain）。口令不落盘；口令本体在内存里也**被护住**（锁定、静止不可读、不进 core dump，见 ADR-0002 §7.2） |
+| 解锁与锁定 | 谁持有解好的库 = app 的一个 `Mutex<Option<…>>`（连接与口令同生共死）；**只有显式锁定** —— 关窗口（默认收托盘）不锁、进程退出不锁、不做空闲超时。锁定后进程内存里不留口令与派生密钥（`VmLck` 回到解锁前，实测 ADR-0002 §7.5） |
 | dump | 支持 |
 | 导出 | 可选**是否加密**导出文件 |
 
@@ -437,6 +438,10 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
   - 还原：**替换**（只写进空的库槽），不合并；明文导出件也能重新加密还原
 - **dump**：把库里有什么说出来（版本号 + 四套池的行），**结构上不含私钥** ——
   诊断的输出会进日志与 issue，而它是一个顺手就会被贴出去的东西。
+- **口令在解锁窗口里一直受保护地住着**，锁定时与连接一起消失：导出那条"独立口令"检查
+  要在窗口内拿得到库口令，所以两者必须同生共死。⚠️ 口令经 IPC 进来时，
+  **tauri 内部那两份副本够不着**（请求体缓冲 + `serde_json::Value`，free 而不擦）——
+  我们这一份被擦零；更紧的做法（raw body）要前端手写裸 `invoke`，见 ADR-0002 §7.5。
 - 库文件是**唯一真相源**，不是缓存；**四套池与 BW 缓存都在同一个库文件里**（`akasha.db`）。
 - **库里不存绝对路径**（P2）。
 - **取证值的理由与否决路见 [ADR-0002](./adr/0002-secret-storage.md)**（实现中）：KDF 参数与盐的

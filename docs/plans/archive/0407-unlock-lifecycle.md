@@ -4,7 +4,7 @@
   [ADR-0002](../../adr/0002-secret-storage.md) D4 / D5 / D6 / D13
 - **前置**：plan 0403（四套池能读写）· plan 0404（导出要库口令 → 本步的约束）·
   plan 0406（口令的受保护页）
-- **状态**：进行中
+- **状态**：已完成（2026-09-12）—— `just ready` 6/6；`just test` 180 passed；`just test-e2e` 退出码 0
 
 ## 目标
 
@@ -147,4 +147,38 @@ just ready                                               # 预期：6/6
 
 ## 实施记录
 
-（边做边填：上面每条验收命令的实际输出，以及过程中改过的决定。）
+### 验收命令的实际输出
+
+| 命令 | 实际结果 |
+|---|---|
+| `cargo test -p akasha-store --test unlock_lifecycle -- --nocapture` | **4 passed**：`VmLck` 轨迹 `0 → 4 → 152 → 4 → 0 kB`；口令 `1 → 2 → 2 → 1` 处（多出来的那处是 `---p` 页）；派生密钥 `3 → 1` 处（剩下的 1 处是测试自己算的）；重新 `open` 也回到 `4 → 172 → 4 kB` |
+| `just test-e2e` | 退出码 **0**（新增 `vault_unlock` 一条）：`vault_status` = `missing`/`unlocked:false` → 造库 → 解锁返回 `{"keys":1,"hosts":1,"serials":1,"forwards":1}` → app 进程 `VmLck` **0 → 192 → 0 kB** → 错误口令被拒且仍然锁着 → 锁上之后还能再解开 |
+| `just test` | **180 passed**（原 171） |
+| `just ready` | **6/6** |
+| `just gen-types` | 生成物多出 `vaultUnlock` / `vaultLock` / `PassphraseInput` / `VaultContents` / `VaultError` 的五个变体与 `vaultStatus.unlocked` |
+
+### 探针与最终测试不一致的两处（照实记，两处都是"测量仪器的错"）
+
+| | 探针（先量） | 最终测试 | 为什么不一样 |
+|---|---|---|---|
+| 解锁中的 `VmLck` | 64 kB | **152 kB** | 探针自己分配了一块 64 MiB 的读缓冲，而且那块缓冲就在它要扫的地址空间里 —— 数字里混进了它 |
+| 解锁中口令的处数 | 3 处 | **2 处** | 探针除了那根针还留着一份 `baseline = pass.clone()`。**第三处不是 SQLCipher 的，是探针自己的** —— 这条差别推翻了一个想当然（ADR-0002 §7.5 第 2 条） |
+
+以此为准的是测试那一份：它复用一块 1 MiB 的缓冲（读完即擦）、没有多余的拷贝、并且带**正对照**。
+两条都进了 STATUS 的坑（#90 / #91）。
+
+### 中途改过的决定
+
+- **口令的副本清单少了一行**：原以为 SQLCipher 的 codec 里也留着一份口令 —— 量下来它只有派生密钥。
+- **`VaultContents` 的计数用 `u32`**：生成器**拒绝**把 `usize` 导出成 TS（BigInt 精度，坑 #32 的同一个坑）；
+  转换写成 checked，不写 `as`。
+- **加了一条判据**：`open` 那条路（不只是 `create`）也要把内存还回来 —— 重新打开才是真实使用里那条路。
+- **为让 app 侧不必依赖某个 `rusqlite` 版本**，`akasha-store` 把 `Connection` 再导出一遍：
+  `libsqlite3-sys` 带 `links`，两个版本连编都编不过（`AGENTS.md` §3.1 的依赖方向没变）。
+
+### 没有做的事
+
+- **没接四套池的 IPC 命令**（库层能读能写，但还没有能写的前端命令）：E2E 造数据直接调
+  `akasha-store` 的库函数，落到 `vault_status` 报出来的那个路径上。
+- **没做 raw body 的口令通道**、**没做空闲超时**：理由在「非目标」里。
+- **没做解锁 UI**：没有设计稿就没有验收标准（`AGENTS.md` §4.0）。
