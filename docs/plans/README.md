@@ -90,6 +90,7 @@
 | 0303 | 关闭行为可配置 | 未开始 | plan 0302 | [0303](./0303-close-behavior-config.md) |
 | 0304 | 单实例 | 未开始 | plan 0302 | [0304](./0304-single-instance.md) |
 | 0305 | 关闭终端标签页 = 立刻丢弃该 Session | 已完成 | plan 0204 | [0305](./archive/0305-tab-close-discards-session.md) |
+| 0306 | 会话自己结束 = 收掉它 + 关掉那个标签页 | 已完成 | plan 0305 | [0306](./archive/0306-session-ended-closes-tab.md) |
 
 ### 阶段 4 — 存储与凭据池
 

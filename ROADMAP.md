@@ -102,6 +102,9 @@
 - [x] **关闭终端标签页 = 立刻丢弃该 Session**（只有三大终端 local / ssh / serial 有 ×）
       验收：点 × 后该会话的进程消失、无需二次确认、别的标签页毫发无伤；转发 / 密码库 /
       文件传输是**仅渲染**的视图（无 ×），关前端不影响后端 → [plan 0305](./docs/plans/archive/0305-tab-close-discards-session.md)
+- [x] **会话自己结束（终端里敲 exit）= 收掉它 + 关掉那个标签页**（与 0305 反方向）
+      验收：敲 exit 后标签页自己消失、进程零残留、app 不退出（标签页 ⇔ 会话同生命期）
+      → [plan 0306](./docs/plans/archive/0306-session-ended-closes-tab.md)
 
 ---
 
