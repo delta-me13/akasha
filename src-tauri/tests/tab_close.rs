@@ -11,6 +11,8 @@
 //!      （内容还在 = 那个面没有被卸载重建，会话还是原来那个）。
 //!   3. 关掉**最后一个**标签页只是空状态：会话照样被丢弃，但**进程留着** ——
 //!      「关标签页 ≠ 关窗口 ≠ 退出应用」。
+//!   4. **反方向**（plan 0306）：在终端里敲 `exit` → 会话自己结束 → **标签页跟着关掉**。
+//!      标签页与会话**同生命期**，两个方向都要成立。
 //!
 //! 三条前提也顺手被这条用例守住：开新标签页、切换标签页**都不得**动到已有会话。
 //!
@@ -394,5 +396,44 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
     )
     .await;
 
+    // ── 8. 在终端里敲 `exit`：会话**自己**结束 → 标签页跟着关（plan 0306）──────
+    // 反方向：0305 验的是"关标签页 → 丢弃会话"，这一段验"会话自己走 → 标签页跟着走"。
+    // 标签页与会话**同生命期**，两个方向都要成立。
+    //
+    // ⚠️ 必须在**干净**的标签页里敲：会话里若还有别的进程握着 PTY（例如忽略 SIGHUP 的
+    // 后台作业），主端就读不到 EOF —— 那时真实终端的行为也是"标签页留着"，不是 bug。
+    type_line(&mut client, "exit\n").await;
+    wait_js(
+        &mut client,
+        &tabs_eq(0),
+        15_000,
+        "敲 exit 之后标签页自己关掉（会话结束 = 标签页关闭）",
+    )
+    .await;
+    eprintln!("在终端里敲 exit：标签页自己关掉（app 仍在）");
+
+    // 会话结束了 ≠ app 退出：还能再开一个（也给后面的 `exit_residue` 留个能用的终端）。
+    assert!(
+        ok(&client.eval_js(NEW_TAB).await.unwrap()),
+        "敲 exit 之后找不到新建标签页的按钮"
+    );
+    wait_js(&mut client, &tabs_eq(1), 30_000, "exit 之后再开一个标签页").await;
+    wait_js(
+        &mut client,
+        "window.__akashaTerminal.renderer !== 'none'",
+        30_000,
+        "exit 之后新开的终端渲染出来",
+    )
+    .await;
+    type_line(&mut client, "printf 'akasha-after-exit-%s\\n' ok\n").await;
+    wait_js(
+        &mut client,
+        &screen_has("akasha-after-exit-ok"),
+        30_000,
+        "exit 之后新开的标签页可交互",
+    )
+    .await;
+
     eprintln!("✅ 关闭终端标签页 = 立刻丢弃该 Session，且只丢它自己（关掉最后一个也不退出应用）");
+    eprintln!("✅ 在终端里敲 exit：会话自己结束，标签页跟着关掉（app 仍在）");
 }
