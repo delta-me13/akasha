@@ -144,7 +144,12 @@ async fn raw_channel_carries_ten_megabytes() {
         .await
         .unwrap();
     let after = number(&client.eval_js("window.__akashaProbe.bytes").await.unwrap());
-    let batches = number(&client.eval_js("window.__akashaProbe.batches").await.unwrap());
+    let batches = number(
+        &client
+            .eval_js("window.__akashaProbe.batches")
+            .await
+            .unwrap(),
+    );
     assert_eq!(
         flooded.get("ok").and_then(|v| v.as_bool()),
         Some(true),
