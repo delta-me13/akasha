@@ -1,6 +1,6 @@
 import { useState } from "react";
 import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
+import { commands } from "./ipc/bindings";
 import "./App.css";
 
 function App() {
@@ -8,8 +8,9 @@ function App() {
   const [name, setName] = useState("");
 
   async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+    // 走生成层（src/ipc/bindings.ts），**不裸调 invoke** —— 那是 AGENTS.md §0 的绝对禁止 #1：
+    // 裸命令名不会随 Rust 侧改名而报错，只会在运行期静默失效。
+    setGreetMsg(await commands.greet(name));
   }
 
   return (

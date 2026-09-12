@@ -91,6 +91,10 @@ deny-offline:
 gen-types:
     just --justfile {{SRC}}/justfile gen-types
 
+# 生成物是否与 Rust 侧一致（改过 IPC 忘了生成就红）
+gen-types-check:
+    just --justfile {{SRC}}/justfile gen-types-check
+
 # ── 组合门禁（跨越根与 crate，所以只能在根定义）──────────────────────────────
 
 # lint = clippy（crate 级）+ ast-grep scan（仓库级，读根 sgconfig.yml）
@@ -106,7 +110,7 @@ lint:
 # 可执行的 DoD（AGENTS.md §7）：提交前跑这一个。
 ready:
     @set -uo pipefail; \
-    steps="fmt-check lint test deny-offline docs-check"; \
+    steps="fmt-check lint test deny-offline gen-types-check docs-check"; \
     total=0; ok=0; \
     for s in $steps; do \
       total=$((total + 1)); \

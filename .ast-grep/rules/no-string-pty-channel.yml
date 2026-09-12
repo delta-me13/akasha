@@ -1,0 +1,37 @@
+id: no-string-pty-channel
+language: Rust
+severity: error
+message: PTY 字节流不能走 `Channel<String>` / `Channel<Vec<u8>>` —— 那是 JSON 数组，不是二进制通道（AGENTS.md §3.2）
+note: |
+  这条规则守的是**终端应用最容易踩的坑**：以为"用了 Channel 就是二进制通道"。
+
+  实际发生的事：`Channel<TSend>` 的 `send` 要求 `TSend: IpcResponse`，而 tauri 有
+
+      impl<T: Serialize> IpcResponse for T
+
+  这条 blanket impl —— 于是 `Channel<Vec<u8>>` 发出去的是 **"6 万多个数字的 JSON 数组"**，
+  `Channel<String>` 同理（还要先 base64/hex 一次）。一个 64 KiB 的批次会膨胀成几百 KB
+  的字符串再被 JS 解析成数组，正是规范里说的"吞吐直接崩"。
+
+  真正走 raw 字节的写法只有一条：
+
+      fn open(webview: Webview, channel: Channel<tauri::ipc::InvokeResponseBody>) -> ...
+      channel.send(tauri::ipc::InvokeResponseBody::Raw(bytes))?;
+
+  JS 侧收到的是 **ArrayBuffer**（小包经 eval、大包经 fetch 通道），可以直接
+  `new Uint8Array(payload)` 喂给 xterm。
+
+  ⚠️ 生成器（tauri-specta）写不出 `InvokeResponseBody` 的 TS 类型，所以过 IPC 的参数
+  只声明"频道句柄是个字符串"，由 Rust 侧还原成 raw 频道 —— 见
+  `src-tauri/src/session.rs` 的 `RawChannel`。
+files:
+  - "src-tauri/src/**/*.rs"
+rule:
+  kind: generic_type
+  all:
+    - has:
+        field: type
+        regex: '^Channel$'
+    - has:
+        kind: type_arguments
+        regex: '^<\s*(String|Vec\s*<\s*(u8|i8)\s*>)\s*>$'

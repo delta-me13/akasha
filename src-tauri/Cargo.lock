@@ -39,6 +39,8 @@ dependencies = [
 name = "akasha"
 version = "0.1.0"
 dependencies = [
+ "akasha-core",
+ "akasha-pty",
  "criterion",
  "insta",
  "portable-pty",
@@ -4659,6 +4661,7 @@ dependencies = [
  "serde_json",
  "specta",
  "specta-serde",
+ "specta-typescript",
  "specta-util",
  "tauri",
  "thiserror 2.0.20",

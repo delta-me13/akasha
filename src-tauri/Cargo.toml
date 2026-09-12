@@ -18,6 +18,11 @@ version = "0.1.0"
 description = "A Tauri App"
 authors = ["cyrene"]
 edition = "2024"
+# ⚠️ 必须有：仓库里有**两个** bin（`akasha` 与代码生成工具 `gen-types`），
+# 而 `tauri dev` 跑的是 `cargo run --` —— 不给默认值它就直接失败：
+# `cargo run could not determine which binary to run`。
+# 症状很迷惑：Vite 起得来、tauri 开始监听，看起来"什么都正常"，但 app 根本没启动。
+default-run = "akasha"
 # 桌面应用，不发布到 crates.io。这同时让 cargo-deny 的 [licenses.private]
 # 跳过本 crate 的许可证表达式要求（第三方依赖仍逐个检查）。
 publish = false
@@ -78,9 +83,17 @@ thiserror = "2.0.20"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 tauri-plugin-log = "2.9.1"
-tauri-specta = "2.0.0-rc.25"
-specta = "2.0.0-rc.25"
-specta-typescript = "0.0.12"
+# IPC 类型边界（AGENTS.md §5）：Rust 声明 → 生成 src/ipc/bindings.ts。
+# ⚠️ 上游明确要求 beta 期间**用 `=` 钉住版本**（否则一次 `cargo update` 就可能
+# 悄悄换掉生成器行为，而产物差异看起来像"我改了什么"）。
+tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+specta-typescript = "=0.0.12"
+
+# 纯逻辑 crate。**依赖方向单向**：`akasha` → `crates/*`（AGENTS.md §3.1），
+# 反向依赖由 ast-grep 规则拦下。
+akasha-core = { path = "crates/akasha-core" }
+akasha-pty = { path = "crates/akasha-pty" }
 
 [dev-dependencies]
 criterion = "0.8.2"

@@ -69,6 +69,19 @@ deny-offline:
 
 # ── 类型边界 ────────────────────────────────────────────────────────────────
 
-# Rust command/event → src/ipc/bindings.ts。改过 IPC 就必须跑并提交产物
+# 生成物落点。**Rust 侧是唯一真相源**（AGENTS.md §5），这个文件由生成器写。
+BINDINGS := "../src/ipc/bindings.ts"
+
+# Rust command/event → src/ipc/bindings.ts。改过 IPC 就必须跑并提交产物差异
 gen-types:
-    @echo "TODO: 接入 tauri-specta 后启用（见 AGENTS.md §5）"
+    cargo run --quiet --package akasha --bin gen-types
+
+# 生成物是否与 Rust 侧一致。**不比对的话，"改了 Rust 忘了生成"没有任何门禁会红**，
+# 前端就会拿着一份过期的签名继续编译通过（AGENTS.md §5）。已纳入 `just ready`。
+gen-types-check:
+    @cargo run --quiet --package akasha --bin gen-types
+    @if [ -n "$(git status --porcelain -- {{BINDINGS}})" ]; then \
+      echo "❌ {{BINDINGS}} 与 Rust 侧不一致 —— 跑 just gen-types 并提交产物差异："; \
+      git status --porcelain -- {{BINDINGS}}; \
+      exit 1; \
+    fi

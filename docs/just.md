@@ -40,7 +40,8 @@
 | `just bench` | 吞吐基线（criterion）。**不是门禁**，用于改动前后对比 | 转发 |
 | `just deny` | 依赖门禁：许可证 / 漏洞 / 来源（需联网） | 转发 |
 | `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |
-| `just gen-types` | Rust command/event → `src/ipc/bindings.ts`（待接入 tauri-specta） | 转发 |
+| `just gen-types` | Rust command/event → `src/ipc/bindings.ts`（生成物，**禁止手改**） | 转发 |
+| `just gen-types-check` | 生成物是否与 Rust 侧一致（改了 IPC 忘了生成就红） | 转发 |
 | `just doctor` | 确认 Victauri 连的是本项目，而不是别的实例 | 根 |
 | `just syscheck` | 检查系统库是否齐（缺 webkit2gtk 会提前报错） | 根 |
 | `just tools` | 按 `mise.toml` 装齐全局 CLI 工具 | 根 |
@@ -57,7 +58,7 @@ justfile                 ← 你在这里敲命令（项目级 + 转发）
                                             ↓
 src-tauri/justfile       ← crate 级命令真正实现的地方
     check / clippy / fmt / fmt-check / watch
-    test / test-e2e / bench / deny / deny-offline / gen-types
+    test / test-e2e / bench / deny / deny-offline / gen-types / gen-types-check
 ```
 
 **为什么要分两个**：just 用 **justfile 所在目录**作为配方的工作目录。
@@ -97,12 +98,13 @@ just deny-offline                       # 新依赖的许可证要过门禁
 ## 5. `just ready` 的输出约定
 
 ```
-→ fmt-check     ✅ 1s
-→ lint          ✅ 3s
-→ test          ✅ 2s
-→ deny-offline  ✅ 6s
-→ docs-check    ✅ 0s
-✅ just ready 全绿（5/5）
+→ fmt-check        ✅ 1s
+→ lint             ✅ 3s
+→ test             ✅ 2s
+→ deny-offline     ✅ 6s
+→ gen-types-check  ✅ 2s
+→ docs-check       ✅ 0s
+✅ just ready 全绿（6/6）
 ```
 
 **成功时只有这些**。失败时会把**那一步**的完整输出倒出来（超过 80 行则首尾各 40 行，
