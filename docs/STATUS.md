@@ -8,49 +8,50 @@
 
 ## 一句话
 
-**阶段 2「端到端最小终端」5/5 完成**：输出合批（0201）、IPC raw 字节通道（0202）、
-前端 xterm + WebGL 渲染（0203）、真正退出零残留（0204）、**被 SIGKILL 的退出路径也零残留（0205）**
-全部落地并实测。四条回收路径现在是：
+**阶段 2「端到端最小终端」5/5 完成**（0201–0205）；**阶段 3 的第一条也已落地**：前端第一次有了
+**标签页**，而"关闭终端标签页 = 立刻丢弃它自己的 `Session`"（plan 0305）。
 
-| 路径 | 谁在回收 |
+"何时回收"因此从三种**进程/窗口级**触发扩成四种，第四种粒度最小：
+
+| 触发 | 谁被回收 |
 |---|---|
-| 关窗口 / 正常退出 | `RunEvent::Exit` → `Sessions::shutdown_all()` |
-| panic | panic hook（打崩溃现场 → 回收 → `abort()`） |
-| `tauri dev` 重编译重启 / `kill -9` / `kill -TERM` | **另一个进程**：看门狗读到管道 EOF → 收掉登记过的会话（ADR-0005） |
+| **关一个终端标签页** | **只有它自己的会话**（`close_session` → kill + wait 收尸 + 撤销兜底登记）；别的标签页毫发无伤 |
+| 关窗口 / 正常退出 | 全部（`RunEvent::Exit` → `Sessions::shutdown_all()`） |
+| panic | 全部（panic hook：打崩溃现场 → 回收 → `abort()`） |
+| `tauri dev` 重载 / `kill -9` / `kill -TERM` | 全部 —— **另一个进程**：看门狗读到管道 EOF（ADR-0005） |
 
-本轮最值钱的两条判据：① **"忽略 SIGHUP 的进程"**——普通 `sleep` 靠内核 session 级
-SIGHUP 本来就不残留，拿它当判据等于没测；② **管道 EOF 与线程无关**——
-`PDEATHSIG` 的"父"是创建进程的那个**线程**，从线程池里起会话就会误杀用户的会话。
+⚠️ **关标签页 ≠ 关窗口 ≠ 退出应用**：关掉**最后一个**标签页只是**空状态**（界面空了、进程留着）。
+只有**三大终端**（local / ssh / serial）的标签页有关闭按钮；转发 / 密码库 / 文件传输是**仅渲染**的
+视图标签页（**无关闭按钮**），关前端不影响后端执行 —— 分类与理由见 `docs/scope.md` §5.6。
 
-`ROADMAP.md` 共 52 个条目（10 个阶段）：阶段 1 完成 5/7（CI 与 E2E 入口都待 CI 实跑），
-阶段 2 完成 **5/5**。**CI 仍未真正跑过** —— 仓库没有配置任何 git remote。
+**本轮最值钱的判据**：`tab_close` 这条 E2E **第一次跑就红**，红的不是测试写错，而是一个真 bug ——
+xterm 的 `term.dispose()` 在"丢过 WebGL 上下文的终端"上会抛，而它跑在 React 的 **effect 清理函数**里、
+又排在"关会话"前面：**关一个标签页会把整个界面卸载成空白，同时那个会话永远收不掉**。两条修法都
+落地了（拆面兜异常 + 清理顺序改成"先交会话、后拆面"），用例里也**故意**先造出那个状态。
+
+`ROADMAP.md` 共 53 个条目（10 个阶段）：阶段 1 完成 5/7（CI 与 E2E 入口都待 CI 实跑），
+阶段 2 完成 **5/5**，阶段 3 完成 **1/5**。**CI 仍未真正跑过** —— 仓库没有配置任何 git remote。
 
 ## 已验证为绿（命令 + 实际结果）
 
 | 命令 / 检查 | 结果 |
 |---|---|
-| `just ready`（fmt-check + lint + test + deny-offline + **gen-types-check** + docs-check） | 退出码 **0**，**6/6 全绿** |
-| `just test` | **66 tests run: 66 passed**（`akasha-pty` 37 + `akasha` 21 + `akasha-core` 8） |
-| ↑ 看门狗用例 | 8 条：协议往返/负例、EOF 收掉登记过的会话、**诱饵会话不被误杀**、`-` 撤销后原样活着、真管道"写完就死的写端"、`watch`/`forget` 的线上表示、argv 认领 |
-| ↑ `tests/session_watchdog.rs`（**真 SIGKILL**） | ✅ 真 app 二进制（`CARGO_BIN_EXE_akasha`）跑成看门狗 + 真管道 + `holder.kill()`（SIGKILL）+ 忽略 SIGHUP 的探针 → 探针随会话消失、**诱饵毫发无伤**、看门狗自己收工。红-绿自检过：临时跳过 kill 时它报红 |
-| **E2E 入口** `just test-e2e`（自包含：起 Vite + app → 逐个目标 → 收尾） | 退出码 **0**，**9 个用例全绿**：`smoke` 3 / `integration` 2 / `session_channel` 1 / `terminal_render` 2 / `exit_residue` 1 |
-| ↑ 退出零残留（plan 0204，关窗口路径） | ✅ `app 已退出（pid 155）`；`✅ 零残留：忽略 SIGHUP 的 1460 已随会话被收掉`（**没被 0205 的改动带坏**） |
-| ↑ 三条"没人能跑代码"的路径（plan 0205，手动实测） | ✅ A `tauri dev` 重载（cli 的 SIGKILL）：探针 479 消失、旧 app 184 消失、零 `sleep 600`；B `kill -9`：探针 1393 消失；C `kill -TERM`：探针 1746 消失。每条路径的 app 日志都有 `看门狗已启动 … watchdog=Some(N)` |
-| ↑ panic 路径（plan 0204） | ✅ 临时把 `greet` 改成 panic 实测：hook 先打崩溃现场 → `shut_down=2 failures=[]` → 两条「会话已显式回收」→ `abort()` |
-| ↑ 终端判据 | `renderer = webgl`、`canvas` 2 块、DOM 行容器 **0** 个；按键 → `akasha-probe-42` 出现在屏幕（求值结果，不是回显）；8 MB 分 **134 批**送达、之后仍可交互；`WEBGL_lose_context` 后退到 canvas **且屏幕内容保留** |
-| ↑ 会话判据 | `yes \| head -c 10000000` 的 **10 802 602** 字节分 **162 批**送达 JS，帧类型 = `ArrayBuffer`（JSON 帧 **0** 个）；关闭后收到频道**收尾帧 1 个**，console 里**零 error** |
-| ↑ 平台差异 | 本机（Wayland）`smoke::screenshot_captures_window` **显式跳过**并打印原因；`exit_residue` 与 `session_watchdog` 的强断言**只在 Linux** 跑（会话级回收只有 Linux 有实现），别处打印原因后跳过 |
-| `pnpm build`（`tsc && vite build`） | 退出码 0；产物 839 kB / gzip 229 kB。生产包里**没有** mock 与探针（命中数 **0**） |
-| **CSP** | `csp` 与 `devCsp` 均非 `null`；把 `devCsp` **临时设成与 `csp` 相同**也真跑过一轮 —— 渲染 / IPC / 8 MB 灌流全部照常、零 console error |
-| **日志** | `tauri-plugin-log` 只挂 stdout、级别显式 `Info`：回收/panic/看门狗都有记录。⚠️ **早于插件注册的 `tracing` 事件会静默消失** —— 看门狗的启动记录因此推迟到 `.setup()`（坑 #47） |
-| `just gen-types` / `just gen-types-check` | 生成 `src/ipc/bindings.ts`；比对通过（本轮**没有**加减 command，生成物无差异） |
-| `just bench`（criterion） | 52.7 GiB/s / 14.1 ns 每批 / 9.64 GiB/s（**0201 的数字，本轮未复跑**） |
+| `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全绿** |
+| `just test` | **66 tests run: 66 passed**（`akasha-pty` 37 + `akasha` 21 + `akasha-core` 8）—— 本轮 Rust 侧**一行没改** |
+| `just test-e2e`（自包含：起 Vite + app → 逐个目标 → 收尾） | 退出码 **0**，**10 个用例全绿**：`smoke` 3 / `integration` 2 / `session_channel` 1 / `terminal_render` 2 / **`tab_close` 1** / `exit_residue` 1 |
+| ↑ **关闭标签页 = 立刻丢弃会话**（plan 0305，真 UI 点击） | ✅ 两个标签页各起一个**忽略 SIGHUP** 的探针 → 点 `+` → 切换 → 点第一个的 `×`：探针 A 在 **83–85 ms** 内消失、**不需要第二次点击**；探针 B **仍在**且屏幕内容还在；关掉最后一个 → 空状态 + 探针 B 也随会话被丢弃；再开一个仍可交互 |
+| ↑ 单独跑 `tab_close`（新起的 app） | ✅ 同一条用例自己把 WebGL 上下文丢掉后再关 —— 说明这条回归**不依赖跑在别的目标后面** |
+| ↑ 退出零残留（plan 0204/0205，未退化） | ✅ `app 已退出（pid 155）`；`✅ 零残留：忽略 SIGHUP 的 1809 已随会话被收掉` |
+| ↑ 终端判据（未退化） | `renderer = webgl`、canvas 2 块、DOM 行容器 **0** 个；8 MB 分 **134 批**、之后仍可交互；`WEBGL_lose_context` 后退到 canvas **且屏幕内容保留** |
+| ↑ 会话判据（未退化） | `open_session → 3`；raw 通道 **10.4 MB / 159 批**送达，帧类型 = `ArrayBuffer`（JSON 帧 **0**）；收尾帧 1 个、console 零异常 |
+| `pnpm build`（tsc + vite build） | 退出码 0；产物 **841 kB / gzip 230 kB**；生产包里 `akashaTerminal` / `activateProbe` / `mockIPC` 命中数 **0**（探针与模拟后端仍被整段摇掉） |
+| `just gen-types` / `just gen-types-check` | 生成物无差异（本轮**没有**加减 command） |
 | `just check` / `just clippy`（`--workspace --all-targets`） | 退出码 **0** |
-| `just deny-offline` | `bans ok, licenses ok, sources ok`（本轮**没有新增依赖**：看门狗只用 `std` + 已有的 `rustix`） |
-| `just docs-check` | 三部分全过（ROADMAP **52** 条目在 3 行内 / plan **45** 份 ≤200 行且索引一致） |
+| `just deny-offline` | `bans ok, licenses ok, sources ok`（本轮**没有新增依赖**，前端也没加包） |
+| `just docs-check` | 三部分全过（ROADMAP **53** 条目在 3 行内 / plan **46** 份 ≤200 行且索引一致） |
 | `ast-grep scan` | 退出码 **0**；**四条**规则均已用正负例验证 |
 | `cargo tree -p akasha-core` / `-p akasha-pty` \| `grep -c tauri` | **0** / **0**（分层成立） |
-| `just dev` / `just doctor` | 起窗口；Vite 1420；Victauri 发现文件写在 `/tmp/victauri/<pid>/`；`just doctor` 13/13（沙箱内） |
+| `just bench`（criterion） | 52.7 GiB/s / 14.1 ns 每批 / 9.64 GiB/s（**0201 的数字，本轮未复跑**） |
 
 > `just deny`（含 advisories）**尚未验证** —— 需要联网拉 RustSec 数据库。
 
@@ -60,9 +61,12 @@ SIGHUP 本来就不残留，拿它当判据等于没测；② **管道 EOF 与�
   风险记在 [`docs/plans/0102`](./plans/0102-ci-platform-matrix.md) 的实施记录里。
 - **E2E 矩阵的三个格子**（Linux/xvfb + macOS + Windows，三格跑同一条 `just test-e2e`）——
   同上：没有 remote 就没跑过。本地只覆盖 **Linux/Wayland** 这一格。
-- **`tauri dev` 重载那条路径没有门禁**：`just test-e2e` 起的是它自己的 app，改不了源码去触发
-  重载 —— 只能手动实测（plan 0205 的记录里有脚本与输出）。**机制**本身有门禁
-  （`tests/session_watchdog.rs` 用真 SIGKILL 打真会话，在 `just test` 里）。
+  ⚠️ 新增的 `tab_close` 在**非 Linux** 上"会话级回收"本来就是缺口（见坑 #46/plan 0204），那条用例
+  的进程判据要在别处显式降级；CI 首跑时要盯这一格。
+- **`tauri dev` 重载那条路径没有门禁**：只能手动实测（plan 0205 的实施记录里有脚本与输出）。
+- **前端类型检查不在任何门禁里**（本轮发现的缺口）：`just ready` 只覆盖 Rust + 文档，`pnpm build`
+  （tsc）要手动跑，E2E 只在真跑时才能发现 TS 之外的问题。要不要把它并进门禁（牵涉 CI 的 checks job
+  是否 `pnpm install`）是**独立的一件事**。
 - **宿主 MCP 连不到沙箱内运行的 app**（私有 PID / 临时目录）。沙箱内可用，
   但**必须让 app 与测试在同一次 bash 调用里**（坑 #33）。
 - **`just dev-web` 的模拟后端没在真浏览器里点过**（本环境没有浏览器）。
@@ -74,68 +78,67 @@ SIGHUP 本来就不残留，拿它当判据等于没测；② **管道 EOF 与�
 |---|---|
 | workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` |
 | 二进制落点 | `src-tauri/target/debug/akasha`（另有代码生成工具 `gen-types`，故必须 `default-run`，坑 #29） |
-| 增量重编译 | 6.09–6.93s（纯逻辑 crate 改动同样触发） |
 | 出字节路径 | PTY read → 合批（64 KiB / 16 ms）→ `Channel<InvokeResponseBody>` **raw** → JS `ArrayBuffer` → `term.write` |
-| 回收路径（进程内） | `RunEvent::Exit` / panic hook → `Sessions::shutdown_all()` → `Transport::shutdown()`（PTY：**收整个 session** → kill 子进程 → wait 收尸） |
+| 前端结构与布局 | `src/tabs/TabStrip.tsx`（标签栏）+ `src/App.tsx`（标签模型，多面**同时挂载**、非活动的 `visibility: hidden` 叠放）+ `src/terminal/`（xterm 面与会话接线） |
+| 关闭一个标签页 | 移除 → React 卸载该面 → `attachTerminal` 清理（**先** `close_session`，**后** `surface.dispose()`）→ `Sessions::close` → `Transport::shutdown()`（PTY：收整个 session → kill 子进程 → wait 收尸）→ 撤销看门狗登记。**实测消失耗时 83–85 ms** |
+| 回收路径（进程内） | `RunEvent::Exit` / panic hook / `close_session` → `Transport::shutdown()` |
 | 回收路径（进程外） | 看门狗（每个 app 实例一个）读管道：`register` 写 `+<会话首进程 pid>`，收干净后写 `-<pid>`；**EOF = app 死了** → 逐个 `kill_session` |
-| 看门狗进程的生命周期 | `main` 第一行认领 `--akasha-session-watchdog` → `setsid` 脱钩 → 阻塞在 `read_line` 直到 EOF → 收尾 → 退出。它**不输出任何东西**（醒来时没有读者） |
+| 看门狗进程的生命周期 | `main` 第一行认领 `--akasha-session-watchdog` → `setsid` 脱钩 → 阻塞在 `read_line` 直到 EOF → 收尾 → 退出。它**不输出任何东西** |
 | 前端渲染器 | **WebGL**（WebKitGTK + MESA 软件栈下仍拿到 WebGL2）；`canvas` 元素 2 块；DOM 渲染器未启用 |
-| 大输出实测 | 11.18 MB / 170 批（0202）；11.28 MB / 168 批（0204）；**10.80 MB / 162 批**（0205 复测） |
-| 前端产物 | 839 kB（gzip 229 kB） |
+| 大输出实测 | 11.18 MB / 170 批（0202）；11.28 MB / 168 批（0204）；10.80 MB / 162 批（0205）；**10.41 MB / 159 批**（0305 复测） |
+| 前端产物 | 841 kB（gzip 230 kB） |
 | 合批参数 | `max_bytes` = 64 KiB、`max_delay` = 16 ms（`BatchPolicy::DEFAULT`，唯一来源） |
 | CSP | `csp`：`default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:`；`devCsp` 多一个 `ws://localhost:1420 http://localhost:1420` |
 | 前提条件 | **需要能写 `$HOME`**；沙箱内会刷 `dconf-CRITICAL` 与 WebKit 缓存 hard-link 告警，但 app 仍正常起窗口 |
 
 ## 进行中 / 下一步
 
-- [~] **plan 0102（CI 平台矩阵，GitHub Actions 一份）**：本地部分完成，
-  最终判据 = **推上去三个 job 全绿**，卡在没有 remote
-- [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测 ——
-  `just test-e2e` 自包含、9 个用例全绿；剩 CI 三平台格子（同上）
-- [ ] **阶段 3 托盘**（[plan 0301](./plans/0301-tray-icon-menu.md)）：注意它建立在
-  "退得干净"之上；而"点叉收托盘"要在 `ExitRequested` 里 `prevent_exit` ——
-  0204 的回收**故意**挂在 `RunEvent::Exit`，别挪到 `ExitRequested`
-- [ ] 阶段 3 还要**复核 0205 的看门狗**：托盘时代"窗口关掉但进程还在"是常态，
-  看门狗的生命周期仍然 = 一个 app 实例（ADR-0005 §6 的复审条件之一）
+- [~] **plan 0102（CI 平台矩阵）**：本地部分完成，最终判据 = **推上去三个 job 全绿**，卡在没有 remote
+- [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测 —— `just test-e2e` 自包含、
+  **10 个用例全绿**；剩 CI 三平台格子（同上）
+- [ ] **阶段 3 托盘**（[plan 0301](./plans/0301-tray-icon-menu.md)）：注意它建立在"退得干净"之上；
+  而"点叉收托盘"要在 `ExitRequested` 里 `prevent_exit` —— 0204 的回收**故意**挂在 `RunEvent::Exit`，
+  别挪到 `ExitRequested`
+- [ ] 阶段 3 还要**复核 0205 的看门狗**：托盘时代"窗口关掉但进程还在"是常态，看门狗的
+  生命周期仍然 = 一个 app 实例（ADR-0005 §6 的复审条件之一）
+- [ ] 托盘时代还要**复核 0305 的两条前提**：① 关窗口（收托盘）时标签页与它们的会话必须原样存活；
+  ② "关最后一个标签页 = 空状态"在"窗口隐藏"成为常态之后是否仍然合适
 
-### 本轮完成（plan 0205：被 SIGKILL 的退出路径也零残留）
+### 本轮完成（plan 0305：关闭终端标签页 = 立刻丢弃该 Session）
 
-- [x] **ADR-0005**：`PDEATHSIG` / 完整 supervisor / 扫孤儿 / 单独 bin 逐条否掉；
-  定案 = **伴生看门狗进程 + 单向管道协议**（触发信号是 EOF，由**进程的 fd 表**决定，
-  与线程无关）
-- [x] `akasha-pty::watchdog`：协议（`+pid` / `-pid`，数字逐位校验）、`run`（EOF → 逐个
-  `kill_session`）、`detach`（`setsid`，^C 与关终端带不走它）、`SessionWatchdog`
-  （起进程、`watch`/`forget`、收尸线程）
-- [x] `Transport::session_leader()`（默认 `None`）：PTY 覆写成子进程 pid，与 `shutdown`
-  用的是同一个 pid
-- [x] `Sessions`：`attach_watchdog` + `register` **先登记再插表** + `close`/`shutdown_all`
-  **收干净才撤销**（收尾失败不撤销）
-- [x] 启动顺序：看门狗最前面起、日志推迟到 `.setup()`（坑 #47）
-- [x] 测试三层：`akasha-pty` 真进程用例（含诱饵）、`SessionWatchdog` 协议断言、
-  `tests/session_watchdog.rs`（真 SIGKILL + 真 app 二进制）+ 三条路径手动实测
+- [x] 前端标签模型 + 标签栏：新建 / 切换 / 关闭；`×` **按 `kind` 渲染**（只有 `"terminal"` 有），
+  位置留给"仅渲染"的视图标签页（转发 / 密码库 / 文件传输）
+- [x] 多面宿主：所有标签页**保持挂载**、非活动的 `visibility: hidden`（`display: none` 量不出尺寸，
+  **卸载 = 关会话**），于是"关标签页"不需要第二条关闭路径
+- [x] `activateProbe(host)`：探针跟着**活动面**走（多标签下"最后挂载的面"会与"正在看的面"分叉）
+- [x] 拆面兜异常 + 清理顺序（**先交会话、后拆面**）—— 见下面坑 #50
+- [x] E2E `tab_close`（真点击、真探针、含"丢过上下文的终端的销毁"与"最后一个标签页 = 空状态"）
+- [x] 规范：`docs/scope.md` §5.6（标签页分类）、`AGENTS.md` §3.3（事件表加一行 + 反直觉提醒）
 
-### 上一轮完成（plan 0204：真正退出零残留）
+### 上一轮完成（plan 0205：被 SIGKILL 的退出路径也零残留）
 
-- [x] `akasha-pty::teardown::kill_session`：Linux 扫 `/proc` 的 session id 逐个 SIGKILL
-- [x] `Sessions::shutdown_all()`（幂等、失败记账不上抛）；挂 `RunEvent::Exit` + panic hook
-- [x] E2E `exit_residue`；日志管道接通（`tauri-plugin-log` stdout + Info）
+- [x] **ADR-0005**：伴生看门狗进程 + 单向管道协议（触发信号是 EOF，由**进程的 fd 表**决定）
+- [x] `akasha-pty::watchdog`（协议 / `run` / `detach` / `SessionWatchdog`）、
+  `Transport::session_leader()`、`Sessions` 的登记与撤销、启动顺序（先起后记日志）
 
 ### 更早
 
-- [x] **plan 0107 / 0203 / 0202 / 0201 / CI 去 Gitea 化 + 布局收口**（见 git 历史与各自的
+- [x] **plan 0107 / 0204 / 0203 / 0202 / 0201 / CI 去 Gitea 化 + 布局收口**（见 git 历史与各自的
   `docs/plans/archive/`）
 
 ## 结构现状（容易找错地方）
 
 - **workspace root 在 `src-tauri/`**（ADR-0004）。**仓库根没有 `Cargo.toml`** ——
   在根目录直接跑 `cargo …` 会失败（坑 #8），一律用 `just` 转发。⚠️ **临时脚本里也一样**：
-  `cargo run` 的 cwd 必须是 `src-tauri/`（本轮实测踩到：脚本在根目录跑 cargo，静默等 5 分钟）。
+  `cargo run` 的 cwd 必须是 `src-tauri/`（实测踩到：脚本在根目录跑 cargo，静默等 5 分钟）。
 - **三个 crate 的分工**：`akasha-core`（Session 模型，零依赖）、`akasha-pty`
   （`Transport` + portable-pty + 合批 + `teardown`（会话级回收）+ **`watchdog`**（进程外兜底））、
   `akasha`（app 包 = IPC 薄壳 + 退出钩子 + 看门狗接线 + 代码生成 bin）。
-- **前端三层**：`src/ipc/`（唯一允许碰后端）、`src/terminal/`、`src/App.tsx`。
+- **前端四层**：`src/ipc/`（唯一允许碰后端）、`src/tabs/`（标签栏）、`src/terminal/`（xterm 面与
+  会话接线）、`src/App.tsx`（标签模型 = 谁在、谁是活动的）。
 - **调试白屏**：Victauri 的 `logs {action:"console"}`；读不到"模块执行期就抛错"的失败 ——
-  那时临时往 `index.html` 塞 `window.onerror` 钩子（坑 #35）。
+  那时临时往 `index.html` 塞 `window.onerror` 钩子（坑 #35）。⚠️ **React 的 effect 清理函数里抛错
+  会卸载整棵树**（坑 #50）—— "界面突然全空"要先怀疑它，而不是先怀疑样式。
 - **调试 E2E / 真 app**：`just test-e2e` 的 app 日志落在 `$tmp/akasha-e2e-app.log`；
   在**同一个 bash 调用**里才能同时读到 app 与测试（坑 #33）。
 - **文档三级粒度**：`ROADMAP.md`（判据）→ `docs/plans/TTxx-*`（手段）→ 本文件的坑（痕迹）。
@@ -209,3 +212,13 @@ SIGHUP 本来就不残留，拿它当判据等于没测；② **管道 EOF 与�
     （坑 #45 的同族，只是对象从"信号投递"换成了"父进程收尸"）。
 49. **按"命令行里含某段文本"找进程会误伤**：沙箱包装进程（bwrap）自己的 cmdline 里带着
     整段脚本文本。要找探针就比对 **argv 恰好等于**那两个词。
+50. **`term.dispose()`（xterm）会抛，而它跑在 React 的 effect 清理函数里** —— 触发状态是
+    "WebGL 上下文丢过、已退到 canvas"的终端（`TypeError: … 'this._linkifier2.onShowLinkUnderline'`）。
+    后果是**双重的**：① 抛在 effect 清理里 = React **卸载整棵树** → "关一个标签页，整个界面变空白"；
+    ② 它若排在别的工作前面，后面的工作**永远执行不到**（实测：会话回收那一句被跳过，PTY 留在机器上）。
+    两条正解：**清理函数里的"必做项"排在第三方拆解之前**，拆第三方时**兜住异常**。
+51. **多标签之后 DOM 选择器不再唯一**：`document.querySelector('.xterm-helper-textarea')` 是"第一个
+    标签页里的那个"，而 `window.__akashaTerminal` 若要指"最后挂载的面"就会与"用户正在看的面"分叉。
+    正解：输入与探针都跟着**活动面**走（`.tab-pane.is-active …` + 一个显式的"交探针"动作）。
+52. **断言超时不一定是"慢"**：本轮 E2E 报的是"标签页只剩一个 超时"，真实原因是**界面已经被卸载**
+    （读到的是 0）。写这类等待时把"0 意味着界面没了"写进失败消息里，能省掉一整轮误判。

@@ -89,7 +89,7 @@
 | 0302 | 隐藏而非销毁窗口 | 未开始 | plan 0301 | [0302](./0302-hide-not-destroy.md) |
 | 0303 | 关闭行为可配置 | 未开始 | plan 0302 | [0303](./0303-close-behavior-config.md) |
 | 0304 | 单实例 | 未开始 | plan 0302 | [0304](./0304-single-instance.md) |
-| 0305 | 关闭终端标签页 = 立刻丢弃该 Session | 进行中 | plan 0204 | [0305](./0305-tab-close-discards-session.md) |
+| 0305 | 关闭终端标签页 = 立刻丢弃该 Session | 已完成 | plan 0204 | [0305](./archive/0305-tab-close-discards-session.md) |
 
 ### 阶段 4 — 存储与凭据池
 

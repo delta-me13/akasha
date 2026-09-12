@@ -2,7 +2,7 @@
 
 - **关联**：ROADMAP 阶段 3 ·「关闭终端标签页 = 立刻丢弃该 Session」
 - **前置**：plan 0204（显式 kill + wait 收尸）、0205（进程外兜底）—— 关闭路径的机制已经成立
-- **状态**：进行中
+- **状态**：已完成
 - **影响面**：`src/**`（标签栏与多标签宿主）、`src-tauri/tests/**`、`src-tauri/justfile`（E2E 清单）、
   `docs/scope.md` §5、`AGENTS.md` §3.3
 
@@ -12,7 +12,9 @@
    每个终端标签页对应**一个**后端 `Session`（`SessionKind::Terminal`）。
 2. **关闭一个终端标签页 = 立刻丢弃它的 `Session`**：不弹确认、不留宽限期。
    **只丢它自己** —— 别的标签页的会话与进程不受影响。
-3. 把"哪一类标签页可关闭"写成规范：
+3. 关掉**最后一个**标签页是**空状态**（界面空了、进程还在），**不是退出应用** ——
+   「关标签页 ≠ 关窗口 ≠ 退出应用」（托盘与退出是阶段 3 另一条线的事）。
+4. 把"哪一类标签页可关闭"写成规范：
    - **三大终端**（local / ssh / serial）的标签页：**有关闭按钮**，关掉 = 立刻丢弃该 `Session`；
    - **仅渲染的前端标签页**（SSH 转发 / 密码库 / 文件传输）：**没有关闭按钮**，前端只是客户端视图，
      **关前端不影响后端执行**（`docs/scope.md` §5.6）。
@@ -85,4 +87,51 @@ just dev
 
 ## 实施记录
 
-（边做边追加：真 app 上的标签页数、两个探针 pid 与消失耗时、`just ready` / `just test-e2e` 的实际输出。）
+| 命令 | 结果 |
+|---|---|
+| `just ready` | **6/6 全绿** |
+| `just test` | **66 tests run: 66 passed**（Rust 侧本轮**一行没改**） |
+| `just test-e2e` | 退出码 **0**，**10 个用例全绿**（新增 `tab_close` 1 条） |
+| `pnpm build`（tsc + vite build） | 退出码 0；产物 841 kB / gzip 230 kB；生产包里 `akashaTerminal` / `activateProbe` / `mockIPC` 命中数 **0**（探针与模拟后端仍被整段摇掉） |
+
+真 app 上的输出（两个标签页各起一个忽略 SIGHUP 的探针；单独跑与在 `test-e2e` 里跑各验一遍）：
+
+```
+已把标签页 1 的 WebGL 上下文丢掉（退到 canvas）      ← 见下面的 1.
+标签页 1：探针 A = 1279；标签页 2：探针 B = 1377
+标签页数：1 → + → 2 → 切换（当前「终端 1」）→ 两个探针都还在
+探针 A(1279) 已随标签页消失（83 ms）                 ← 关闭 = 立刻丢弃，不需要第二次点击
+探针 B(1377) 仍在，且它的屏幕内容还在                ← 只丢它自己
+关掉最后一个标签页：空状态（app 仍在），探针 B(1377) 也随会话被丢弃
+✅ 关闭终端标签页 = 立刻丢弃该 Session，且只丢它自己（关掉最后一个也不退出应用）
+```
+
+**实现**：`src/tabs/TabStrip.tsx`（新；`×` 按 `kind` 渲染）、`src/App.tsx`（标签模型 + 多面宿主）、
+`src/terminal/TerminalPane.tsx`（活动面交焦点 / 交探针）、`src/terminal/surface.ts`（`activateProbe`
++ 拆面兜底）、`src/terminal/attach.ts`（清理顺序）。**Rust 侧没改** —— `close_session` 本来就是
+"立刻丢弃"（plan 0204）。
+
+**这条 E2E 第一次跑就红，抓到的是一个真 bug**（不是测试写错）：
+
+1. **`term.dispose()` 会抛，而它跑在 React 的 effect 清理函数里。** 触发状态：终端的 WebGL
+   上下文丢过、已经退到 canvas（`terminal_render` 的降级用例正好造成这个状态）。实测栈：
+   `dispose@surface.ts` → `dispose@xterm` → `TypeError: undefined is not an object
+   (evaluating 'this._linkifier2.onShowLinkUnderline')`。后果是**双重的**：
+   - 抛在 effect 清理里 = React 卸载整棵树 → **关一个标签页，整个界面变空白**；
+   - 它排在"关会话"前面 → 那一句**永远执行不到** → 标签页没了、PTY 与里面的作业留在机器上。
+   修法两条：`surface.dispose()` 兜住异常（只记账），`attach.ts` 的清理**先交会话、后拆面**。
+   用例因此**故意**先把那个状态造出来（`LOSE_WEBGL`），红-绿都实测过。
+2. **多标签之后 `.xterm-helper-textarea` 不再唯一**：`terminal_render` / `exit_residue` 的输入
+   helper 从"第一个 / 最后一个"改成**活动面**里的那个（`.tab-pane.is-active …`）—— 否则敲的命令
+   可能落进一个隐藏的终端。
+3. **探针原本是"最后挂载的那个面"**，多标签下会与"用户正在看的那个面"分叉（切回去、关掉别的
+   标签页都会）。新增 `activateProbe(host)`，由活动标签页在拿到焦点时调用。
+
+**未覆盖**
+
+- 标签页重命名 / 拖拽排序 / 分屏 / OSC 标题同步（本步非目标）。
+- 转发 / 密码库 / 文件传输的**视图标签页**（阶段 4/6/7）—— 本步只立了 `kind` 这个位置与规范。
+- **前端类型检查不在 `just ready` 里**（它只覆盖 Rust + 文档）：本步靠 `pnpm build` 手动跑 + E2E
+  真跑兜着。要不要把 `tsc` 纳入门禁（牵涉 CI 那条 job 装不装前端依赖）是**另一件事**，记在 `STATUS.md`。
+- 每个面各有一份探针，但只有**活动面**能从 `window.__akashaTerminal` 读到；非活动面的屏幕要另开
+  入口才能看（本步用不着）。
