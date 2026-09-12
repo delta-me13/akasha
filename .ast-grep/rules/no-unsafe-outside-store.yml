@@ -4,14 +4,17 @@ severity: error
 # ⚠️ message 必须加引号：YAML 里反引号是保留指示符，不能出现在裸标量的开头。
 message: "`unsafe` 只允许出现在 `akasha-store` —— 它是唯一需要碰 SQLCipher C API 的 crate（AGENTS.md §3.4）"
 note: |
-  `unsafe` 的**唯一**正当理由是"必须调一个 C API，而它没有安全包装"。目前全仓库只有一处：
-  `akasha-store` 里把口令送进 `sqlite3_key()`（ADR-0002 D4 —— 不允许用 `PRAGMA key='…'`
-  文本形式，那会把口令写进 SQL 语句）。除此之外的任何 `unsafe` 都不是"不得不用"。
+  `unsafe` 的**唯一**正当理由是"必须调一个 C API，而它没有安全包装"。本仓库放行的是
+  **整个 `akasha-store`**：库里那一处把口令送进 `sqlite3_key()`（ADR-0002 D4 —— 不允许用
+  `PRAGMA key='…'` 文本形式，那会把口令写进 SQL 语句），它的契约测试为了钉住 SQLCipher
+  的语义（空 key 会怎样、`rekey` 会不会换盐）也直接调 `sqlite3_key` / `sqlite3_rekey`。
+  除此之外的任何 `unsafe` 都不是"不得不用"。
 
   为什么需要这条**规则**而不是只靠 lint：workspace 的 `unsafe_code` 只能是 `deny`
   而不能是 `forbid`（rustc 规定 `forbid` 无法被 `#[allow]` 覆盖，那样 `AGENTS.md` §3.4
-  承诺的"单点 allow + SAFETY 注释"就永远写不出来）。`deny` 允许在任意单点加
-  `#[allow(unsafe_code)]`，所以"唯一单点"这件事必须由本规则来守。
+  承诺的"单点 `#[allow(unsafe_code)]` + `// SAFETY:`"就永远写不出来）。`deny` 允许在
+  任意地方加 `#[allow(unsafe_code)]`，所以"**只许写在哪**"这件事必须由本规则来守；
+  "**必须怎么写**"由 §3.4 那三条 clippy lint 守。
 
   加了一处新 `unsafe` 时：先问"能不能不下沉到 C API"，不能的话把**理由**写进 `// SAFETY:`
   与对应 ADR，并把 `ignores` 放宽到那个文件 —— 放宽 `ignores` 等于改架构，要单独提交。

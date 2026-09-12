@@ -54,9 +54,9 @@ members = ["crates/*"]
 # AGENTS.md §3.4：unsafe 默认禁止；确有必要时单点 `#[allow(unsafe_code)]` + `// SAFETY:` 注释。
 #
 # ⚠️ 这里是 **deny 而不是 forbid**，理由是硬的：rustc 规定 `forbid` **不能被 `#[allow]` 覆盖**，
-# 所以 `forbid` 会让上面那句"单点 allow"永远写不出来 —— 而 `akasha-store` 恰恰需要一处
+# 所以 `forbid` 会让上面那句"单点 allow"永远写不出来 —— 而 `akasha-store` 恰恰需要它
 # （口令必须经 `sqlite3_key()` C API 送入，ADR-0002 D4）。既然不能按 crate 分开设，
-# 就只能选 `deny`，然后**用规则把"唯一单点"这件事补回来**：
+# 就只能选 `deny`，然后**用规则把"哪能写"这件事补回来**：
 # `.ast-grep/rules/no-unsafe-outside-store.yml` 规定 `unsafe` 只许出现在 `akasha-store`。
 # 两层加起来与 `forbid` 等价，且比 `forbid` 多一条能改的口子。
 unsafe_code = "deny"
@@ -66,6 +66,20 @@ unsafe_code = "deny"
 # `just clippy` 带 `-D warnings`，所以生产代码里它实际就是错误；测试里的 unwrap 是断言手段，
 # 由测试目标自己 `#![allow(clippy::unwrap_used)]` 显式豁免。
 unwrap_used = "warn"
+
+# `unsafe` 的**文档注释**（规则见 AGENTS.md §3.4）。这三条就是 Linux 内核的做法 ——
+# 它的 Makefile 里写的是 `-Wclippy::undocumented_unsafe_blocks` /
+# `-Wclippy::unnecessary_safety_comment` / `-Wclippy::unnecessary_safety_doc`，
+# 依据是 `Documentation/rust/coding-guidelines.rst`（"These must appear before every
+# `unsafe` block"）。前两条一正一反地守 `// SAFETY:`（该写没写 / 写在了安全块上），
+# 第三条守 `/// # Safety`（不该挂在安全函数上）。
+#
+# ⚠️ **不需要** clippy.toml 的 `check-private-items`：实测这三条本来就查私有项 ——
+# 唯一那处 `unsafe` 在**私有**函数 `apply_key` 里，把 `// SAFETY:` 改名之后它照样红
+# （反而要小心的是反过来的情形：以后若升级 clippy 后它不再报，就是静默失效）。
+undocumented_unsafe_blocks = "deny"
+unnecessary_safety_comment = "deny"
+unnecessary_safety_doc = "deny"
 
 # release profile **必须**放在 workspace root：成员里的 `[profile.*]` 会被静默忽略
 # （坑 #18）。本文件就是 root，所以它在这里是对的。

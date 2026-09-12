@@ -292,7 +292,7 @@ fn enable_memory_security(conn: &Connection) -> Result<(), StoreError> {
 ///
 /// 这里**没有**空口令分支：空值造不出来（[`Passphrase::new`]），所以这个函数收到的一定
 /// 是非空字节。这就是"应用层拒绝"从 if 升级成类型之后的样子 —— 少一条永远不该走的分支。
-#[allow(unsafe_code)] // 全仓库唯一的 unsafe 单点，见下面 SAFETY 与 ADR-0002 D4
+#[allow(unsafe_code)] // 本 crate 是全仓库唯一允许出现 unsafe 的地方（no-unsafe-outside-store.yml）；理由见下
 fn apply_key(conn: &Connection, passphrase: &mut Passphrase) -> Result<(), StoreError> {
     // `expose()` 拿到的是一次**提权窗口**：`bytes` 只在它活着时有效，drop 之后
     // 那块页在 Unix 上立刻回到 `PROT_NONE`。所以密钥必须在本次调用里送完。
