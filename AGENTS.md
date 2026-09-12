@@ -137,7 +137,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
   **`Transport`** = 字节载体（PTY / SSH shell 通道 / 串口）、
   **`Connection`** = 一条 SSH 连接。不要用 `Tab` / `Pane` / `View`，
   也不要用 `Workspace`（本仓库已指 Cargo workspace）。
-- 本节的**分层与命名**以 **ADR-0001 为准**（已接受）；**workspace 的物理位置**
+- 本节的**分层与命名**以 **ADR-0001 为准**（已定案）；**workspace 的物理位置**
   （root 在 `src-tauri/`、成员在其 `crates/` 下、仓库根不放 Rust 成员）以
   [`docs/adr/0004`](./docs/adr/0004-rust-workspace-under-src-tauri.md) 为准 ——
   它取代了 ADR-0001 的决策一。
@@ -362,7 +362,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline
 | `docs/bitwarden.md` | **Bitwarden 集成的展开**：许可证、条目字段、指纹语义 | 随上游版本与实测变 |
 | `docs/logging.md` | **日志怎么写**：消息形态（含反面例子）、字段词汇、级别 | 几乎不变 |
 | `docs/STATUS.md` | 现在在哪 | **每次会话覆盖写，不追加** |
-| `docs/adr/NNNN-*.md` | 为什么这样定 | **不可变**，只追加"被 NNNN 取代" |
+| `docs/adr/NNNN-*.md` | 为什么这样定 | **三态**：提议中 → 实现中（**可改**，每次改动记一行）→ 已定案（**不可变**，只能被新 ADR 取代）。判据见 `docs/adr/README.md` |
 | `docs/plans/TTxx-*.md` | 这次怎么做（一个工作项一个文件） | 进行中就地修改；**完成后整份移入 `docs/plans/archive/`** |
 
 - **不要把状态、进度、待办写进本文件** —— 那会让本文件每天都要改，
