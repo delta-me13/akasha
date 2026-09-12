@@ -68,7 +68,9 @@
   - `just watch`（bacon）提供秒级 `check`/`test`，**全程不启动 app**；
   - `src-tauri` 只留 IPC 编组，改它的频率越低，重编译成本越低。
 - **前端迭代不启动 app**：`just dev-web` + Tauri `mockIPC`，浏览器里跑 Vite HMR。
-- **`.taurignore`** 排除不该触发 Rust 重建的路径（日志、fixtures、临时产物）。
+- **没有 `.taurignore`，也不需要**：监听范围就是 `src-tauri/`（ADR-0004），成员天然被覆盖
+  （坑 #21）。真出现"改某个文件就白重建一次"时再建它，并在这里登记 ——
+  别照着一条并不存在的机制去排查。
 - 跨平台差异交给 CI 矩阵，本地不必反复跑全平台。
 
 ### ⚠️ 一类会被误判成 bug 的失败：写工作区之外被沙箱拒绝
@@ -365,7 +367,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline
 
 - **不要把状态、进度、待办写进本文件** —— 那会让本文件每天都要改，
   而后人无法分辨哪条还是现行规则。
-- **本文件已经偏长**（超过 300 行）。再要往里加东西时，先问："这是规则，还是参考资料？"
+- **本文件已经偏长。** 再要往里加东西时，先问："这是规则，还是参考资料？"
   参考资料（如命令的详细用法、排错步骤）应下沉到 `docs/` 并在本文件留一句指针。
 - 终端领域选型（PTY 库、VT 解析器、渲染器、序列化协议）**必须**有 ADR：
   这类决定日后被反复推翻的成本最高。
@@ -432,7 +434,8 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline
 
 `mise.toml` 是"不属于 Cargo.toml 的工具"的唯一来源。里面只有 `just`、`sccache`
 有 aqua 预编译配方，`bacon` / `cargo-nextest` / `cargo-deny` 必须显式写
-`"cargo:xxx"` 后端，首次安装会从源码编译（较慢）。
+`"cargo:xxx"` 后端，首次安装会从源码编译（较慢）；**node / pnpm 也钉在这里**
+（前端运行时与 CLI 工具收敛到同一个机制，`just tools` 一次装齐）。
 
 > 注意：这些工具目前已通过 `cargo install` 装在 `~/.cargo/bin`。`just tools`
 > 会用 mise 再装一份并让 shim 优先。若不想装两份，删掉 `mise.toml` 即可 ——
@@ -459,7 +462,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan) + test + deny-offline
   漏了会让 `crates/*` 的 check / clippy / test **完全不被执行**，而 `just ready` 照样全绿
   （坑 #20）。`cargo fmt --all` 是例外（`--all` 本来就指全 workspace）。
 
-**完整命令清单（全部 21 个配方 + 用途 + 典型工作流 + 排错）见
+**完整命令清单（全部配方 + 用途 + 典型工作流 + 排错）见
 [`docs/just.md`](./docs/just.md) §2。** 新增或改名配方时必须同步那里 ——
 `just docs-check` 强制要求：**每个配方都必须在 `docs/just.md` 里出现**，
 且两份文档提到的命令都必须真实存在。该校验已纳入 `just ready` 与 CI。
