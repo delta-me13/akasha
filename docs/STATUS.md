@@ -4,7 +4,7 @@
 > 会话结束前必须更新 —— 下一个会话（或另一个 agent）只读这个文件 + 相关 plan 就能接手，
 > 不需要回溯对话历史。规则见 [`docs/README.md`](./README.md)。
 
-**最后更新**：2026-09-11
+**最后更新**：2026-09-12
 
 ## 一句话
 
@@ -13,10 +13,13 @@
 看到输出；8 MB 灌下来界面不卡死，WebGL 丢了上下文会自动退到 canvas。
 下一步是 [`docs/plans/0204`](./plans/0204-exit-zero-residue.md)（真正退出零残留）。
 
-本轮顺带把 **`csp` 从 `null` 换成了最小放行**（`AGENTS.md` §4.3 的要求）：
-`csp` / `devCsp` 两处，只差 Vite HMR 用的 `ws://localhost:1420`。
+本轮补上了 **E2E 的入口**（[plan 0107](./plans/0107-e2e-entry.md)）：`just test-e2e`
+现在**自包含** —— 有 app 就复用、没有就自己起 Vite + app，跑完把自己起的那套收掉。
+六个 E2E 用例**全绿**（先前红的三处：探针污染、Wayland 截图、greet 缺参）。
+本机是 Wayland，窗口截图那条路径在这里**显式跳过并写明原因**，覆盖面交给 CI 矩阵
+（Linux/xvfb = X11 + Windows + macOS，三格跑同一条命令，**待首次推送实跑**）。
 
-`ROADMAP.md` 共 50 个条目（10 个阶段）：阶段 1 完成 5/6（剩 CI 实跑），
+`ROADMAP.md` 共 51 个条目（10 个阶段）：阶段 1 完成 5/7（CI 与 E2E 入口都待 CI 实跑），
 阶段 2 完成 **3/4**。**CI 仍未真正跑过** —— 仓库没有配置任何 git remote。
 
 ## 已验证为绿（命令 + 实际结果）
@@ -25,15 +28,17 @@
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + **gen-types-check** + docs-check） | 退出码 **0**，6/6 全绿 |
 | `just test` | **47 tests run: 47 passed**（`akasha` 13 + `akasha-core` 8 + `akasha-pty` 26） |
-| **终端 E2E** `VICTAURI_E2E=1 cargo test --test terminal_render -- --test-threads=1` | **2 passed**（真 app）：`renderer = webgl`、`canvas` 2 块、DOM 行容器 **0** 个；按键 → `akasha-probe-42` 出现在屏幕（求值结果，不是回显）；8 MB 分 **135–141 批**送达、排空哨兵出现、队列归零、**之后仍可交互**；`WEBGL_lose_context` 后退到 canvas **且屏幕内容保留** |
-| **会话 E2E** `VICTAURI_E2E=1 cargo test --test session_channel` | **1 passed**：`yes \| head -c 10000000` 的 11 179 553 字节分 170 批送达 JS，帧类型 = `ArrayBuffer`（JSON 帧 0 个） |
+| **E2E 入口** `just test-e2e`（自包含：起 Vite + app → 跑完 → 收尾） | 退出码 **0**，**6 个用例全绿**：`integration` 2 / `session_channel` 1 / `smoke` 3 / `terminal_render` 2。自起路径跑完 **零残留**（无 app 进程、1420 已释放）；已有 app 时打印「复用已在运行的 app」且**不动别人的进程**（实测：`just dev` 那套在跑完后仍活着） |
+| ↑ 终端判据 | `renderer = webgl`、`canvas` 2 块、DOM 行容器 **0** 个；按键 → `akasha-probe-42` 出现在屏幕（求值结果，不是回显）；8 MB 分 **133 批**送达、排空哨兵出现、队列归零、**之后仍可交互**；`WEBGL_lose_context` 后退到 canvas **且屏幕内容保留** |
+| ↑ 会话判据 | `yes \| head -c 10000000` 的 **10 496 866** 字节分 **158 批**送达 JS，帧类型 = `ArrayBuffer`（JSON 帧 **0** 个）；关闭后收到频道**收尾帧 1 个**，console 里**零 error** |
+| ↑ 平台差异 | 本机（Wayland）`smoke::screenshot_captures_window` **显式跳过**并打印原因（原生句柄是 Wayland surface，Victauri 只认 Xlib/Xcb/Win32/AppKit）；CI 矩阵在 X11 / Windows / macOS 上真跑这条 |
 | `pnpm build`（`tsc && vite build`） | 退出码 0；产物 839 kB / gzip 229 kB。生产包里**没有** mock 与探针（`模拟后端` / `mockIPC` / `__akashaTerminal` 命中数 **0**） |
 | **CSP** | `csp` 与 `devCsp` 均非 `null`；把 `devCsp` **临时设成与 `csp` 相同**也真跑过一轮 —— 渲染 / IPC / 8 MB 灌流全部照常、零 console error（即生产那条字符串是被跑过的） |
 | `just gen-types` / `just gen-types-check` | 生成 `src/ipc/bindings.ts`；比对通过（生成物已提交） |
 | `just bench`（criterion，配方 #20） | 52.7 GiB/s（容量路径）/ 14.1 ns 每批 / 9.64 GiB/s（**0201 的数字，本轮未复跑**） |
 | `just check` / `just clippy`（`--workspace --all-targets`） | 退出码 **0** |
 | `just deny-offline` | `bans ok, licenses ok, sources ok` |
-| `just docs-check` | 三部分全过（ROADMAP 50 条目在 3 行内 / plan 43 份 ≤200 行且索引一致） |
+| `just docs-check` | 三部分全过（ROADMAP **51** 条目在 3 行内 / plan **44** 份 ≤200 行且索引一致） |
 | `ast-grep scan` | 退出码 **0**；**四条**规则均已用正负例验证 |
 | `cargo tree -p akasha-core` / `-p akasha-pty` \| `grep -c tauri` | **0** / **0**（分层成立） |
 | `just dev` | 起窗口；Vite 1420；Victauri 发现文件写在 `/tmp/victauri/<pid>/` |
@@ -51,6 +56,11 @@
   [`docs/plans/0102`](./plans/0102-ci-platform-matrix.md) 的实施记录里。
   ⚠️ `checks-linux` 里那一条 `just ready` 会**编译整个 app**（`gen-types-check` 要
   `cargo run --bin gen-types`），CI 时长会明显变长 —— 首次实跑时留意。
+- **E2E 矩阵的三个格子**（Linux/xvfb + macOS + Windows，三格跑同一条 `just test-e2e`）——
+  同上：没有 remote 就没跑过。本地只覆盖到 **Linux/Wayland** 这一格，而 Wayland 下
+  截图的用例是**跳过**的（xvfb 给的是 X11，那格才会真跑）。首次推送要盯三件事：
+  Git Bash 下的判活 / 收尾（`tasklist` / `taskkill`）、macOS 上 Vite 的监听地址
+  （坑 #40）、以及 runner 上 `cargo run` 起的 GUI app 能否真的开出窗口。
 - **宿主 MCP 连不到沙箱内运行的 app**（私有 PID / 临时目录）。沙箱内可用，
   但**必须让 app 与测试在同一次 bash 调用里**（坑 #33）。
 - **`just dev-web` 的模拟后端没在真浏览器里点过**（本环境没有浏览器）：
@@ -58,7 +68,7 @@
 - **大流量下的 JS heap 数字没取**：只验到"8 MB 灌完队列归零、界面仍可交互"，
   plan 0203 里写的 `get_performance` 取数没做。
 
-## 当前基线（2026-09-11 实测，workspace root = `src-tauri/`）
+## 当前基线（2026-09-12 实测，workspace root = `src-tauri/`）
 
 | 项 | 实测结果 |
 |---|---|
@@ -67,7 +77,7 @@
 | 增量重编译 | 6.09–6.26s（纯逻辑 crate 改动同样触发） |
 | 出字节路径 | PTY read → 合批（64 KiB / 16 ms）→ `Channel<InvokeResponseBody>` **raw** → JS `ArrayBuffer` → `term.write` |
 | 前端渲染器 | **WebGL**（WebKitGTK + MESA 软件栈下仍拿到 WebGL2）；`canvas` 元素 2 块（纹理图集另算）；DOM 渲染器未启用（`.xterm-rows` 为 0） |
-| 大输出实测 | 11.18 MB / **170 批**（0202）；8 MB / **135–141 批**（0203，含渲染消费） |
+| 大输出实测 | 11.18 MB / 170 批（0202 当时）；**10.50 MB / 158 批**（2026-09-12 复测）；8 MB / **133 批**（含 xterm 消费） |
 | 前端产物 | 839 kB（gzip 229 kB）—— xterm + React 占绝对多数，暂不做代码分割 |
 | 合批参数 | `max_bytes` = 64 KiB、`max_delay` = 16 ms（`BatchPolicy::DEFAULT`，唯一来源） |
 | CSP | `csp`：`default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:`；`devCsp` 多一个 `ws://localhost:1420 http://localhost:1420` |
@@ -81,10 +91,26 @@
   （真正退出零残留：窗口关闭退出 / app 重载 / panic 三条路径）。
   ⚠️ 现在**没有**任何退出路径在关会话 —— 前端只在组件卸载时 `close_session`，
   而"收托盘"语义属于阶段 3，两条要一起想清楚（见 `AGENTS.md` §3.3）
-- [ ] **E2E 入口要能真跑起来**（独立工作项，未开 plan）：`just test-e2e` 不在 `ready` 里、
-  又要真 app，因此它的用例生成后就没人跑过；本轮查证时发现**三处先前就红**（坑 #36）
+- [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测 ——
+  `just test-e2e` 自包含、6 个用例全绿、自起路径零残留；剩 CI 三平台格子（同上面那条）
 
-### 本轮完成（plan 0203：前端 xterm + WebGL 渲染）
+### 本轮完成（plan 0107：E2E 入口）
+
+- [x] **探针修在源头**：频道的**收尾帧**（`{index, end:true}`）不是数据帧 ——
+  官方 `Channel` 先判 `'end' in raw` 再取 `raw.message`，而 0202 的探针少了这一跳，
+  于是抛 `TypeError` 留在 console 里，把同一 app 上后跑的
+  `smoke::ipc_integrity_passes`（no console errors）弄红。现在探针跳过非数据帧、
+  并断言**收尾帧确实到达**（实测 1 个）
+- [x] **`just test-e2e` 自包含**：有 app（`just dev`）就复用、没有就起 Vite + `cargo run`，
+  app 的 pid 从 discovery 目录拿（收 `cargo run` 的 pid 只会留孤儿），跑完 reap 到真退出
+- [x] **全部四个 E2E 目标都接进来**（先前只跑 `smoke` + `integration`，另外两个
+  "能跑但没人跑"），并加一条 guard：`tests/*.rs` 新增目标不接入 `E2E_TARGETS` 就红
+- [x] **平台能力显式表达**：Wayland 下截图用例跳过并**打印原因**（`--nocapture` 是必需的，
+  否则"跳过"和"跑过了"在摘要里长得一模一样）
+- [x] **CI 的 `e2e` job 换成三平台矩阵**，三格跑的**就是**本地这条 `just test-e2e`
+  （Linux 那格套 `xvfb-run`，于是 X11 的原生句柄路径真的被跑到）
+
+### 上一轮完成（plan 0203：前端 xterm + WebGL 渲染）
 
 - [x] **`src/terminal/surface.ts`**：xterm + `addon-webgl` / `addon-canvas` / `fit` /
   `search` / `serialize` / `unicode11`；渲染器 WebGL → canvas → **明确报错**三档
@@ -151,13 +177,8 @@
 
 ### 待实测 / 待确认
 
-- [ ] **CI 首次推送实跑**（现在还要看 `gen-types-check` 在 runner 上的耗时）
-- [ ] **`just test-e2e` 里的红用例**（坑 #36）：`smoke::screenshot_captures_window`
-      报 `unsupported window handle type on this platform`（全新 app 上也红，平台限制）；
-      `smoke::ipc_integrity_passes` 的 `no console errors` 被 0202 探针在 `{end:true}`
-      帧上抛的 `TypeError` 弄红（**同一次 app 里先跑过 `session_channel` 才出现** ——
-      全新 app 上这条是绿的；修法：探针收到非 message 帧要跳过）。
-      `integration::command_greet` 本轮已修
+- [ ] **CI 首次推送实跑**（现在还要看 `gen-types-check` 在 runner 上的耗时，
+      以及新扩的 **E2E 三平台矩阵** —— 本地只有 Linux/Wayland 那一格）
 - [ ] **前端渲染的内存表现**：8 MB 已不卡死，但**没有 heap 数字**（`get_performance` 未取）
 - [ ] **`just dev-web` 的模拟后端**没在真浏览器里点过（本环境没有浏览器）
 - [ ] **`bw` 对 `sshKey` 条目的非交互行为** —— 需要真实 vault
@@ -243,6 +264,15 @@
     归档时**两处一起改**，只改一处必红。
 38. **每加一个依赖就多一份要维护的放行**：CSP 的 `style-src 'unsafe-inline'` 就是
     xterm 自己注入 `<style>` 逼出来的 —— 加前端库时先想"它要不要新的 CSP 指令"。
+39. **"测试自己抛的异常"会污染同一 app 上后跑的用例**：raw 频道（0202）的探针把
+    **收尾帧** `{index, end:true}` 当成数据帧，在 `buf.byteLength` 上抛 `TypeError` ——
+    它不让自己红，却留在 webview 的 console 里，于是 `smoke::ipc_integrity_passes`
+    （no console errors）红了，而**单独跑时是绿的**（"先跑过 `session_channel` 才出现"）。
+    官方 `Channel` 的写法就是答案：先判 `'end' in raw` 再取 `raw.message`。
+    推论：探针不许往 console 里丢异常；跨用例共享一个 app 时这是**污染源**而不是细节。
+40. **vite 默认只监听 `[::1]:1420`**：拿 `127.0.0.1:1420` 探活会得到"Vite 起不来"的
+    假象（`ss -ltnp` 一看只有 IPv6）。端口探活一律写 `localhost`；`ls /tmp/victauri/<pid>/`
+    里的 `pid` 目录名**就是 app 的 pid** —— 收尾要收它，收 `cargo run` 的 pid 只会留孤儿。
 
 ## 环境
 

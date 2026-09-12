@@ -46,6 +46,9 @@
 - [~] **CI 平台矩阵**（Linux + Windows + macOS，GitHub Actions 一份）
       验收：三平台都能通过类型检查；Linux 另跑完整门禁与 E2E
       → [plan 0102](./docs/plans/0102-ci-platform-matrix.md)
+- [~] **E2E 入口能真跑起来**：`just test-e2e` 自包含（起 app → 跑完全部 E2E 目标 → 收尾）
+      验收：没有 app 在跑时它也退出码 0；新增的 E2E 目标不接入就红；CI 三平台待实跑
+      → [plan 0107](./docs/plans/0107-e2e-entry.md)
 - [x] `src-tauri/crates/akasha-core` 骨架：**`Session` 模型**（**必须先于任何后端**）
       验收：单测覆盖 `SessionId` 分配、关闭一个 `Session` 不影响另一个
       → [plan 0103](./docs/plans/archive/0103-core-session-model.md)

@@ -44,10 +44,114 @@ watch:
 test:
     cargo nextest run --workspace
 
-# E2E：需要 app 正在运行（根目录 `just dev`）。
-# 用 cargo test 而非 nextest —— 这些用例要求串行且依赖真实 app 进程。
+# E2E 用例清单（`tests/` 下的目标名）。**新增目标必须加进来** ——
+# 否则它会像坑 #36 那样"生成了但没人跑"，而 `just ready` 照样全绿。
+# 运行时这条清单由下面的 guard 与 `tests/*.rs` 对账。
+E2E_TARGETS := "smoke integration session_channel terminal_render"
+
+# E2E：真 app 上的验收（契约 + 交互）。用 cargo test 而非 nextest —— 用例共享一个真 app，必须串行。
+#
+# **自包含**：已经有 app 在跑（`just dev`）就复用它；没有就自己起一套，跑完收掉。
+#   * 前端必须走 Vite dev（1420）：`window.__akashaTerminal` 探针只在 dev 构建里注册，
+#     生产构建会把它整段摇掉；
+#   * 后端用 debug 构建（`cfg(dev)` → 走 `devUrl`）。
+# 为什么要自包含：这个配方不能假设"上一秒有别的进程在跑"（受限环境每次调用一个新
+# 命名空间，坑 #33），而"请你自己先起 app"的入口最后就是没人跑（坑 #36）。
+# 平台能力差异由用例自己**显式跳过并写明原因**（Wayland 截不了窗口等），
+# 多平台覆盖面交给 CI 矩阵（AGENTS.md §12）。
 test-e2e:
-    VICTAURI_E2E=1 cargo test --test smoke --test integration -- --test-threads=1
+    @set -uo pipefail; \
+    tmp="${TMPDIR:-${TEMP:-/tmp}}"; \
+    disc="$tmp/victauri"; \
+    vite_url="http://localhost:1420/"; \
+    vite_pid=""; app_pid=""; cargo_pid=""; \
+    pid_alive() { \
+      case "$(uname -s 2>/dev/null || echo unknown)" in \
+        MINGW*|MSYS*|CYGWIN*) tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1" ;; \
+        *) kill -0 "$1" 2>/dev/null ;; \
+      esac; \
+    }; \
+    stop() { \
+      case "$(uname -s 2>/dev/null || echo unknown)" in \
+        MINGW*|MSYS*|CYGWIN*) taskkill //F //PID "$1" >/dev/null 2>&1 || true ;; \
+        *) kill "$1" 2>/dev/null || true ;; \
+      esac; \
+    }; \
+    reap() { \
+      i=0; \
+      while pid_alive "$1" && [ "$i" -lt 20 ]; do sleep 0.5; i=$((i + 1)); done; \
+      return 0; \
+    }; \
+    cleanup() { \
+      [ -n "$cargo_pid" ] && { stop "$cargo_pid"; wait "$cargo_pid" 2>/dev/null; }; \
+      [ -n "$app_pid" ] && { stop "$app_pid"; reap "$app_pid"; }; \
+      [ -n "$vite_pid" ] && { stop "$vite_pid"; reap "$vite_pid"; }; \
+      return 0; \
+    }; \
+    trap cleanup EXIT; \
+    rc=0; \
+    for f in tests/*.rs; do \
+      [ -e "$f" ] || continue; \
+      t=$(basename "$f" .rs); \
+      case " {{E2E_TARGETS}} " in *" $t "*) ;; \
+        *) echo "❌ tests/$t.rs 没接进 test-e2e —— 加进 E2E_TARGETS，或说明它为什么不需要真 app"; rc=1 ;; \
+      esac; \
+    done; \
+    [ "$rc" = 0 ] || exit 1; \
+    app_port() { \
+      [ -d "$disc" ] || return 1; \
+      for d in "$disc"/*/; do \
+        [ -f "${d}port" ] || continue; \
+        p=${d%/}; p=${p##*/}; \
+        case "$p" in ''|*[!0-9]*) continue ;; esac; \
+        pid_alive "$p" || continue; \
+        port=$(cat "${d}port" 2>/dev/null) || continue; \
+        curl -s -o /dev/null -m 2 "http://127.0.0.1:${port}/" || continue; \
+        printf '%s' "$port"; return 0; \
+      done; \
+      return 1; \
+    }; \
+    if app_port >/dev/null 2>&1; then \
+      echo "→ 复用已在运行的 app（不启动、也不收尾）"; \
+    else \
+      if curl -s -o /dev/null -m 2 "$vite_url"; then \
+        echo "→ 复用已在运行的 Vite（1420）"; \
+      else \
+        echo "→ 起 Vite（1420）"; \
+        ( cd .. && exec ./node_modules/.bin/vite ) >"$tmp/akasha-e2e-vite.log" 2>&1 & \
+        vite_pid=$!; \
+        for _ in $(seq 1 60); do curl -s -o /dev/null -m 1 "$vite_url" && break; sleep 1; done; \
+        if ! curl -s -o /dev/null -m 2 "$vite_url"; then \
+          echo "❌ Vite 起不来（日志：$tmp/akasha-e2e-vite.log）"; exit 1; \
+        fi; \
+      fi; \
+      cargo build --package akasha || exit 1; \
+      before=$(ls "$disc" 2>/dev/null | tr '\n' ' '); \
+      echo "→ 起 app（debug 构建，走 devUrl）"; \
+      cargo run --quiet --package akasha >"$tmp/akasha-e2e-app.log" 2>&1 & \
+      cargo_pid=$!; \
+      for _ in $(seq 1 120); do \
+        for d in "$disc"/*/; do \
+          [ -f "${d}port" ] || continue; \
+          p=${d%/}; p=${p##*/}; \
+          case " $before " in *" $p "*) continue ;; esac; \
+          app_pid=$p; break; \
+        done; \
+        [ -n "$app_pid" ] && break; \
+        pid_alive "$cargo_pid" || break; \
+        sleep 1; \
+      done; \
+      if [ -z "$app_pid" ]; then \
+        echo "❌ app 没起来（日志：$tmp/akasha-e2e-app.log）"; tail -n 20 "$tmp/akasha-e2e-app.log"; exit 1; \
+      fi; \
+    fi; \
+    args=""; \
+    for t in {{E2E_TARGETS}}; do args="$args --test $t"; done; \
+    VICTAURI_E2E=1 cargo test --no-fail-fast $args -- --test-threads=1 --nocapture || rc=1; \
+    if [ "$rc" != 0 ] && [ -f "$tmp/akasha-e2e-app.log" ]; then \
+      echo "—— app 日志尾部（$tmp/akasha-e2e-app.log）——"; tail -n 20 "$tmp/akasha-e2e-app.log"; \
+    fi; \
+    exit $rc
 
 # ── 性能基线 ────────────────────────────────────────────────────────────────
 

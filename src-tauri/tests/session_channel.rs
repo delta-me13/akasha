@@ -34,12 +34,23 @@ const OPEN_AND_WATCH: &str = r#"
     // 帧的**类型**也要盯：raw 通道应当收到二进制。若退化成 `number[]`
     // （tauri#13138 那种回归），字节数依然"对"，但整条路已经变成 JSON 序列化 ——
     // 只数字节数是抓不到这件事的。
-    jsonFrames: 0, frameType: null,
+    jsonFrames: 0, frameType: null, endFrames: 0,
   };
   window.__akashaProbe = probe;
 
   const id = internals.transformCallback((raw) => {
+    // ⚠️ 频道的收尾帧是 `{index, end:true}`，**没有 `message`** —— 官方
+    // `Channel` 正是先判 `'end' in raw` 再取 `raw.message`（@tauri-apps/api/core.js）。
+    // 少了这一跳，收尾帧会在 `buf.byteLength` 上抛 `TypeError`。
+    // 它不会让本用例红（本用例不看 console），但会把异常**留在 webview 的 console 里**，
+    // 于是同一个 app 上后跑的 `smoke::ipc_integrity_passes`（no console errors）变红 ——
+    // 用例之间的污染。源头在这里：探针不许往 console 里丢异常。
+    if (raw === null || typeof raw !== "object" || "end" in raw) {
+      probe.endFrames += 1;
+      return;
+    }
     const buf = raw.message;
+    if (buf === null || buf === undefined) return;
     if (buf instanceof ArrayBuffer) probe.frameType = "ArrayBuffer";
     else if (ArrayBuffer.isView(buf)) probe.frameType = buf.constructor.name;
     else { probe.frameType = typeof buf; probe.jsonFrames += 1; }
@@ -227,5 +238,33 @@ async fn raw_channel_carries_ten_megabytes() {
             .map(|v| v.is_null())
             .unwrap_or(false),
         "整条路径上不该有任何错误"
+    );
+
+    // 7. 结束帧必须到达，而且探针**认得它**。
+    //    这不是内部细节：官方 `Channel` 就是靠这个 `{end:true}` 帧把回调注销掉的
+    //    （`cleanupCallback`），所以它是线上格式的一部分。同时它也是坑 #39 的哨兵 ——
+    //    收尾帧被当成数据帧解，就会在 console 里留下一个 TypeError。
+    let ended = client
+        .wait_for_expression(
+            "window.__akashaProbe.endFrames >= 1",
+            None,
+            Some(20_000),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        ended.get("ok").and_then(|v| v.as_bool()),
+        Some(true),
+        "关闭会话后没有收到频道的结束帧：{ended}"
+    );
+    eprintln!(
+        "✅ 收尾帧 {} 个；console 里没有异常留下",
+        number(
+            &client
+                .eval_js("window.__akashaProbe.endFrames")
+                .await
+                .unwrap()
+        )
     );
 }
