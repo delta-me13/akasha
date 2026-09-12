@@ -86,7 +86,7 @@
 | `just check` / `just clippy`（`--workspace --all-targets`） | 退出码 **0** |
 | `just deny-offline` | `bans ok, licenses ok, sources ok`。本轮**没有新增要放行的包**：`tauri-plugin-single-instance` 拉的 `windows-sys 0.60` 只进 Windows 目标的图，`zbus` 早已在树里（许可证放行仍是托盘那轮的 `ISC` 一条） |
 | `just docs-check` | 三部分全过（ROADMAP 条目在 3 行内 / plan ≤200 行且索引一致） |
-| `ast-grep scan` | 退出码 **0**；**四条**规则均已用正负例验证（本轮未改规则） |
+| `ast-grep scan` | 退出码 **0**；**五条**规则均已用正负例验证（本轮未改规则） |
 | `cargo tree -p akasha-core` \| `grep -c tauri` | **0**（分层成立；单实例与配置载体都只在 app 包里） |
 | `just bench`（criterion） | 52.7 GiB/s / 14.1 ns 每批 / 9.64 GiB/s（**0201 的数字，本轮未复跑**） |
 
@@ -161,7 +161,28 @@
   **13 个用例全绿**（含两段配置）；剩 CI 三平台格子（同上）
 - [ ] **正式 UI**：等设计稿（见上面「UI 现状」）—— 没有验收标准，故**不进 ROADMAP**
 
-### 本轮完成（plan 0304：单实例）
+### 本轮完成（文档审计：让文档对得上现状）
+
+进阶段 4 之前把文档整体核了一遍（逐条对照代码 / justfile / 目录，不看措辞看事实）：
+
+- [x] `AGENTS.md`：删掉指向**并不存在**的 `.taurignore` 的规则（这个文件从未进过仓库）；
+      "行数""配方数"这类会漂的数字不再写进正文
+- [x] 配方数三处分叉（`README.md` 20 / `AGENTS.md` 21 / `just --list` 22，而
+      `docs/just.md` §2 表格是 21 行）→ 正文不写数字，`docs/just.md` §2 说明
+      `default` 为何不上表（`docs-check` 的正向检查本来就跳过它）
+- [x] `docs/logging.md` §2 的字段词汇表**漏掉了一半在用字段**（`window` /
+      `close_behavior` / `close_action` / `path` / `activations` / `step`）→ 补齐，
+      并加一条"一个概念一个字段名"；`single_instance.rs` 里那个 `label` 随之统一为 `window`
+      （同一个"哪个窗口"，`tray.rs` / `lifecycle.rs` 用的是 `window`）
+- [x] `docs/adr/README.md`：队列标题（"原定 3 份 + 1 份"→ 实际 5 个编号）、
+      `docs/plans/0001` 这条**不存在的路径**、"什么时候写：**不是现在**"（0002 现在到了）
+- [x] `docs/scope.md`：`no-ui-vocab-in-types` 早已落地却仍写作"计划中的约束"；
+      单实例从"需要显式处理"改成已定案（并写明"唤起"必须包含显示）
+- [ ] **未处理**：`scope.md` §2 / §3 把**端口敲门**列为 ssh 后端 v1 能力，而
+      `ROADMAP.md` 与 `docs/plans/` 里**没有任何对应条目** —— 补条目，还是把这条能力
+      降级为 `later`，是个产品决定，见下
+
+### 上一轮完成（plan 0304：单实例）
 
 - [x] 接入 `tauri-plugin-single-instance 2.4.4`，注册在**第一个插件位**（插件的 setup 在 `build()`
   里按注册顺序跑 —— 排在前面 = 第二个实例在别的插件的 setup 之前就退掉）
@@ -179,17 +200,9 @@
   而那会把托盘菜单的"退出"一起拦掉（坑 #65）
 - [ ] **未覆盖**：Windows / macOS 上的单实例未验；CI 的 Linux E2E 上这条用例跳过（xvfb 没有会话总线）
 
-### 上一轮完成（plan 0302 + 0303：点叉收托盘 + 关闭行为可配置）
-
-- [x] 判据下沉到 `akasha-core::CloseAction::decide`（**配置 × 托盘可用性 → 隐藏 / 退出**）；
-  `CloseRequested` → **先 `hide()`、成功才 `prevent_close()`**；**不写 `prevent_exit`**（坑 #65）
-- [x] 配置载体 `<数据目录>/config.json`（便携目录优先）；**只读不写**；坏文件 / 非法值 /
-  拼错字段一律回默认值 + 一条日志
-- [x] E2E `window_close`；`exit_residue` 的刺激改为配置驱动，配方自起分支分**两段**
-
 ### 更早
 
-- [x] **plan 0301 / 0305 / 0306 / 0201–0205 / 0107 / CI 去 Gitea 化 + 布局收口**
+- [x] **plan 0301 / 0302 / 0303 / 0305 / 0306 / 0201–0205 / 0107 / CI 去 Gitea 化 + 布局收口**
   （见 git 历史与各自的 `docs/plans/archive/`）
 
 ## 结构现状（容易找错地方）
@@ -219,7 +232,8 @@
   完成的 plan **整份移入 `docs/plans/archive/`**（不拼接、不追加）。
   规范之外的两份"展开"：`docs/logging.md`（日志形态）、`docs/just.md`（命令清单）。
 - 命令入口分两处：项目级在根 `justfile`，crate 级在 `src-tauri/justfile`。
-  **权威清单在 `docs/just.md` §2**（21 个配方），由 `just docs-check` 强制同步。
+  **权威清单在 `docs/just.md` §2**，由 `just docs-check` 强制同步（正文不写配方数量 ——
+  它是那种一定会漂的数字）。
 
 ## 踩过的坑（避免重复踩）
 
@@ -353,3 +367,9 @@
     `canonicalize` 直接 `NotFound`。拿它做相等比较的结果是"一个 app 实例都找不到"
     （本轮 E2E 就这么红的，而且报错完全不提这件事）。正解：**比"父目录 + 文件名"，文件名先
     去掉 ` (deleted)`**；要判断"哪个进程是它"就别比完整路径。
+69. **文档里的"事实"没人核对就会自己长大**：这一轮专门核了一遍，查出三处**都不是写代码时
+    撞得到**的失真 —— `AGENTS.md` 要求用 `.taurignore`（**这个文件从未存在过**）；
+    同一件事的数字在三处各不相同（配方数 `README.md` 20 / `AGENTS.md` 21 / `just --list` 22）；
+    `logging.md` 的字段词汇表漏掉了一半在用的字段（于是 `label` 与 `window` 长期并存）。
+    共同点：**门禁只查"索引对不对、命令在不在"，查不了"这句话还成不成立"** ——
+    所以进新阶段之前要专门去核一遍，而**正文里不写数字**能消掉最常见的那一类。

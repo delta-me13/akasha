@@ -33,5 +33,5 @@ cargo 命令一律走 `just`（根 `justfile` 转发到 `src-tauri/justfile`，�
 | `just watch` | bacon 秒级反馈循环，不启动 app |
 | `just doctor` | 确认 Victauri 连的是本项目，而不是别的实例 |
 
-完整清单（20 个配方 + 典型工作流 + 排错）见 [`docs/just.md`](./docs/just.md) §2；
+完整清单（全部配方 + 典型工作流 + 排错）见 [`docs/just.md`](./docs/just.md) §2；
 环境前置（系统库、工具链）见 [`AGENTS.md`](./AGENTS.md) §10 与 `just syscheck`。
