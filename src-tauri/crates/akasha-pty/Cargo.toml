@@ -16,6 +16,11 @@ publish = false
 portable-pty = "0.9.0"
 # AGENTS.md §3.4：错误用 thiserror 分域定义。
 thiserror = "2"
+# 收掉整个会话（`teardown` 模块）要发 SIGKILL，而 workspace 的 `unsafe_code = "forbid"`
+# 不允许我们自己写 `unsafe { libc::kill(…) }` —— 走 rustix 的**安全**封装。
+# 它本来就在依赖树里（同一个版本），所以不新增下载，只是升格为直接依赖。
+# 许可证 Apache-2.0 WITH LLVM-exception OR MIT，在 deny.toml 的 allow 列表内。
+rustix = { version = "1", features = ["process"] }
 
 [dev-dependencies]
 # 吞吐基线（`just bench`）。**不新增依赖**：workspace 里本来就有它 —— `akasha` 的

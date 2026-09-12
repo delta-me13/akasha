@@ -13,6 +13,9 @@
 //!    与 [`std::io::Read`]，不出现 `String` / `&str`。
 //! 3. **shutdown 必须显式 kill + wait 收尸**，`drop` 不能代替（`AGENTS.md` §3.3）。
 //!    所以本 crate **没有** `Drop` 实现 —— 那会让"忘记收尸"变成静默成功。
+//!    对本地 PTY 还多一层：只 kill 那个 shell 是不够的，会话里**忽略 SIGHUP** 的进程
+//!    （`nohup` / `trap "" HUP` / 守护化的）会活下来 —— [`PtyTransport::shutdown`]
+//!    会先把**整个会话**收掉再收尸，理由与平台差异见 `teardown` 模块（plan 0204）。
 //!
 //! 本 crate **不含**：IPC（plan 0202）、前端（阶段 2）、`Session` 模型（已在 `akasha-core`）。
 //! 它只管"字节怎么进出载体"，外加把输出合批成 [`Batch`]（[`spawn_batcher`]）。
@@ -30,6 +33,7 @@
 mod batcher;
 mod pty;
 mod shell;
+mod teardown;
 pub mod testing;
 mod transport;
 

@@ -116,12 +116,24 @@ impl Transport for PtyTransport {
             return Ok(Some(status.clone()));
         }
 
+        // 顺序是有理由的，别换：
+        //
+        // 1. **先收整个会话，再收子进程** —— `kill_session` 靠"sid == 首进程 pid"来认会话，
+        //    而 pid 只有在首进程**还活着**时才不会被复用成别的会话（见 `crate::teardown`）。
+        // 2. 会话里那些**忽略 SIGHUP** 的进程（`nohup` / `trap "" HUP` / 守护化的）不会被
+        //    `Child::kill()` 收走，也不会被内核的 hangup 收走 —— 只有点名 SIGKILL 才行。
+        //    这正是 plan 0204 实测到的残留。
+        // 3. 这一步**不能省**：不 wait 就会留下僵尸进程。
+        if let Some(pid) = self.child.process_id() {
+            crate::teardown::kill_session(pid);
+        }
+
         // kill 的错误**不外抛**：它唯一现实的失败原因是"进程恰好在这一刻已经没了"，
         // 而那正是我们想要的结局 —— 真实结局由紧随其后的 wait() 给出。
         // 注意这不是"用 drop 兜底"：显式 wait 就在下一行。
         let _ = self.child.kill();
 
-        // 收尸。**这一步不能省**：不 wait 就会留下僵尸进程。
+        // 收尸。
         let raw = self.child.wait()?;
         let status = ExitStatus::from(raw);
         self.status = Some(status.clone());
@@ -276,6 +288,63 @@ mod tests {
         assert!(
             matches!(transport.write(b"x"), Err(TransportError::Closed)),
             "关闭之后再写必须是 Closed，不能静默丢弃"
+        );
+    }
+
+    /// 在**截止时间**内等 `/proc/<pid>` 变成"在"或"不在"。
+    fn proc_appears(pid: u32, exists: bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if std::path::Path::new(&format!("/proc/{pid}")).exists() == exists {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// `AKPROBE=<pid>` 里的 pid（屏幕上第一处**带数字**的那个）。
+    fn parse_probe_pid(seen: &[u8]) -> Option<u32> {
+        let text = String::from_utf8_lossy(seen);
+        let (_, rest) = text.rsplit_once("AKPROBE=")?;
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    }
+
+    /// **忽略 SIGHUP 的进程也必须被收掉** —— 这是 plan 0204 的核心判据。
+    ///
+    /// 为什么这条用例能分辨"只 kill shell"与"收掉整个会话"：探针明确忽略 SIGHUP，
+    /// 于是内核在 master 关闭时发的那轮 SIGHUP 对它无效，`Child::kill()` 也够不着它
+    /// （它不是 shell 本身）。只有点名 SIGKILL 才收得走。
+    ///
+    /// `set -m` 打开作业控制，让这个作业拿到**自己的进程组** —— 这样被验的就是
+    /// "认 session 去收"而不是顺手的 `killpg`。
+    #[test]
+    fn shutdown_collects_processes_that_ignore_sighup() {
+        let mut transport = sh(TerminalSize::DEFAULT);
+        let output = transport.output_stream().expect("第一次取输出流必须成功");
+
+        // 探针写成 `printf 'AKPROBE%s\n' "=$!"`：**回显**里只有 `AKPROBE%s`，
+        // 所以下面按 `AKPROBE=` 找，命中的一定是 shell 求值后的输出（同 `real_shell_…` 用例）。
+        transport
+            .write(b"set -m; (trap \"\" HUP; exec sleep 300) & printf 'AKPROBE%s\\n' \"=$!\"\n")
+            .expect("write 失败");
+
+        let seen = read_until(output, b"AKPROBE=", Duration::from_secs(15));
+        let pid = parse_probe_pid(&seen)
+            .unwrap_or_else(|| panic!("没读到探针 pid：{:?}", String::from_utf8_lossy(&seen)));
+        assert!(
+            proc_appears(pid, true),
+            "探针 {pid} 应当还活着（否则这条用例什么都没验）"
+        );
+
+        transport.shutdown().expect("shutdown 失败");
+
+        assert!(
+            proc_appears(pid, false),
+            "忽略 SIGHUP 的子进程 {pid} 必须被收掉 —— 只 kill 那个 shell 是收不走的"
         );
     }
 }
