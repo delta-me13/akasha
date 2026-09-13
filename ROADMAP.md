@@ -173,9 +173,9 @@
 - [x] 隧道实体（独立于终端 `Session`）+ 状态机
       验收：五态可观测；状态变化发事件
       → [plan 0601](./docs/plans/archive/0601-tunnel-entity-state-machine.md)
-- [ ] 本地转发 `-L`（复用阶段 5 的 `direct-tcpip`）
+- [x] 本地转发 `-L`（复用阶段 5 的 `direct-tcpip`）
       验收：转发端口可访问远端服务
-      → [plan 0602](./docs/plans/0602-local-forward.md)
+      → [plan 0602](./docs/plans/archive/0602-local-forward.md)
 - [ ] 动态转发 `-D`（本地 SOCKS5 服务端）
       验收：配置 SOCKS5 代理后能访问远端网络
       → [plan 0603](./docs/plans/0603-dynamic-forward-socks5.md)

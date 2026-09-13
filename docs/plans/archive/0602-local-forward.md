@@ -2,7 +2,7 @@
 
 - **关联**：ROADMAP 阶段 6 ·「本地转发 `-L`（复用阶段 5 的 `direct-tcpip`）」
 - **前置**：plan 0601（隧道实体与状态机）· plan 0505（原语）
-- **状态**：进行中
+- **状态**：已完成（2026-09-13）
 
 ## 目标
 
@@ -103,3 +103,35 @@ pnpm build         # 预期：退出码 0
   （ADR-0003 §10 第 4 条）—— 改名要连同前端与生成物一起改。
 
 ## 实施记录（边做边追加）
+
+- **2026-09-13 展开**：骨架 → 进行中（补齐步骤、先定死的三件事与可粘贴的验收命令）。
+- **2026-09-13 落地**：`akasha-ssh` 新增 `relay` 模块 —— `LocalListener::bind`（先绑，
+  空绑定地址明确拒绝）+ `LocalListener::serve`（在**给定** runtime 上起任务：接受循环 +
+  每条入站连接一条 `direct_tcpip` 通道 + `copy_bidirectional`）+ `LocalForward`（`shutdown`
+  发信号即返回，收尾在 runtime 上做：停监听 → abort 并在途任务 → `Arc::try_unwrap` 后
+  **礼貌断开**连接）+ `ForwardTarget`；新增 `SshError::Listen`（与 `Connect` 分开：
+  "本机端口没拿到"与"对端连不上"的下一步动作不同）。app 侧 `Tunnel.connection` →
+  `Tunnel.forward`，`tunnel_open` 改为**先绑定、后连接**，`TunnelError` 新增 `Bind` 与
+  `Unsupported` 两档；probe `tunnels` 每条多一个 `bind`；前端补两档文案。
+- **门禁实测**：`just ready` **6/6**（fmt-check / lint / test / deny-offline /
+  gen-types-check / docs-check）；`just test` **300 passed**（akasha **69** + akasha-core 27 +
+  akasha-pty 39 + **akasha-ssh 38** + akasha-store 127）；`just test-e2e` **退出码 0**
+  （**23 个用例**，新增 `tunnel_local_forward` **1.05 s**）；`pnpm build` 退出码 0
+  （859.31 kB / gzip 236.48 kB）；`Cargo.lock` **零增量**（本 plan 未新增依赖）。
+- **真实 app 上的判据**（`tunnel_local_forward` E2E，测试进程内一台 SSH 服务端 + 一个回声服务端）：
+  界面打开那条规则 → 答完主机密钥与口令 → probe 报 `bind = 127.0.0.1:<端口>` →
+  从测试进程连该端口写一行、读回同一行 → **对端记到恰好 1 条 `direct-tcpip` 请求**
+  （`host` = 只有它认识的 `.invalid` 名字、`port` 一致）、中继字节数 `> 0` →
+  同一端口再连一次 → 请求数变 2 → 端口被占的那条：界面上「本地监听 127.0.0.1:38725 绑定失败：
+  地址已在使用 (os error 98)」且 **probe 里没有它**（没登记成）→ 点停止 → 该端口不再接受连接、
+  `sessions` 的 `live`/`registered` 相等（1/1）、**服务端看到 1 条连接断开**。
+- **计划之外的发现**（已写进 `docs/STATUS.md` 的已知问题）：
+  1. **面板的规则表是挂载时读一次的**，而 `.tab-new-tunnel` 是**切换** —— 两个 E2E 目标共用一个
+     app，于是"上一个目标留下的打开状态"会把面板关闭，表现为"面板列不出规则"（超时）。
+     正解：两条隧道用例共用 `support::open_tunnel_panel`（先卸下再挂上，顺带重新读池子）。
+  2. **`credential_protection` 在 `cargo test` 下随机红**（同进程并行两测试时约一半概率）：
+     并发的那个测试线程结束会带走它的**线程栈守卫页**（一个 `---p` 映射），使进程级
+     `---p` 判据少算 4 kB。`just test` 用 nextest（一进程一测试）因此不触发 ——
+     门禁不受影响，判据如何改成"按 `VmFlags` 归属"记在已知问题里。
+- **一处刻意未做**：`重连中(n)` 仍不由真实路径产生（驱动它的循环是 plan 0605）；
+  停止仍是**同步命令 + 异步收尾**（要观察收尾的地方看对端的连接计数）。

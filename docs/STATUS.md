@@ -10,9 +10,10 @@
 
 **阶段 2「端到端最小终端」5/5 完成**；**阶段 3「托盘与应用生命周期」6/6 完成**；
 **阶段 4「存储与凭据池」9/9 完成**；**阶段 5「SSH 栈」6/6 完成**；
-**阶段 6「SSH 端口转发」1/6**（**0601 = 隧道实体 + 状态机**：五态、事件、手动重试已落地 ——
-它建立并持有真实的 SSH 连接，**但还不转发任何字节**）；
-下一步是 **阶段 6 plan 0602（本地转发 `-L`）**。
+**阶段 6「SSH 端口转发」2/6**（**0601 = 隧道实体 + 状态机**：五态、事件、手动重试；
+**0602 = 本地转发 `-L`**：本地监听 + 每条入站连接一条 `direct-tcpip` 通道 ——
+三种转发机制里只有 `-L` 通了）；
+下一步是 **阶段 6 plan 0603（动态转发 `-D`，本地 SOCKS5 服务端）**。
 
 阶段 4 的八项（每项一句）：**SQLCipher 加密库可打开**（0401）、**口令只从一条路径进入且可真正验证**
 （0402 —— 拆分"打开"与"新建"；此前在文件不存在的路径上**任何口令都能打开**）、
@@ -44,26 +45,30 @@
 导入的 `ProxyJump` 已可用：E2E 使用**导入得到的条目**连通了仅对跳板机可见的主机。
 ⚠️ 私钥**不导入**：`IdentityFile` 只令条目落成"公钥认证 + 密钥在 ssh-agent 中"。
 
-### 阶段 6 的形状（plan 0601 已落地的那一半）
+### 阶段 6 的形状（0601 的实体 + 0602 的 `-L` 已落地）
 
 **隧道是一个独立的 `Session`**（ADR-0003 D5 / D6，`scope.md` §2.2）：一条转发规则一个
-`Session`，它自持有一条连接。plan 0601 落地的是**实体与状态机**，不是转发 ——
-三种转发机制（`-L` / `-D` / `-R`）分别在 plan 0602 / 0603 / 0604。
+`Session`，它自持有一条连接。三种转发机制（`-L` / `-D` / `-R`）分别在 plan 0602 / 0603 / 0604 ——
+**只有 `-L` 已落地**，另两个方向的规则在命令边界上明确拒绝（`TunnelError::Unsupported`）。
 
 | 事 | 落在哪 |
 |---|---|
 | 五态与转移表 | `akasha-core::TunnelState`（纯逻辑、零 Tauri；同态与"重连直达 `已连接`"都是非法边） |
 | 实体表与注册表 | `src-tauri/src/session.rs` 的 `Sessions` —— **同一张注册表、同一把锁**（D6），不另立第二份 |
 | 连接 | `SshConnection`（D9 的类型：已认证、**没有通道**）+ 同步门面 `connect_via`（它会持有自己的跳板链） |
+| **转发（`-L`）** | `akasha-ssh::relay`：`LocalListener`（**先绑**）→ `LocalForward`（接受循环 + 每条入站连接一条 `direct_tcpip` 通道 + `copy_bidirectional`） |
 | 命令 | `tunnel_open(forwardId)` · `tunnel_retry(handle)` · `tunnel_stop(handle)` · 只读 `vault_forwards()` |
 | 事件 | `tunnel_state`（载荷 `{handle, state, attempt}`）—— 按 `SessionId` 路由 |
-| probe | `tunnels` → `[{handle, ruleId, name, state, attempt}]`（与托盘菜单同源） |
+| probe | `tunnels` → `[{handle, ruleId, name, state, attempt, bind}]`（与托盘菜单同源；`bind` = 实际监听地址） |
+| 失败分档 | `TunnelError`：`locked` / `noSuchForward` / `noSuchHost` / `notATunnel` / **`unsupported`（方向不是 `-L`）** / **`bind`（端口没拿到）** / `failed {kind,message}` / `transition` / `internal` |
 
 ⚠️ **`重连中(n)` 目前不由真实路径产生**：驱动它的重连循环是 plan 0605。
-⚠️ **停止 = 停止 + 注销**：`tunnel_stop` 先把状态推到 `已停止`（发事件），再把那个 `Session`
-摘掉 —— D5 的"关闭即断开"与"已停止"这一态因此不冲突：用户看到它消失，事件流里留着那一步。
-⚠️ **`target_host` / `target_port` 在 0601 不参与连接**：隧道只连**规则所属主机**
-（`forwards.host_id`）。它们要等 plan 0602 的 `-L` —— 因此"连不上"的构造点在主机那一层。
+⚠️ **停止 = 停止 + 注销**：`tunnel_stop` 先把状态推到 `已停止`（发事件），再摘掉那个 `Session`
+并让转发收尾 —— 收尾（停监听 → 收在途连接 → 礼貌断开连接）**在 runtime 上做**，命令发完信号即返回。
+⚠️ **先绑定、后连接**：端口被占用是本类功能最常见的一类失败，它必须在"用户答凭据"**之前**失败 ——
+绑定失败 = **没登记成**（`Err`），与"登记了但连不上"（`Ok(TunnelAttempt{failure})`，仍在册可重试）分开。
+⚠️ **`target_host` / `target_port` 从 plan 0602 起参与**：它们被原样送进 `direct_tcpip`，
+由**对端**解析（在本地解析等于绕开跳板机）。
 
 ### 阶段 5 之前那些跨阶段的结论（还在生效）
 
@@ -122,7 +127,12 @@
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
-| `just test` | **292 tests run: 292 passed**（`akasha` **68** + `akasha-core` **27** + `akasha-pty` 39 + `akasha-ssh` **31** + `akasha-store` **127**）。⚠️ `akasha` 的 68 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回 —— 其中 `portable` 3 条、`ssh_session` 1 条、`ssh_jump` 1 条、`ssh_config_import` 1 条、**`tunnel_state` 1 条**） |
+| `just test` | **300 tests run: 300 passed**（`akasha` **69** + `akasha-core` **27** + `akasha-pty` 39 + `akasha-ssh` **38** + `akasha-store` **127**）。⚠️ `akasha` 的 69 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回 —— 其中 `portable` 3 条、`ssh_session` 1 条、`ssh_jump` 1 条、`ssh_config_import` 1 条、`tunnel_state` 1 条、**`tunnel_local_forward` 1 条**） |
+| ↑ **判据：转发端口可访问远端服务**（plan 0602） | ✅ `tunnel_local_forward` E2E（真实 app + **测试进程内**一台 SSH 服务端与一个回声服务端，**1.05 s**）：界面打开池里那条规则 → 主机密钥与口令各答一轮 → probe 报 `bind = 127.0.0.1:<规则端口>` → 从测试进程连该端口**写一行、读回同一行**（回声服务答的） |
+| ↑ **走的是 `direct-tcpip`，且每条入站连接各开一条通道**（plan 0602） | ✅ **对端记到恰好 1 条 `direct-tcpip` 请求**（`host` = `akasha-local-forward.invalid`、`port` = 回声服务端口，**本机解析不出这个名字** —— 用例自行解析一次并断言失败）、中继字节数 `> 0`；同一端口再连一次 → 请求数变 **2** |
+| ↑ **端口被占用的报错可读**（plan 0602） | ✅ 规则指向一个被本进程占着的端口：界面显示「本地监听 127.0.0.1:38725 绑定失败：地址已在使用 (os error 98)」，且 probe 里**没有**它（**没登记成** —— 重试也不会好，用户要动的是端口） |
+| ↑ **停止后端口释放、连接断开**（plan 0602） | ✅ 点"停止" → 该端口**不再接受连接**（连接被拒，不是超时）、`sessions` 的 `live`/`registered` = **1/1**、**服务端看到 1 条连接断开** |
+| ↑ **转发本身是库内可测的**（plan 0602，crate 层） | ✅ `akasha-ssh` 新增 **7 条**（`relay` 4 + `local_forward` 3）：端口 0 由内核分配并报回实际地址 / 端口被占用报 `Listen` 且带地址与原话 / 空绑定地址被拒 / 正例（本地端口 → 对端中继 → 回声服务，请求数 1→2、中继字节数 `> 0`）/ 停止后端口释放 + 连接断开 / **负控**（没人绑的端口连不上、被占端口是 `Listen` 而不是 `Connect`） |
 | ↑ **判据：五态可观测 + 状态变化发事件**（plan 0601） | ✅ `tunnel_state` E2E（真实 app + **测试进程内**一台服务端，**0.90 s**）：界面点开隧道面板 → 打开池里那条能连通的 → 主机密钥与口令各答一轮 → probe `tunnels` 的 `state = connected`、界面上 `data-tunnel-state="connected"`、事件序列 `["connecting","connected"]` 且 `handle` 与 probe 一致 |
 | ↑ **`→ 已停止`，以及"连接真的断了"**（plan 0601） | ✅ 点"停止" → probe 里那条消失、`sessions` 的 `live`/`registered` = **1/1**、**服务端看到 1 条连接断开**（本轮新增的连接级计数 `connections_closed` —— 隧道没有通道，`sessions_closed` 在这条路上恒为 0）、事件里有 `stopped` |
 | ↑ **`连接中 → 失败` 可见，且能手动重试**（plan 0601） | ✅ 连不上的那条（规则指向一台**不可达主机**）：`tunnel_open` 回 `{handle, failure:{kind:"failed",…}}`、probe `state = failed`、事件里有 `failed`；`tunnel_retry` 再走一遍 `connecting → failed`；**全程没有 `reconnecting`**（那是 plan 0605） |
@@ -143,14 +153,14 @@
 | ↑ **判据：真实 app 上建立 SSH 会话**（plan 0504） | ✅ `ssh_session` E2E（真实 app + **测试进程内**服务端，**2.32 s**）：界面点击 SSH → 选中池中该行 → **主机密钥提示中的指纹等于服务端的指纹** → 接受 → 口令提示 → 作答 → 连通（标签页标题 = 池中的名称） |
 | ↑ **字节双向流动 / 已确认密钥写入库 / 凭据仅询问一次 / 关闭标签页零残留**（plan 0504） | ✅ 四项各有断言：回显出现在屏幕上**且服务端收到同一串**；直连库文件读到 `known_hosts` **1 行**；第二个会话**未发起任何询问**即连通（服务端第 2 次收到**同一口令**）；关闭两个标签页 → `sessions` probe 返回 **`{"live":1,"registered":1}`** + 服务端观察到 **2 条**连接断开 |
 | ↑ **提问往返本身**（plan 0504，crate 级 6 条） | ✅ 答案送达发起提问的一方 / 超时会**撤回**该提问、其后作答报 `Gone` / **取消与超时可区分** / **无人作答 = `HostKeyUnknown`（拒绝），而非 `Ok`** / 用户接受后**确实写入缓存** |
-| ↑ **`just test-e2e` 全部通过** | 退出码 **0**：**22 个 E2E 用例**（`E2E_TARGETS` / `E2E_TARGETS_EXIT` 共 19 个 + `E2E_SELF_APP` 的 `portable` 3 个，含新增的 `tunnel_state`）。`ssh_session` / `ssh_jump` / `ssh_config_import` / `tunnel_state` 均排在 `vault_unlock` **之后**（它们操作同一个库文件） |
+| ↑ **`just test-e2e` 全部通过** | 退出码 **0**：**23 个 E2E 用例**（`E2E_TARGETS` / `E2E_TARGETS_EXIT` 共 20 个 + `E2E_SELF_APP` 的 `portable` 3 个，含新增的 `tunnel_local_forward`）。`ssh_session` / `ssh_jump` / `ssh_config_import` / `tunnel_state` / `tunnel_local_forward` 均排在 `vault_unlock` **之后**（它们操作同一个库文件） |
 | ↑ **判据：主机密钥变化即拒绝，未见过的询问一次**（plan 0503） | ✅ `akasha-ssh` 的 7 条：未知且无人可问 → `HostKeyUnknown`（携带用于核对的指纹，且**认证尚未开始**）；确认 → 写入缓存，**第二个连接 0 次询问**；记录不匹配 → `HostKeyChanged`（**两个指纹都在**）且**不发起询问**；用户拒绝 → 拒绝连接且**不记录**；用户文件中已认可 → 连通且文件**逐字节未变** |
 | ↑ **本仓库首次格式迁移**（plan 0503） | ✅ `akasha-store` 的 6 条：`DDL_V1` 构造出**真实 v1 库** → `open` 之后 `user_version = 2`、五张表存在、**该 host 行仍在**；再次打开当前格式的库**不写入任何字节**；缺表的 v1 **不迁移**；加密导出与明文导出两条还原路径均**升级副本、来源逐字节不变** |
 | ↑ **判据：同主机三个连接仅询问一次凭据**（plan 0502） | ✅ `three_sessions_ask_for_one_credential`：`provider.calls() == 1`、缓存 `len() == 1`、服务端三次均收到**同一口令** |
 | ↑ **认证顺序由协议交互验证**（plan 0502） | ✅ 服务端记录的序列：`publickey → password`、`publickey → keyboard-interactive`；agent 不可用时序列中**没有** `publickey` |
 | ↑ **`nodelay` 实际生效**（plan 0505 修正） | ✅ `tcp_stream` 自建 TCP 时显式 `set_nodelay(true)`（问题 #120：上游仅在 `client::connect` 中读取 `Config::nodelay`，而两条路都使用 `connect_stream`） |
 | ↑ **`Cargo.lock` 增量仅一行**（plan 0504 / 0505） | ✅ 新增 `akasha → akasha-ssh` 这条边**只增加一行**；0505 **未增加任何行**（无新依赖，`rand` 早已是 `akasha-ssh` 的真依赖） |
-| `pnpm build`（tsc + vite build） | 退出码 0；产物 **859.11 kB / gzip 236.37 kB**（+5.3 kB：隧道面板） |
+| `pnpm build`（tsc + vite build） | 退出码 0；产物 **859.31 kB / gzip 236.48 kB**（+0.2 kB：隧道错误的两档新文案） |
 | `just docs-check` | 全部通过（ROADMAP 58 个条目 ≤3 行且无代码块 / 50 份 plan ≤200 行且索引一致） |
 | `ast-grep scan` + `ast-grep test` | 均退出 **0**（本轮未新增 / 修改规则） |
 | **三条 unsafe 注释 lint**（clippy，位于 `just lint`） | 退出码 **0**；三条各以一个探针验证其**确实会失败**（探针用后即撤） |
@@ -165,11 +175,19 @@
 
 ## 待验证（本地或沙箱环境无法执行）
 
-- **隧道目前只建立连接、不转发任何字节**（plan 0601 的边界）：probe 里的 `已连接` 只意味着
-  "到规则所属主机的 SSH 连接活着"，**不意味着**有端口在监听。本地监听与 `direct_tcpip` 的接线
-  是 plan 0602 —— 不得把"隧道已连接"读成"转发可用"。
+- **`-L` 已通，另两个方向明确拒绝**（plan 0602 的边界）：`-D`（SOCKS5）与 `-R`（远端监听）
+  分别是 plan 0603 / 0604 —— 这两类规则现在**打不开**，报的是一句明确的话，而不是静默按本地转发处理。
+  ⚠️ 不得把"池里有一条规则"读成"它可用"。
 - **`重连中(n)` 未由真实路径产生**：状态与那条边由 crate 层用例覆盖，而驱动它的重连循环是
   plan 0605。因此真实 app 上覆盖的是四态（`连接中` / `已连接` / `失败` / `已停止`）。
+- **"端口被占用"的判据依赖操作系统的错误码文案**：界面显示的是「绑定失败：地址已在使用 (os error 98)」
+  这一句的**原文**，跨平台措辞不同（Windows 是 `os error 10048`）。用例断言的是"有地址、有原因"，
+  不是某一句话。
+- **隧道的停止是"同步命令 + 异步收尾"**：`tunnel_stop` 发完信号即返回，停监听、收在途连接、
+  礼貌断开都在 runtime 上做 —— 观察收尾只能看**对端**（服务端的连接计数），命令的返回不代表已经收干净。
+- **连接的 originator 仍是"最外层那条 TCP 的本地地址"**（plan 0505 的取舍）：`-L` 转发出去的
+  `direct-tcpip` 请求带的就是它，而不是**那条入站连接**的对端地址 —— 真实服务器的审计日志因此
+  看到的是我们，不是转发进来的客户端。是否改（以及怎么改）**尚未规划**。
 - **"仅对跳板机可见"是构造出来的，不是真实的网络隔离**：无特权环境中切换 netns 或增加防火墙规则
   都需要 root，因此该性质依靠**名字**（`.invalid` + 跳板侧的中继表）实现 —— 用例自行解析一次并断言
   失败。它与"跳板机可见、本机不可见"在行为上等价，但不是同一件事。
@@ -215,19 +233,19 @@
 | workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` / `akasha-store` / `akasha-ssh` |
 | 二进制落点 | `src-tauri/target/debug/akasha`（另有代码生成工具 `gen-types`，故必须 `default-run`，问题 #29） |
 | 后端模块 | `bindings` / `session` / `tray` / `config` / `lifecycle` / `single_instance` / `vault` / `watchdog` / `ssh`（长住状态 + 那条命令 + 跳板链 + 库内 known_hosts 适配器） / `prompt`（提问往返） / `pools`（池的读取 + **导入** + **转发规则**） / **`tunnel`（隧道实体 + 三条命令 + `tunnel_state` 事件 + `tunnels` probe）** |
-| **命令清单** | `greet` · `vault_status` / `vault_unlock` / `vault_lock` · `vault_hosts` · **`vault_forwards`** · `import_ssh_config` · `open_session` · `open_ssh_session` · `write_session` / `resize_session` / `close_session` · `ssh_prompt_credential` / `ssh_prompt_host_key` / `ssh_prompt_cancel` · **`tunnel_open` / `tunnel_retry` / `tunnel_stop`**（事件：`session_ended` · `ssh_prompt` / `ssh_prompt_dismissed` · **`tunnel_state`**）。**plan 0601 新增四条命令**（三条驱动隧道 + 一条只读规则池）；`tunnel_open` / `tunnel_retry` 是 **async**（命令体里有一次会阻塞几秒的握手） |
-| **probe** | `lifecycle` → `{close_behavior, tray_ready, close_action}`（没登记时 `{"initialized":false}`，问题 #93）；`single_instance` → `{registered, activations}`；`sessions` → `{live, registered}`（SSH 与隧道都没有本地进程，"零残留"只能看注册表）；**`tunnels` → `[{handle, ruleId, name, state, attempt}]`**（与托盘菜单同一份数据）。**库没有 probe**：状态本身就是命令（`vault_status`） |
+| **命令清单** | `greet` · `vault_status` / `vault_unlock` / `vault_lock` · `vault_hosts` · **`vault_forwards`** · `import_ssh_config` · `open_session` · `open_ssh_session` · `write_session` / `resize_session` / `close_session` · `ssh_prompt_credential` / `ssh_prompt_host_key` / `ssh_prompt_cancel` · **`tunnel_open` / `tunnel_retry` / `tunnel_stop`**（事件：`session_ended` · `ssh_prompt` / `ssh_prompt_dismissed` · **`tunnel_state`**）。**plan 0601 新增四条命令**（三条驱动隧道 + 一条只读规则池）；`tunnel_open` / `tunnel_retry` 是 **async**（命令体里有一次会阻塞几秒的握手）。⚠️ **plan 0602 没有新增命令**，只改了它们的内部与失败分档 |
+| **probe** | `lifecycle` → `{close_behavior, tray_ready, close_action}`（没登记时 `{"initialized":false}`，问题 #93）；`single_instance` → `{registered, activations}`；`sessions` → `{live, registered}`（SSH 与隧道都没有本地进程，"零残留"只能看注册表）；**`tunnels` → `[{handle, ruleId, name, state, attempt, bind}]`**（与托盘菜单同一份数据；`bind` = 实际监听地址，plan 0602）。**库没有 probe**：状态本身就是命令（`vault_status`） |
 | 出字节路径 | PTY / SSH read → 合批（64 KiB / 16 ms）→ `Channel<InvokeResponseBody>` **raw** → JS `ArrayBuffer` → `term.write`。**两条载体共用同一段输出路径的后半段**（`session::open_terminal`） |
-| **隧道实体**（plan 0601） | `src-tauri/src/tunnel.rs`：`Tunnel { id, rule_id, rule_name, host_id, state, attempts, connection }`，登记进 `Sessions` 的**同一张注册表**（`Inner.tunnels`，与 `live` 同一把锁；`len()` = 两者之和，与 `registered()` 相等）。`tunnel_open` 失败分两种：**没登记成**（`Err`：库锁着 / 规则不在池里）与**登记了但连不上**（`Ok(TunnelAttempt { handle, failure })` —— 那条仍在册、可重试）。`tunnel_stop` 先发 `已停止` 再注销注册，**幂等** |
-| **`direct-tcpip` 原语**（plan 0505，ADR-0003 **D9**） | `akasha-ssh/src/forward.rs`：`SshStream`（自己实现 `AsyncRead + AsyncWrite`，**不把 `russh::ChannelStream` 漏进公开签名**）+ `SshConnection`（已认证、**没有通道**的连接，持有 `Handle` **与它自己的跳板链** `under`）+ `SshConnection::direct_tcpip(host, port)`。三处消费者（跳板 / `-L` / SFTP B 档）使用的都是**这条流**；`-L` 与 SFTP 尚未接上（plan 0602 / 0703）。plan 0601 给它加了同步门面 `connect_via`，并把"逐跳搭链"抽成 `hops_chain`（**建链只有一份实现**，`SshTransport` 与它共用） |
+| **隧道实体**（plan 0601 / 0602） | `src-tauri/src/tunnel.rs`：`Tunnel { id, rule_id, rule_name, host_id, state, attempts, forward }`，登记进 `Sessions` 的**同一张注册表**（`Inner.tunnels`，与 `live` 同一把锁；`len()` = 两者之和，与 `registered()` 相等）。`tunnel_open` 失败分两种：**没登记成**（`Err`：库锁着 / 规则不在池里 / 方向不是 `-L` / **端口没拿到**）与**登记了但连不上**（`Ok(TunnelAttempt { handle, failure })` —— 那条仍在册、可重试）。`tunnel_stop` 先发 `已停止` 再注销注册，**幂等**；`shutdown_all` 的隧道分支一并让转发收尾 |
+| **`direct-tcpip` 原语**（plan 0505，ADR-0003 **D9**） | `akasha-ssh/src/forward.rs`：`SshStream`（自己实现 `AsyncRead + AsyncWrite`，**不把 `russh::ChannelStream` 漏进公开签名**）+ `SshConnection`（已认证、**没有通道**的连接，持有 `Handle` **与它自己的跳板链** `under`）+ `SshConnection::direct_tcpip(host, port)`。三处消费者（跳板 / `-L` / SFTP B 档）使用的都是**这条流**；跳板与 `-L` 已接上，SFTP 的 B 档仍未接（plan 0703）。plan 0601 给它加了同步门面 `connect_via`，并把"逐跳搭链"抽成 `hops_chain`（**建链只有一份实现**，`SshTransport` 与它共用） |
 | **跳板链**（plan 0505） | 库侧：`hosts::jump_chain`（**目标在前**、有界、成环报 `StoreError::JumpChain`）。app 侧：`ssh.rs::plan_chain` 按 id 解出各跳，`open_ssh_session` 再将其反转为"最外层在前"后调用 `SshTransport::connect_via(runtime, hops, target)`（`connect` 即空链的那一次）。**每一跳各一份 `SshConnect`**（各自询问凭据、各自校验主机密钥）；链上每一跳是一个 `SshConnection`，随 `Established::carriers` **move 进最终那条连接的 `pump` task** —— "task 结束 = 整条链结束"，收尾按**最内层先断** |
 | **连接的 originator** | `direct-tcpip` 要求带发起方地址（RFC 4254 §7.2）：用**最外层那条 TCP 的本地地址**（我们唯一真知道的），往下每一跳复用；拿不到就空串 + 0（不得伪造一个看似真实的地址写入对端日志） |
 | **SSH 的 IPC 层**（plan 0504） | `src-tauri/src/ssh.rs`：app 启动时建**一个**专用 tokio runtime（**4 个 worker**，D2）；`open_ssh_session` 是 **async 命令**（不阻塞 IPC），内部起一条**普通 `std::thread`** 运行同步门面（`spawn_blocking` 的线程**也算** tokio 上下文，会触发 `BlockingInsideRuntime`），结果经 `tokio::sync::oneshot` 回来。`SshConnect` 的材料按池行组：`password` → 不用 agent、不带钥匙；`agent` → 只用 agent；`publickey` + `key_id` → 那一把钥匙（PEM → 受保护页 → `KeyCandidate`，标识 `key#<id>`） |
 | **提问往返**（plan 0504，ADR-0003 **D16**） | `src-tauri/src/prompt.rs`：`Prompts`（`Arc` + 待答表 + 可注入的发布口）；事件 `ssh_prompt`（判别式：`hostKey` / `credential`）+ `ssh_prompt_dismissed`；三条回答命令；编号从 1 起、只增不减；**超时 120 s → 拒绝 + 撤回**；答过 / 超时的 id → `PromptError::Gone`；**主机密钥那一问只认"接受 / 拒绝"**，超时 / 取消 / 答错类型一律 `Err(HostKeyUnknown)`（= 拒绝连接）。⚠️ 跳板链上**每一跳各产生一轮**（密钥 + 口令），E2E 实测四问按序 |
 | **库内主机密钥缓存**（plan 0504 接线） | `VaultHostKeys`：`Vault` 可 `Arc` 克隆，`with_conn` **短借**连接；库处于锁定状态 → `SshError::HostKeyCache` → **拒绝连接**（不视为未知）。⚠️ **不得在持锁期间连接**：`remember` 会在连接中途回锁库（跳板链因此先**一次读完整条链**再开始连接） |
 | **库的解锁状态** | `Vault { inner: Arc<Mutex<Option<Unlocked>>> }`（`Clone`）；`Unlocked { conn, passphrase }` 同生共死。借库的失败分两种（`ConnError`：`Locked` / `Store`）—— 因为 SSH 那条路要单独认出 `NoSuchRow`（"所选主机不存在"） |
-| **`akasha-ssh` 的形状** | 十个模块：`target` / `credential` / `keys` / `handshake`（`handshake<S>` = 一跳的握手 + 认证，**底层流由调用方提供**） / `known_hosts` / **`forward`（D9 原语 + `SshConnection` + `hops_chain` + 同步门面 `connect_via`）** / `transport` / `testing`（进程内测试服务端，**仅用于测试**；支持 `direct-tcpip` 的中继与拒绝两条分支，并记**连接级**的断开数 `connections_closed`） / `auth` / `error` |
-| **错误分域** | `akasha-ssh`：`HostKeyCache`（库那一侧无法读取缓存）、**`Forward { host, port, reason }`**（跳板拒绝 / 目标不可达 —— 与"无法连接跳板机"分开）。app 侧 `SshIpcError`：`Locked` / `NoSuchHost` / `Failed { kind, message }`（`kind` = `hostKeyChanged` / `hostKeyRejected` / `hostKeyUnknown` / `hostKeyCache` / `auth` / `connect` / **`jump`** / `other`）/ `Internal` —— **前端按 `kind` 分辨**，不匹配消息字符串。**隧道另有 `TunnelError`**（`locked` / `noSuchForward` / `noSuchHost` / `notATunnel` / `failed {kind,message}` / `transition` / `internal`），连接失败那一档复用同一个 `SshFailureKind` |
+| **`akasha-ssh` 的形状** | 十一个模块：`target` / `credential` / `keys` / `handshake`（`handshake<S>` = 一跳的握手 + 认证，**底层流由调用方提供**） / `known_hosts` / **`forward`（D9 原语 + `SshConnection` + `hops_chain` + 同步门面 `connect_via`）** / **`relay`（`-L`：`LocalListener` + `LocalForward` + `ForwardTarget`）** / `transport` / `testing`（进程内测试服务端，**仅用于测试**；支持 `direct-tcpip` 的中继与拒绝两条分支，并记**连接级**的断开数 `connections_closed`） / `auth` / `error` |
+| **错误分域** | `akasha-ssh`：`HostKeyCache`（库那一侧无法读取缓存）、**`Forward { host, port, reason }`**（跳板拒绝 / 目标不可达 —— 与"无法连接跳板机"分开）、**`Listen { address, reason }`**（本机端口没拿到，plan 0602 —— 与"对端连不上"分开）。app 侧 `SshIpcError`：`Locked` / `NoSuchHost` / `Failed { kind, message }`（`kind` = `hostKeyChanged` / `hostKeyRejected` / `hostKeyUnknown` / `hostKeyCache` / `auth` / `connect` / **`jump`** / `other`）/ `Internal` —— **前端按 `kind` 分辨**，不匹配消息字符串。**隧道另有 `TunnelError`**（`locked` / `noSuchForward` / `noSuchHost` / `notATunnel` / **`unsupported`（方向不是 `-L`）** / **`bind`（端口没拿到）** / `failed {kind,message}` / `transition` / `internal`），连接失败那一档复用同一个 `SshFailureKind` |
 | **前端结构** | `src/ipc/`（`session.ts` / `prompts.ts` / `hosts.ts` / **`tunnels.ts`** —— 唯一允许碰后端的目录）、`src/tabs/`、`src/terminal/`、`src/ssh/`（主机选择器 + 导入面板 + 提示面板）、**`src/tunnels/`（隧道面板）**、`src/App.tsx`。标签页 `kind`：`terminal` / `ssh`（**都有关闭按钮**，规则写成 `CLOSABLE` 清单）—— **隧道不是标签页**：它是应用级浮层，关闭面板不停任何隧道 |
 | **前端的一个 dev-only 陷阱** | React StrictMode（仅开发模式）会把 effect 执行两遍，SSH 会话因此被建立两次。处置：SSH 那条连接**无条件推迟一个微任务**再发起（本地 PTY 不受影响；问题 #118） |
 | **SSH 栈**（ADR-0003） | `russh = "=0.63.3"`、features `["ring","rsa"]`；`akasha-ssh` 只收 `tokio::runtime::Handle`；对外是同步 `Transport` 门面 + 两条**有界** mpsc（满 → `TransportError::Busy`）；capability = `resize + exit_status`、`session_leader() = None` |
@@ -247,15 +265,16 @@
 
 ## 进行中 / 下一步
 
-- [ ] **下一步 = 阶段 6 的 plan 0602（本地转发 `-L`）**：该 plan 目前是**未规划（骨架）**，
-  需先补齐「步骤」与「验收命令」。⚠️ 它要接上的是 0601 已经建好的那条连接
-  （`SshConnection`：已认证、**没有通道**）—— 本地监听 + 每条入站连接开一条 `direct_tcpip`
-  是它的全部内容；`target_host` / `target_port` 到这一步才第一次参与（0601 不碰它们）。
+- [ ] **下一步 = 阶段 6 的 plan 0603（动态转发 `-D`，本地 SOCKS5 服务端）**：该 plan 目前是
+  **未规划（骨架）**，需先补齐「步骤」与「验收命令」。⚠️ 它复用 0602 已经打通的形状
+  （本地监听 + 每条入站连接一条 `direct_tcpip` 通道），差别只在"目标由谁定"：`-L` 的目标来自规则，
+  `-D` 的目标是**客户端在 SOCKS5 握手里说的**（`dynamic` 规则没有目标，库的 `CHECK` 拦着）。
 - [ ] **阶段 5 之后仍有两处界面缺口**（不是缺陷，而是尚未规划的工作）：**解锁界面**（当前 SSH 的
   真实路径上，解锁由 E2E 以 `invoke_command` 完成）与**主机池的增删改查界面**。⚠️ plan 0506 只
   补上了**导入**这一条写路径：目前一台机器的端口 / 用户名 / 跳板在界面上**无法修改**（只能修改
   配置后重新导入并指定 `overwrite`，或直接改库）。
-- [ ] **`-L` / SFTP B 档尚未接入 `direct_tcpip`**：形状已定（一条流），实际适配在 plan 0602 / 0703。
+- [ ] **SFTP 的 B 档尚未接入 `direct_tcpip`**：形状已定（一条流），实际适配在 plan 0703。
+  `-L` 这一处已于 plan 0602 接上。
 - [ ] **降级路径未实测**：v2 库在旧版本程序中会以 `UnsupportedVersion { found: 2 }` 被拒绝（有意为之）。
 - [~] **plan 0102（CI 平台矩阵）**：本地部分完成，最终判据 = 推送后三个 job 全部通过，当前阻塞于仓库无 remote
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测，剩余 CI 三平台格子
@@ -266,7 +285,30 @@
 > 理由：信任策略属于**接口形状**（先行），而原语的消费者都需要先有一条**从 app 建立起来的**
 > SSH 会话才能验证。编号与执行顺序现已一致，索引中有一段重排说明。
 
-### 本轮完成（plan 0601：隧道实体 + 状态机）
+### 本轮完成（plan 0602：本地转发 `-L`）
+**判据（ROADMAP 原文）**：转发端口**可访问远端服务**。
+
+- [x] **`akasha-ssh` 新增 `relay`**：`LocalListener::bind`（**先绑**，空绑定地址明确拒绝）+
+  `LocalListener::serve`（在**给定** runtime 上起任务：接受循环 + 每条入站连接一条 `direct_tcpip`
+  通道 + `copy_bidirectional`）+ `LocalForward`（`shutdown` 发信号即返回；收尾 = 停监听 →
+  收在途任务 → **礼貌断开**连接）+ `ForwardTarget`。原语（D9）与 `SshConnection` **未改**
+- [x] **错误分域**：新增 `SshError::Listen`（"本机端口没拿到"）与 `TunnelError::Bind` ——
+  用户的下一步动作是腾端口，而不是查网络；`Unsupported` 单独一档（方向不是 `-L`）
+- [x] **顺序**：`tunnel_open` 改为**先绑定、后连接**；绑定失败 = **没登记成**（`Err`），
+  与"登记了但连不上"（仍在册可重试）分开
+- [x] **实体**：`Tunnel.connection` → `Tunnel.forward`（转发任务持有连接，"已连接"= 端口在听 + 连接活着）；
+  probe `tunnels` 每条多一个 `bind`（实际监听地址）
+- [x] **判据实测**（真实 app + 测试进程内一台 SSH 服务端与一个回声服务端）：见上表四行 ——
+  转发端口写一行读回同一行 / 对端记到 1 条 `direct-tcpip`（第二次连接变 2 条）/ 端口被占用可读且未登记 /
+  停止后端口释放且连接断开
+- [x] **门禁**：`just ready` **6/6**；`just test` **300 passed**（+8）；`just test-e2e`
+  **退出码 0**（23 个用例，新增 `tunnel_local_forward` 1.05 s）；`pnpm build` 退出码 0；
+  `Cargo.lock` **零增量**
+- [x] **文档同步**：plan 0602 置「已完成」并 `git mv` 进 `archive/`（索引与 ROADMAP 指针同步）；
+  ADR-0003 D9 补"三处消费者的进度" + §14 记一行；本文件覆盖写
+
+### 上一轮完成（plan 0601：隧道实体 + 状态机）
+
 
 **判据（ROADMAP 原文）**：五态**可观测**；状态变化**发事件**。
 
@@ -288,53 +330,20 @@
 - [x] **文档同步**：plan 0601 置「已完成」并 `git mv` 进 `archive/`（索引与 ROADMAP 指针同步）；
   ADR-0003 D12 标注已落地 + §12 删除已决条目 + §14 记一行；本文件覆盖写
 
-### 上一轮完成（plan 0506：`~/.ssh/config` 受限子集导入）
+### 更早几轮（plan 0506 / 0505）
 
-**判据（ROADMAP 原文）**：含 `Match` 的配置产生**明确报错**，而非静默误解析。
-
-- [x] **三档边界确定**（ADR-0003 **D14** 展开，§14 记一行）：六条导入 / **可识别的局部指令逐条警告
-  并继续** / `Match`、`Include`、会改变目的地或信任来源的、`IgnoreUnknown`、**表中未收录的**一律
-  **整份报错**（一次列全，带行号）。判据取**后果**这一维度（是否连到别的机器、是否改变信任的
-  密钥），而非"是否认识"；兜底方向是**默认报错**
-- [x] **求值语义按 OpenSSH 实测**（`ssh -G`）：每个参数**首次取到的值生效**（写在前的 `Host *` 会压住
-  其后的具体条目 —— 按"一个 `Host` 块 = 一行"解读会**静默连接到错误端口**）；文件开头到第一个
-  `Host` / `Match` 之间为全局段；关键字不区分大小写而 `Host` 模式区分；通配块不产生条目
-- [x] **解析器是纯函数**（`akasha-store/src/sshconfig.rs`）：不读盘、不读环境、不碰库 —— 整套语义
-  因此在没有 app / 库 / 网络的环境下由 29 条用例固化
-- [x] **落库使用单个事务**（`pools/import.rs`）：先全部插入（`jump_id = NULL`）再挂链，成环检查**复用**
-  `update_host` 的那一份（`insert_host` 的"新行没有入边"论证对导入不成立 —— **plan 之外的发现**）；
-  同名默认不动、补建的跳板条目**永不覆盖**
-- [x] **池的第一条写路径接入 IPC 与前端**：`import_ssh_config(path, overwrite)` + 报告
-  （新增 / 更新 / 跳过 / **未生效的指令** / 结构性说明）+ 界面上列出**支持集**
-- [x] **判据实测**（真实 app）：见上表三行 —— 含 `Match` 的整份报错且一行不写 / 正常配置导入的两条
-  **经跳板真实连通** / 私钥路径未进入库
-- [x] **门禁**：`just ready` **6/6**；`just test` **279 passed**（+36）；`just test-e2e` **退出码 0**
-  （21 个用例）；`pnpm build` 退出码 0；`Cargo.lock` 零增量
-- [x] **文档同步**：plan 0506 置「已完成」并 `git mv` 进 `archive/`（索引与 ROADMAP 指针同步）；
-  ADR-0003 D14 展开 + §14 记一行；`scope.md` §3 / §8 各补一句；本文件覆盖写
-
-### 更早几轮（plan 0505：`direct-tcpip` 原语 + 跳板）
-
-**判据（ROADMAP 原文）**：ProxyJump 可连通**仅对跳板机可见**的目标。
-
-- [x] **原语形状按 D9 落地**：`SshStream`（一条 `AsyncRead + AsyncWrite` 的流）+ `SshConnection`
-  （已认证、没有通道的连接）+ `direct_tcpip`；`establish` 拆成 `handshake<S>`（**底层流由调用方提供**）
-  与 shell 收尾 —— 因此"以通道作为下一跳的网络"与"直连"走**同一条路**
-- [x] **`Handle` 归属确定**：跳板路径**自己持有连接**（另一条路是给 `SshTransport` 开受控借用口）
-  —— 句柄不出 `akasha-ssh`，也不需要回答"谁在何时可以访问它"
-- [x] **整条链一起生灭**：carriers move 进最终那条连接的 `pump` task，收尾**最内层先断**
-- [x] **错误分域**：新增 `SshError::Forward`（跳板拒绝 / 目标不可达）→ `SshFailureKind::Jump`
-  —— "无法连接跳板机"与"跳板机无法连接目标主机"必须区分，否则排查方向将被误导
-- [x] **库侧**：`hosts::jump_chain`（目标在前、有界、成环报错）；**读路径同样拦截**环与深度
-  （写入路径无法阻止直接改库，而环会使连接**永久阻塞**）
-- [x] **判据实测**（真实 app + 测试进程内两台服务端）：见上表四行 —— 名字不可解析 / 四条提示按序 /
-  跳板记到 1 条 `direct-tcpip` / 字节到达目标 / 关闭标签页后链断开
-- [x] **修正一处未生效的配置**：`Config::nodelay` 在 `connect_stream` 这条路上从未生效
-  （问题 #120），现改为自建 TCP 时显式关闭 Nagle
-- [x] **门禁**：`just ready` **6/6**；`just test` **243 passed**（+8）；`just test-e2e` **退出码 0**；
-  `pnpm build` 退出码 0；`Cargo.lock` **零增量**
-- [x] **文档同步**：plan 0505 置「已完成」并 `git mv` 进 `archive/`（索引与 ROADMAP 指针同步）；
-  ADR-0003 **D9 标记为已落地**并新增一行 §14 修订；本文件覆盖写
+- [x] **0506**（`~/.ssh/config` 受限子集导入，ADR-0003 **D14**）：三档边界（六条导入 /
+  可识别的局部指令**逐条警告**并继续 / 其余**整份报错**，判据取"是否连到别的机器、是否改变信任的密钥"）；
+  求值语义按 `ssh -G` 实测（每个参数**首次取到的值生效**）；解析器是**纯函数**（29 条用例固化语义）；
+  落库是第一次"一次插入多行、行间互相引用"（单个事务 + 复用 `update_host` 的成环检查）；
+  **私钥不导入**。判据实测：含 `Match` 的整份报错且一行不写 / 导入得到的条目**经跳板真实连通**。
+  细节见 [`archive/0506`](./plans/archive/0506-ssh-config-subset-import.md)
+- [x] **0505**（`direct-tcpip` 原语 + 跳板，ADR-0003 **D9**）：原语 = **一条 `AsyncRead + AsyncWrite`
+  的流**（`SshStream` + `SshConnection`）；跳板链整条一起生灭（carriers move 进 `pump` task，
+  收尾**最内层先断**）；`SshError::Forward` 让"目标不可达"与"我连不上跳板机"分开；
+  `hosts::jump_chain` 在**读路径**上同样拦环与深度。判据实测：四条提示按序答完 / 跳板记到
+  **恰好 1 条** `direct-tcpip` / 字节到达一个**只对跳板机可见**的名字。
+  细节见 [`archive/0505`](./plans/archive/0505-direct-tcpip-primitive.md)
 
 ### 更早（plan 0504 及之前）
 
@@ -369,13 +378,15 @@
   **必须相等**，分叉说明存在"可查询、但无人管理"的会话）。
 - **改隧道之前先看**：`akasha-core/src/tunnel.rs`（五态与转移表，**纯逻辑**）→
   `src-tauri/src/tunnel.rs`（实体、三条命令、`tunnel_state` 事件、`tunnels` probe）→
-  `akasha-ssh/src/forward.rs` 的 `SshConnection`（⚠️ **它没有通道**；`-L` / `-D` 在这条连接上按需开）。
+  `akasha-ssh/src/forward.rs` 的 `SshConnection`（⚠️ **它没有通道**）→
+  `akasha-ssh/src/relay.rs`（`-L` 的本地监听与搬运；`-D` 在这条连接上按需开通道）。
   状态名与事件名是**契约**（ADR-0003 §10 第 4 条）：改名要同时改 `bindings.ts`、前端与托盘。
 - **新增 command / event 的三处**：`src-tauri/src/bindings.rs` 登记、`just gen-types` 重新生成、
   `just gen-types-check` 比对（`AGENTS.md` §5）；事件还必须在 `.setup()` 里 `mount_events`。
-- **排查"隧道为何没连上"**：日志里 `ssh connection opening`（带 `hops` = 跳数）与
-  `tunnel state changed`（带 `state`；`重连中` 时还带 `attempt`）；当前状态的**唯一事实**是
-  `app_state { probe: "tunnels" }`（托盘子菜单与它同源）。
+- **排查"隧道为何没连上 / 为何转发不通"**：日志里 `ssh connection opening`（带 `hops` = 跳数）与
+  `tunnel state changed`（带 `state`；`重连中` 时还带 `attempt`）；**端口没拿到**是 `SshError::Listen`
+  那条（在握手之前，因此日志里没有 `ssh connection opening`）；通道开不出来是 `local forward channel failed`；
+  当前状态的**唯一事实**是 `app_state { probe: "tunnels" }`（托盘子菜单与它同源，`bind` 是监听地址）。
 - **修改库格式之后先看**：`akasha-store/src/schema.rs`（`DDL_V1` 冻结 + `TABLES`）→
   `lib.rs` 的 `upgrade()` / `FORMAT_VERSION` → `tests/format_migration.rs`。⚠️ 新增表**必须**提升
   `FORMAT_VERSION` 并编写迁移。
@@ -569,3 +580,16 @@
     只能得到一个永真的断言。正解：新增**连接级**计数（`Observed::connections_closed`，
     在 handler 的 `Drop` 里数 —— 真实 handler 由 `Server::new_client` 标出，
     `Clone` 出的中间副本不计）。
+129. **进程级的 `---p` 判据会被"别人的守卫页"搅动**：`credential_protection` 按
+     `/proc/self/maps` 里 `---p` 映射的**总量**判断"8 条凭据 → 多 8 页"，而同一个进程里并发的
+     那个测试线程结束时，它的**线程栈守卫页**（同样是 `---p`）会被解除映射 —— 实测 8 页只数到
+     7 页（+28 kB 而不是 +32 kB），约一半概率红。
+     ⚠️ **它只在 `cargo test` 下发作**（一个二进制里的多个测试运行在同一进程的多个线程上）；
+     `just test` 用 **nextest**（一个测试一个进程）因此不触发 —— 门禁不受影响，这也是它长期没被发现的原因。
+     正确的做法是**按归属**而不是按总量：`akasha-store` 的用例已经在用 `smaps` 的 `VmFlags`
+     （`memsafe` 的页带 `dd` / `wf`，守卫页没有），把这条判据改成同一口径即可。
+130. **E2E 共用同一个 app，而"面板"是有状态的浮层**：`.tab-new-tunnel` 是**切换**，面板的规则表
+     又是**挂载时读一次**（`TunnelPanel`）—— 于是下一个目标点同一按钮会把上一个目标留下的面板
+     **关闭**，表现为"面板列不出规则"（超时），而不是"按钮点错了"。
+     正解：`support::open_tunnel_panel` —— **先卸下再挂上**（既幂等，又保证重新读一次池子）。
+     教训：共用 app 的 E2E 目标里，"打开某个浮层"必须是幂等的，且要假设它已经是打开状态。
