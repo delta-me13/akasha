@@ -64,6 +64,12 @@ pub struct Observed {
     /// 数的是"通道被关掉"这件事 —— 客户端收尾时会 `eof` + `close`；只数"曾经来过几条"
     /// 分不出"还挂着"与"收干净了"。
     pub sessions_closed: usize,
+    /// 有几条**连接**已经断开（plan 0601：隧道停下来之后连接真的没有了）。
+    ///
+    /// 与 [`Observed::sessions_closed`] 分开是必要的：那个数的是**通道**关闭，
+    /// 而隧道**没有通道**（ADR-0003 D4：隧道是纯字节管道）—— 它的连接断没断，
+    /// 只有连接级的那一个数看得见。
+    pub connections_closed: usize,
     /// 收到的 `direct-tcpip` 请求，按发生顺序（plan 0505：**跳板那一半的判据**）。
     ///
     /// "我们经了跳板"不能只看客户端 —— 这句话的证据是**对端被要求去连什么**。
@@ -234,6 +240,9 @@ pub async fn start(options: ServerOptions) -> Running {
     };
     let mut server = TestServer {
         shared: shared.clone(),
+        // 这个副本只用来 `new_client`（accept 循环）—— 它自己不是任何连接的 handler，
+        // 所以它的 drop 不算"连接结束"。
+        handler: false,
     };
     // 自己写 accept 循环而不是 `run_on_socket`：后者的返回 future 借了 `server` 与
     // `listener`（edition 2024 的 `impl Trait` 会捕获输入生命期），而这里要把它
@@ -262,6 +271,21 @@ pub async fn start(options: ServerOptions) -> Running {
 #[derive(Clone)]
 struct TestServer {
     shared: Shared,
+    /// 这个副本是不是**一条连接的 handler**（见 [`Drop`] 的实现）。
+    handler: bool,
+}
+
+impl Drop for TestServer {
+    /// 每条连接一个 handler，russh 在连接结束时销毁它 —— 于是"它被销毁"就是
+    /// "那条连接结束了"。这是**连接级**的观察点（隧道没有通道，只能看这一个）。
+    ///
+    /// `#[derive(Clone)]` 的中间副本**不会**被算进来：只有 [`Server::new_client`]
+    /// 返回的那个副本把 `handler` 置为真。
+    fn drop(&mut self) {
+        if self.handler {
+            self.shared.observed.lock().unwrap().connections_closed += 1;
+        }
+    }
 }
 
 impl TestServer {
@@ -278,7 +302,9 @@ impl Server for TestServer {
     type Handler = Self;
 
     fn new_client(&mut self, _peer: Option<SocketAddr>) -> Self {
-        self.clone()
+        let mut handler = self.clone();
+        handler.handler = true;
+        handler
     }
 }
 

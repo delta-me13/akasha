@@ -59,6 +59,12 @@ export const commands = {
 	 */
 	importSshConfig: (path: string | null, overwrite: boolean) => typedError<ImportReport, ImportError>(__TAURI_INVOKE("import_ssh_config", { path, overwrite })),
 	/**
+	 *  库里转发规则池的全部行（按名字排序 —— 顺序确定，界面才不会每次刷新换一个样）。
+	 * 
+	 *  库锁着 → [`VaultError::Locked`]：规则在库里，没有别的来路。
+	 */
+	vaultForwards: () => typedError<ForwardEntry[], VaultError>(__TAURI_INVOKE("vault_forwards")),
+	/**
 	 *  打开一个终端会话，输出经 `channel` 以 **raw 字节**送出。
 	 * 
 	 *  返回的 id 是前端后续 `write_session` / `resize_session` / `close_session` 要用的句柄。
@@ -94,6 +100,31 @@ export const commands = {
 	 *  它让连接以"用户取消"结束。
 	 */
 	sshPromptCancel: (id: number) => typedError<null, PromptError>(__TAURI_INVOKE("ssh_prompt_cancel", { id })),
+	/**
+	 *  打开一条隧道：读池里的规则 → 登记 → 建连接 → `已连接`。
+	 * 
+	 *  ⚠️ **async**：命令体里有一次会阻塞几秒的握手（最长 `connect_timeout`，跳板链再乘以
+	 *  跳数）。同步命令跑在处理 IPC 请求的那条线程上，挡住它就等于挡住全部 IPC ——
+	 *  包括用户回答问题要用的那三条（同 `open_ssh_session`）。
+	 * 
+	 *  `Err` 只在**没登记成**时返回（库锁着 / 规则不在池里 / id 装不下）；连不上属于
+	 *  [`TunnelAttempt::failure`]（隧道已在册、可重试）。
+	 */
+	tunnelOpen: (forwardId: number) => typedError<TunnelAttempt, TunnelError>(__TAURI_INVOKE("tunnel_open", { forwardId })),
+	/**
+	 *  手动重试（D12：`失败 / 已停止 → 连接中`，尝试次数清零）。
+	 * 
+	 *  `Err` 只在"这个句柄不是一条隧道 / 状态推不动"时返回；**又没连上**属于
+	 *  [`TunnelAttempt::failure`]。
+	 */
+	tunnelRetry: (handle: number) => typedError<TunnelAttempt, TunnelError>(__TAURI_INVOKE("tunnel_retry", { handle })),
+	/**
+	 *  停止一条隧道：`已停止`（发事件）→ 断开连接 → 从注册表摘掉。
+	 * 
+	 *  摘牌是**幂等**的：重复点击、或这条已经被别的路径收掉时返回 `Ok`，而不是报一个
+	 *  用户没有下一步动作可做的错。
+	 */
+	tunnelStop: (handle: number) => typedError<null, TunnelError>(__TAURI_INVOKE("tunnel_stop", { handle })),
 };
 
 /** Events */
@@ -101,6 +132,7 @@ export const events = {
 	sessionEnded: makeEvent<SessionEnded>("session_ended"),
 	sshPrompt: makeEvent<PromptRequest>("ssh_prompt"),
 	sshPromptDismissed: makeEvent<PromptDismissed>("ssh_prompt_dismissed"),
+	tunnelState: makeEvent<TunnelStateChanged>("tunnel_state"),
 };
 
 /* Types */
@@ -118,6 +150,36 @@ export type ConfigFinding = {
 	line: number,
 	keyword: string,
 	message: string,
+};
+
+/**  转发方向过 IPC 的形状（与 [`AuthMethod`] 同一个理由：存储 crate 不依赖 specta）。 */
+export type ForwardDirection = 
+/**  `-L`：本地绑定，转发到目标。 */
+"local" | 
+/**  `-R`：远端绑定，转发回本地侧。 */
+"remote" | 
+/**  `-D`：本地起一个 SOCKS5，目标由客户端给。 */
+"dynamic";
+
+/**
+ *  界面看得见的一条转发规则。
+ * 
+ *  `target_host` / `target_port` 是 `Option`：`dynamic`（SOCKS5）**没有目标** ——
+ *  那是库里 `CHECK` 拦着的不变量，这里如实照搬，而不是填一个看起来像真的空串。
+ */
+export type ForwardEntry = {
+	/**  池里的行 id（`tunnel_open` 要的就是它）。 */
+	id: number,
+	name: string,
+	direction: ForwardDirection,
+	bindHost: string,
+	bindPort: number,
+	targetHost: string | null,
+	targetPort: number | null,
+	/**  这条规则属于哪台主机（`hosts.id`）—— 隧道**连的就是它**。 */
+	hostId: number,
+	/**  会话建立时是否自动起这条转发（plan 0601 只读取，不据此自动开）。 */
+	autostart: boolean,
 };
 
 /**  界面看得见的一台主机。 */
@@ -207,8 +269,9 @@ export type ImportedHost = {
  *  IPC 边界的错误。
  * 
  *  域边界就在这里：`akasha-core` 与 `akasha-pty` **都不知道 IPC 存在**，所以它们的错误
- *  在这里收敛成一个可序列化的形状（`AGENTS.md` §3.4）。前端能据此区分的只有三件事：
- *  会话不存在 / 载体出错 / 频道句柄无效 —— 再细的分支要等真有 UI 依赖它时再加。
+ *  在这里收敛成一个可序列化的形状（`AGENTS.md` §3.4）。前端能据此区分的只有四件事：
+ *  会话不存在 / 载体出错 / 频道句柄无效 / 隧道状态转移被拒 —— 再细的分支要等真有 UI
+ *  依赖它时再加。
  */
 export type IpcError = 
 /**  这个会话不存在：已经关闭，或从来没打开过。**两者的处置相同**，故不区分。 */
@@ -221,6 +284,13 @@ export type IpcError =
 } } | 
 /**  传给后端的东西不是合法的频道句柄。 */
 { kind: "channel"; detail: {
+	message: string,
+} } | 
+/**
+ *  隧道的状态转移被拒（plan 0601）。**不是内部故障**：最常见的就是"另一条路已经
+ *  把它推到终态了"（重试与停止几乎同时发生），前端刷新一下即可。
+ */
+{ kind: "tunnel"; detail: {
 	message: string,
 } } | 
 /**
@@ -411,6 +481,75 @@ export type State =
 "empty" | 
 /**  有内容。解锁会**打开它**（口令不对就打不开）。 */
 "present";
+
+/**
+ *  一次"打开 / 重试"的结果。
+ * 
+ *  为什么不是 `Result<handle, error>`：连接失败时这条隧道**仍然登记着**（状态 `失败`，
+ *  可手动重试 —— D12），界面因此必须拿到 `handle` 才说得清"是哪一条失败了"。
+ *  把"根本没登记成"（库锁着 / 规则不存在）与"登记了但连不上"混进同一个 `Err`，
+ *  前者会退化成一个没人能重试的死胡同。
+ */
+export type TunnelAttempt = {
+	/**  这条隧道的句柄（无论连上没有，它都登记着）。 */
+	handle: number,
+	/**  连接失败的原因；`None` = 已连接。 */
+	failure: TunnelError | null,
+};
+
+/**  IPC 边界的隧道错误。变体按**用户的下一步动作**分（同 `VaultError` / `SshIpcError`）。 */
+export type TunnelError = 
+/**  库没解锁。规则在库里，**没有别的来路**。 */
+{ kind: "locked" } | 
+/**  池里没有这一条规则。 */
+{ kind: "noSuchForward"; detail: {
+	id: number,
+} } | 
+/**  规则指向的那台主机不在池里。 */
+{ kind: "noSuchHost"; detail: {
+	id: number,
+} } | 
+/**  这个句柄不是一条隧道（已经停止 / 从来不存在）。 */
+{ kind: "notATunnel"; detail: {
+	handle: number,
+} } | 
+/**  连接这条路失败。`kind` 是给界面分辨**警报**用的（同 `SshIpcError`）。 */
+{ kind: "failed"; detail: {
+	kind: SshFailureKind,
+	message: string,
+} } | 
+/**  状态转移被拒。多半是"另一条路已经把它推到终态了"，刷新一下即可。 */
+{ kind: "transition"; detail: {
+	message: string,
+} } | 
+/**  内部状态不可用。 */
+{ kind: "internal"; detail: {
+	message: string,
+} };
+
+/**
+ *  **状态变化事件**（ADR-0003 D12 的"状态变化发事件"，事件名见 [`Self::NAME`]）。
+ * 
+ *  载荷带 `handle`（按 `SessionId` 路由的落点）而不只是状态：前端与托盘要能回答
+ *  "是**哪一条**隧道失败了"—— 只报状态的话，多隧道并行时那份信息就丢了。
+ */
+export type TunnelStateChanged = {
+	/**  哪条隧道。 */
+	handle: number,
+	/**  变成什么状态了。 */
+	state: TunnelStateName,
+	/**  重连次数（只有 `reconnecting` 带着它）。 */
+	attempt: number | null,
+};
+
+/**
+ *  状态过 IPC 的形状。
+ * 
+ *  与 `akasha_core::TunnelState` 分开：`Reconnecting` 的次数在那边是**载荷**，在这边是
+ *  事件里的另一个字段（`attempt`）—— 前端因此不必对"每种状态长什么样"分支。
+ *  映射写成穷尽 `match`：core 加一个状态时**这里编译不过**。
+ */
+export type TunnelStateName = "connecting" | "connected" | "reconnecting" | "failed" | "stopped";
 
 /**
  *  解锁之后读一次四套池的结果。

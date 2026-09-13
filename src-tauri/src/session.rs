@@ -25,16 +25,19 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 
-use akasha_core::{SessionId, SessionKind, SessionRegistry};
+use akasha_core::{SessionEvent, SessionId, SessionKind, SessionRegistry, TunnelState};
 use akasha_pty::watchdog::SessionWatchdog;
 use akasha_pty::{
     Batch, BatchPolicy, ExitStatus, PtyTransport, TerminalSize, Transport, TransportError,
     spawn_batcher,
 };
+use akasha_ssh::SshConnection;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody, JavaScriptChannelId};
 use tauri::{AppHandle, Emitter, State, Webview};
 use tauri_specta::Event;
+
+use crate::tunnel::{Tunnel, TunnelSummary};
 
 /// 前端 raw 字节频道的句柄。
 ///
@@ -81,8 +84,9 @@ pub type SessionHandle = u32;
 /// IPC 边界的错误。
 ///
 /// 域边界就在这里：`akasha-core` 与 `akasha-pty` **都不知道 IPC 存在**，所以它们的错误
-/// 在这里收敛成一个可序列化的形状（`AGENTS.md` §3.4）。前端能据此区分的只有三件事：
-/// 会话不存在 / 载体出错 / 频道句柄无效 —— 再细的分支要等真有 UI 依赖它时再加。
+/// 在这里收敛成一个可序列化的形状（`AGENTS.md` §3.4）。前端能据此区分的只有四件事：
+/// 会话不存在 / 载体出错 / 频道句柄无效 / 隧道状态转移被拒 —— 再细的分支要等真有 UI
+/// 依赖它时再加。
 #[derive(Debug, thiserror::Error, Serialize, specta::Type)]
 #[serde(tag = "kind", content = "detail", rename_all = "camelCase")]
 pub enum IpcError {
@@ -97,6 +101,11 @@ pub enum IpcError {
     /// 传给后端的东西不是合法的频道句柄。
     #[error("频道句柄无效：{message}")]
     Channel { message: String },
+
+    /// 隧道的状态转移被拒（plan 0601）。**不是内部故障**：最常见的就是"另一条路已经
+    /// 把它推到终态了"（重试与停止几乎同时发生），前端刷新一下即可。
+    #[error("隧道状态转移被拒：{message}")]
+    Tunnel { message: String },
 
     /// 内部状态不可用（Mutex 中毒，或 core 的 id 装不进句柄）。
     /// **不是用户错误** —— 但也不能 `unwrap`。
@@ -130,6 +139,10 @@ struct Live {
 struct Inner {
     registry: SessionRegistry,
     live: HashMap<SessionHandle, Live>,
+    /// 隧道实体（plan 0601）。与 `live` **共用同一张注册表与同一把锁**（ADR-0003 D6：
+    /// 一条转发规则一个 `Session`，共用同一个 `SessionId` 空间与注册表）——
+    /// 两张表分叉正是 `registered` 的文档里防的那件事，而两把锁必然带来锁序问题。
+    tunnels: HashMap<SessionHandle, Tunnel>,
 }
 
 /// 全部终端会话。由 tauri 作为 `State` 持有（`Send + Sync`）。
@@ -422,8 +435,13 @@ impl Sessions {
     }
 
     /// 当前活着的会话数（测试与将来的诊断用）。
+    ///
+    /// **包含隧道**：它和 [`Self::registered`] 必须相等（两张表分叉就说明有会话
+    /// "查得到、却没人管"），而注册表里既有终端也有隧道。
     pub fn len(&self) -> usize {
-        self.lock().map(|inner| inner.live.len()).unwrap_or(0)
+        self.lock()
+            .map(|inner| inner.live.len() + inner.tunnels.len())
+            .unwrap_or(0)
     }
 
     /// 注册表里登记着的会话数（诊断用）。它和 [`Self::len`] **必须一致** ——
@@ -432,25 +450,143 @@ impl Sessions {
         self.lock().map(|inner| inner.registry.len()).unwrap_or(0)
     }
 
-    /// 当前登记着的**隧道类**会话，升序（plan 0301：托盘菜单要列它们）。
+    /// 当前登记着的隧道，按句柄升序 —— 托盘菜单与 `tunnels` probe 的**唯一数据源**
+    /// （plan 0301 预留的"列表从哪来"到这里才有内容）。
     ///
-    /// 阶段 6 之前**必然是空的** —— 那时隧道才存在。这一步先把"列表从哪来"定下来：
-    /// **只读注册表**，不另立一张表（两张表必然分叉，`registered` 的注释里已写过这条）。
-    pub fn tunnels(&self) -> Vec<SessionId> {
+    /// 只读这一张表，不另立第二份账：菜单里少一项的后果比"日志里说清楚"小，但谎报
+    /// "一条都没有"会让排查的人往错的方向找（`docs/logging.md`：字段值不撒谎）。
+    pub fn tunnel_entries(&self) -> Vec<TunnelSummary> {
         let inner = match self.lock() {
             Ok(inner) => inner,
-            // 中毒时**不假装空列表**：菜单里少一项的后果比"日志里说清楚"小，但谎报
-            // "一条都没有"会让排查的人往错的方向找（`docs/logging.md` 的字段值不撒谎）。
             Err(err) => {
                 tracing::warn!(%err, "session table unavailable");
                 return Vec::new();
             }
         };
+        let mut entries: Vec<TunnelSummary> = inner
+            .tunnels
+            .iter()
+            .map(|(handle, tunnel)| tunnel.summary(*handle))
+            .collect();
+        entries.sort_by_key(|entry| entry.handle);
+        entries
+    }
+
+    // ── 隧道（plan 0601） ────────────────────────────────────────────────────
+
+    /// 登记一条隧道：**先放进注册表**（于是 `live` / `registered` 的对等关系一直成立），
+    /// 再交给调用方去建立连接 —— 连接是 async 的，绝不能在这把锁里做。
+    pub fn open_tunnel(
+        &self,
+        rule_id: i64,
+        rule_name: String,
+        host_id: u32,
+    ) -> Result<SessionHandle, IpcError> {
+        let mut inner = self.lock()?;
+        let id = inner
+            .registry
+            .open(SessionKind::Tunnel)
+            .map_err(|err| IpcError::Internal {
+                message: err.to_string(),
+            })?;
+        let handle = Self::handle(id)?;
+        inner
+            .tunnels
+            .insert(handle, Tunnel::new(id, rule_id, rule_name, host_id));
+        // **登记本身就是进入「连接中」**：那不是一次转移（同态转移是非法边，
+        // 见 `akasha_core::TunnelState`），而订阅者该知道的正是"它开始连了"。
+        inner.registry.emit(SessionEvent::TunnelStateChanged {
+            id,
+            state: TunnelState::Connecting,
+        });
+        drop(inner);
+        self.notify_changed();
+        Ok(handle)
+    }
+
+    /// 走一步隧道状态机，并在注册表上**按 `SessionId` 路由**一条事件（ADR-0003 D12）。
+    ///
+    /// 返回**实际生效**的状态：调用方据此在**锁外**发前端事件 —— 握着这张表的锁去通知
+    /// 订阅者就是自己等自己（托盘的 `on_change` 会回头读同一张表）。
+    pub fn set_tunnel_state(
+        &self,
+        handle: SessionHandle,
+        next: TunnelState,
+    ) -> Result<TunnelState, IpcError> {
+        let mut inner = self.lock()?;
+        // 一个块把 `tunnels` 的借用收干净：下面还要借 `inner.registry` 发事件，
+        // 而两次借用都穿过 `MutexGuard` 的 `DerefMut`，借用检查器看不到"不同字段"。
+        let (id, applied) = {
+            let tunnel = inner
+                .tunnels
+                .get_mut(&handle)
+                .ok_or(IpcError::NotFound { handle })?;
+            let applied = match tunnel.transition(next) {
+                Ok(applied) => applied,
+                Err(err) => {
+                    return Err(IpcError::Tunnel {
+                        message: err.to_string(),
+                    });
+                }
+            };
+            (tunnel.id(), applied)
+        };
         inner
             .registry
-            .ids()
-            .filter(|id| inner.registry.kind(*id) == Some(SessionKind::Tunnel))
-            .collect()
+            .emit(SessionEvent::TunnelStateChanged { id, state: applied });
+        Ok(applied)
+    }
+
+    /// 挂上刚建立的连接。
+    pub fn attach_tunnel_connection(
+        &self,
+        handle: SessionHandle,
+        connection: SshConnection,
+    ) -> Result<(), IpcError> {
+        let mut inner = self.lock()?;
+        let tunnel = inner
+            .tunnels
+            .get_mut(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        tunnel.attach(connection);
+        Ok(())
+    }
+
+    /// 取走这条隧道的连接 —— 重试与停止都要在**锁外**显式断开它。
+    pub fn take_tunnel_connection(&self, handle: SessionHandle) -> Option<SshConnection> {
+        self.lock()
+            .ok()?
+            .tunnels
+            .get_mut(&handle)
+            .and_then(Tunnel::take_connection)
+    }
+
+    /// 一条隧道的 `(规则 id, 所属主机 id)`：重试时要照原样再连一次，材料只在这里。
+    pub fn tunnel_origin(&self, handle: SessionHandle) -> Option<(i64, u32)> {
+        self.lock().ok()?.tunnels.get(&handle).map(Tunnel::origin)
+    }
+
+    /// 这条隧道现在的状态（诊断用）。
+    pub fn tunnel_state(&self, handle: SessionHandle) -> Option<TunnelState> {
+        self.lock().ok()?.tunnels.get(&handle).map(Tunnel::state)
+    }
+
+    /// 把一条隧道从注册表里摘掉（停止、或用户关掉一条已失败的隧道）。
+    ///
+    /// 与 [`Self::close`] 的分工：那边是终端会话的收尾（有本地进程要 kill + wait），
+    /// 这边只有一条 SSH 连接，而断开它是 async 的 —— 调用方拿着返回的实体在**锁外**做。
+    /// 已经摘过的句柄返回 `Ok(None)`（幂等，同 [`Self::retire`] 的理由）。
+    pub fn remove_tunnel(&self, handle: SessionHandle) -> Result<Option<Tunnel>, IpcError> {
+        let mut inner = self.lock()?;
+        let Some(tunnel) = inner.tunnels.remove(&handle) else {
+            return Ok(None);
+        };
+        if let Err(err) = inner.registry.close(tunnel.id()) {
+            tracing::warn!(handle, session = tunnel.id().get(), %err, "session unregister failed");
+        }
+        drop(inner);
+        self.notify_changed();
+        Ok(Some(tunnel))
     }
 
     /// **真正退出时**把全部会话收掉：逐个显式 `shutdown()`（kill + wait 收尸），再摘牌。
@@ -498,6 +634,31 @@ impl Sessions {
             // 回收失败**也要摘牌**：留着它只会在退出路径上被重复失败一遍。
             ids.push(live.id);
         }
+
+        // 隧道（plan 0601）单独 drain：它的收尾与载体**不是一回事** —— 没有本地进程要
+        // kill + wait（ADR-0003 D4），收尾就是**丢掉连接**（`SshConnection` 的 `Handle`
+        // 一 drop，上游会话任务随之收工，服务端看到断开）。混进上面那个循环只会让
+        // 两支各自长出一段用不上的代码。
+        let mut tunnel_ids = Vec::new();
+        let tunnels: Vec<Tunnel> = match self.inner.lock() {
+            Ok(mut inner) => inner
+                .tunnels
+                .drain()
+                .map(|(_, tunnel)| {
+                    tunnel_ids.push(tunnel.id());
+                    tunnel
+                })
+                .collect(),
+            Err(err) => {
+                tracing::error!(%err, "session table unavailable");
+                Vec::new()
+            }
+        };
+        if !tunnels.is_empty() {
+            tracing::info!(tunnels = tunnels.len(), "tunnels reclaimed");
+        }
+        drop(tunnels); // 连接在这里断开（显式 disconnect 要 runtime，退出路径上不值得再排队）
+        ids.append(&mut tunnel_ids);
 
         if let Ok(mut inner) = self.inner.lock() {
             for id in ids {
@@ -1232,7 +1393,7 @@ mod tests {
         let table = sessions.clone();
         sessions.on_change(move || {
             assert!(
-                table.tunnels().is_empty(),
+                table.tunnel_entries().is_empty(),
                 "会话表读到一半的状态必须是可读的"
             );
             counter.fetch_add(1, Ordering::SeqCst);
@@ -1275,12 +1436,35 @@ mod tests {
 
     #[test]
     fn terminal_sessions_are_not_listed_as_tunnels() {
-        // ⚠️ 这条只守一半：**能开出隧道类会话的入口要到阶段 6 才有**（0601），
-        // 所以"隧道出现在列表里"那一半现在无法构造。它守的是"别把终端混进隧道列表"。
+        // 正反例成对：只断言"终端不在列表里"无法区分"规则在工作"与"列表永远是空的"
+        // —— plan 0601 之前那一半构造不出来，现在可以了。
         let sessions = Sessions::default();
         let _ = register_recording(&sessions, "a");
 
-        assert!(sessions.tunnels().is_empty());
+        assert!(
+            sessions.tunnel_entries().is_empty(),
+            "终端会话不该出现在隧道列表里"
+        );
         assert_eq!(sessions.registered(), 1, "终端会话本身仍然登记着");
+
+        let handle = sessions
+            .open_tunnel(7, "e2e-tunnel".to_owned(), 1)
+            .expect("登记一条隧道");
+        let entries = sessions.tunnel_entries();
+        assert_eq!(entries.len(), 1, "隧道必须出现在列表里");
+        assert_eq!(entries[0].handle, handle);
+        assert_eq!(entries[0].rule_id, 7);
+        assert_eq!(entries[0].name, "e2e-tunnel");
+        assert_eq!(
+            entries[0].state,
+            TunnelState::Connecting,
+            "刚登记、还没连接的隧道是「连接中」"
+        );
+        assert_eq!(sessions.len(), 2, "len 要把隧道算进去");
+        assert_eq!(
+            sessions.registered(),
+            2,
+            "它与 registered 必须相等 —— 两张表分叉就是「查得到、却没人管」"
+        );
     }
 }

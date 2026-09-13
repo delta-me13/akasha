@@ -33,7 +33,7 @@ use tokio::runtime::Handle as RuntimeHandle;
 use tokio::sync::mpsc;
 
 use crate::error::SshError;
-use crate::forward::SshConnection;
+use crate::forward::{SshConnection, hops_chain};
 use crate::handshake::{Handler, SshConnect, establish};
 
 /// 写队列的容量（**积压上限，不是缓冲优化**：满了就是 [`TransportError::Busy`]）。
@@ -130,16 +130,9 @@ impl SshTransport {
         }
 
         let established = runtime.block_on(async {
-            let mut carriers: Vec<SshConnection> = Vec::new();
-            for mut hop in hops {
-                let connection = match carriers.last() {
-                    // 第一跳：自己建 TCP。
-                    None => SshConnection::connect(&mut hop).await?,
-                    // 之后的每一跳：在上一跳上开一条 `direct-tcpip` 通道，**它就是这一跳的"网络"**。
-                    Some(previous) => previous.over(&mut hop).await?,
-                };
-                carriers.push(connection);
-            }
+            // 跳板链的搭法**只有一份实现**（`akasha-ssh::forward::hops_chain`）：
+            // 隧道那条路（`SshConnection::connect_via`）用的是同一个函数，差的只是终点。
+            let carriers = hops_chain(hops).await?;
             // 最后一条流给目标：它是"离目标最近的那一跳"上的一条通道，直连时则是 None。
             let under = match carriers.last() {
                 None => None,

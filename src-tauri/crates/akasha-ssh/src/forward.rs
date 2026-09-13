@@ -27,6 +27,7 @@ use russh::client::{self, Handle};
 use russh::{ChannelStream, Disconnect};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
+use tokio::runtime::Handle as RuntimeHandle;
 
 use crate::error::{SshError, forward_failed};
 use crate::handshake::{self, Handler, SshConnect};
@@ -113,6 +114,32 @@ pub struct SshConnection {
     session: Handle<Handler>,
     target: SshTarget,
     originator: Originator,
+    /// 承载这条连接的**下层链**（空 = 直连）。最外层在前，紧挨目标的那个在最后。
+    ///
+    /// 为什么挂在这里而不是由调用方另存一个 `Vec`：链的存活不是一个可以"记得"的东西
+    /// —— 中间任何一跳 drop 掉，它上面那条 `direct-tcpip` 通道就跟着消失，而我们手上
+    /// 这条连接的"网络"正是那条通道。挂进来之后，**谁活着这条链就活着**，
+    /// 而收尾的顺序（最内层先断）也由 [`SshConnection::disconnect`] 一处定死。
+    under: Vec<SshConnection>,
+}
+
+/// 把 `hops` 逐跳搭起来（`[最外层, …, 紧挨目标的那个]`）。
+///
+/// 抽成函数的理由只有一个：**建链只有一份实现**。`SshTransport::connect_via` 与
+/// [`SshConnection::connect_via`] 的差别在终点（那边还要开一个 shell 通道），
+/// 而"逐跳搭链"这一段完全相同 —— 抄第二份的下场是其中一条慢慢长歪。
+pub(crate) async fn hops_chain(hops: Vec<SshConnect>) -> Result<Vec<SshConnection>, SshError> {
+    let mut under: Vec<SshConnection> = Vec::new();
+    for mut hop in hops {
+        let connection = match under.last() {
+            // 第一跳：自己建 TCP。
+            None => SshConnection::connect(&mut hop).await?,
+            // 之后的每一跳：在上一跳上开一条 `direct-tcpip` 通道，**它就是这一跳的网络**。
+            Some(previous) => previous.over(&mut hop).await?,
+        };
+        under.push(connection);
+    }
+    Ok(under)
 }
 
 impl SshConnection {
@@ -125,6 +152,7 @@ impl SshConnection {
             session,
             target: options.target.clone(),
             originator,
+            under: Vec::new(),
         })
     }
 
@@ -139,6 +167,33 @@ impl SshConnection {
             session,
             target: options.target.clone(),
             originator: self.originator.clone(),
+            under: Vec::new(),
+        })
+    }
+
+    /// **同步门面**：建一条到 `options` 的连接，经 `hops` 这条跳板链（空链 = 直连）。
+    ///
+    /// 与 [`crate::SshTransport::connect_via`] 同一形状、同一约束（**不得在 tokio
+    /// 上下文里调用**，见 ADR-0003 D3），区别只在终点：那边在目标上再开一个 **shell 通道**
+    /// （终端），这边**只要连接本身**。端口转发（plan 0602 起）在这条连接上按需开通道 ——
+    /// 那正是 D9 把"连接"与"通道"分开的理由。
+    pub fn connect_via(
+        runtime: &RuntimeHandle,
+        hops: Vec<SshConnect>,
+        mut options: SshConnect,
+    ) -> Result<Self, SshError> {
+        if RuntimeHandle::try_current().is_ok() {
+            return Err(SshError::BlockingInsideRuntime);
+        }
+        runtime.block_on(async {
+            let mut under = hops_chain(hops).await?;
+            let mut target = match under.last() {
+                None => Self::connect(&mut options).await?,
+                Some(previous) => previous.over(&mut options).await?,
+            };
+            // 整条链交给目标那条连接持有 —— 见 `under` 字段的文档。
+            std::mem::swap(&mut target.under, &mut under);
+            Ok(target)
         })
     }
 
@@ -173,10 +228,22 @@ impl SshConnection {
 
     /// 收尾：**显式**断开（`Handle` 一 drop 也会结束连接，但那次是"悄悄走"，
     /// 服务端只会看到 TCP 断了；这一句让它能记下原因）。
-    pub(crate) async fn disconnect(self) {
+    ///
+    /// 下层链**从最内层往外**断（与 `SshTransport` 的收尾同一条理由）：反过来会把承载
+    /// 后面每一跳的那条通道先踩掉，那些 `disconnect` 就都发在一条已经死掉的连接上。
+    pub async fn disconnect(mut self) {
         let _ = self
             .session
             .disconnect(Disconnect::ByApplication, "", "")
             .await;
+        let mut under = std::mem::take(&mut self.under);
+        while let Some(mut hop) = under.pop() {
+            let _ = hop
+                .session
+                .disconnect(Disconnect::ByApplication, "", "")
+                .await;
+            // 保险：万一某一跳自己也挂着下层（本 crate 现在不这么用），一并按序断掉。
+            under.append(&mut hop.under);
+        }
     }
 }

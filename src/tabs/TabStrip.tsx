@@ -36,9 +36,24 @@ interface TabStripProps {
   onNew(): void;
   /** 打开主机选择器（新建 SSH 会话的第一步）。 */
   onNewSsh(): void;
+  /**
+   * 打开隧道面板（端口转发）。
+   *
+   * ⚠️ 隧道**不是标签页**：一条转发规则是一个独立的 `Session`（`docs/scope.md` §2.2），
+   * 所以这个入口开的是一个面板，不是一个带 × 的标签页 —— 关它不会停掉任何隧道。
+   */
+  onNewTunnel(): void;
 }
 
-export function TabStrip({ tabs, active, onSelect, onClose, onNew, onNewSsh }: TabStripProps) {
+export function TabStrip({
+  tabs,
+  active,
+  onSelect,
+  onClose,
+  onNew,
+  onNewSsh,
+  onNewTunnel,
+}: TabStripProps) {
   return (
     <div className="tab-strip" role="tablist" aria-label="终端标签页">
       {tabs.map((tab) => (
@@ -88,6 +103,15 @@ export function TabStrip({ tabs, active, onSelect, onClose, onNew, onNewSsh }: T
         onClick={onNewSsh}
       >
         SSH
+      </button>
+      <button
+        type="button"
+        className="tab-new tab-new-tunnel"
+        title="端口转发（打开隧道面板）"
+        aria-label="打开隧道面板"
+        onClick={onNewTunnel}
+      >
+        转发
       </button>
     </div>
   );

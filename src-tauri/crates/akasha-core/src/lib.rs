@@ -26,8 +26,10 @@ mod config;
 mod event;
 mod registry;
 mod session;
+mod tunnel;
 
 pub use config::{CloseAction, CloseBehavior, Config};
 pub use event::SessionEvent;
 pub use registry::SessionRegistry;
 pub use session::{SessionError, SessionId, SessionKind};
+pub use tunnel::{TunnelState, TunnelTransitionError};

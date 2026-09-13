@@ -428,3 +428,125 @@ body {
 .config-import-counts {
   margin: 8px 0 0;
 }
+
+/* ── 隧道面板（plan 0601）────────────────────────────────────────────────── */
+/*
+ * 与主机选择器同一条要求：**能被 E2E 驱动**（`AGENTS.md` §4.0）。
+ * 类名与 data 属性稳定（`.tunnel-item[data-rule-id]`、`.tunnel-state[data-tunnel-state]`），
+ * 没有动画、没有依赖布局时序的东西。
+ */
+
+.tunnel-panel {
+  position: absolute;
+  top: 44px;
+  left: 12px;
+  z-index: 20;
+  min-width: 360px;
+  max-width: 560px;
+  padding: 12px;
+  background: #171b22;
+  border: 1px solid #2b3444;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+}
+
+.tunnel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #c3ccd8;
+}
+
+.tunnel-close {
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  color: #7b8794;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.tunnel-problem,
+.tunnel-failure {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #ffb4b4;
+}
+
+.tunnel-empty {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #8d99a8;
+}
+
+.tunnel-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tunnel-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid #232a36;
+  font-size: 13px;
+  color: #d8dee9;
+}
+
+.tunnel-name {
+  font-weight: 600;
+}
+
+.tunnel-route {
+  font-size: 11px;
+  color: #7b8794;
+}
+
+.tunnel-state {
+  margin-left: auto;
+  font-size: 11px;
+  color: #8d99a8;
+}
+
+/* 状态的颜色按**后端的取值**取（`data-tunnel-state`）—— 界面不推断状态。 */
+.tunnel-state[data-tunnel-state="connected"] {
+  color: #a3be8c;
+}
+
+.tunnel-state[data-tunnel-state="failed"] {
+  color: #ffb4b4;
+}
+
+.tunnel-state[data-tunnel-state="reconnecting"] {
+  color: #ebcb8b;
+}
+
+.tunnel-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.tunnel-actions button {
+  padding: 2px 8px;
+  background: #222a35;
+  border: 1px solid #2b3444;
+  border-radius: 4px;
+  color: #d8dee9;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tunnel-actions button:hover:not(:disabled) {
+  border-color: #3f4d66;
+}
+
+.tunnel-actions button:disabled {
+  color: #5b6673;
+  cursor: default;
+}

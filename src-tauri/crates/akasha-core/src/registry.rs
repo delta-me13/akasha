@@ -274,6 +274,34 @@ mod tests {
     }
 
     #[test]
+    fn tunnel_state_events_are_routed_by_session_id() {
+        use crate::tunnel::TunnelState;
+
+        let mut registry = SessionRegistry::new();
+        let first = registry.open(SessionKind::Tunnel).expect("open");
+        let second = registry.open(SessionKind::Tunnel).expect("open");
+        let first_rx = registry.subscribe(first).expect("subscribe");
+        let second_rx = registry.subscribe(second).expect("subscribe");
+
+        let delivered = registry.emit(SessionEvent::TunnelStateChanged {
+            id: first,
+            state: TunnelState::Connected,
+        });
+
+        assert_eq!(delivered, 1, "只应投给那一条隧道的订阅者");
+        assert!(matches!(
+            first_rx.try_recv(),
+            Ok(SessionEvent::TunnelStateChanged { id, state })
+                if id == first && state == TunnelState::Connected
+        ));
+        assert_eq!(
+            second_rx.try_recv(),
+            Err(TryRecvError::Empty),
+            "另一条隧道不该收到状态事件（串号正是全局广播的病）"
+        );
+    }
+
+    #[test]
     fn every_session_kind_has_a_distinct_short_name() {
         let names: Vec<&str> = SessionKind::ALL.iter().map(|k| k.as_str()).collect();
         let mut unique = names.clone();

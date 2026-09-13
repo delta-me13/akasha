@@ -12,12 +12,13 @@
 //! 为什么**不动** `capabilities/*.json`：整个托盘都在 Rust 侧建，前端一次都不碰
 //! （`AGENTS.md` §4.3 最小权限）。给 `core:tray:*` 只会把"改托盘"的能力白送给 webview。
 
-use akasha_core::SessionId;
+use akasha_core::TunnelState;
 use tauri::menu::{IsMenuItem, Menu, MenuBuilder, MenuEvent, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Wry};
 
 use crate::Sessions;
+use crate::session::SessionHandle;
 
 /// 托盘 id。刷新菜单时按它取回句柄（`AppHandle::tray_by_id`）。
 const TRAY_ID: &str = "akasha";
@@ -36,10 +37,11 @@ const ID_QUIT: &str = "app.quit";
 
 /// 隧道项的 id 命名法：`tunnel.<会话 id>`。
 ///
-/// 点击处理等到阶段 6 —— 没有隧道时那条分支永远进不去，写出来只是死代码。
-/// 名字先定下来，是为了**阶段 6 不必改协议**（改 id 等于改一份别人可能已经依赖的契约）。
-fn tunnel_item_id(session: SessionId) -> String {
-    format!("tunnel.{}", session.get())
+/// 点击处理等到界面那一侧的工作 —— 没有可聚焦的视图时那条分支永远进不去，
+/// 写出来只是死代码。名字先定下来，是为了**接上点击时不必改协议**
+/// （改 id 等于改一份别人可能已经依赖的契约）。
+fn tunnel_item_id(handle: SessionHandle) -> String {
+    format!("tunnel.{handle}")
 }
 
 /// 建托盘。返回值 = "托盘可用吗"，调用方据此决定关窗语义（plan 0302）。
@@ -116,9 +118,12 @@ fn build_menu(app: &AppHandle<Wry>) -> tauri::Result<Menu<Wry>> {
         .build()
 }
 
-/// 隧道子菜单。阶段 6 之前**必然**只有那一项禁用的"（暂无隧道）"。
+/// 隧道子菜单。**"失败可见"的落点**（`docs/scope.md` §5.2 / §2.2）：重连耗尽之后必须有
+/// 个地方让用户看到"它已经死了"，否则用户以为隧道还在转发。
+///
+/// 数据源是 `Sessions::tunnel_entries()` —— 与 `tunnels` probe **同一份**，不另立一张账。
 fn tunnel_submenu(app: &AppHandle<Wry>) -> tauri::Result<tauri::menu::Submenu<Wry>> {
-    let list = app.state::<Sessions>().tunnels();
+    let list = app.state::<Sessions>().tunnel_entries();
 
     if list.is_empty() {
         let empty = MenuItemBuilder::with_id(ID_TUNNELS_EMPTY, "（暂无隧道）")
@@ -129,23 +134,41 @@ fn tunnel_submenu(app: &AppHandle<Wry>) -> tauri::Result<tauri::menu::Submenu<Wr
             .build();
     }
 
-    // 有隧道时按 `SessionId` 逐条列，**先一律禁用**：
-    //   * 状态文案要等阶段 6 的状态机（0601）才存在 —— 现在**不编一个假状态**
-    //     （`docs/logging.md`：值不撒谎）；"失败可见"靠**列出来**就已经成立；
-    //   * "点了聚焦到那条隧道"也要等阶段 6 —— 一个**点了没反应**的菜单项比灰掉的更糟。
-    //     阶段 6 接上点击时，记得同时把这里改成 enabled(true)（否则那个分支永远进不去）。
+    // 按 `SessionId` 逐条列，文案 = **名称 · 状态**（plan 0601）。状态来自状态机本身，
+    // 不是另写一套（`docs/logging.md`：值不撒谎）。
+    //
+    // 仍然一律**禁用**：点击聚焦要等界面那一侧的工作 —— 一个点了没反应的菜单项
+    // 比灰掉的更糟。`tunnel_item_id` 的命名法先留着，接上点击时不必改协议。
     let mut items = Vec::with_capacity(list.len());
-    for session in list {
+    for entry in list {
+        let state = match entry.state {
+            TunnelState::Reconnecting { attempt } => format!("重连中（第 {attempt} 次）"),
+            other => tunnel_state_label(other).to_owned(),
+        };
         items.push(
-            MenuItemBuilder::with_id(tunnel_item_id(session), format!("隧道 {}", session.get()))
-                .enabled(false)
-                .build(app)?,
+            MenuItemBuilder::with_id(
+                tunnel_item_id(entry.handle),
+                format!("{} · {state}", entry.name),
+            )
+            .enabled(false)
+            .build(app)?,
         );
     }
     let refs: Vec<&dyn IsMenuItem<Wry>> = items.iter().map(|item| item as _).collect();
     SubmenuBuilder::with_id(app, ID_TUNNELS, "隧道")
         .items(&refs)
         .build()
+}
+
+/// 隧道状态的中文文案（托盘是给用户看的，不是日志）。
+fn tunnel_state_label(state: TunnelState) -> &'static str {
+    match state {
+        TunnelState::Connecting => "连接中",
+        TunnelState::Connected => "已连接",
+        TunnelState::Reconnecting { .. } => "重连中",
+        TunnelState::Failed => "失败",
+        TunnelState::Stopped => "已停止",
+    }
 }
 
 fn on_menu_event(app: &AppHandle<Wry>, event: MenuEvent) {

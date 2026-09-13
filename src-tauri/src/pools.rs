@@ -19,6 +19,7 @@
 //! 这种东西改起来没有任何人会红。`jump_id` 在 plan 0505 补上了：它也是库里的一列，
 //! 而"这一台经谁连"是选主机的人有权知道的事。
 
+use akasha_store::pools::forwards::Direction;
 use akasha_store::pools::hosts::Auth;
 use akasha_store::pools::import::Reason;
 use serde::Serialize;
@@ -327,4 +328,85 @@ fn local_user() -> Option<String> {
         .or_else(|_| std::env::var("USERNAME"))
         .ok()
         .filter(|user| !user.is_empty())
+}
+
+// ── 转发规则池的只读读取（plan 0601） ─────────────────────────────────────────
+
+/// 转发规则行的过 IPC 表示。理由同 [`HostId`]：`i64` 不过 IPC，截断绝不允许。
+pub type ForwardId = u32;
+
+/// 行 id → 过 IPC 的表示。装不下就报错，**绝不截断**。
+fn forward_id(id: i64) -> Result<ForwardId, VaultError> {
+    ForwardId::try_from(id).map_err(|_| VaultError::Unusable {
+        message: format!("转发规则池的行 id 超出可表示范围（{id}）"),
+    })
+}
+
+/// 转发方向过 IPC 的形状（与 [`AuthMethod`] 同一个理由：存储 crate 不依赖 specta）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ForwardDirection {
+    /// `-L`：本地绑定，转发到目标。
+    Local,
+    /// `-R`：远端绑定，转发回本地侧。
+    Remote,
+    /// `-D`：本地起一个 SOCKS5，目标由客户端给。
+    Dynamic,
+}
+
+impl From<Direction> for ForwardDirection {
+    fn from(direction: Direction) -> Self {
+        match direction {
+            Direction::Local => Self::Local,
+            Direction::Remote => Self::Remote,
+            Direction::Dynamic => Self::Dynamic,
+        }
+    }
+}
+
+/// 界面看得见的一条转发规则。
+///
+/// `target_host` / `target_port` 是 `Option`：`dynamic`（SOCKS5）**没有目标** ——
+/// 那是库里 `CHECK` 拦着的不变量，这里如实照搬，而不是填一个看起来像真的空串。
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardEntry {
+    /// 池里的行 id（`tunnel_open` 要的就是它）。
+    pub id: ForwardId,
+    pub name: String,
+    pub direction: ForwardDirection,
+    pub bind_host: String,
+    pub bind_port: u16,
+    pub target_host: Option<String>,
+    pub target_port: Option<u16>,
+    /// 这条规则属于哪台主机（`hosts.id`）—— 隧道**连的就是它**。
+    pub host_id: HostId,
+    /// 会话建立时是否自动起这条转发（plan 0601 只读取，不据此自动开）。
+    pub autostart: bool,
+}
+
+/// 库里转发规则池的全部行（按名字排序 —— 顺序确定，界面才不会每次刷新换一个样）。
+///
+/// 库锁着 → [`VaultError::Locked`]：规则在库里，没有别的来路。
+#[tauri::command]
+#[specta::specta]
+pub fn vault_forwards(vault: State<'_, Vault>) -> Result<Vec<ForwardEntry>, VaultError> {
+    let rows = vault
+        .with_conn(akasha_store::pools::forwards::forwards)
+        .map_err(VaultError::from_conn)?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(ForwardEntry {
+                id: forward_id(row.id)?,
+                name: row.name,
+                direction: ForwardDirection::from(row.direction),
+                bind_host: row.bind_host,
+                bind_port: row.bind_port,
+                target_host: row.target_host,
+                target_port: row.target_port,
+                host_id: host_id(row.host_id)?,
+                autostart: row.autostart,
+            })
+        })
+        .collect()
 }

@@ -31,6 +31,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             // ⚠️ 它同步就行：读一个小文件 + 一次事务都在毫秒级，而这条命令**不握手**
             //（会阻塞几秒的那种活儿在 `open_ssh_session` 那条 async 命令上）。
             crate::pools::import_ssh_config,
+            // 转发规则池的只读读取（plan 0601）：界面据此列出"有哪些隧道可以打开"。
+            crate::pools::vault_forwards,
             crate::session::open_session,
             // SSH 会话（plan 0504）。⚠️ 它**必须**留着 async：命令体里有一次会阻塞几秒的
             // 握手（最长 `connect_timeout`），而同步命令跑在处理 IPC 请求的那条线程上 ——
@@ -43,11 +45,19 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::prompt::ssh_prompt_credential,
             crate::prompt::ssh_prompt_host_key,
             crate::prompt::ssh_prompt_cancel,
+            // 隧道（plan 0601）。⚠️ `tunnel_open` / `tunnel_retry` 必须是 async：
+            // 命令体里有一次会阻塞几秒的握手（同 `open_ssh_session` 的理由）；
+            // `tunnel_stop` 只改状态与断开连接，同步即可。
+            crate::tunnel::tunnel_open,
+            crate::tunnel::tunnel_retry,
+            crate::tunnel::tunnel_stop,
         ])
         .events(collect_events![
             crate::session::SessionEnded,
             crate::prompt::PromptRequest,
             crate::prompt::PromptDismissed,
+            // 隧道的状态变化（plan 0601）：ADR-0003 D12 的"状态变化发事件"。
+            crate::tunnel::TunnelStateChanged,
         ])
 }
 

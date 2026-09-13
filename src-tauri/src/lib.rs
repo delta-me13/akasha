@@ -8,6 +8,7 @@ pub mod session;
 pub mod single_instance;
 pub mod ssh;
 pub mod tray;
+pub mod tunnel;
 pub mod vault;
 pub mod watchdog;
 
@@ -102,6 +103,13 @@ pub fn run() {
                 .probe("sessions", {
                     let sessions = sessions.clone();
                     move || session::snapshot(&sessions)
+                })
+                // 隧道（plan 0601）：`sessions` 那个探针回答"有没有人管得着"，
+                // 这一份回答"**哪一条**现在是什么状态" —— "失败必须可见"（`scope.md` §2.2）
+                // 的机器可读那一半。
+                .probe("tunnels", {
+                    let sessions = sessions.clone();
+                    move || tunnel::snapshot(&sessions)
                 })
                 .build()
                 .expect("default Victauri configuration is always valid"),

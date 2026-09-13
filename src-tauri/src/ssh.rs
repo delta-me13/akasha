@@ -33,7 +33,7 @@ use std::sync::Arc;
 use akasha_pty::TerminalSize;
 use akasha_ssh::{
     CredentialCache, HostKey, HostKeyCache, KeyCandidate, KnownHostsVerifier, RecordedHostKey,
-    SshAuth, SshConfig, SshConnect, SshError, SshTarget, SshTransport,
+    SshAuth, SshConfig, SshConnect, SshConnection, SshError, SshTarget, SshTransport,
 };
 use akasha_store::StoreError;
 use akasha_store::pools::hosts::Auth;
@@ -121,6 +121,17 @@ impl Ssh {
                     self.startup_error.as_deref().unwrap_or("原因未知")
                 ),
             })
+    }
+
+    /// runtime 的句柄；`None` = 起不来。
+    ///
+    /// 与 [`Self::handle`] 分开：那个在"要连一条新连接"的路上用，报错是对的；
+    /// 这个在**收尾**的路上用（断开一条隧道），那里没有报错的余地 ——
+    /// 起不来时退化回"丢掉连接"（`Handle` 一 drop，连接照样结束）。
+    pub(crate) fn runtime_handle(&self) -> Option<RuntimeHandle> {
+        self.runtime
+            .as_ref()
+            .map(|runtime| runtime.handle().clone())
     }
 }
 
@@ -345,40 +356,98 @@ fn stable_id(key_id: i64) -> String {
     format!("key#{key_id}")
 }
 
-/// 建立连接（**同步门面，异步在门後面**）。
+/// 在一条**普通 `std::thread`** 上跑同步门面，结果经 oneshot 回来。
 ///
-/// 一条普通 `std::thread` 上跑 `SshTransport::connect_via`：那条路径内部会
-/// `Handle::block_on`（在 tokio 上下文里会 panic / 被拒），而 `spawn_blocking` 的线程
-/// 也算 tokio 上下文 —— 所以只能自己起线程。结果经一条 oneshot 回到 async 命令，
-/// 于是**没有任何一个 runtime worker 被这一次连接占住**。
-async fn establish(
-    handle: RuntimeHandle,
-    hops: Vec<SshConnect>,
-    options: SshConnect,
-) -> Result<SshTransport, SshIpcError> {
+/// 为什么必须是 `std::thread`（模块文档的边界 1）：同步门面内部会 `Handle::block_on`，
+/// 而它在 tokio 上下文里会被拒绝（`SshError::BlockingInsideRuntime`）—— 直接 await 就等于
+/// 已经在上下文里了。`spawn_blocking` 也**不算**出路：它的线程同样 `rt.enter()` 过。
+/// 结果经 oneshot 回到 async 命令，于是没有任何一个 runtime worker 被这一次连接占住。
+async fn spawn_sync<T: Send + 'static>(
+    name: &'static str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, SshIpcError> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     std::thread::Builder::new()
-        .name("akasha-ssh-connect".to_owned())
+        .name(name.to_owned())
         .spawn(move || {
             // 送不出去只可能是命令那一侧已经走了（超时被前端放弃 / app 在退出）——
             // 那一边本来也不等，所以不记日志。
-            let _ = sender.send(SshTransport::connect_via(&handle, hops, options));
+            let _ = sender.send(work());
         })
         .map_err(|err| SshIpcError::Internal {
             message: format!("连接线程起不来：{err}"),
         })?;
 
-    receiver
-        .await
-        .map_err(|_| SshIpcError::Internal {
-            message: "连接线程没有回话".to_owned(),
-        })?
-        .map_err(SshIpcError::from_ssh)
+    receiver.await.map_err(|_| SshIpcError::Internal {
+        message: "连接线程没有回话".to_owned(),
+    })
 }
 
 /// 连接取值。默认值只有**一处**（`SshConfig::default()`），这里只把它组装起来。
 fn config() -> SshConfig {
     SshConfig::default()
+}
+
+/// 这次连接要什么：跳板链（**最外层在前**）+ 目标。
+///
+/// 终端（[`open_ssh_session`]）与隧道（[`connect_connection`]）共用它 —— 两条路的差别只在
+/// 最后一步（一个在目标上再开 shell 通道拿 `SshTransport`，一个只要 `SshConnection`），
+/// 而"照池里的行连过去要准备什么材料"这件事只该有一种说法。
+fn connect_plan(
+    ssh: &Ssh,
+    vault: &Vault,
+    host_id: HostId,
+) -> Result<(Vec<SshConnect>, SshConnect), SshIpcError> {
+    let mut links = plan_chain(vault, host_id)?;
+    // 链是"目标在前"读出来的；连接要的是"最外层先连"，所以把目标摘出来、其余翻转。
+    let target_link = links.remove(0);
+    links.reverse();
+
+    let prompts = ssh.prompts().clone();
+    // 每一跳各装一份：**每一跳各问各的凭据、各校各的主机密钥**（跳板与目标是两台机器，
+    // 信任记录与密钥池当然各是各的）。缓存是共享的 —— 它按 `(host, port, user, 方式)` 分键。
+    let link_options = |link: Planned| SshConnect {
+        target: link.target,
+        auth: link.auth,
+        cache: Arc::clone(&ssh.cache),
+        provider: Arc::new(prompts.clone()),
+        host_keys: Arc::new(
+            KnownHostsVerifier::new(Arc::new(VaultHostKeys {
+                vault: Vault::clone(vault),
+            }))
+            .with_prompt(Arc::new(prompts.clone())),
+        ),
+        config: config(),
+        size: TerminalSize::DEFAULT,
+    };
+    let hops: Vec<SshConnect> = links.into_iter().map(link_options).collect();
+    let target = link_options(target_link);
+    Ok((hops, target))
+}
+
+/// 建立一条**已认证、没有通道**的连接（plan 0601 的隧道要的就是它）。
+///
+/// 与 [`open_ssh_session`] 同一个理由走同一条 `std::thread`（见 [`spawn_sync`]）。
+pub(crate) async fn connect_connection(
+    ssh: &Ssh,
+    vault: &Vault,
+    host_id: HostId,
+) -> Result<SshConnection, SshIpcError> {
+    let handle = ssh.handle()?;
+    let (hops, options) = connect_plan(ssh, vault, host_id)?;
+    let target = options.target.clone();
+    tracing::info!(
+        host = target.host(),
+        port = target.port(),
+        user = target.user(),
+        hops = hops.len(),
+        "ssh connection opening"
+    );
+    spawn_sync("akasha-ssh-connection", move || {
+        SshConnection::connect_via(&handle, hops, options)
+    })
+    .await?
+    .map_err(SshIpcError::from_ssh)
 }
 
 /// 打开一个 SSH 终端会话，输出经 `channel` 以 **raw 字节**送出。
@@ -408,35 +477,12 @@ pub async fn open_ssh_session(
     })?;
 
     let ssh = app.state::<Ssh>();
-    let handle = ssh.handle()?;
     let vault = app.state::<Vault>();
     // 短借：把整条链读出来（每跳的地址与认证材料）就把锁放掉
     // —— 连接中途 `remember` 要回头锁库（模块文档的边界 2）。
-    let mut links = plan_chain(&vault, host_id)?;
-    // 链是"目标在前"读出来的；连接要的是"最外层先连"，所以把目标摘出来、其余翻转。
-    let target_link = links.remove(0);
-    links.reverse();
-
-    let prompts = ssh.prompts().clone();
-    // 每一跳各装一份：**每一跳各问各的凭据、各校各的主机密钥**（跳板与目标是两台机器，
-    // 信任记录与密钥池当然各是各的）。缓存是共享的 —— 它按 `(host, port, user, 方式)` 分键。
-    let link_options = |link: Planned| SshConnect {
-        target: link.target,
-        auth: link.auth,
-        cache: Arc::clone(&ssh.cache),
-        provider: Arc::new(prompts.clone()),
-        host_keys: Arc::new(
-            KnownHostsVerifier::new(Arc::new(VaultHostKeys {
-                vault: Vault::clone(&vault),
-            }))
-            .with_prompt(Arc::new(prompts.clone())),
-        ),
-        config: config(),
-        size: TerminalSize::DEFAULT,
-    };
-    let hops: Vec<SshConnect> = links.into_iter().map(link_options).collect();
-    let target = target_link.target.clone();
-    let options = link_options(target_link);
+    let (hops, options) = connect_plan(&ssh, &vault, host_id)?;
+    let handle = ssh.handle()?;
+    let target = options.target.clone();
 
     tracing::info!(
         host = target.host(),
@@ -446,7 +492,11 @@ pub async fn open_ssh_session(
         "ssh session opening"
     );
 
-    let transport = establish(handle, hops, options).await?;
+    let transport = spawn_sync("akasha-ssh-connect", move || {
+        SshTransport::connect_via(&handle, hops, options)
+    })
+    .await?
+    .map_err(SshIpcError::from_ssh)?;
     let sessions = app.state::<Sessions>();
     session::open_terminal(&app, &sessions, transport, channel).map_err(Into::into)
 }

@@ -1,4 +1,5 @@
 use crate::session::SessionId;
+use crate::tunnel::TunnelState;
 
 /// 发给某个 `Session` 的事件。
 ///
@@ -6,12 +7,22 @@ use crate::session::SessionId;
 /// 投递方不需要额外的"这是发给谁的"参数，路由因此不可能与事件内容不一致
 /// （`docs/scope.md` §5.1 第 2 条 —— 全局广播后由前端过滤，多 Session 并行时会串）。
 ///
-/// 目前只有生命周期事件：数据事件要等 `Transport` 落地（plan 0105 / 0201）。
+/// 目前是生命周期事件 + 隧道状态事件：数据事件要等 `Transport` 落地（plan 0105 / 0201）。
 /// 这里**不预先编造** `Output` / `Exited` 之类的形状 —— 那是下一个工作项的事。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEvent {
     /// 该 `Session` 已被关闭。这是订阅者能收到的**最后一条**事件，之后通道断开。
     Closed { id: SessionId },
+    /// 某条隧道的状态变了（ADR-0003 **D12**：状态变化**发事件**，界面未实现也先发）。
+    ///
+    /// 事件里带的是**新状态**，不是"从哪来"：订阅者要的是"它现在怎么样"
+    /// （`docs/scope.md` §2.2 的"失败必须可见"就靠这一条送到托盘与界面）。
+    TunnelStateChanged {
+        /// 哪条隧道。
+        id: SessionId,
+        /// 变成什么状态了。
+        state: TunnelState,
+    },
 }
 
 impl SessionEvent {
@@ -19,6 +30,7 @@ impl SessionEvent {
     pub const fn session(&self) -> SessionId {
         match self {
             SessionEvent::Closed { id } => *id,
+            SessionEvent::TunnelStateChanged { id, .. } => *id,
         }
     }
 }

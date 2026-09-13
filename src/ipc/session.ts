@@ -31,6 +31,10 @@ export class IpcInvokeError extends Error {
         return `载体失败：${detail.detail.message}`;
       case "channel":
         return `频道句柄无效：${detail.detail.message}`;
+      case "tunnel":
+        // 隧道有自己的错误类型（`TunnelFailed`）。走到这里说明一条隧道命令是从
+        // **终端会话**那条路调出来的 —— 那不是用户错误，是接线错了。
+        return `隧道状态转移被拒：${detail.detail.message}`;
       case "internal":
         return `内部状态不可用：${detail.detail.message}`;
     }
