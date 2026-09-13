@@ -9,9 +9,10 @@
 ## 一句话
 
 **阶段 2「端到端最小终端」5/5 完成**；**阶段 3「托盘与应用生命周期」6/6 完成**；
-**阶段 4「存储与凭据池」9/9 完成**；**阶段 5「SSH 栈」5/6**（0501 ADR / 0502 连接认证 /
-0503 known_hosts / 0504 接进 IPC 与前端 / **0505 `direct-tcpip` 原语 + 跳板**）；
-下一步是 **0506 `~/.ssh/config` 受限子集导入**。
+**阶段 4「存储与凭据池」9/9 完成**；**阶段 5「SSH 栈」6/6 完成**（0501 ADR / 0502 连接认证 /
+0503 known_hosts / 0504 接进 IPC 与前端 / 0505 `direct-tcpip` 原语 + 跳板 /
+**0506 `~/.ssh/config` 受限子集导入**）；
+下一步是 **阶段 6 plan 0601（隧道实体 + 状态机）**。
 
 阶段 4 的八块（一句话各一块）：**SQLCipher 加密库能开**（0401）、**口令只从一条路进来，而且能真的
 验证它**（0402 —— 拆开了"打开"与"新建"，原来在没有文件的路径上**任何口令都能开**）、
@@ -34,13 +35,14 @@
 | 0503 | known_hosts 三态判定（D11）+ 库格式 v2 与第一次迁移 | **crate 层**：策略 + 库契约；迁移用真 v1 库 |
 | 0504 | SSH 接进 IPC / 前端：带目标的会话命令、提问往返、提示界面 | **真 app**（`ssh_session` E2E + 测试进程内的服务端） |
 | **0505** | **`direct-tcpip` 原语**（D9 的形状 = 一条流）+ **跳板链**（池里的 `jump_id` 真的走） | **crate 层**（两个真服务端 + 负控）+ **真 app**（`ssh_jump` E2E） |
-| 0506 | `~/.ssh/config` 受限子集导入 | 未开始 |
+| **0506** | **`~/.ssh/config` 受限子集导入**（三档边界：六条导入 / 局部指令警告 / 其余整份报错）+ 池的**第一条写路径** | **crate 层**（29 条解析 + 5 条落库，纯函数）+ **真 app**（`ssh_config_import` E2E：导入进来的行**经跳板真连上**） |
 
-**这一轮（0505）把"一个原语服务三处"的地基落了**：`SshConnection::direct_tcpip` 交出**一条
-`AsyncRead + AsyncWrite` 的流**（`SshStream`），跳板那条路把这条流交给 `connect_stream`
-当下一跳的"网络"——于是"经跳板连一台**只有跳板看得见**的主机"这条判据在真 app 上成立。
-整条链（每一跳各问各的凭据、各校各的主机密钥）**随最终那条连接的 task 一起生灭**：
-关标签页 = 整条链一起断。
+**这一轮（0506）把"用户已有的配置"接上了**：`akasha-store::sshconfig` 是一个**纯函数**
+（一段文本 → 一批条目），求值只有一条规则 —— 每个参数**首次取到的值生效**（`Host *` 写在前面
+会压住后面的具体条目）。剩下的全在**边界**上：认得的局部指令（保活、算法、转发、日志……）
+逐条警告，`Match` / `Include` / 会改目的地或信任来源的、以及**表里没有的**一律**整份报错**。
+导入进来的 `ProxyJump` 不再是空话：E2E 用**导入出来的那两行**连上了只有跳板看得见的主机。
+⚠️ 私钥**不导入**：`IdentityFile` 只让条目落成"公钥认证 + 钥匙在 ssh-agent 里"。
 
 ### 阶段 5 之前那些跨阶段的结论（还在生效）
 
@@ -99,7 +101,13 @@
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全绿** |
-| `just test` | **243 tests run: 243 passed**（`akasha` **66** + `akasha-core` 15 + `akasha-pty` 39 + `akasha-ssh` **31** + `akasha-store` **92**）。⚠️ `akasha` 那 66 条含 `tests/` 下的集成目标（没有 `VICTAURI_E2E` 时它们只打印原因并返回 —— 其中 `portable` 3 条、`ssh_session` 1 条、**`ssh_jump` 1 条**） |
+| `just test` | **279 tests run: 279 passed**（`akasha` **66** + `akasha-core` 15 + `akasha-pty` 39 + `akasha-ssh` **31** + `akasha-store` **127**）。⚠️ `akasha` 那 66 条含 `tests/` 下的集成目标（没有 `VICTAURI_E2E` 时它们只打印原因并返回 —— 其中 `portable` 3 条、`ssh_session` 1 条、`ssh_jump` 1 条、**`ssh_config_import` 1 条**） |
+| ↑ **判据：含 `Match` 的配置产生明确报错**（plan 0506） | ✅ `ssh_config_import` E2E（真 app + 测试进程内两台服务端）：界面上导入一份含 `Match` 的配置 → **逐条**列出"第 4 行 `match`：条件块无法求值…"且**没有导入报告** → `vault_hosts` 的行数与导入前**一样**（一行都没写） |
+| ↑ **导入进来的跳板能真用**（plan 0506 —— 这才是它排在 0505 之后的理由） | ✅ 同一份 E2E 的另外两半：① 界面列出**支持集**（`Host,HostName,User,Port,IdentityFile,ProxyJump`）→ 填路径 → 导入报告 `新增 2 · 更新 0 · 跳过 0`，两条"没生效"逐条带行号（`serveraliveinterval` / `identityfile`）；② 拿**导入出来的那两行**开一个经跳板的会话 —— 四条提示按序答完 → 跳板记到 1 条 `direct-tcpip → akasha-e2e-import.invalid:22` → 字到了目标 |
+| ↑ **导入只搬配置、不搬私钥**（P2） | ✅ E2E 里那一行的 `auth = publicKey` + `keyId = null`（钥匙在 agent 里）；`no_absolute_paths` 新增一条：配置里写着 `IdentityFile /home/nobody/.ssh/id_ed25519`，导完之后**库里没有一个值提到这个路径**（解析器看见了它、只放进报告） |
+| ↑ **解析语义与系统 ssh 逐字一致**（开发期对照，不进任何门禁） | ✅ 同一份 fixture 喂 `ssh -G`：`hostname akasha-e2e-import.invalid` / `user e2e` / `port 22` / `proxyjump e2e-config-jump` —— 与导入进池的那一行**逐字一致**。⚠️ 系统 `ssh` 不是本产品的依赖（`scope.md` §2.1），它只在开发期当**差分对照物** |
+| ↑ **三档边界在 crate 层被钉住**（plan 0506，纯函数） | ✅ `sshconfig_parse` **29 passed**（0.11 s）：首次取值胜出 / 全局段 / 关键字不分大小写而 `Host` 模式分 / 通配块不成条目 / `ProxyJump` 的 `none`·逗号链·补建 / `Match`·`Include`·改目的地（`ProxyCommand` / `Canonicalize*` / 源地址）· 改信任来源 一律报错且**一次列全** / 局部指令逐条警告 |
+| ↑ **落库的判据**（plan 0506） | ✅ `hosts_import` **5 passed**：链挂上且 `jump_chain` 读得出 / 同名默认不动、`overwrite` 才替换 / **补建的跳板条目永不覆盖**用户写的行 / **手工塞进去的环被存储层拒绝且一行不写**（事务回滚） |
 | ↑ **判据：ProxyJump 可连通只对跳板机可见的目标**（plan 0505） | ✅ `ssh_jump` E2E（真 app + **测试进程内两台**服务端）：池里那一行的 `host` 是 `akasha-e2e-inner.invalid`（用例自己解析一次并**断言失败**）→ 界面选它 → **四条提示按序答完**（跳板的密钥 / 跳板的口令 / 目标的密钥 / 目标的口令）→ 连上 → **跳板服务端记到恰好 1 条 `direct-tcpip → akasha-e2e-inner.invalid:22`** → 敲的字到了**目标**服务端 |
 | ↑ **那个名字在本机解析不出来**（构造前提） | ✅ `(INNER_NAME, 22).to_socket_addrs()` **返回 Err** —— 用例自己断言。于是"字节到了目标"这件事**只可能**经过跳板（无特权环境做不出真网络隔离，这条是替代口径，见「待验证」） |
 | ↑ **每一跳各问各的凭据**（D8 的缓存键含 host） | ✅ 跳板服务端收到的是 `jump-host-password`、目标收到的是 `inner-host-password`（**两句话不一样**，给错就认证失败）；两台的**指纹也不同**（各自被问过一次） |
@@ -109,14 +117,14 @@
 | ↑ **判据：真 app 上开一个 SSH 会话**（plan 0504） | ✅ `ssh_session` E2E（真 app + **测试进程内**的服务端，**2.32 s**）：界面点 SSH → 选中池里那一行 → **主机密钥提示里那串指纹等于服务端的** → 接受 → 口令提示 → 填答 → 连上（标签页标题 = 池里的名字） |
 | ↑ **字节能双向流 / 确认过的密钥进我们的库 / 凭据只问一次 / 关标签页零残留**（plan 0504） | ✅ 四条各有一断言：回声在屏幕上**且服务端收到同一串**；直连库文件读到 `known_hosts` **1 行**；第二个会话**一次都没问**就连上（服务端第 2 次收到**同一句**口令）；关两个标签页 → `sessions` probe 回 **`{"live":1,"registered":1}`** + 服务端看到 **2 条**连接断开 |
 | ↑ **提问往返自身**（plan 0504，crate 级 6 条） | ✅ 答案到得了问的人手里 / 超时会**撤回**那一问、之后作答报 `Gone` / **取消与超时分得开** / **没人答 = `HostKeyUnknown`（拒绝），不是 `Ok`** / 用户接受之后**真的写进缓存** |
-| ↑ **`just test-e2e` 全绿** | 退出码 **0**：**20 个 E2E 用例**（含新增的 `ssh_jump`）+ 第三段 3 条（`portable`）。`ssh_session` / `ssh_jump` 都排在 `vault_unlock` **之后**（三个用例都在动同一个库文件） |
+| ↑ **`just test-e2e` 全绿** | 退出码 **0**：**21 个 E2E 用例**（含新增的 `ssh_config_import`）+ 第三段 3 条（`portable`）。`ssh_session` / `ssh_jump` / `ssh_config_import` 都排在 `vault_unlock` **之后**（三个用例都在动同一个库文件） |
 | ↑ **判据：host key 变了就拒绝，没见过的要问一次**（plan 0503） | ✅ `akasha-ssh` 的 7 条：未知且没人可问 → `HostKeyUnknown`（带去核对的指纹，且**认证一步没开始**）；确认 → 进缓存，**第二个连接 0 次提问**；记录对不上 → `HostKeyChanged`（**两个指纹都在**）且**一次都不问**；用户否认 → 拒绝且**不记录**；用户文件里认得 → 连上且文件**逐字节没变** |
 | ↑ **本仓库第一次格式迁移**（plan 0503） | ✅ `akasha-store` 的 6 条：`DDL_V1` 造出**真 v1 库** → `open` 之后 `user_version = 2`、五张表在、**那条 host 还在**；再开一次当前格式的库**一个字节都不写**；缺表的 v1 **不迁移**；导出与明文导出两条还原路都**升的是副本、来源逐字节不变** |
 | ↑ **判据：同主机三个连接只问一次凭据**（plan 0502） | ✅ `three_sessions_ask_for_one_credential`：`provider.calls() == 1`、缓存 `len() == 1`、服务端三次都收到**同一句口令** |
 | ↑ **认证顺序是线协议上的事实**（plan 0502） | ✅ 服务端记下的序列：`publickey → password`、`publickey → keyboard-interactive`；agent 不可用时序列里**没有** `publickey` 痕迹 |
 | ↑ **`nodelay` 从空话变成真的**（plan 0505 修） | ✅ `tcp_stream` 里自建 TCP 时显式 `set_nodelay(true)`（坑 #120：上游只在 `client::connect` 里看 `Config::nodelay`，而两条路都用 `connect_stream`） |
 | ↑ **`cargo.lock` 的增量只有一行**（plan 0504/0505） | ✅ 加 `akasha → akasha-ssh` 这条边**只多一行**；0505 **一行都没多**（没有新依赖，`rand` 早就是 `akasha-ssh` 的真依赖） |
-| `pnpm build`（tsc + vite build） | 退出码 0；产物 **850.09 kB / gzip 233.41 kB**（+0.2 kB：选择器上多一个"经跳板"标记） |
+| `pnpm build`（tsc + vite build） | 退出码 0；产物 **853.84 kB / gzip 234.67 kB**（+3.8 kB：选择器里多一块导入面板） |
 | `just docs-check` | 全过（ROADMAP 58 个条目 ≤3 行且无代码块 / 50 份 plan ≤200 行且索引一致） |
 | `ast-grep scan` + `ast-grep test` | 都退出 **0**（本轮没有新增 / 改动规则） |
 | **三条 unsafe 注释 lint**（clippy，`just lint` 里） | 退出码 **0**；三条各用一个探针证明**它们真的会红**（探针跑完即撤） |
@@ -173,8 +181,8 @@
 |---|---|
 | workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` / `akasha-store` / `akasha-ssh` |
 | 二进制落点 | `src-tauri/target/debug/akasha`（另有代码生成工具 `gen-types`，故必须 `default-run`，坑 #29） |
-| 后端模块 | `bindings` / `session` / `tray` / `config` / `lifecycle` / `single_instance` / `vault` / `watchdog` / `ssh`（长住状态 + 那条命令 + 跳板链 + 库内 known_hosts 适配器） / `prompt`（提问往返） / `pools`（池的只读读取） |
-| **命令清单** | `greet` · `vault_status` / `vault_unlock` / `vault_lock` · `vault_hosts` · `open_session` · `open_ssh_session` · `write_session` / `resize_session` / `close_session` · `ssh_prompt_credential` / `ssh_prompt_host_key` / `ssh_prompt_cancel`（事件：`session_ended` · `ssh_prompt` / `ssh_prompt_dismissed`）。**plan 0505 没有新增命令** —— 跳板是既有那条命令内部多走几跳 |
+| 后端模块 | `bindings` / `session` / `tray` / `config` / `lifecycle` / `single_instance` / `vault` / `watchdog` / `ssh`（长住状态 + 那条命令 + 跳板链 + 库内 known_hosts 适配器） / `prompt`（提问往返） / `pools`（池的读取 + **导入**） |
+| **命令清单** | `greet` · `vault_status` / `vault_unlock` / `vault_lock` · `vault_hosts` · **`import_ssh_config`** · `open_session` · `open_ssh_session` · `write_session` / `resize_session` / `close_session` · `ssh_prompt_credential` / `ssh_prompt_host_key` / `ssh_prompt_cancel`（事件：`session_ended` · `ssh_prompt` / `ssh_prompt_dismissed`）。**plan 0505 没有新增命令**（跳板是既有那条命令内部多走几跳）；**0506 新增一条**，而它是**池的第一条写路径** |
 | **probe** | `lifecycle` → `{close_behavior, tray_ready, close_action}`（没登记时 `{"initialized":false}`，坑 #93）；`single_instance` → `{registered, activations}`；`sessions` → `{live, registered}`（SSH 没有本地进程，"零残留"只能看注册表）。**库没有 probe**：状态本身就是命令（`vault_status`） |
 | 出字节路径 | PTY / SSH read → 合批（64 KiB / 16 ms）→ `Channel<InvokeResponseBody>` **raw** → JS `ArrayBuffer` → `term.write`。**两条载体共用同一条尾巴**（`session::open_terminal`） |
 | **`direct-tcpip` 原语**（plan 0505，ADR-0003 **D9**） | `akasha-ssh/src/forward.rs`：`SshStream`（自己实现 `AsyncRead + AsyncWrite`，**不把 `russh::ChannelStream` 漏进公开签名**）+ `SshConnection`（已认证、**没有通道**的连接，持有 `Handle`）+ `SshConnection::direct_tcpip(host, port)`。三处消费者（跳板 / `-L` / SFTP B 档）吃的都是**这条流**；`-L` 与 SFTP 尚未接上（plan 0602 / 0703） |
@@ -186,13 +194,15 @@
 | **库的解锁状态** | `Vault { inner: Arc<Mutex<Option<Unlocked>>> }`（`Clone`）；`Unlocked { conn, passphrase }` 同生共死。借库的失败分两种（`ConnError`：`Locked` / `Store`）—— 因为 SSH 那条路要单独认出 `NoSuchRow`（"你挑错了主机"） |
 | **`akasha-ssh` 的形状** | 八个模块：`target` / `credential` / `keys` / `handshake`（`handshake<S>` = 一跳的握手 + 认证，**底层流由调用方给**） / `known_hosts` / **`forward`（D9 原语 + `SshConnection`）** / `transport` / `testing`（进程内测试服务端，**生产代码别用**；它支持 `direct-tcpip` 的中继与拒绝两条分支） |
 | **错误分域** | `akasha-ssh`：`HostKeyCache`（库那一侧读不动缓存）、**`Forward { host, port, reason }`**（跳板拒绝 / 够不着目标 —— 与"我连不上那台机器"分开）。app 侧 `SshIpcError`：`Locked` / `NoSuchHost` / `Failed { kind, message }`（`kind` = `hostKeyChanged` / `hostKeyRejected` / `hostKeyUnknown` / `hostKeyCache` / `auth` / `connect` / **`jump`** / `other`）/ `Internal` —— **前端按 `kind` 分辨**，不匹配消息字符串 |
-| **前端结构** | `src/ipc/`（`session.ts` / `prompts.ts` / `hosts.ts` —— 唯一允许碰后端的目录）、`src/tabs/`、`src/terminal/`、`src/ssh/`（主机选择器 + 提示面板）、`src/App.tsx`。标签页 `kind`：`terminal` / `ssh`（**都有关闭按钮**，规则写成 `CLOSABLE` 清单） |
+| **前端结构** | `src/ipc/`（`session.ts` / `prompts.ts` / `hosts.ts` —— 唯一允许碰后端的目录）、`src/tabs/`、`src/terminal/`、`src/ssh/`（主机选择器 + **导入面板** + 提示面板）、`src/App.tsx`。标签页 `kind`：`terminal` / `ssh`（**都有关闭按钮**，规则写成 `CLOSABLE` 清单） |
 | **前端的一个 dev-only 陷阱** | React StrictMode 把 effect 走两遍 → SSH 会话会被开两次。处置：SSH 那条连接**推迟一个微任务**再发（坑 #118） |
 | **SSH 栈**（ADR-0003） | `russh = "=0.63.3"`、features `["ring","rsa"]`；`akasha-ssh` 只收 `tokio::runtime::Handle`；对外是同步 `Transport` 门面 + 两条**有界** mpsc（满 → `TransportError::Busy`）；capability = `resize + exit_status`、`session_leader() = None` |
 | **连接取值**（D15 + 0505 的修正） | `connect_timeout = 10s`；`keepalive_interval = Some(30s)`、`keepalive_max = 3`；**Nagle 关掉**（`tcp_stream` 里显式 `set_nodelay(true)`，坑 #120）。⚠️ 那三个数是**有理由的默认值**，不是实测出来的 |
 | **库格式与迁移** | `FORMAT_VERSION = 2`；v1 = 四张池表（`DDL_V1` 冻结、公开），v2 = v1 + `known_hosts`。`open` 里 `upgrade()`：`== 2` 什么都不做；`1` → 先按 v1 校验形状 → **一次事务**里加表 + 写版本号；`> 2` 与 `0` 拒绝；写不动 → `UpgradeFailed`。⚠️ **降级不行** |
 | **库文件的磁盘事实** | `akasha.db`；建库后 **36864 字节 = 9 页**；SQLCipher 4.5.7 + vendored OpenSSL 3.6.3 + 内嵌 SQLite **3.46**；`user_version = 2` 是格式权威；盐 16 字节随机；显式收紧到 **600**；不带 `-wal` / `-shm`；解锁代价 **~105 ms**（KDF） |
 | **四套池** | `keys` / `hosts` / `serials` / `forwards`，各 5 个函数 + 反查（`hosts` 另有 `jump_chain`）。`New*`（没有 id）与 `*`（有 id）**是两种类型**；不变量写在库上（`STRICT` + `CHECK` + 外键 `RESTRICT`，D14） |
+| **`~/.ssh/config` 导入**（plan 0506，ADR-0003 **D14**） | 解析器在 `akasha-store/src/sshconfig.rs`，**纯函数** `parse(text, default_user)`（不读盘 / 不读环境 / 不碰库）；落库在 `pools/import.rs` —— **一个事务**，先全按 `jump_id = NULL` 插入、再用 `update_host` 挂链（于是成环检查**只有一份实现**：`insert_host` 刻意不做的那份，而导入是第一条"一次插入多行、这些行互相引用"的路径）。三档边界见 ADR-0003 D14；名单与判据只有 `classify` 一处 |
+| **导入的三条产品口径** | ① **同名默认不动**（`overwrite` 才整行替换）；② **为跳板补建的条目永不覆盖**用户写的行；③ `IdentityFile` 只让条目落成 `publickey` + `key_id = null`（**私钥不导入**，连接时走 agent），报告里逐条说明 |
 | **known_hosts 缓存** | 表 `known_hosts(id, host, port, key_type, key_blob, fingerprint)`，`UNIQUE (host, port, key_type)`。**缓存不是池**；判定材料是 `key_blob`（逐字节比）；`remember` 遇到同键不同值 → `Conflict`（**写路径上就不许静默改写**） |
 | **主机密钥的三态判定** | `KnownHostsVerifier`：**库 → 用户的 `~/.ssh/known_hosts`（只读）→ 提问**。库里 / 文件里对不上 → `HostKeyChanged`（**不看不问**）；两边都没有 → 有 `HostKeyPrompt` 就问、确认后 `remember`。两个注入点是**同步** trait |
 | **口令与私钥** | `Passphrase` / `PrivateKey`：空值**造不出来**、**没有 `Debug`**、本体住在 `memsafe` 的受保护页；`PassphraseInput` 是口令**经 IPC 进来的唯一形态**（vault 解锁与 SSH 凭据**共用**它） |
@@ -203,13 +213,13 @@
 
 ## 进行中 / 下一步
 
-- [ ] **下一步 = 阶段 5 的 plan 0506**（[`~/.ssh/config` 受限子集导入](./plans/0506-ssh-config-subset-import.md)）：
-  它是**未规划（骨架）**，要先补齐「步骤」与「验收命令」。**0505 已经让池里的 `jump_id` 真能用**，
-  所以导进来的 `ProxyJump` 这才不是一句空话。⚠️ 它要动的是**写入路径**（池的第一个写命令），
-  而写入路径的判据（重名 / 成环 / 引用）在 `akasha-store` 那侧已经写好了。
+- [ ] **下一步 = 阶段 6 的 plan 0601（隧道实体 + 状态机）**：它是**未规划（骨架）**，
+  要先补齐「步骤」与「验收命令」。⚠️ 阶段 6 要动的是**不可逆点**之一（隧道状态名与事件名会进
+  `bindings.ts` 与前端）—— 开工前先看 ADR-0003 §10 与 D12。
 - [ ] **阶段 5 之后还有两处界面缺口**（不是 bug，是没有规划的工作）：**解锁界面**（今天 SSH 那条
-  真路径上，解锁由 E2E 的 `invoke_command` 完成）与**主机池的增删改查界面**（今天只能直接写库 ——
-  连跳板链也一样）。
+  真路径上，解锁由 E2E 的 `invoke_command` 完成）与**主机池的增删改查界面**。⚠️ 0506 只补上了
+  **导入**这一条写路径：今天一台机器的端口/用户名/跳板在界面上**改不了**（只能改配置再导一次 +
+  `overwrite`，或者直接改库）。
 - [ ] **`-L` / SFTP B 档还没接上 `direct_tcpip`**：形状已定（一条流），真正的适配在 0602 / 0703。
 - [ ] **降级路径没有实测**：v2 的库在旧版本程序里会以 `UnsupportedVersion { found: 2 }` 被拒（有意）。
 - [~] **plan 0102（CI 平台矩阵）**：本地部分完成，最终判据 = **推上去三个 job 全绿**，卡在没有 remote
@@ -221,7 +231,32 @@
 > 理由：信任策略是**接口形状**（先行），而原语的消费者都要先有一条**从 app 打得开的**
 > SSH 会话才验得了。编号与执行顺序现在一致，索引里有一段重排说明。
 
-### 本轮完成（plan 0505：`direct-tcpip` 原语 + 跳板）
+### 本轮完成（plan 0506：`~/.ssh/config` 受限子集导入）
+
+**判据（ROADMAP 原文）**：含 `Match` 的配置产生**明确报错**，不是静默误解析。
+
+- [x] **三档边界落定**（ADR-0003 **D14** 展开，§14 记一行）：导入六条 / **认得的局部指令逐条警告
+  并继续** / `Match`·`Include`·会改目的地或信任来源的·`IgnoreUnknown`·**表里没有的**一律
+  **整份报错**（一次列全，带行号）。判据是**后果**（"会不会连到别的机器、会不会改我们信任哪把
+  密钥"），不是"认不认识"；兜底方向是**默认报错**
+- [x] **求值语义照 OpenSSH 实测**（`ssh -G`）：每个参数**首次取到的值生效**（开头 `Host *` 会压住
+  后面的具体条目 —— "一个 `Host` 块 = 一行"那种读法会**静默连错端口**）；文件开头到第一个
+  `Host` / `Match` 之间是全局段；关键字不分大小写而 `Host` 模式分；通配块不产生条目
+- [x] **解析器是纯函数**（`akasha-store/src/sshconfig.rs`）：不读盘、不读环境、不碰库 —— 于是
+  整套语义在没有 app / 库 / 网络的地方被 29 条用例钉住
+- [x] **落库走一个事务**（`pools/import.rs`）：先全插（`jump_id = NULL`）再挂链，成环检查**复用**
+  `update_host` 那份（`insert_host` 的"新行没有入边"论证对导入不成立 —— **plan 之外的一条发现**）；
+  同名默认不动、补建的跳板条目**永不覆盖**
+- [x] **池的第一条写路径接进 IPC 与前端**：`import_ssh_config(path, overwrite)` + 报告
+  （新增 / 更新 / 跳过 / **未生效的指令** / 结构性说明）+ 界面上列出**支持集**
+- [x] **判据实测**（真 app）：见上表三行 —— 含 `Match` 的整份报错且一行不写 / 正常配置导入的
+  两行**经跳板真连上** / 私钥路径没进库
+- [x] **门禁**：`just ready` **6/6**；`just test` **279 passed**（+36）；`just test-e2e` **退出码 0**
+  （21 个用例）；`pnpm build` 退出码 0；`cargo.lock` 零增量
+- [x] **记账**：plan 0506 改「已完成」并 `git mv` 进 `archive/`（索引与 ROADMAP 指针同步）；
+  ADR-0003 D14 展开 + §14 一行；`scope.md` §3 / §8 各补一句；本文件覆盖写
+
+### 上一轮完成（plan 0505：`direct-tcpip` 原语 + 跳板）
 
 **判据（ROADMAP 原文）**：ProxyJump 可连通**只对跳板机可见**的目标。
 
@@ -244,16 +279,11 @@
 - [x] **记账**：plan 0505 改「已完成」并 `git mv` 进 `archive/`（索引与 ROADMAP 指针同步）；
   ADR-0003 **D9 标上已落地**并新增一行 §14 修订；本文件覆盖写
 
-### 上一轮完成（plan 0504：SSH 接进 IPC / 前端）
+### 更早几轮（0504 及之前）
 
-- [x] **一条带目标的会话命令**：`open_ssh_session` 按主机池的一行连过去；SSH 与本地终端**共用**
-  注册 / 频道 / 收尾那条尾巴（D3 的兑现）
-- [x] **一条"后端问 → 前端答"的往返**（ADR-0003 **D16**）：一个事件 + 三条回答命令，
-  **120 s 超时即拒绝**，被撤下时再发一个 `ssh_prompt_dismissed`
-- [x] **库连接做成可共享句柄**：`Vault` → `Arc` + `with_conn` 短借；`HostKeyCache` 适配器接到
-  `akasha_store::known_hosts`；⚠️ **绝不在持锁期间连接**
-- [x] **服务端提成 `akasha_ssh::testing`**（app 的 E2E 也要在它自己的进程里起它）、新增 `sessions`
-  probe、`session.rs` 抽出 `open_terminal`
+- [x] **0504**（SSH 接进 IPC / 前端）：一条带目标的会话命令 + 一条"后端问 → 前端答"的往返
+  （ADR-0003 **D16**，120 s 超时即拒绝）+ 库连接做成可共享句柄（⚠️ **绝不在持锁期间连接**）。
+  细节全在 [`archive/0504`](./plans/archive/0504-ssh-into-ipc-frontend.md) 与上面的基线表里
 
 ### 上一轮完成（plan 0503 / 0502 / 0501）
 
@@ -449,3 +479,14 @@
 123. **`rusqlite` 不是 app 的 dev-dependency**（`akasha-store` 才是）—— 集成测试里要写
     `Connection` 这个类型时，走 `akasha_store::Connection` 这个**再导出**，别去 `Cargo.toml` 里
     加一份版本要对齐的重复依赖。
+124. **全部 E2E 目标跑在同一个 app 进程里，而内存凭据缓存的键是 `(host, port, user, 认证方式)`**
+    （ADR-0003 D8，`Arc` 共享）。所以两个 E2E 目标若用**同一个 `host:port`**（例如都拿
+    `akasha-e2e-inner.invalid:22` 当"只有跳板看得见的目标"）而后面的目标给了**另一句口令**，
+    第二个目标会**静默用缓存里那句**：服务端拒绝 → `password_step` 只 `forget`、这一条连接就
+    走完了 → 整条认证**失败**，用户（和用例）**不会**被重新问一次。症状是"提示问答没走完就连不上"，
+    而 `wait_connected` 那条诊断会告诉你真正的原因（`认证失败：… 上没有可用的方式`）。
+    正解：**每个 SSH E2E 目标用自己的目标名**（`akasha-e2e-import.invalid` 是这么来的）——
+    端口撞不会有事（跳板端口每次随机），**名字会**。
+125. **`thiserror` 的 `#[error("…", expr)]` 不吃位置参数** —— 想写 `… 有 {} 处 …", problems.len()`
+    会得到 `expected an expression`。要么用字段引用（`{problems}`，但那要求字段实现 `Display`），
+    要么**把整句话在构造处拼好**放到一个 `message` 字段里（`ImportError::Refused` 就是这么做的）。

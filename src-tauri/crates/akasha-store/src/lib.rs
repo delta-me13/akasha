@@ -51,6 +51,12 @@ pub mod pools;
 /// 口令与私钥用它，SSH 的凭据缓存也用**它**——而不是各自抄一份。
 pub mod protected;
 mod schema;
+/// `~/.ssh/config` 的**受限子集**解析（plan 0506 / ADR-0003 D14）。
+///
+/// 放在这里而不是 app 侧：它的产物就是 ssh 配置池的字段集，而"哪些能进池"这件事的
+/// 判据（不存路径、重名唯一、跳板要成一行）本来就在这个 crate 里。它自己是**纯函数**
+/// —— 不读盘、不读环境、不碰库。
+pub mod sshconfig;
 
 use std::path::{Path, PathBuf};
 

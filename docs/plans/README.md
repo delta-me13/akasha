@@ -114,7 +114,7 @@
 | 0503 | known_hosts 校验与缓存（含库格式 v2 迁移） | 已完成（2026-09-13：三态判定 + 自动迁移；`just ready` 6/6） | plan 0502（ADR-0003 D11 已定策略） | [0503](./archive/0503-known-hosts.md) |
 | 0504 | SSH 接进 IPC / 前端（带目标的命令 + 凭据往返 + 提示界面） | 已完成（2026-09-13：真 app 上界面选主机 → 提示 → 双向流；凭据只问一次；关标签页零残留） | plan 0503（信任策略已定） | [0504](./archive/0504-ssh-into-ipc-frontend.md) |
 | 0505 | `direct-tcpip` 原语 | 已完成（2026-09-13：跳板链走通；库内 4 用例 + 真 app E2E；`just ready` 6/6） | plan 0504（已完成）· 形状见 ADR-0003 D9 | [0505](./archive/0505-direct-tcpip-primitive.md) |
-| 0506 | `~/.ssh/config` 受限子集导入 | 未规划（骨架） | 展开时机：plan 0505（**已完成**）之后（导入的 `ProxyJump` 要能真用） | [0506](./0506-ssh-config-subset-import.md) |
+| 0506 | `~/.ssh/config` 受限子集导入 | 已完成（2026-09-13：三档边界落地；导入的行**经跳板真连上**；含 `Match` 的整份报错且一行不写；`just ready` 6/6） | plan 0505（已完成）· 边界见 ADR-0003 D14 | [0506](./archive/0506-ssh-config-subset-import.md) |
 
 > 本阶段的顺序由**依赖**决定，不按原立项号（2026-09-13 重排）：信任策略 → 接进 app → 原语 → 配置导入。
 > 重排后**编号与执行顺序一致**；`direct-tcpip` 从 0503 挪到 0505，因为它的三处消费者

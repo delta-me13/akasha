@@ -232,8 +232,22 @@ impl HostKeyVerifier for KnownHostsVerifier {
 /// 这里不用 `std::env::home_dir()`：它在旧版本上被弃用过，行为也随时间变过；
 /// 我们只需要两个环境变量（Windows 上是 `USERPROFILE`）。
 pub fn user_known_hosts_file() -> Option<PathBuf> {
+    ssh_file("known_hosts")
+}
+
+/// 用户的 `~/.ssh/config`（plan 0506 导入的**默认**输入）。
+///
+/// 与 [`user_known_hosts_file`] 共用"`~/.ssh` 在哪"这一条推导（`HOME` / `USERPROFILE`）：
+/// 两处各写一份，迟早会出现"一个认 `HOME`、另一个只认 `USERPROFILE`"。
+/// 导入的调用方**可以**给别的路径 —— 这个函数只回答"不给路径时读哪个"。
+pub fn user_ssh_config_file() -> Option<PathBuf> {
+    ssh_file("config")
+}
+
+/// `~/.ssh/<name>`。取不到家目录 → `None`（**不猜**一个路径去读别人的东西）。
+fn ssh_file(name: &str) -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    Some(PathBuf::from(home).join(".ssh").join("known_hosts"))
+    Some(PathBuf::from(home).join(".ssh").join(name))
 }
 
 /// 用户文件里那把**同类型**的密钥，以及它在文件里的**真实**行号。

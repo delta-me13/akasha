@@ -67,7 +67,7 @@ pub use handshake::{HostKey, HostKeyVerifier, PinnedHostKey, SshConfig, SshConne
 pub use keys::{KeyCandidate, SshAuth};
 pub use known_hosts::{
     HostKeyCache, HostKeyPrompt, KnownHostsVerifier, RecordedHostKey, RecordedIn,
-    user_known_hosts_file,
+    user_known_hosts_file, user_ssh_config_file,
 };
 pub use target::SshTarget;
 pub use transport::SshTransport;

@@ -33,8 +33,8 @@ use akasha_ssh::testing::{Relay, Running, ServerOptions, start};
 use akasha_store::pools::hosts;
 use serde_json::{Value, json};
 use support::{
-    CLOSE_TIMEOUT, USER, click, connect_and_prepare, forget, observed, open_vault, text, text_of,
-    type_line, unlock, wait_connected, wait_js,
+    CLOSE_TIMEOUT, PromptScript, USER, answer_prompts, click, connect_and_prepare, forget,
+    observed, open_vault, text, text_of, type_line, unlock, wait_connected, wait_js,
 };
 use victauri_test::VictauriClient;
 
@@ -107,79 +107,25 @@ fn seed(path: &std::path::Path, jump_port: u16) -> (u64, u64) {
     (jump as u64, target as u64)
 }
 
-/// 回答提示**直到会话连上**（按类型答），并把"问过谁"记下来。
-///
-/// 为什么是循环而不是写死四步：链上每一跳各来一轮（密钥 + 口令），轮数取决于链上有几台、
-/// 以及哪些已经记在库里 —— 写死数字会在链一变长时**静默少答一轮**，表现是"连不上"
-/// 而不是"用例写错了"。
-async fn answer_prompts(
+/// 回答提示五步里的"这一问" —— 循环本身搬到了 `support`（两个用例共用，见那边的文档）。
+async fn answer(
     client: &mut VictauriClient,
     jump_port: u16,
-    jump_fingerprint: &str,
-    target_fingerprint: &str,
-    tabs: usize,
+    jump_fp: &str,
+    target_fp: &str,
 ) -> Vec<String> {
-    let mut asked = Vec::new();
-    let deadline = std::time::Instant::now() + Duration::from_secs(90);
-    // 等"弹出任意一种提示"（超时也照常往下走：下一圈先看是不是已经连上了）。
-    let any_prompt = "!!document.querySelector('.ssh-prompt[data-prompt-kind=\"hostKey\"]') \
-                      || !!document.querySelector('.ssh-prompt[data-prompt-kind=\"credential\"]')";
-    loop {
-        if support::is_connected(client, tabs).await {
-            return asked;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "提示问答没走完就连不上（问到过的：{asked:?}）"
-        );
-        let _ = client
-            .wait_for_expression(any_prompt, None, Some(5_000), None)
-            .await;
-
-        let fingerprint = text_of(
-            client,
-            ".ssh-prompt[data-prompt-kind=\"hostKey\"] .ssh-prompt-fingerprint",
-        )
-        .await;
-        if !fingerprint.is_empty() {
-            // 主机密钥：指纹必须与**某一台**服务端对得上（"问的是谁"要说得清）。
-            assert!(
-                fingerprint == jump_fingerprint || fingerprint == target_fingerprint,
-                "提示里那串指纹不属于任何一台服务端：{fingerprint}"
-            );
-            asked.push(format!("hostKey:{fingerprint}"));
-            click(
-                client,
-                ".ssh-prompt[data-prompt-kind=\"hostKey\"] .ssh-prompt-accept",
-                "接受这把主机密钥",
-            )
-            .await;
-            continue;
-        }
-
-        let target_text = text_of(
-            client,
-            ".ssh-prompt[data-prompt-kind=\"credential\"] .ssh-prompt-hint",
-        )
-        .await;
-        if !target_text.is_empty() {
-            // 口令按**问的是哪台**给：两跳的登录口令不一样。
-            let secret = if target_text.contains(&format!(":{jump_port}")) {
-                JUMP_PASSWORD
-            } else {
-                TARGET_PASSWORD
-            };
-            asked.push(format!("credential:{target_text}"));
-            support::fill_secret(client, secret).await;
-            click(
-                client,
-                ".ssh-prompt[data-prompt-kind=\"credential\"] .ssh-prompt-submit",
-                "提交口令",
-            )
-            .await;
-            continue;
-        }
-    }
+    answer_prompts(
+        client,
+        PromptScript {
+            tabs: 2,
+            jump_port,
+            jump_password: JUMP_PASSWORD,
+            target_password: TARGET_PASSWORD,
+            jump_fingerprint: jump_fp,
+            target_fingerprint: target_fp,
+        },
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -265,12 +211,11 @@ async fn a_session_through_a_bastion_reaches_a_host_only_it_can_see() {
     .await;
 
     // ── 5. 提示：**每一跳各一轮**（密钥 + 口令），按类型循环答完 ──────────────
-    let asked = answer_prompts(
+    let asked = answer(
         &mut client,
         jump.addr.port(),
         &jump.fingerprint,
         &target.fingerprint,
-        2,
     )
     .await;
     eprintln!("提示问答（按发生顺序）：{asked:?}");

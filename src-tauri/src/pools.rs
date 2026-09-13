@@ -1,14 +1,16 @@
-//! **池的只读读取**（plan 0504）—— 界面凭什么把一台主机交给 SSH 那条路。
+//! **池与界面之间的接口** —— 阶段 4 落的是四套池的 CRUD（`akasha-store` 的 `pools::*`，
+//! plan 0403），而它一条命令都没接进 IPC：那时没有任何界面要读它们。
 //!
-//! 阶段 4 落的是四套池的 **CRUD**（`akasha-store` 的 `pools::*`，plan 0403），
-//! 而它一条命令都没接进 IPC：那时没有任何界面要读它们。plan 0504 需要第一条 ——
-//! "从界面选一个主机"要求界面**看得见**池里有什么。
+//! | 命令 | 哪来的 | 为什么是它 |
+//! |---|---|---|
+//! | [`vault_hosts`]（plan 0504） | "从界面选一个主机"要求界面**看得见**池里有什么 | 纯读，不改任何状态 |
+//! | [`import_ssh_config`]（plan 0506） | 用户的机器上早就有 `~/.ssh/config` | 唯一的**写**路径，而它写什么是**文件说了算**（不是界面上一格一格填） |
 //!
-//! ## 为什么只做"读"，以及为什么这样不算越界
+//! ## 为什么到现在也只有这两条
 //!
 //! 增删改是**用户动作**，各有各的判据（重名怎么办、跳板成环怎么提示、删掉被引用的行怎么
-//! 解释）—— 那些是阶段 4 之后仍未规划的界面工作，不属于本 plan。而"列出有哪些主机"
-//! 没有可选项：它就是把库里已有的东西显示出来，**不改任何状态**。
+//! 解释）—— 那些是仍未规划的界面工作。而导入不一样：它没有"填什么"的自由度，只有"照不照
+//! 这份文件做"这一个问题，而那个问题的答案已经写在 `akasha-store::sshconfig` 里了。
 //!
 //! ## 过 IPC 的形状是有意的
 //!
@@ -18,10 +20,11 @@
 //! 而"这一台经谁连"是选主机的人有权知道的事。
 
 use akasha_store::pools::hosts::Auth;
+use akasha_store::pools::import::Reason;
 use serde::Serialize;
 use tauri::State;
 
-use crate::vault::{Vault, VaultError};
+use crate::vault::{ConnError, Vault, VaultError};
 
 /// 池行的**过 IPC 表示**。
 ///
@@ -109,4 +112,219 @@ pub fn vault_hosts(vault: State<'_, Vault>) -> Result<Vec<HostEntry>, VaultError
             })
         })
         .collect()
+}
+
+// ── 从 `~/.ssh/config` 导入（plan 0506） ────────────────────────────────────
+
+/// 导入报告（过 IPC 的形状）。
+///
+/// 它同时回答三个问题，缺一个用户就没法相信这次导入：
+///
+/// | 字段 | 回答 |
+/// |---|---|
+/// | [`Self::created`] / [`Self::updated`] / [`Self::skipped`] | **池里变了吗** |
+/// | [`Self::ignored`] | **配置里哪些话我们没照做**（受限子集的边界就落在这里） |
+/// | [`Self::notes`] | **我们替你补了什么、跳过了什么**（通配块、补建的跳板条目……） |
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportReport {
+    /// **真读的那个文件**（`path` 没给时是这样推出来的）。
+    pub path: String,
+    pub created: Vec<ImportedHost>,
+    pub updated: Vec<ImportedHost>,
+    pub skipped: Vec<SkippedHost>,
+    /// 没生效的指令：行号 + 关键字 + 说法。
+    pub ignored: Vec<ConfigFinding>,
+    pub notes: Vec<String>,
+}
+
+/// 池里新增 / 被替换的一行。
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedHost {
+    pub id: HostId,
+    pub name: String,
+}
+
+/// 看见了、但**没动**的一行。
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedHost {
+    pub name: String,
+    pub reason: SkipReason,
+}
+
+/// 没动这一行的原因。**两个取值对应两个不同的下一步动作**（对用户说的是两句话）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SkipReason {
+    /// 池里已经有同名的行了（想换掉它就再导一次并选择覆盖）。
+    Existing,
+    /// 这一条是**为跳板补建**的，而池里已有同名行 —— 用的是池里那一行。
+    Fallback,
+}
+
+impl From<Reason> for SkipReason {
+    fn from(reason: Reason) -> Self {
+        match reason {
+            Reason::Exists => Self::Existing,
+            Reason::Fallback => Self::Fallback,
+        }
+    }
+}
+
+/// 报告里的一条：行号 + 关键字 + 说法。
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigFinding {
+    pub line: u32,
+    pub keyword: String,
+    pub message: String,
+}
+
+/// 导入失败。变体按**用户的下一步动作**分（与 `VaultError` / `SshIpcError` 同一原则）。
+#[derive(Debug, thiserror::Error, Serialize, specta::Type)]
+#[serde(tag = "kind", content = "detail", rename_all = "camelCase")]
+pub enum ImportError {
+    /// 库没解锁。导入要**写**进 ssh 配置池，所以解锁是硬前提（不像列主机那样只是读不到）。
+    #[error("库是锁着的：导入要把条目写进 ssh 配置池，先解锁")]
+    Locked,
+
+    /// 文件读不到（不存在 / 权限 / 不是 UTF-8）。**不是"导入了 0 台"**：这两件事要分得开，
+    /// 否则用户会去池子里找一台本来就还在原地的机器。
+    #[error("读不到 `{path}`：{message}")]
+    Unreadable { path: String, message: String },
+
+    /// 这份配置**整份**不能照着做（`Match` / `Include` / 不认识的指令……）。
+    /// 一行都没写 —— 这是"宁可明确报错，也不静默误解析"那条判据的落点。
+    ///
+    /// `message` 里带条数（`thiserror` 的格式串只认字段，所以那句话在命令里拼好）。
+    #[error("{message}")]
+    Refused {
+        path: String,
+        message: String,
+        problems: Vec<ConfigFinding>,
+    },
+
+    /// 其余（写库失败、取不到本机用户名……）。
+    #[error("{message}")]
+    Failed { message: String },
+}
+
+/// 把一份 `~/.ssh/config`（或 `path` 指定的文件）导入 ssh 配置池。
+///
+/// `path` 为 `None` → `~/.ssh/config`（家目录取不到时**明确报错**，不猜一个路径去读）。
+/// `overwrite` = `false`（默认）：同名已存在就**不动它**，只在报告里列出来。
+///
+/// 支持哪些指令、不支持时是报错还是警告 —— 全在 `akasha_store::sshconfig` 里，这个命令
+/// 只负责"读文件、问用户名、写库、把结果拼成报告"。
+#[tauri::command]
+#[specta::specta]
+pub fn import_ssh_config(
+    vault: State<'_, Vault>,
+    path: Option<String>,
+    overwrite: bool,
+) -> Result<ImportReport, ImportError> {
+    let file = match path {
+        Some(path) => std::path::PathBuf::from(path),
+        None => akasha_ssh::user_ssh_config_file().ok_or_else(|| ImportError::Unreadable {
+            path: "~/.ssh/config".to_owned(),
+            message: "取不到家目录（`HOME` / `USERPROFILE` 都没有），不给路径就不知道该读哪个文件"
+                .to_owned(),
+        })?,
+    };
+    // 显示用的路径：报告里要写清**真读了哪一个**（给相对路径时这一点尤其重要）。
+    let shown = file.to_string_lossy().into_owned();
+
+    let text = std::fs::read_to_string(&file).map_err(|err| ImportError::Unreadable {
+        path: shown.clone(),
+        message: err.to_string(),
+    })?;
+
+    // 没写 `User` 的条目用本机用户名（OpenSSH 的默认值就是当前用户）。
+    let user = local_user().ok_or_else(|| ImportError::Failed {
+        message: "取不到本机用户名（`USER` / `USERNAME` 都没有），没写 `User` 的条目不知道该填谁"
+            .to_owned(),
+    })?;
+
+    let parsed = akasha_store::sshconfig::parse(&text, &user).map_err(|problems| {
+        let problems: Vec<ConfigFinding> = problems.into_iter().map(finding).collect();
+        ImportError::Refused {
+            path: shown.clone(),
+            message: format!(
+                "`{shown}` 里有 {} 处不能照着做，所以一行都没导入（每处一行，见 problems）",
+                problems.len()
+            ),
+            problems,
+        }
+    })?;
+
+    let outcome = vault
+        .with_conn(|conn| {
+            akasha_store::pools::import::import_hosts(conn, &parsed.targets, overwrite)
+        })
+        .map_err(|err| match err {
+            ConnError::Locked => ImportError::Locked,
+            ConnError::Store(err) => ImportError::Failed {
+                message: err.to_string(),
+            },
+            ConnError::Internal(message) => ImportError::Failed { message },
+        })?;
+
+    tracing::info!(
+        path = shown.as_str(),
+        created = outcome.created.len(),
+        updated = outcome.updated.len(),
+        skipped = outcome.skipped.len(),
+        ignored = parsed.ignored.len(),
+        "ssh config imported"
+    );
+
+    let host = |row: akasha_store::pools::import::Row| {
+        host_id(row.id)
+            .map(|id| ImportedHost { id, name: row.name })
+            .map_err(|err| ImportError::Failed {
+                message: err.to_string(),
+            })
+    };
+    Ok(ImportReport {
+        created: outcome
+            .created
+            .into_iter()
+            .map(host)
+            .collect::<Result<_, _>>()?,
+        updated: outcome
+            .updated
+            .into_iter()
+            .map(host)
+            .collect::<Result<_, _>>()?,
+        skipped: outcome
+            .skipped
+            .into_iter()
+            .map(|(name, reason)| SkippedHost {
+                name,
+                reason: reason.into(),
+            })
+            .collect(),
+        ignored: parsed.ignored.into_iter().map(finding).collect(),
+        notes: parsed.notes,
+        path: shown,
+    })
+}
+
+/// `akasha-store` 的说法 → 过 IPC 的形状。
+fn finding(finding: akasha_store::sshconfig::Finding) -> ConfigFinding {
+    ConfigFinding {
+        line: u32::try_from(finding.line).unwrap_or(u32::MAX),
+        keyword: finding.keyword,
+        message: finding.message,
+    }
+}
+
+/// 本机用户名（OpenSSH 在没写 `User` 时用的那个）。
+fn local_user() -> Option<String> {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .ok()
+        .filter(|user| !user.is_empty())
 }

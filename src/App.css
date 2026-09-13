@@ -346,3 +346,85 @@ body {
   font-size: 12px;
   color: #ffb4b4;
 }
+
+/* ── 从 ~/.ssh/config 导入（plan 0506）────────────────────────────────────── */
+/*
+ * 与上面两块同一个要求：**能被 E2E 驱动**（`AGENTS.md` §4.0）。选择器与类名稳定
+ * （`[data-import-run]` / `[data-import-report]` / `[data-import-ignored]`），没有动画。
+ */
+
+.config-import {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #2b3444;
+  font-size: 12px;
+  color: #c3ccd8;
+}
+
+.config-import-summary {
+  cursor: pointer;
+}
+
+.config-import-scope {
+  margin: 6px 0;
+  color: #8d99a8;
+  line-height: 1.5;
+}
+
+.config-import-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.config-import-path {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  background: #12161c;
+  border: 1px solid #2b3444;
+  border-radius: 4px;
+  color: #d8dee9;
+  font: inherit;
+}
+
+.config-import-overwrite {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.config-import-run {
+  padding: 4px 10px;
+  background: #263042;
+  border: 1px solid #3f4d66;
+  border-radius: 4px;
+  color: #d8dee9;
+  font: inherit;
+  cursor: pointer;
+}
+
+.config-import-problem {
+  margin: 8px 0 0;
+  color: #ffb4b4;
+}
+
+/* 整份被拒的那几处 / 没生效的指令 / 补建与跳过的说明：都是逐条列表。 */
+.config-import-problems,
+.config-import-ignored,
+.config-import-skipped,
+.config-import-notes {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  color: #8d99a8;
+  line-height: 1.5;
+}
+
+.config-import-problems {
+  color: #ffb4b4;
+}
+
+.config-import-counts {
+  margin: 8px 0 0;
+}

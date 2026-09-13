@@ -214,3 +214,33 @@ fn the_absolute_path_check_can_actually_see_a_path() {
         "取数那一层必须看得见绝对路径 —— 看不见的话，上一条判据只是「什么都没匹配到」"
     );
 }
+
+/// **新加的写入路径也要守 P2**：导入 `~/.ssh/config`（plan 0506）时最容易漏出去的就是
+/// `IdentityFile` —— 它天然是一个绝对路径，而且用户写得理直气壮。
+///
+/// 判据分两半：解析器**看见了**那条路径（报告里有它），而库里**一个值都没有提到它**。
+/// 只断言后一半是不够的：一个"根本没读懂这行"的实现也照样让后一半成立。
+#[test]
+fn importing_a_config_does_not_leave_the_key_file_path_behind() {
+    let (_dir, conn) = new_vault("no-paths-import");
+
+    const KEY_FILE: &str = "/home/nobody/.ssh/id_ed25519";
+    let config = format!("Host work\n  HostName work.example\n  IdentityFile {KEY_FILE}\n");
+    let imported = akasha_store::sshconfig::parse(&config, "me").unwrap();
+    assert_eq!(
+        imported.targets[0].key_file.as_deref(),
+        Some(KEY_FILE),
+        "解析器该读到这个密钥文件（报告里要说清它没有导入）"
+    );
+    akasha_store::pools::import::import_hosts(&conn, &imported.targets, false).unwrap();
+
+    let values = all_values(&conn);
+    assert!(
+        values.iter().any(|(table, _, _)| table == "hosts"),
+        "池里该有导入进来的那一行：{values:?}"
+    );
+    assert!(
+        !values.iter().any(|(_, _, value)| value.contains(KEY_FILE)),
+        "密钥文件的路径不该进库（它只出现在报告里）：{values:?}"
+    );
+}

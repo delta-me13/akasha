@@ -1,13 +1,15 @@
-// 主机选择器 —— "从界面选一个主机"（plan 0504）。
+// 主机选择器 —— "从界面选一个主机"（plan 0504），以及**从 `~/.ssh/config` 导入**（plan 0506）。
 //
 // 它是**壳层**：列出池里已有的行，选一行交给 `onConnect`。没有新建 / 编辑 / 删除
-// —— 那是仍未规划的界面工作（本步只把库里已有的东西列出来）。
+// —— 那是仍未规划的界面工作（本步只把库里已有的东西列出来）。唯一的写入口是导入，
+// 而它写什么由**文件**说了算（见 `ConfigImport.tsx`）。
 //
 // ⚠️ 库锁着时列不出来（池在库里）：这里把那句话原样显示，**不假装列表是空的**
 // —— "一台主机都没有"与"读不出来"是两件事，混在一起会让用户去建一台已经存在的机器。
 
 import { useCallback, useEffect, useState } from "react";
 import { HostsUnavailable, listHosts, type HostEntry } from "../ipc/hosts";
+import { ConfigImport } from "./ConfigImport";
 
 interface HostPickerProps {
   onConnect(host: HostEntry): void;
@@ -79,6 +81,9 @@ export function HostPicker({ onConnect, onClose }: HostPickerProps) {
           取消
         </button>
       </div>
+      {/* 导入（plan 0506）：池的第一条写路径。放在选择器里是因为它**产出**这个列表
+          —— 导完立刻能看见池里多了什么（`onImported` 就是重新读一次）。 */}
+      <ConfigImport onImported={reload} />
     </div>
   );
 }

@@ -49,6 +49,16 @@ export const commands = {
 	 */
 	vaultHosts: () => typedError<HostEntry[], VaultError>(__TAURI_INVOKE("vault_hosts")),
 	/**
+	 *  把一份 `~/.ssh/config`（或 `path` 指定的文件）导入 ssh 配置池。
+	 * 
+	 *  `path` 为 `None` → `~/.ssh/config`（家目录取不到时**明确报错**，不猜一个路径去读）。
+	 *  `overwrite` = `false`（默认）：同名已存在就**不动它**，只在报告里列出来。
+	 * 
+	 *  支持哪些指令、不支持时是报错还是警告 —— 全在 `akasha_store::sshconfig` 里，这个命令
+	 *  只负责"读文件、问用户名、写库、把结果拼成报告"。
+	 */
+	importSshConfig: (path: string | null, overwrite: boolean) => typedError<ImportReport, ImportError>(__TAURI_INVOKE("import_ssh_config", { path, overwrite })),
+	/**
 	 *  打开一个终端会话，输出经 `channel` 以 **raw 字节**送出。
 	 * 
 	 *  返回的 id 是前端后续 `write_session` / `resize_session` / `close_session` 要用的句柄。
@@ -103,6 +113,13 @@ export const events = {
  */
 export type AuthMethod = "password" | "publicKey" | "agent";
 
+/**  报告里的一条：行号 + 关键字 + 说法。 */
+export type ConfigFinding = {
+	line: number,
+	keyword: string,
+	message: string,
+};
+
 /**  界面看得见的一台主机。 */
 export type HostEntry = {
 	/**  池里的行 id（`open_ssh_session` 要的就是它）。 */
@@ -128,6 +145,62 @@ export type HostEntry = {
 	 *  还是跳板的问题。链本身（跳板还有跳板）由连接那条路自己走，界面只看一跳。
 	 */
 	jumpId: number | null,
+};
+
+/**  导入失败。变体按**用户的下一步动作**分（与 `VaultError` / `SshIpcError` 同一原则）。 */
+export type ImportError = 
+/**  库没解锁。导入要**写**进 ssh 配置池，所以解锁是硬前提（不像列主机那样只是读不到）。 */
+{ kind: "locked" } | 
+/**
+ *  文件读不到（不存在 / 权限 / 不是 UTF-8）。**不是"导入了 0 台"**：这两件事要分得开，
+ *  否则用户会去池子里找一台本来就还在原地的机器。
+ */
+{ kind: "unreadable"; detail: {
+	path: string,
+	message: string,
+} } | 
+/**
+ *  这份配置**整份**不能照着做（`Match` / `Include` / 不认识的指令……）。
+ *  一行都没写 —— 这是"宁可明确报错，也不静默误解析"那条判据的落点。
+ * 
+ *  `message` 里带条数（`thiserror` 的格式串只认字段，所以那句话在命令里拼好）。
+ */
+{ kind: "refused"; detail: {
+	path: string,
+	message: string,
+	problems: ConfigFinding[],
+} } | 
+/**  其余（写库失败、取不到本机用户名……）。 */
+{ kind: "failed"; detail: {
+	message: string,
+} };
+
+/**
+ *  导入报告（过 IPC 的形状）。
+ * 
+ *  它同时回答三个问题，缺一个用户就没法相信这次导入：
+ * 
+ *  | 字段 | 回答 |
+ *  |---|---|
+ *  | [`Self::created`] / [`Self::updated`] / [`Self::skipped`] | **池里变了吗** |
+ *  | [`Self::ignored`] | **配置里哪些话我们没照做**（受限子集的边界就落在这里） |
+ *  | [`Self::notes`] | **我们替你补了什么、跳过了什么**（通配块、补建的跳板条目……） |
+ */
+export type ImportReport = {
+	/**  **真读的那个文件**（`path` 没给时是这样推出来的）。 */
+	path: string,
+	created: ImportedHost[],
+	updated: ImportedHost[],
+	skipped: SkippedHost[],
+	/**  没生效的指令：行号 + 关键字 + 说法。 */
+	ignored: ConfigFinding[],
+	notes: string[],
+};
+
+/**  池里新增 / 被替换的一行。 */
+export type ImportedHost = {
+	id: number,
+	name: string,
 };
 
 /**
@@ -258,6 +331,19 @@ export type SessionEnded = {
 	handle: number,
 	/**  结局的可读描述（`None` = 这个载体不报结局，或收尾时出了岔子 —— 见 `retire`）。 */
 	status: string | null,
+};
+
+/**  没动这一行的原因。**两个取值对应两个不同的下一步动作**（对用户说的是两句话）。 */
+export type SkipReason = 
+/**  池里已经有同名的行了（想换掉它就再导一次并选择覆盖）。 */
+"existing" | 
+/**  这一条是**为跳板补建**的，而池里已有同名行 —— 用的是池里那一行。 */
+"fallback";
+
+/**  看见了、但**没动**的一行。 */
+export type SkippedHost = {
+	name: string,
+	reason: SkipReason,
 };
 
 /**

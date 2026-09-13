@@ -21,6 +21,7 @@
 
 pub mod forwards;
 pub mod hosts;
+pub mod import;
 pub mod keys;
 pub mod known_hosts;
 pub mod serial;

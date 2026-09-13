@@ -160,9 +160,9 @@
 - [x] **`direct-tcpip` 原语**（本阶段先用于跳板，之后三处复用）
       验收：ProxyJump 可连通只对跳板机可见的目标
       → [plan 0505](./docs/plans/archive/0505-direct-tcpip-primitive.md)
-- [ ] `~/.ssh/config` **受限子集**导入（`Match` / `Include` 显式报错）
+- [x] `~/.ssh/config` **受限子集**导入（`Match` / `Include` 显式报错）
       验收：含 `Match` 的配置产生**明确报错**，不是静默误解析
-      → [plan 0506](./docs/plans/0506-ssh-config-subset-import.md)
+      → [plan 0506](./docs/plans/archive/0506-ssh-config-subset-import.md)
 
 ---
 

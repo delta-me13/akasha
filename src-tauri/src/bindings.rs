@@ -27,6 +27,10 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::vault::vault_lock,
             // 池的只读读取（plan 0504）：界面据此列出主机。
             crate::pools::vault_hosts,
+            // 池的**第一条写路径**（plan 0506）：从 `~/.ssh/config` 导入。
+            // ⚠️ 它同步就行：读一个小文件 + 一次事务都在毫秒级，而这条命令**不握手**
+            //（会阻塞几秒的那种活儿在 `open_ssh_session` 那条 async 命令上）。
+            crate::pools::import_ssh_config,
             crate::session::open_session,
             // SSH 会话（plan 0504）。⚠️ 它**必须**留着 async：命令体里有一次会阻塞几秒的
             // 握手（最长 `connect_timeout`），而同步命令跑在处理 IPC 请求的那条线程上 ——

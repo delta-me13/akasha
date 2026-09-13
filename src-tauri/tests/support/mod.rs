@@ -214,19 +214,21 @@ pub async fn type_line(client: &mut VictauriClient, line: &str) {
     );
 }
 
-/// 在凭据提示里填一句口令。
+/// 往一个受控输入框里填值。
 ///
-/// ⚠️ **必须分两次 `eval_js`**（填一次、提交一次）：React 的受控输入要等它把 `input` 事件
-/// 之后的那次重渲染提交完，`onSubmit` 闭包里的 `secret` 才是新值 —— 同一个 JS 任务里
-/// 紧接着 `.click()` 会提交**上一次渲染**的空串。
-pub async fn fill_secret(client: &mut VictauriClient, secret: &str) {
-    let literal = serde_json::to_string(secret).unwrap();
+/// ⚠️ React 的受控输入认的是**原生 setter + `input` 事件**（直接改 `.value` 它看不见），
+/// 而且**必须与提交分成两次 `eval_js`**：要等它把这一次事件之后的重渲染提交完，
+/// `onSubmit` 闭包里的值才是新的 —— 同一个 JS 任务里紧接着 `.click()` 会提交**上一次渲染**
+/// 的旧值（空串）。这个坑是 `ssh_session` 上实测出来的。
+pub async fn fill_input(client: &mut VictauriClient, selector: &str, value: &str) {
+    let selector = serde_json::to_string(selector).unwrap();
+    let value = serde_json::to_string(value).unwrap();
     let js = format!(
         r#"(() => {{
-  const input = document.querySelector('.ssh-prompt[data-prompt-kind="credential"] .ssh-prompt-secret');
+  const input = document.querySelector({selector});
   if (!input) return false;
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-  setter.call(input, {literal});
+  setter.call(input, {value});
   input.dispatchEvent(new Event('input', {{ bubbles: true }}));
   return true;
 }})()"#
@@ -234,8 +236,113 @@ pub async fn fill_secret(client: &mut VictauriClient, secret: &str) {
     let filled = client.eval_js(&js).await.unwrap();
     assert!(
         payload(&filled).as_bool().unwrap_or(false),
-        "口令框没有出现在预算里：{filled}"
+        "填不进 {selector}：{filled}"
     );
+}
+
+/// 在凭据提示里填一句口令（见 [`fill_input`] 的两条理由）。
+pub async fn fill_secret(client: &mut VictauriClient, secret: &str) {
+    fill_input(
+        client,
+        ".ssh-prompt[data-prompt-kind=\"credential\"] .ssh-prompt-secret",
+        secret,
+    )
+    .await;
+}
+
+/// 回答提示的**剧本**：链上有哪两台、口令各是什么、各自的主机密钥指纹。
+pub struct PromptScript<'a> {
+    /// 这一轮问答结束时会话数（用来判"已经连上了，不用再答"）。
+    pub tabs: usize,
+    /// 跳板监听的端口 —— 用它认"这一问问的是哪一台"（口令按此分流）。
+    pub jump_port: u16,
+    pub jump_password: &'a str,
+    pub target_password: &'a str,
+    pub jump_fingerprint: &'a str,
+    pub target_fingerprint: &'a str,
+}
+
+/// 回答提示**直到会话连上**（按类型答），并把"问过谁"记下来。
+///
+/// 为什么是循环而不是写死四步：链上每一跳各来一轮（密钥 + 口令），轮数取决于链上有几台、
+/// 以及哪些已经记在库里 —— 写死数字会在链一变长时**静默少答一轮**，表现是"连不上"
+/// 而不是"用例写错了"。
+///
+/// 两个用例（`ssh_jump` 与 `ssh_config_import`）共用它：它们问的是同一个问题
+/// （"每一跳各问各的凭据"），抄第二份的下场是两份慢慢分叉。
+pub async fn answer_prompts(client: &mut VictauriClient, script: PromptScript<'_>) -> Vec<String> {
+    let mut asked = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    // 等"弹出任意一种提示"（超时也照常往下走：下一圈先看是不是已经连上了）。
+    let any_prompt = "!!document.querySelector('.ssh-prompt[data-prompt-kind=\"hostKey\"]') \
+                      || !!document.querySelector('.ssh-prompt[data-prompt-kind=\"credential\"]')";
+    loop {
+        if is_connected(client, script.tabs).await {
+            return asked;
+        }
+        if std::time::Instant::now() >= deadline {
+            // 超时要带上**界面当时说的话**（状态栏 + 报错行 + 此刻有没有提示），
+            // 否则下一次只能猜是"没弹提示"还是"连不上"——实测这两件事长得一模一样。
+            let status = text_of(client, ".tab-pane.is-active .terminal-status").await;
+            let error = text_of(client, ".tab-pane.is-active .terminal-error").await;
+            let hint = text_of(
+                client,
+                ".ssh-prompt[data-prompt-kind=\"credential\"] .ssh-prompt-hint",
+            )
+            .await;
+            panic!(
+                "提示问答没走完就连不上（问到过的：{asked:?}；状态栏={status:?} 报错={error:?} \
+                 当前提示={hint:?}）"
+            );
+        }
+        let _ = client
+            .wait_for_expression(any_prompt, None, Some(5_000), None)
+            .await;
+
+        let fingerprint = text_of(
+            client,
+            ".ssh-prompt[data-prompt-kind=\"hostKey\"] .ssh-prompt-fingerprint",
+        )
+        .await;
+        if !fingerprint.is_empty() {
+            // 主机密钥：指纹必须与**某一台**服务端对得上（"问的是谁"要说得清）。
+            assert!(
+                fingerprint == script.jump_fingerprint || fingerprint == script.target_fingerprint,
+                "提示里那串指纹不属于任何一台服务端：{fingerprint}"
+            );
+            asked.push(format!("hostKey:{fingerprint}"));
+            click(
+                client,
+                ".ssh-prompt[data-prompt-kind=\"hostKey\"] .ssh-prompt-accept",
+                "接受这把主机密钥",
+            )
+            .await;
+            continue;
+        }
+
+        let target_text = text_of(
+            client,
+            ".ssh-prompt[data-prompt-kind=\"credential\"] .ssh-prompt-hint",
+        )
+        .await;
+        if !target_text.is_empty() {
+            // 口令按**问的是哪台**给：两跳的登录口令不一样。
+            let secret = if target_text.contains(&format!(":{}", script.jump_port)) {
+                script.jump_password
+            } else {
+                script.target_password
+            };
+            asked.push(format!("credential:{target_text}"));
+            fill_secret(client, secret).await;
+            click(
+                client,
+                ".ssh-prompt[data-prompt-kind=\"credential\"] .ssh-prompt-submit",
+                "提交口令",
+            )
+            .await;
+            continue;
+        }
+    }
 }
 
 /// 读某个选择器的文本（取不到就返回空串）。
