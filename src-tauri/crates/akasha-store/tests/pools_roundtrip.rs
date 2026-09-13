@@ -262,6 +262,67 @@ fn a_jump_chain_may_not_close_into_a_cycle() {
     ));
 }
 
+/// 整条链读得出来，而且**目标在前**（plan 0505 的连接路径就吃这个顺序）。
+#[test]
+fn a_jump_chain_reads_from_the_target_back_to_the_bastion() {
+    let (_dir, conn) = new_vault("hosts-jump-chain");
+
+    let outer = hosts::insert_host(&conn, &new_host("outer", None)).unwrap();
+    let middle = hosts::insert_host(&conn, &new_host("middle", Some(outer))).unwrap();
+    let inner = hosts::insert_host(&conn, &new_host("inner", Some(middle))).unwrap();
+
+    let chain = hosts::jump_chain(&conn, inner).unwrap();
+    let names: Vec<&str> = chain.iter().map(|host| host.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["inner", "middle", "outer"],
+        "第一项是**要连的那台**，最后一项是最外层（app 直接连的那台）"
+    );
+
+    // 没有跳板的主机：链就是它自己一项（"直连"也是一种链，只是长度为 1）。
+    let alone = hosts::jump_chain(&conn, outer).unwrap();
+    assert_eq!(alone.len(), 1);
+    assert_eq!(alone[0].id, outer);
+}
+
+/// 读路径**自己也**挡成环与过深：写入路径挡不住有人手工改库，而链上真有环时连接会**挂住**
+/// （不是报错，是"点了没反应"）。这里用 SQL 直接造一个环 —— 那正是要防的那种库。
+#[test]
+fn a_cycle_that_was_smuggled_into_the_file_is_caught_on_read() {
+    let (_dir, conn) = new_vault("hosts-jump-smuggled-cycle");
+
+    let a = hosts::insert_host(&conn, &new_host("a", None)).unwrap();
+    let b = hosts::insert_host(&conn, &new_host("b", Some(a))).unwrap();
+    // 绕过 `update_host`（它会拒绝）：手工把 a 的跳板接到 b 上。
+    conn.execute("UPDATE hosts SET jump_id = ?1 WHERE id = ?2", [b, a])
+        .unwrap();
+
+    let err = hosts::jump_chain(&conn, b).unwrap_err();
+    assert!(
+        matches!(err, StoreError::JumpChain),
+        "读路径也要拦住成环：{err:?}"
+    );
+}
+
+#[test]
+fn a_jump_chain_deeper_than_the_limit_is_refused() {
+    let (_dir, conn) = new_vault("hosts-jump-too-deep");
+
+    // 造一条比上限更长的链（每台都是上一台的跳板）。
+    let mut previous: Option<i64> = None;
+    let mut last = 0;
+    for index in 0..40 {
+        last = hosts::insert_host(&conn, &new_host(&format!("hop{index:02}"), previous)).unwrap();
+        previous = Some(last);
+    }
+
+    let err = hosts::jump_chain(&conn, last).unwrap_err();
+    assert!(
+        matches!(err, StoreError::JumpChain),
+        "深得离谱的链要报错而不是一路连下去：{err:?}"
+    );
+}
+
 // ── serial 配置池 ───────────────────────────────────────────────────────────
 
 #[test]

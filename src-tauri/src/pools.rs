@@ -12,9 +12,10 @@
 //!
 //! ## 过 IPC 的形状是有意的
 //!
-//! [`HostEntry`] 里**没有** `private_pem`（密钥池的秘密）、没有 `jump_id`（跳板链是 plan 0505
-//! 的事），也没有库里那一列 `auth` 的原始文本 —— 认证方式过 IPC 是一个**枚举**，
-//! 因为它是前端要分支的东西，而"字符串里的取值"这种东西改起来没有任何人会红。
+//! [`HostEntry`] 里**没有** `private_pem`（密钥池的秘密），也没有库里那一列 `auth` 的
+//! 原始文本 —— 认证方式过 IPC 是一个**枚举**，因为它是前端要分支的东西，而"字符串里的取值"
+//! 这种东西改起来没有任何人会红。`jump_id` 在 plan 0505 补上了：它也是库里的一列，
+//! 而"这一台经谁连"是选主机的人有权知道的事。
 
 use akasha_store::pools::hosts::Auth;
 use serde::Serialize;
@@ -54,6 +55,12 @@ pub struct HostEntry {
     /// 配了哪把钥匙（`keys.id`）。只有 `publickey` 时可能非空 —— 而它也可能是空的
     /// （走 ssh-agent 的钥匙不在我们的池里）。
     pub key_id: Option<HostId>,
+    /// 这台主机**经哪台连**（`hosts.jump_id`，plan 0505）。
+    ///
+    /// 出现在这里是因为它已经是库里的一列，而"从界面选主机"的人有权知道这一次点下去
+    /// 会**经过谁** —— 不然一条跳板链在界面上没有任何痕迹，连不上时也无从判断是目标的问题
+    /// 还是跳板的问题。链本身（跳板还有跳板）由连接那条路自己走，界面只看一跳。
+    pub jump_id: Option<HostId>,
 }
 
 /// 认证方式过 IPC 的形状。
@@ -98,6 +105,7 @@ pub fn vault_hosts(vault: State<'_, Vault>) -> Result<Vec<HostEntry>, VaultError
                 user: row.user,
                 auth: AuthMethod::from(row.auth),
                 key_id: row.key_id.map(host_id).transpose()?,
+                jump_id: row.jump_id.map(host_id).transpose()?,
             })
         })
         .collect()

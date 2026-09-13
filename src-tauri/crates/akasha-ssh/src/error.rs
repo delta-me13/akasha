@@ -128,6 +128,22 @@ pub enum SshError {
     #[error("打开会话通道失败：{0}")]
     Channel(String),
 
+    /// `direct-tcpip`（跳板 / 转发）失败：**对端**拒绝或够不着 `host:port`（plan 0505）。
+    ///
+    /// ⚠️ 与 [`SshError::Connect`] **分开**是刻意的：那条说的是"我连不上这台机器"，
+    /// 这条说的是"这台机器连不上那台"。两者的下一步动作不同 —— 前者查网络与端口，
+    /// 后者要问的是**跳板机**能不能看见目标（`ChannelOpenFailure::ConnectFailed` 就是
+    /// 最常见的那一种）。压成一句话会把排查方向指错。
+    #[error("转发到 {host}:{port} 失败：{reason}")]
+    Forward {
+        /// 对端要去连的地址（**不是**我们连的那台）。
+        host: String,
+        /// 对端要去连的端口。
+        port: u16,
+        /// 上游的原话（`ConnectFailed` / `AdministrativelyProhibited` 一类）。
+        reason: String,
+    },
+
     /// 在 tokio 上下文里调同步门面。**返回错误而不是 panic**：
     /// `Handle::block_on` 在这里会 panic（"Cannot start a runtime from within a runtime"），
     /// 而这条路径的调用方是 app 的命令层 —— 那里 panic 会连带丢掉整个 app。
@@ -150,4 +166,13 @@ pub(crate) fn connect_failed(target: &SshTarget, err: impl std::fmt::Display) ->
 /// 通道操作失败的统一说法。
 pub(crate) fn channel_failed(err: impl std::fmt::Display) -> SshError {
     SshError::Channel(err.to_string())
+}
+
+/// `direct-tcpip` 那条路的统一说法（原语在 [`crate::SshConnection::direct_tcpip`]）。
+pub(crate) fn forward_failed(host: &str, port: u16, err: impl std::fmt::Display) -> SshError {
+    SshError::Forward {
+        host: host.to_owned(),
+        port,
+        reason: err.to_string(),
+    }
 }

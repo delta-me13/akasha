@@ -10,12 +10,14 @@ use akasha_pty::TerminalSize;
 use russh::client::{self, Config, Handle};
 use russh::keys::{HashAlg, PublicKey, PublicKeyOrCertificate};
 use russh::{ChannelReadHalf, ChannelWriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use crate::auth;
 use crate::credential::{CredentialCache, CredentialProvider};
 use crate::error::{SshError, channel_failed, connect_failed};
+use crate::forward::{SshConnection, SshStream};
 use crate::keys::SshAuth;
 use crate::target::SshTarget;
 
@@ -160,7 +162,9 @@ pub struct SshConnect {
     pub host_keys: Arc<dyn HostKeyVerifier>,
     /// 取值。
     pub config: SshConfig,
-    /// 初始窗口尺寸（`request_pty` 要）。
+    /// 初始窗口尺寸（`request_pty` 要）。⚠️ **跳板那几跳用不到它**（它们不开 pty，只被借来
+    /// 开通道），但类型不变 —— 一份 `SshConnect` 就是"连一台要的全部输入"，为跳板单独造一个
+    /// 少一个字段的类型只会让调用方多写一处转换。
     pub size: TerminalSize,
 }
 
@@ -244,24 +248,17 @@ pub(crate) struct Established {
     pub(crate) read: ChannelReadHalf,
     /// 通道的写半（`data_bytes` / `window_change`）。
     pub(crate) write: ChannelWriteHalf<client::Msg>,
+    /// 这条连接赖以存在的**下层连接**（跳板链，最外层在前）。
+    ///
+    /// 它们必须活到连接结束：承载我们的那条 `direct-tcpip` 通道长在**最后一条**上，
+    /// 而 `Handle` 一 drop 那条连接就没了。所以它们跟着 `Established` 一起 move 进
+    /// `pump` —— "task 结束 = 整条链结束"，收尾仍然只有一个出口（D9 / plan 0505）。
+    pub(crate) carriers: Vec<SshConnection>,
 }
 
-/// 连上、认证、开一个带 pty 的 shell 通道。
-pub(crate) async fn establish(options: &mut SshConnect) -> Result<Established, SshError> {
-    // 目标的**副本**：下面要可变借 `options`（认证要读受保护页），
-    // 而日志与错误消息整条路都要用目标。一个目标的克隆换掉一整串借用冲突，值。
-    let target = options.target.clone();
-
-    tracing::debug!(
-        host = target.host(),
-        port = target.port(),
-        user = target.user(),
-        "ssh connecting"
-    );
-
-    // 自己建 TcpStream 而不是用 `client::connect`：这样超时是**我们的**，
-    // 而且以后接跳板时这里换成"任意流"就行（ADR-0003 D9 已经把 `connect_stream` 的用法
-    // 定成"一条 `AsyncRead + AsyncWrite`"，跳板正是拿 channel 当这条流）。
+/// 建一条到目标的 **TCP** 连接。超时是**我们的**，不是上游的。
+pub(crate) async fn tcp_stream(options: &SshConnect) -> Result<TcpStream, SshError> {
+    let target = &options.target;
     let stream = timeout(
         options.config.connect_timeout,
         TcpStream::connect(target.address()),
@@ -271,14 +268,42 @@ pub(crate) async fn establish(options: &mut SshConnect) -> Result<Established, S
         target: target.clone(),
         after: options.config.connect_timeout,
     })?
-    .map_err(|err| connect_failed(&target, err))?;
+    .map_err(|err| connect_failed(target, err))?;
+
+    // ⚠️ **必须在这里显式关 Nagle**：上游只在 `client::connect` 里看 `Config::nodelay`
+    // （`client/mod.rs:1089`），而 `connect_stream` —— 我们两条路都用它 —— **不看**。
+    // 也就是说"把 config.nodelay 设成 true"在 `connect_stream` 下是一句**空话**，
+    // 而 Nagle 会让"一次按键一个小包"的交互式输入攒着等确认（`docs/STATUS.md` 坑 #120）。
+    if let Err(err) = stream.set_nodelay(true) {
+        tracing::warn!(%err, "ssh nodelay failed");
+    }
+    Ok(stream)
+}
+
+/// 一跳的**握手 + 认证**：底层流由调用方给。
+///
+/// 抽出来的理由就是 `direct-tcpip`（plan 0505）：跳板那条路上，第二跳的"网络"是第一跳上的
+/// 一条通道，而它之后做的事（配 config、把被拒原因换回来、认证）与直连**一字不差**。
+/// 两种底层流因此走同一条路 —— `client::connect_stream` 只要求 `AsyncRead + AsyncWrite`。
+pub(crate) async fn handshake<S>(
+    options: &mut SshConnect,
+    stream: S,
+) -> Result<Handle<Handler>, SshError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let target = options.target.clone();
+
+    tracing::debug!(
+        host = target.host(),
+        port = target.port(),
+        user = target.user(),
+        "ssh connecting"
+    );
 
     let mut config = Config::default();
     config.keepalive_interval = options.config.keepalive_interval;
     config.keepalive_max = options.config.keepalive_max;
-    // 交互式终端要关掉 Nagle：它会把小包攒起来等确认，而用户敲一个键就是一个小包
-    // （上游默认 `false`，所以这一行是**我们的**选择，不是继承来的）。
-    config.nodelay = true;
     let config = Arc::new(config);
 
     let rejection = Arc::new(Mutex::new(None));
@@ -301,6 +326,27 @@ pub(crate) async fn establish(options: &mut SshConnect) -> Result<Established, S
     };
 
     auth::authenticate(&mut session, options).await?;
+    Ok(session)
+}
+
+/// 连上（直连或经跳板）、认证、开一个带 pty 的 shell 通道。
+///
+/// `under` 是"这条连接跑在哪条流上"：`None` = 自己建 TCP（直连），`Some` = 上一跳上的一条
+/// `direct-tcpip` 通道；`carriers` 是那一条通道赖以存在的下层连接，原样带进 [`Established`]。
+pub(crate) async fn establish(
+    options: &mut SshConnect,
+    under: Option<SshStream>,
+    carriers: Vec<SshConnection>,
+) -> Result<Established, SshError> {
+    let target = options.target.clone();
+
+    let session = match under {
+        Some(stream) => handshake(options, stream).await?,
+        None => {
+            let stream = tcp_stream(options).await?;
+            handshake(options, stream).await?
+        }
+    };
 
     let channel = session
         .channel_open_session()
@@ -331,5 +377,6 @@ pub(crate) async fn establish(options: &mut SshConnect) -> Result<Established, S
         session,
         read,
         write,
+        carriers,
     })
 }

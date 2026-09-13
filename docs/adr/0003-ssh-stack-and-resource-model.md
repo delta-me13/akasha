@@ -8,7 +8,7 @@
   阶段 6 / 7 的接口形状
 - **关联**：[plan 0501](../plans/archive/0501-adr-0003-ssh-stack.md)（本文的落地）、
   [0502](../plans/archive/0502-ssh-connect-auth.md) / [0503](../plans/archive/0503-known-hosts.md) /
-  [0504](../plans/archive/0504-ssh-into-ipc-frontend.md) / [0505](../plans/0505-direct-tcpip-primitive.md) /
+  [0504](../plans/archive/0504-ssh-into-ipc-frontend.md) / [0505](../plans/archive/0505-direct-tcpip-primitive.md) /
   [0506](../plans/0506-ssh-config-subset-import.md)、阶段 6 全部
 - **取代**：无
 
@@ -253,6 +253,17 @@
   （`client/mod.rs:1102`），所以"通道当下一跳的底层流"是上游现成的用法；形状定成流之后，
   另两处只是它的两个消费者，不需要各自再发明一条路径。
 - **否决的替代路**：为跳板单独写一条连接路径 —— 三处各写一遍，SFTP 与转发到来时还要再改。
+- ✅ **已落地**（plan 0505），**形状一字未改**，两处把"没写死的"补上：
+  - **句柄归谁**：选的是"**这条路自己持有连接**"（另一条是给 `SshTransport` 开一条受控借用口）。
+    于是原语长在身上而不是当一个自由函数收 `&Handle`：`SshConnection`（一条已认证、没有通道的
+    连接）持有句柄，`SshConnection::direct_tcpip(&self, host, port)` 就是 D9 那条流。
+    句柄因此不出 `akasha-ssh`，也不需要回答"谁在什么时候能碰这个句柄"。
+  - **流的类型**：对外是 `SshStream`（我们自己实现 `AsyncRead + AsyncWrite` 的 newtype），
+    **不是** `russh::ChannelStream` —— 后者是 0.x 的类型，与 [`HostKey`] 把上游公钥留在私有字段里
+    是同一条纪律：升级 `russh` 时改动止步于 crate 内。
+  - 跳板链上每一跳都是一个 `SshConnection`，它们随 `Established::carriers` 一起 move 进那条
+    `pump` task —— "task 结束 = 整条链结束"，收尾仍然只有一个出口（D5 的"关 Session 立刻关连接"
+    因此对整条链成立）。
 
 ### D10 —— `-R` 是**另一套**机制：`tcpip_forward` + Handler 回调
 
@@ -357,3 +368,4 @@
 | 2026-09-13 | 本 ADR 引用的阶段 5 plan 编号**全部重排**（known_hosts 0505 → **0503**、`direct-tcpip` 0503 → **0505**、config 导入 0504 → **0506**；新增 **0504** = SSH 接进 IPC / 前端）；§12 补上"未知 host key 的提问形态"这条跨 0503 / 0504 的问题 | 执行顺序改由依赖决定：D11 的信任策略（谁问、问什么、答案存哪）是**接口形状**，必须在 0504 把它送到前端之前定下来，否则 0504 只能自造一套临时信任；`direct-tcpip`（D9）的三处消费者都要先有一条从 app 打得开的会话才验得了 |
 | 2026-09-13 | 新增 **D16**（提问往返的形状与超时、库锁着不连）；D2 标上"已落地"；§12 删掉已定的两条（库内 known_hosts 的表结构 —— 那是 plan 0503 的遗留、未知 host key 的提问形态 —— 本 plan 落地） | plan 0504 把 D8 / D11 的两个提问口接到了前端，顺手定下"谁来问、超时多长、没人答怎么办"这三件原先挂在 §12 的事。D2 / D3 的实现形状一字未改 |
 | 2026-09-13 | **D11 按原文落地**（plan 0503）：三态判定（库里有且一致 → 连 / 有但对不上 → 拒 / 未知 → 问）、`~/.ssh/known_hosts` **只读**、确认过的进**我们自己的库**；本 ADR 的**决定一字未改**，只把关联指针改到归档路径（§12 里"提问形态"那条仍然成立：策略接口已定，接前端在 plan 0504） | D11 当初就把策略写死了，实现没有推翻它，所以本文没有必要改内容。落地时带出一个新事实（库格式 `user_version` 1 → 2，本仓库第一次迁移），它属于 ADR-0002 的辖区 —— 已记在归档的 plan 0503 与 `docs/STATUS.md` |
+| 2026-09-13 | **D9 按原文落地**（plan 0505）：三处复用的原语形状 = 一条 `AsyncRead + AsyncWrite` 的流，实现为 `SshConnection::direct_tcpip`（跳板那条路**自己持有连接**，句柄不出 crate）；对外类型是我们自己的 `SshStream` 而不是 `russh::ChannelStream`；新增 `SshError::Forward`（跳板拒绝/够不着目标 —— 与"我连不上跳板机"分开）；**决定本身一字未改**，只补上两处原先没写死的（句柄归谁、流的类型） | D9 把"只实现一次"与"形状是流"定死了，实现没有推翻它。补的两处是它留下的空：骨架阶段已经写明原语要拿句柄只有"受控借用口"与"自己持有连接"两条路（0504 的接口归属结论），本 plan 选了后者；流的类型则沿用 [`HostKey`] 的做法，不把上游 0.x 的类型漏进公开签名 |

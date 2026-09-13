@@ -31,12 +31,21 @@
 //! 明文私钥在握手期间会短暂存在于普通堆：`russh` 要一个
 //! [`ssh_key::PrivateKey`](russh::keys::PrivateKey) 才能签名，而它解析出来的明文
 //! **我们放不进受保护页**。缓解 = 只在握手窗口内存在、签完即 drop、**不进缓存**。
-//! 登录口令同理有一份 `String`（`russh` 的认证接口只收 `Into<String>`）。这两条副本
+//! 登录口令同理有一份 `String`（`russh` 的认证接口只收 `impl Into<String>`）。这两条副本
 //! 照实记在 ADR-0003 D8 与 `docs/STATUS.md`，不假装它们不存在。
+//!
+//! ## 两个门面，一条是异步的
+//!
+//! [`SshTransport`] 是**同步**门面（装进 `akasha_pty::Transport`，给会话层用）；
+//! [`SshConnection`] + [`SshStream`] 是**异步**那一层 —— `direct-tcpip` 原语（D9）住在那里，
+//! 跳板 / `-L` / SFTP 的 B 档都按"[一条流](SshStream)"消费它。谁用哪一层、为什么，
+//! 见 [`crate::SshConnection`] 的文档。
 
 mod auth;
 mod credential;
 mod error;
+/// **D9 的原语**：`direct-tcpip` = 一条流（跳板 / `-L` / SFTP B 档复用）。
+mod forward;
 mod handshake;
 mod keys;
 mod known_hosts;
@@ -53,6 +62,7 @@ pub use credential::{
     MAX_CREDENTIAL_LEN,
 };
 pub use error::SshError;
+pub use forward::{SshConnection, SshStream};
 pub use handshake::{HostKey, HostKeyVerifier, PinnedHostKey, SshConfig, SshConnect};
 pub use keys::{KeyCandidate, SshAuth};
 pub use known_hosts::{

@@ -1,21 +1,23 @@
-//! **SSH 接进 IPC**（plan 0504）—— 让真 app 能开一个 SSH 会话。
+//! **SSH 接进 IPC**（plan 0504 / 跳板链 plan 0505）—— 让真 app 能开一个 SSH 会话。
 //!
-//! 这个模块是"库那一侧"与"界面那一侧"之间的接线，一共三件事：
+//! 这个模块是"库那一侧"与"界面那一侧"之间的接线，一共四件事：
 //!
 //! | 事 | 在哪 | 为什么在这里 |
 //! |---|---|---|
 //! | 专用 runtime（ADR-0003 D2） | [`Ssh`] | 建 runtime 是 app 的事，库只收 `Handle` |
 //! | 库内的主机密钥缓存（D11） | [`VaultHostKeys`] | 库连接归解锁窗口（plan 0407），verifier 要 `'static` 口 |
 //! | 一条带目标的会话命令（D3） | [`open_ssh_session`] | `Sessions::register` 已经是 `<T: Transport>` |
+//! | **跳板链**（D9） | [`plan_chain`] | 链住**池**里（`hosts.jump_id`），而库不知道池长什么样 |
 //!
 //! ## 三条别改回去的边界
 //!
-//! 1. **连接跑在一条普通 `std::thread` 上**。`SshTransport::connect` 会在
+//! 1. **连接跑在一条普通 `std::thread` 上**。`SshTransport::connect_via` 会在
 //!    `RuntimeHandle::try_current()` 命中时拒绝（[`SshError::BlockingInsideRuntime`]），
 //!    而 `spawn_blocking` 的线程**也算**在 tokio 上下文里（它 `rt.enter()` 过）——
 //!    所以既不能用 async command 直接调，也不能丢给 `spawn_blocking`。
 //! 2. **不持着库的锁去连接**。`known_hosts` 的 `remember` 会在连接中途回头锁库
-//!    （用户确认一把没见过的密钥时）—— 持锁连接就是自己等自己。
+//!    （用户确认一把没见过的密钥时）—— 持锁连接就是自己等自己。跳板链因此是
+//!    **一次读完整条**（[`plan_chain`]）再开始连，而不是"连一跳读一行"。
 //! 3. **库锁着 = 不连**。信任记录与密钥池都在库里，"绕过缓存连上"会把 D11 的三态
 //!    退化成两态，而缺的那一态正是警报那一态（[`SshFailureKind::HostKeyChanged`]）。
 //!
@@ -23,7 +25,8 @@
 //!
 //! [`SshIpcError`] 的变体按**用户的下一步动作**分（同 `VaultError` / `StoreError` 的原则）：
 //! 先解锁（`Locked`）、去池子里挑一台（`NoSuchHost`）、去查（`HostKeyChanged` 是警报）、
-//! 去核对凭据（`Auth`）、去查网络 / 服务端（`Connect`）。
+//! 去核对凭据（`Auth`）、去查网络 / 服务端（`Connect`）、去看**跳板机能不能看见目标**
+//! （`Jump`）。
 
 use std::sync::Arc;
 
@@ -162,6 +165,11 @@ pub enum SshFailureKind {
     Auth,
     /// 连不上 / 超时 / 通道开不出来。
     Connect,
+    /// **跳板这条线断了**（plan 0505）：链成环 / 过长，或者跳板机拒绝转发到目标。
+    ///
+    /// 与 [`SshFailureKind::Connect`] 分开是刻意的：那一档是"我连不上**你挑的那台**"，
+    /// 这一档是"**跳板机**够不着它"。混在一起用户会去查自己的网络，而问题在对端。
+    Jump,
     /// 其余（错误消息里说得清）。
     Other,
 }
@@ -180,6 +188,7 @@ impl SshIpcError {
             SshError::HostKeyCache(_) => SshFailureKind::HostKeyCache,
             SshError::AuthenticationFailed { .. } => SshFailureKind::Auth,
             SshError::Connect { .. } | SshError::ConnectTimeout { .. } => SshFailureKind::Connect,
+            SshError::Forward { .. } => SshFailureKind::Jump,
             SshError::Channel(_) | SshError::HostKeyUnusable { .. } => SshFailureKind::Other,
             // 凭据要不到 / 空值 / 不是 UTF-8 / 受保护页 / 在 tokio 上下文里调同步门面。
             _ => SshFailureKind::Other,
@@ -262,24 +271,39 @@ struct Planned {
     auth: SshAuth,
 }
 
-/// 取池行 + 认证材料。
+/// **整条跳板链**：`[目标, 它的跳板, 跳板的跳板, …]`（与 `hosts::jump_chain` 同序）。
 ///
-/// `id` 是 `hosts.id`；认证方式决定带不带钥匙、试不试 agent（ADR-0003 D7 的顺序由
-/// `akasha-ssh` 定，这里只决定**给它什么材料**）。
-fn plan(vault: &Vault, id: HostId) -> Result<Planned, SshIpcError> {
+/// 目标在前是 `akasha-store` 定的顺序（"我要连**这台**，它得先经**那台**"）；
+/// 连接那一步要的是反过来，由 [`open_ssh_session`] 翻转 —— 靠近使用点翻转，
+/// 比让每一层都记一遍"哪个是最外层"要可靠。
+fn plan_chain(vault: &Vault, id: HostId) -> Result<Vec<Planned>, SshIpcError> {
     // 池那一层用 `i64` 作行 id，IPC 这一侧是 `u32` 代理 —— 到这里再换回去（不是截断，
     // 而是回到它本来的宽度：`HostId` 就是从 `i64` checked 出来的）。
-    let row_id = i64::from(id);
-    let row = match vault.with_conn(|conn| akasha_store::pools::hosts::host(conn, row_id)) {
-        Ok(row) => row,
-        Err(ConnError::Locked) => return Err(SshIpcError::Locked),
-        // 池里没有这一行是"用户挑错了"，不是库坏了 —— 这一步单独认（`from_conn` 认不出行号）。
-        Err(ConnError::Store(StoreError::NoSuchRow { .. })) => {
-            return Err(SshIpcError::NoSuchHost { id });
-        }
-        Err(err) => return Err(SshIpcError::from_conn(err)),
-    };
+    let rows = vault
+        .with_conn(|conn| akasha_store::pools::hosts::jump_chain(conn, i64::from(id)))
+        .map_err(|err| match err {
+            ConnError::Locked => SshIpcError::Locked,
+            // 池里没有这一行是"用户挑错了"，不是库坏了 —— 这一步单独认
+            // （`from_conn` 认不出行号，而链里断了一行也要说清是**哪个 id** 起头的）。
+            ConnError::Store(StoreError::NoSuchRow { .. }) => SshIpcError::NoSuchHost { id },
+            // 成环 / 过深：**不是**"库坏了"，是这份配置连不通。`from_conn` 会把它归到
+            // 主机密钥缓存不可用 —— 那个提示会把人引到解锁上去，方向完全错。
+            ConnError::Store(StoreError::JumpChain) => SshIpcError::Failed {
+                kind: SshFailureKind::Jump,
+                message: format!("主机池里的跳板链成环或过长，连不到 id {id} 这台"),
+            },
+            err => SshIpcError::from_conn(err),
+        })?;
 
+    rows.into_iter().map(|row| planned(vault, row)).collect()
+}
+
+/// 一行池记录 → "连它要什么"。
+///
+/// 认证方式决定带不带钥匙、试不试 agent（ADR-0003 D7 的顺序由 `akasha-ssh` 定，
+/// 这里只决定**给它什么材料**）—— **每一跳各算各的**：跳板与目标是两台机器，
+/// 凭据与钥匙都各是各的。
+fn planned(vault: &Vault, row: akasha_store::pools::hosts::Host) -> Result<Planned, SshIpcError> {
     let auth = match row.auth {
         Auth::Password => SshAuth::keys(Vec::new()),
         Auth::Agent => SshAuth::agent_only(),
@@ -323,12 +347,13 @@ fn stable_id(key_id: i64) -> String {
 
 /// 建立连接（**同步门面，异步在门後面**）。
 ///
-/// 一条普通 `std::thread` 上跑 `SshTransport::connect`：那条路径内部会
+/// 一条普通 `std::thread` 上跑 `SshTransport::connect_via`：那条路径内部会
 /// `Handle::block_on`（在 tokio 上下文里会 panic / 被拒），而 `spawn_blocking` 的线程
 /// 也算 tokio 上下文 —— 所以只能自己起线程。结果经一条 oneshot 回到 async 命令，
 /// 于是**没有任何一个 runtime worker 被这一次连接占住**。
 async fn establish(
     handle: RuntimeHandle,
+    hops: Vec<SshConnect>,
     options: SshConnect,
 ) -> Result<SshTransport, SshIpcError> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -337,7 +362,7 @@ async fn establish(
         .spawn(move || {
             // 送不出去只可能是命令那一侧已经走了（超时被前端放弃 / app 在退出）——
             // 那一边本来也不等，所以不记日志。
-            let _ = sender.send(SshTransport::connect(&handle, options));
+            let _ = sender.send(SshTransport::connect_via(&handle, hops, options));
         })
         .map_err(|err| SshIpcError::Internal {
             message: format!("连接线程起不来：{err}"),
@@ -385,33 +410,43 @@ pub async fn open_ssh_session(
     let ssh = app.state::<Ssh>();
     let handle = ssh.handle()?;
     let vault = app.state::<Vault>();
-    // 短借：取出池行与密钥材料就把锁放掉（连接中途 `remember` 要回头锁库）。
-    let planned = plan(&vault, host_id)?;
+    // 短借：把整条链读出来（每跳的地址与认证材料）就把锁放掉
+    // —— 连接中途 `remember` 要回头锁库（模块文档的边界 2）。
+    let mut links = plan_chain(&vault, host_id)?;
+    // 链是"目标在前"读出来的；连接要的是"最外层先连"，所以把目标摘出来、其余翻转。
+    let target_link = links.remove(0);
+    links.reverse();
 
     let prompts = ssh.prompts().clone();
-    let options = SshConnect {
-        target: planned.target.clone(),
-        auth: planned.auth,
+    // 每一跳各装一份：**每一跳各问各的凭据、各校各的主机密钥**（跳板与目标是两台机器，
+    // 信任记录与密钥池当然各是各的）。缓存是共享的 —— 它按 `(host, port, user, 方式)` 分键。
+    let link_options = |link: Planned| SshConnect {
+        target: link.target,
+        auth: link.auth,
         cache: Arc::clone(&ssh.cache),
         provider: Arc::new(prompts.clone()),
         host_keys: Arc::new(
             KnownHostsVerifier::new(Arc::new(VaultHostKeys {
                 vault: Vault::clone(&vault),
             }))
-            .with_prompt(Arc::new(prompts)),
+            .with_prompt(Arc::new(prompts.clone())),
         ),
         config: config(),
         size: TerminalSize::DEFAULT,
     };
+    let hops: Vec<SshConnect> = links.into_iter().map(link_options).collect();
+    let target = target_link.target.clone();
+    let options = link_options(target_link);
 
     tracing::info!(
-        host = planned.target.host(),
-        port = planned.target.port(),
-        user = planned.target.user(),
+        host = target.host(),
+        port = target.port(),
+        user = target.user(),
+        hops = hops.len(),
         "ssh session opening"
     );
 
-    let transport = establish(handle, options).await?;
+    let transport = establish(handle, hops, options).await?;
     let sessions = app.state::<Sessions>();
     session::open_terminal(&app, &sessions, transport, channel).map_err(Into::into)
 }

@@ -163,6 +163,34 @@ pub fn hosts_jumping_to(conn: &Connection, id: i64) -> Result<Vec<Host>, StoreEr
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// 整条跳板链，**从要连的那台往上走**：`[这台, 它的跳板, 跳板的跳板, …]`。
+///
+/// 顺序是这么定的：链的语义本来就是"我要连**这台**，它得先经**那台**"，所以第一项是目标。
+/// 连接那条路（`akasha-ssh` 的 `connect_via`）要的是反过来的顺序，它自己 `rev` 一下 ——
+/// 让**读**这一侧保持"从目标往回走"的直觉，比让每个调用方都想一遍"哪个是最外层"要好。
+///
+/// ## 为什么读路径也要挡住环与深度
+///
+/// [`update_host`] 挡住的是**我们的**写入。它挡不住有人拿 `sqlite3` 改库、挡不住旧版本的
+/// bug、也挡不住从别处还原回来的一份文件 —— 而链上真有环时，连接那条路会顺着环走下去：
+/// 那不是"报错"，是**挂住**（而"挂住"在用户看来就是点了没反应）。
+/// 所以深度上限与成环判定在**读**这一侧也各有一份，代价是一次 `Vec` 扫描。
+pub fn jump_chain(conn: &Connection, id: i64) -> Result<Vec<Host>, StoreError> {
+    let mut chain: Vec<Host> = Vec::new();
+    let mut cursor = Some(id);
+    while let Some(current) = cursor {
+        // 已经走过这一行（成环），或者链长得离谱 —— 两者对用户是同一件事：
+        // 这条配置连不通，而且都不是能连的配置。
+        if chain.len() >= MAX_JUMP_DEPTH || chain.iter().any(|host| host.id == current) {
+            return Err(StoreError::JumpChain);
+        }
+        let row = host(conn, current)?;
+        cursor = row.jump_id;
+        chain.push(row);
+    }
+    Ok(chain)
+}
+
 /// 从 `jump_id` 沿链往上走，撞见 `host_id` 就是环。
 ///
 /// 每跳一次查一次库是有意的：这条链**短**（跳板链的现实长度是 1～3），

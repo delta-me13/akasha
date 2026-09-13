@@ -73,7 +73,38 @@ impl CredentialProvider for CountingProvider {
     }
 }
 
-/// 客户端的连接参数。
+/// 一次连接尝试的默认期限（够慢的机器也来得及，又不至于让测试卡住）。
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// **最通用的一层**：目标 + 认哪把主机密钥 + 认证材料 + 一次尝试的期限。
+///
+/// 为什么目标由调用方给、而不是从 `Running` 推出来：**跳板那条路上目标不是任何一台服务端的
+/// 监听地址** —— 它是一个只在对端网络里存在的名字（plan 0505）。
+pub fn connect_options_to(
+    target: SshTarget,
+    host_keys: Arc<dyn HostKeyVerifier>,
+    auth: SshAuth,
+    cache: Arc<CredentialCache>,
+    provider: Arc<CountingProvider>,
+    connect_timeout: Duration,
+) -> SshConnect {
+    SshConnect {
+        target,
+        auth,
+        cache,
+        provider,
+        host_keys,
+        config: SshConfig {
+            connect_timeout,
+            // 保活对本测试没有意义（连接活不到 30 秒），但**留着默认值**：
+            // 这条路径要验的是"默认值能用"，不是"能关掉它"。
+            ..SshConfig::default()
+        },
+        size: TerminalSize::DEFAULT,
+    }
+}
+
+/// 客户端的连接参数：连一台测试服务端（`127.0.0.1` + 它的监听端口），并钉住它的指纹。
 pub fn connect_options(
     running: &Running,
     user: &str,
@@ -81,12 +112,17 @@ pub fn connect_options(
     cache: Arc<CredentialCache>,
     provider: Arc<CountingProvider>,
 ) -> SshConnect {
-    let verifier: Arc<dyn HostKeyVerifier> =
-        Arc::new(PinnedHostKey::new(running.fingerprint.clone()));
-    connect_options_with(running, user, auth, cache, provider, verifier)
+    connect_options_with(
+        running,
+        user,
+        auth,
+        cache,
+        provider,
+        Arc::new(PinnedHostKey::new(running.fingerprint.clone())),
+    )
 }
 
-/// 同上，但主机密钥策略由调用方给（测"钉错了"那条路）。
+/// 同上，但主机密钥策略由调用方给（测"钉错了"、"库里没记录"那几条路）。
 pub fn connect_options_with(
     running: &Running,
     user: &str,
@@ -95,20 +131,14 @@ pub fn connect_options_with(
     provider: Arc<CountingProvider>,
     host_keys: Arc<dyn HostKeyVerifier>,
 ) -> SshConnect {
-    SshConnect {
-        target: SshTarget::new("127.0.0.1", running.addr.port(), user),
+    connect_options_to(
+        SshTarget::new("127.0.0.1", running.addr.port(), user),
+        host_keys,
         auth,
         cache,
         provider,
-        host_keys,
-        config: SshConfig {
-            connect_timeout: Duration::from_secs(5),
-            // 保活对本测试没有意义（连接活不到 30 秒），但**留着默认值**：
-            // 这条路径要验的是"默认值能用"，不是"能关掉它"。
-            ..SshConfig::default()
-        },
-        size: TerminalSize::DEFAULT,
-    }
+        CONNECT_TIMEOUT,
+    )
 }
 
 /// 从一个载体上读到出现 `needle` 为止（或超时）。

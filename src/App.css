@@ -258,6 +258,12 @@ body {
   color: #7b8794;
 }
 
+/* 跳板（plan 0505）：这一次点下去会经过谁。 */
+.host-picker-jump {
+  font-size: 11px;
+  color: #b48ead;
+}
+
 .host-picker-actions {
   display: flex;
   justify-content: flex-end;

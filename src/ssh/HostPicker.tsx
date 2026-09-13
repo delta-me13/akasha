@@ -14,6 +14,11 @@ interface HostPickerProps {
   onClose(): void;
 }
 
+/** 跳板那一行的名字（池里找不到就退回 id —— 池是唯一真相源，界面上不该编一个名字）。 */
+function nameOf(hosts: HostEntry[], id: number): string {
+  return hosts.find((host) => host.id === id)?.name ?? `#${id}`;
+}
+
 export function HostPicker({ onConnect, onClose }: HostPickerProps) {
   const [hosts, setHosts] = useState<HostEntry[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -57,6 +62,13 @@ export function HostPicker({ onConnect, onClose }: HostPickerProps) {
                 <span className="host-picker-target">
                   {host.user}@{host.host}:{host.port}
                 </span>
+                {host.jumpId !== null && (
+                  // 跳板（plan 0505）：这一次点下去会**经过谁**。链的其余部分由后端走，
+                  // 这里只显示一跳 —— 界面上有这一笔，连不上时才分得清是目标还是跳板的问题。
+                  <span className="host-picker-jump" data-host-jump={host.jumpId}>
+                    经跳板 {nameOf(hosts, host.jumpId)}
+                  </span>
+                )}
               </button>
             </li>
           ))}

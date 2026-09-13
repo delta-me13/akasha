@@ -33,6 +33,7 @@ use tokio::runtime::Handle as RuntimeHandle;
 use tokio::sync::mpsc;
 
 use crate::error::SshError;
+use crate::forward::SshConnection;
 use crate::handshake::{Handler, SshConnect, establish};
 
 /// 写队列的容量（**积压上限，不是缓冲优化**：满了就是 [`TransportError::Busy`]）。
@@ -105,12 +106,51 @@ impl SshTransport {
     /// 而且它**不能在 tokio 上下文里调用** —— 那种情况下返回
     /// [`SshError::BlockingInsideRuntime`]，不是 panic（调用方是 app 的命令层，
     /// 那里 panic 会连带丢掉整个 app）。
-    pub fn connect(runtime: &RuntimeHandle, mut options: SshConnect) -> Result<Self, SshError> {
+    pub fn connect(runtime: &RuntimeHandle, options: SshConnect) -> Result<Self, SshError> {
+        Self::connect_via(runtime, Vec::new(), options)
+    }
+
+    /// 经一条**跳板链**连到 `options` 描述的目标（plan 0505 / D9）。
+    ///
+    /// `hops` 从**最外层**到最内层：第一个是 app 直接连的那一台，最后一个是紧挨着目标的
+    /// 那一台；空链就是直连（[`Self::connect`]）。
+    ///
+    /// 每一跳各是一份 [`SshConnect`] —— 也就是**每一跳各问各的凭据、各校各的主机密钥**
+    /// （跳板机与目标机是两台机器，信任记录与密钥池当然各是各的）。
+    ///
+    /// ⚠️ 与 [`Self::connect`] 同一套约束：**不能在 tokio 上下文里调用**，而且**会阻塞**
+    /// 调用线程 —— 最坏情况是"每一跳各一次 `connect_timeout`"，别在 UI 线程上直接调它。
+    pub fn connect_via(
+        runtime: &RuntimeHandle,
+        hops: Vec<SshConnect>,
+        mut options: SshConnect,
+    ) -> Result<Self, SshError> {
         if RuntimeHandle::try_current().is_ok() {
             return Err(SshError::BlockingInsideRuntime);
         }
 
-        let established = runtime.block_on(establish(&mut options))?;
+        let established = runtime.block_on(async {
+            let mut carriers: Vec<SshConnection> = Vec::new();
+            for mut hop in hops {
+                let connection = match carriers.last() {
+                    // 第一跳：自己建 TCP。
+                    None => SshConnection::connect(&mut hop).await?,
+                    // 之后的每一跳：在上一跳上开一条 `direct-tcpip` 通道，**它就是这一跳的"网络"**。
+                    Some(previous) => previous.over(&mut hop).await?,
+                };
+                carriers.push(connection);
+            }
+            // 最后一条流给目标：它是"离目标最近的那一跳"上的一条通道，直连时则是 None。
+            let under = match carriers.last() {
+                None => None,
+                Some(previous) => Some(
+                    previous
+                        .direct_tcpip(options.target.host(), options.target.port())
+                        .await?,
+                ),
+            };
+            establish(&mut options, under, carriers).await
+        })?;
 
         let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE);
         let (output_tx, output_rx) = mpsc::channel(OUTPUT_QUEUE);
@@ -125,6 +165,9 @@ impl SshTransport {
             Arc::clone(&shared),
             // 句柄交给 task：**task 结束就是连接结束**（收尾的唯一出口在那里）。
             established.session,
+            // 跳板链一起进去：它们必须活到这条连接结束（`direct_tcpip` 的那条通道长在
+            // 其中最后一条上），而"谁在什么时候丢掉它们"因此只有一个答案。
+            established.carriers,
             ended_tx,
         ));
 
@@ -279,6 +322,7 @@ async fn pump(
     output: mpsc::Sender<Vec<u8>>,
     shared: Arc<Shared>,
     session: Handle<Handler>,
+    mut carriers: Vec<SshConnection>,
     ended: std::sync::mpsc::Sender<()>,
 ) {
     let mut status = None;
@@ -335,6 +379,13 @@ async fn pump(
     // 显式断开：`Handle` 一 drop 也会结束连接，但那时是"悄悄走"，
     // 服务端只会看到 TCP 断了；这一句是礼貌且有用的（服务端能记下原因）。
     let _ = session.disconnect(Disconnect::ByApplication, "", "").await;
+
+    // 跳板链：**从最内层往外**断（`pop` 拿到的正是最内层）。反过来会把承载我们的那条
+    // 通道先踩掉 —— 后面每一跳的 disconnect 就都发在一条已经死掉的连接上，
+    // 服务端看到的是"被 TCP 掐了"，而不是我们说了再见。
+    while let Some(carrier) = carriers.pop() {
+        carrier.disconnect().await;
+    }
 
     shared.set(status);
     // 回话失败只可能是同步侧已经不在了（调用了 `shutdown` 之后又 drop 了传输）——

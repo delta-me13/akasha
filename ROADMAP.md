@@ -157,9 +157,9 @@
 - [x] **SSH 接进 IPC / 前端**（从界面选主机 → 连上 → 双向流；凭据与未知主机密钥的往返）
       验收：真 app 上开一个 SSH 会话 —— 字节能双向流、凭据只问一次、关标签页零残留
       → [plan 0504](./docs/plans/archive/0504-ssh-into-ipc-frontend.md)
-- [ ] **`direct-tcpip` 原语**（本阶段先用于跳板，之后三处复用）
+- [x] **`direct-tcpip` 原语**（本阶段先用于跳板，之后三处复用）
       验收：ProxyJump 可连通只对跳板机可见的目标
-      → [plan 0505](./docs/plans/0505-direct-tcpip-primitive.md)
+      → [plan 0505](./docs/plans/archive/0505-direct-tcpip-primitive.md)
 - [ ] `~/.ssh/config` **受限子集**导入（`Match` / `Include` 显式报错）
       验收：含 `Match` 的配置产生**明确报错**，不是静默误解析
       → [plan 0506](./docs/plans/0506-ssh-config-subset-import.md)

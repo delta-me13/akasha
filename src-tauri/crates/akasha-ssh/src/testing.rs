@@ -25,8 +25,13 @@
 #![allow(clippy::unwrap_used)] // 测试脚手架：这里的 unwrap 是断言手段（生产代码的基线见 root Cargo.toml）
 
 use std::borrow::Cow;
+use std::collections::HashSet;
+use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use rand::rng;
@@ -34,7 +39,8 @@ use russh::keys::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use russh::server::ChannelOpenHandle;
 use russh::server::{Auth, Msg, Response, Server, Session};
 use russh::{Channel, ChannelId, MethodSet, Pty};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, copy_bidirectional};
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::handshake::HostKey;
 
@@ -58,6 +64,23 @@ pub struct Observed {
     /// 数的是"通道被关掉"这件事 —— 客户端收尾时会 `eof` + `close`；只数"曾经来过几条"
     /// 分不出"还挂着"与"收干净了"。
     pub sessions_closed: usize,
+    /// 收到的 `direct-tcpip` 请求，按发生顺序（plan 0505：**跳板那一半的判据**）。
+    ///
+    /// "我们经了跳板"不能只看客户端 —— 这句话的证据是**对端被要求去连什么**。
+    pub direct_tcpip: Vec<ForwardRequest>,
+    /// 有几次中继**已经结束**（`copy_bidirectional` 收工）。
+    pub relays_finished: usize,
+}
+
+/// 一次 `direct-tcpip` 请求（对端被告知"去连这里"）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardRequest {
+    /// 客户端要求连的地址 —— **在跳板机的网络里解析**，与客户端自己的 DNS 无关。
+    pub host: String,
+    pub port: u32,
+    /// 客户端自报的发起方地址（RFC 4254 §7.2）。空串 = 它说"不知道"。
+    pub originator: String,
+    pub originator_port: u32,
 }
 
 /// 服务端行为的可调部分（测试可以在运行中改它 —— 例如"把这个口令改成不认"）。
@@ -71,6 +94,24 @@ pub struct ServerOptions {
     pub keyboard_code: Option<String>,
     /// 客户端请求关闭时回哪个退出码。
     pub exit_status: u32,
+    /// "我可以替你连到哪" —— 一台**真的**跳板机里那张表的位置。
+    ///
+    /// 没有匹配项的 `direct-tcpip` 一律**拒绝**（drop `reply`），与真实服务端的
+    /// "转发不允许 / 连不上"同形。
+    pub relay: Vec<Relay>,
+}
+
+/// 一条中继映射：**对端要求连**的地址 → **我们真的连**哪。
+///
+/// 两边不一样是刻意的：跳板机的意义就在于它能解析/够得着我们够不着的东西，
+/// 所以测试里的目标地址是**只有跳板才认识**的（见 `tests/jump_host.rs`）。
+#[derive(Debug, Clone)]
+pub struct Relay {
+    /// 客户端要求的地址（`host_to_connect`）。
+    pub host: String,
+    pub port: u16,
+    /// 真的连到哪 —— 通常是测试进程内另一台服务端的监听地址。
+    pub to: SocketAddr,
 }
 
 impl ServerOptions {
@@ -90,9 +131,37 @@ pub struct Shared {
     pub observed: Arc<Mutex<Observed>>,
     /// 服务端的行为。
     pub options: Arc<Mutex<ServerOptions>>,
+    /// 哪些通道是 **shell 通道**（由 `pty_request` / `shell_request` 认出来）。
+    ///
+    /// 为什么需要它：上游把通道数据**同时**交给通道自己的接收端**和** `Handler::data()`
+    /// （`server/encrypted.rs:1251`），所以"回声"这件事必须只对 shell 通道做。否则
+    /// `direct-tcpip` 那条通道上的字节会被原样打回去 —— 客户端读到的是**自己刚写的 id 行**，
+    /// 表现为 `Bad packet size: 1397966893`（那串数字正是 `"SSH-"`，plan 0505 踩到过）。
+    shell_channels: Arc<Mutex<HashSet<ChannelId>>>,
+    /// 中继一共搬过多少字节（两个方向之和）—— **边搬边记**。
+    ///
+    /// 为什么不是"收工时一次性交出来"：`copy_bidirectional` 出错时**不交出**已搬的字节数，
+    /// 而收尾那一下报错是常态（客户端撤了）。那样一来"搬过字节"这条判据会在最需要它的时候
+    /// 永远是 0，而它本来是最直接的一条证据（见 [`Counted`]）。
+    relayed_bytes: Arc<AtomicU64>,
 }
 
 impl Shared {
+    /// 认下一条 shell 通道。
+    fn mark_shell(&self, channel: ChannelId) {
+        self.shell_channels.lock().unwrap().insert(channel);
+    }
+
+    /// 这条通道是不是 shell 通道（只有它该收到回声）。
+    fn is_shell(&self, channel: ChannelId) -> bool {
+        self.shell_channels.lock().unwrap().contains(&channel)
+    }
+
+    /// 中继搬过多少字节（**可以在会话还开着的时候读**）。
+    pub fn relayed_bytes(&self) -> u64 {
+        self.relayed_bytes.load(Ordering::Relaxed)
+    }
+
     fn record(&self, method: &str) {
         self.observed
             .lock()
@@ -160,6 +229,8 @@ pub async fn start(options: ServerOptions) -> Running {
     let shared = Shared {
         observed: Arc::new(Mutex::new(Observed::default())),
         options: Arc::new(Mutex::new(options)),
+        shell_channels: Arc::new(Mutex::new(HashSet::new())),
+        relayed_bytes: Arc::new(AtomicU64::new(0)),
     };
     let mut server = TestServer {
         shared: shared.clone(),
@@ -302,6 +373,67 @@ impl russh::server::Handler for TestServer {
         Ok(())
     }
 
+    /// `direct-tcpip`：一台跳板机被要求"去连那里"。
+    ///
+    /// 两个分支都要有，因为判据的两半都靠它：
+    /// * **有映射** → 接受 + 双向中继（于是"经跳板真的通了"有服务端这一侧的证据）；
+    /// * **没有映射** → **drop `reply`** = 拒绝（真实服务端在"转发不允许 / 连不上"时就是这样）。
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        originator_address: &str,
+        originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.shared
+            .observed
+            .lock()
+            .unwrap()
+            .direct_tcpip
+            .push(ForwardRequest {
+                host: host_to_connect.to_owned(),
+                port: port_to_connect,
+                originator: originator_address.to_owned(),
+                originator_port,
+            });
+
+        let destination = self
+            .shared
+            .options
+            .lock()
+            .unwrap()
+            .relay
+            .iter()
+            .find(|relay| relay.host == host_to_connect && u32::from(relay.port) == port_to_connect)
+            .map(|relay| relay.to);
+
+        // 没有映射 → 什么都不做。`reply` 在这一行之后被 drop，
+        // 而上游的契约正是"drop 掉句柄 = 拒绝这个通道"。
+        let Some(destination) = destination else {
+            return Ok(());
+        };
+
+        reply.accept().await;
+        let shared = self.shared.clone();
+        let counter = Arc::clone(&self.shared.relayed_bytes);
+        tokio::spawn(async move {
+            let Ok(upstream) = TcpStream::connect(destination).await else {
+                return;
+            };
+            // 两侧都包一层计数器，于是**两个方向**的字节都算进来（README 那半句"搬过多少"）。
+            let mut client_side = Counted::new(channel.into_stream(), Arc::clone(&counter));
+            let mut target_side = Counted::new(upstream, counter);
+            // **两条出路都算"收工"**：收尾那一下（客户端撤了）让某一侧报错是常态，
+            // 而"中继已经结束"与"结束时是否干净"是两件事。
+            let _ = copy_bidirectional(&mut client_side, &mut target_side).await;
+            shared.observed.lock().unwrap().relays_finished += 1;
+        });
+        Ok(())
+    }
+
     async fn pty_request(
         &mut self,
         channel: ChannelId,
@@ -314,6 +446,7 @@ impl russh::server::Handler for TestServer {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         self.shared.observed.lock().unwrap().pty_requests += 1;
+        self.shared.mark_shell(channel);
         let _ = session.channel_success(channel);
         Ok(())
     }
@@ -323,6 +456,7 @@ impl russh::server::Handler for TestServer {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.shared.mark_shell(channel);
         let _ = session.channel_success(channel);
         Ok(())
     }
@@ -333,6 +467,11 @@ impl russh::server::Handler for TestServer {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        // 只记 shell 通道的数据：`direct-tcpip` 通道上流的是**另一条 SSH 连接**的字节，
+        // 把它算进"终端收到过什么"会让判据读到一个它没在说的事实。
+        if !self.shared.is_shell(channel) {
+            return Ok(());
+        }
         self.shared
             .observed
             .lock()
@@ -371,5 +510,51 @@ impl russh::server::Handler for TestServer {
         let _ = session.exit_status_request(channel, status);
         let _ = session.close(channel);
         Ok(())
+    }
+}
+
+/// 数着字节搬的包装：每写出一次就加一次计数。
+///
+/// 为什么不用 `copy_bidirectional` 的返回值：它**出错时不交出**已搬的字节数，而收尾那一下
+/// 报错是常态 —— 于是"这条中继搬过多少"会在最需要它的时候变成 0。记在写这一侧就没有这个
+/// 问题（而且**会话还开着的时候就能读**，见 `Shared::relayed_bytes`）。
+struct Counted<T> {
+    inner: T,
+    counter: Arc<AtomicU64>,
+}
+
+impl<T> Counted<T> {
+    fn new(inner: T, counter: Arc<AtomicU64>) -> Self {
+        Self { inner, counter }
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for Counted<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for Counted<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let written = ready!(Pin::new(&mut self.inner).poll_write(cx, buf))?;
+        self.counter.fetch_add(written as u64, Ordering::Relaxed);
+        Poll::Ready(Ok(written))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
