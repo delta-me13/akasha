@@ -41,12 +41,21 @@ impl SshTarget {
 
     /// 交给 `TcpStream::connect` 的形态。
     pub(crate) fn address(&self) -> String {
-        // IPv6 字面量要带方括号，否则 `::1:22` 会被当成一个坏主机名。
-        if self.host.contains(':') {
-            format!("[{}]:{}", self.host, self.port)
-        } else {
-            format!("{}:{}", self.host, self.port)
-        }
+        host_and_port(&self.host, self.port)
+    }
+}
+
+/// `host:port`，**IPv6 字面量带方括号**。
+///
+/// 两处用它：连接一个 SSH 目标（[`SshTarget::address`]）与绑定一个本地监听
+/// （[`crate::LocalListener::bind`]）。抽成一份的理由与"建链只有一份实现"相同 ——
+/// 少一处手工拼接，就少一处 `::1:46010` 那样的坏地址（它会被当成主机名去解析，
+/// 报出来的错指向 DNS，而问题在格式）。
+pub(crate) fn host_and_port(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
     }
 }
 

@@ -205,3 +205,18 @@ pub fn round_trip(transport: &mut dyn Transport, text: &str) {
         seen.len()
     );
 }
+
+/// 等到某件事成立（或者放弃并说明等的是什么）。
+///
+/// 不用固定 `sleep` 猜（`AGENTS.md` §7）：这里轮询的是**对端记下来的事实**，
+/// 而"多久才记上"取决于收尾的往返 —— 猜一个数字就是在写一条随机红。
+pub fn wait_until(deadline: Duration, what: &str, condition: impl Fn() -> bool) {
+    let until = Instant::now() + deadline;
+    while Instant::now() < until {
+        if condition() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("等不到：{what}");
+}

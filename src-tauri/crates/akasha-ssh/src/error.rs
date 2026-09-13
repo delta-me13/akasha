@@ -144,6 +144,20 @@ pub enum SshError {
         reason: String,
     },
 
+    /// 本地监听绑定失败（plan 0602 的 `-L`）：端口被占用、没有权限、地址不可用。
+    ///
+    /// ⚠️ 与 [`SshError::Connect`] 分开是必要的：那条说的是"**对端**连不上"，
+    /// 这条说的是"**本机**的端口没拿到"。用户要做的动作完全不同 ——
+    /// 前者查网络与远端服务，后者腾出端口或换一个绑定地址。
+    /// 它同时是**最先**可能失败的一步：绑定在握手之前，所以它一出错就不必再问凭据。
+    #[error("本地监听 {address} 绑定失败：{reason}")]
+    Listen {
+        /// 想绑的地址（`host:port`）。
+        address: String,
+        /// 操作系统的原话（`Address already in use (os error 98)` 那一种）。
+        reason: String,
+    },
+
     /// 在 tokio 上下文里调同步门面。**返回错误而不是 panic**：
     /// `Handle::block_on` 在这里会 panic（"Cannot start a runtime from within a runtime"），
     /// 而这条路径的调用方是 app 的命令层 —— 那里 panic 会连带丢掉整个 app。
@@ -173,6 +187,14 @@ pub(crate) fn forward_failed(host: &str, port: u16, err: impl std::fmt::Display)
     SshError::Forward {
         host: host.to_owned(),
         port,
+        reason: err.to_string(),
+    }
+}
+
+/// 本地监听那条路的统一说法（plan 0602）。
+pub(crate) fn listen_failed(address: &str, err: impl std::fmt::Display) -> SshError {
+    SshError::Listen {
+        address: address.to_owned(),
         reason: err.to_string(),
     }
 }

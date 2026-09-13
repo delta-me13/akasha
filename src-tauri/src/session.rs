@@ -31,7 +31,7 @@ use akasha_pty::{
     Batch, BatchPolicy, ExitStatus, PtyTransport, TerminalSize, Transport, TransportError,
     spawn_batcher,
 };
-use akasha_ssh::SshConnection;
+use akasha_ssh::LocalForward;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody, JavaScriptChannelId};
 use tauri::{AppHandle, Emitter, State, Webview};
@@ -537,28 +537,28 @@ impl Sessions {
         Ok(applied)
     }
 
-    /// 挂上刚建立的连接。
-    pub fn attach_tunnel_connection(
+    /// 挂上刚起来的转发（本地监听 + 那条连接，plan 0602）。
+    pub fn attach_tunnel_forward(
         &self,
         handle: SessionHandle,
-        connection: SshConnection,
+        forward: LocalForward,
     ) -> Result<(), IpcError> {
         let mut inner = self.lock()?;
         let tunnel = inner
             .tunnels
             .get_mut(&handle)
             .ok_or(IpcError::NotFound { handle })?;
-        tunnel.attach(connection);
+        tunnel.attach(forward);
         Ok(())
     }
 
-    /// 取走这条隧道的连接 —— 重试与停止都要在**锁外**显式断开它。
-    pub fn take_tunnel_connection(&self, handle: SessionHandle) -> Option<SshConnection> {
+    /// 取走这条隧道的转发 —— 重试与停止都要在**锁外**收掉它（停止监听 + 断开连接）。
+    pub fn take_tunnel_forward(&self, handle: SessionHandle) -> Option<LocalForward> {
         self.lock()
             .ok()?
             .tunnels
             .get_mut(&handle)
-            .and_then(Tunnel::take_connection)
+            .and_then(Tunnel::take_forward)
     }
 
     /// 一条隧道的 `(规则 id, 所属主机 id)`：重试时要照原样再连一次，材料只在这里。
@@ -635,9 +635,9 @@ impl Sessions {
             ids.push(live.id);
         }
 
-        // 隧道（plan 0601）单独 drain：它的收尾与载体**不是一回事** —— 没有本地进程要
-        // kill + wait（ADR-0003 D4），收尾就是**丢掉连接**（`SshConnection` 的 `Handle`
-        // 一 drop，上游会话任务随之收工，服务端看到断开）。混进上面那个循环只会让
+        // 隧道（plan 0601 / 0602）单独 drain：它的收尾与载体**不是一回事** —— 没有本地进程要
+        // kill + wait（ADR-0003 D4），收尾就是**停止转发 + 丢掉连接**（`SshConnection` 的
+        // `Handle` 一 drop，上游会话任务随之收工，服务端看到断开）。混进上面那个循环只会让
         // 两支各自长出一段用不上的代码。
         let mut tunnel_ids = Vec::new();
         let tunnels: Vec<Tunnel> = match self.inner.lock() {
@@ -657,7 +657,9 @@ impl Sessions {
         if !tunnels.is_empty() {
             tracing::info!(tunnels = tunnels.len(), "tunnels reclaimed");
         }
-        drop(tunnels); // 连接在这里断开（显式 disconnect 要 runtime，退出路径上不值得再排队）
+        // 转发在这里停下（停止监听、收掉在途连接），连接随后断开：显式 `disconnect` 要在
+        // runtime 上排队，而退出路径上不值得等它 —— 与 plan 0601 的处理一致。
+        drop(tunnels);
         ids.append(&mut tunnel_ids);
 
         if let Ok(mut inner) = self.inner.lock() {

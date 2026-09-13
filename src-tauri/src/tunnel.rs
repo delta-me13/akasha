@@ -1,4 +1,4 @@
-//! **隧道实体与三条命令**（plan 0601）—— 端口转发的资源模型落地处。
+//! **隧道实体、三条命令与本地转发**（plan 0601 / 0602）—— 端口转发的资源模型落地处。
 //!
 //! `docs/scope.md` §2.2 / ADR-0003 D6 把这件事定得很死：**一条转发规则是一个独立的
 //! `Session`**（不是某个终端会话的附属物），它自己持有一条连接，关它只关它自己。
@@ -9,16 +9,20 @@
 //! | 五态与"哪些转移合法" | `akasha_core::TunnelState`（纯逻辑，零 Tauri） |
 //! | 实体表与注册表 | [`crate::session::Sessions`] —— **同一张注册表**（D6），不另立一份 |
 //! | 连接怎么建 | [`crate::ssh::connect_connection`]（已认证、没有通道的 `SshConnection`） |
+//! | 转发怎么做 | `akasha_ssh::relay`（本地监听 + 每条入站连接一条 `direct_tcpip` 通道） |
 //! | 事件与 probe | 本模块（`tunnel_state` / `tunnels`） |
 //!
-//! ## 本步做到哪为止
+//! ## 一条"已连接"的隧道现在意味着什么
 //!
-//! 建出来的是"**一条已连接的隧道**"：它持有一条真实的 SSH 连接，**但还不转发任何字节**。
-//! 三种转发机制分别在 plan 0602（`-L`）/ 0603（`-D`）/ 0604（`-R`），它们都在这条连接上
-//! 按需开通道 —— 那正是 ADR-0003 D9 把"连接"与"通道"分开的理由。
+//! 从 plan 0602 起，`已连接` 意味着两件事同时成立：**本地端口在监听**，
+//! 且**那条 SSH 连接活着**。两者合成一件事 —— 转发任务持有连接，端口与被转发的字节
+//! 都只属于它（`akasha_ssh::relay` 的模块文档写了收尾的两条路径）。
 //!
-//! ⚠️ **`重连中` 在本步不由真实路径产生**：驱动它的重连循环是 plan 0605。状态与那条边
-//! 已经存在（`akasha_core::TunnelState` 的用例覆盖了它），但这里没有任何代码会走到它 ——
+//! ⚠️ **只做 `-L`**：`-D`（SOCKS5）与 `-R`（远端监听）分别是 plan 0603 / 0604，
+//! 遇到这两个方向的规则**明确拒绝**，不静默按本地转发处理。
+//!
+//! ⚠️ **`重连中` 在本步仍不由真实路径产生**：驱动它的重连循环是 plan 0605。状态与那条边
+//! 已经存在（`akasha_core::TunnelState` 的用例覆盖了它），但没有代码会走到它 ——
 //! 文档与判据都不得假装它已被验证。
 //!
 //! ## 停止 = 停止 + 注销
@@ -27,15 +31,20 @@
 //! 摘掉 —— D5 的"关闭 Session 立刻关闭连接，无宽限期"与"已停止"这一态因此不冲突：
 //! 用户看到的是它消失了，而事件序列里留着那一步。残留的半开状态（"已停止但仍占着注册表"）
 //! 是 stage 6 的 plan 0606 要处理的那种东西，本步不引入。
+//!
+//! ⚠️ **停止是异步收尾**：摘掉实体之后调 [`LocalForward::shutdown`] —— 它发完信号即返回，
+//! 停止监听、收掉在途连接与断开那条 SSH 连接都在 runtime 上做（同 D5 的"立刻"，
+//! 只是"立刻"发生在另一个线程上；要观察结果的地方看对端的连接计数，见 E2E）。
 
 use akasha_core::{SessionId, TunnelState, TunnelTransitionError};
-use akasha_ssh::SshConnection;
+use akasha_ssh::{ForwardTarget, LocalForward, LocalListener, SshError};
 use akasha_store::StoreError;
+use akasha_store::pools::forwards::Direction;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_specta::Event;
 
-use crate::pools::{ForwardId, HostId};
+use crate::pools::{ForwardDirection, ForwardId, HostId};
 use crate::session::{IpcError, SessionHandle, Sessions};
 use crate::ssh::{Ssh, SshFailureKind, SshIpcError};
 use crate::vault::{ConnError, Vault};
@@ -43,8 +52,8 @@ use crate::vault::{ConnError, Vault};
 /// 一条隧道。
 ///
 /// 字段都是**资源归属**那一类（D6 的"自持有条目"）：规则是谁、连的是哪台、现在什么状态、
-/// 已经重试了几次、以及**那条连接**。没有"用户在界面上选中了它"这类信息 ——
-/// 后端不编码呈现方式（`AGENTS.md` §3.1）。
+/// 已经重试了几次、以及**那条转发**（它持有连接，见 `akasha_ssh::relay`）。
+/// 没有"用户在界面上选中了它"这类信息 —— 后端不编码呈现方式（`AGENTS.md` §3.1）。
 pub struct Tunnel {
     id: SessionId,
     /// 池里的转发规则行 id（`forwards.id`）。
@@ -56,8 +65,8 @@ pub struct Tunnel {
     state: TunnelState,
     /// 已经重试过几次。手动重试清零（D12），进入 `重连中(n)` 时等于 `n`。
     attempts: u32,
-    /// 已认证、没有通道的连接（ADR-0003 D9 的类型）。`None` = 还没连上 / 已经断开。
-    connection: Option<SshConnection>,
+    /// 本地监听 + 那条连接（ADR-0003 D9 的类型在里面）。`None` = 还没连上 / 已经断开。
+    forward: Option<LocalForward>,
 }
 
 impl Tunnel {
@@ -70,7 +79,7 @@ impl Tunnel {
             host_id,
             state: TunnelState::Connecting,
             attempts: 0,
-            connection: None,
+            forward: None,
         }
     }
 
@@ -93,18 +102,19 @@ impl Tunnel {
         Ok(applied)
     }
 
-    pub(crate) fn attach(&mut self, connection: SshConnection) {
-        self.connection = Some(connection);
+    /// 挂上刚起来的转发（本地监听 + 那条连接）。
+    pub(crate) fn attach(&mut self, forward: LocalForward) {
+        self.forward = Some(forward);
     }
 
-    /// 取走连接（重试 / 停止要在**锁外**显式断开它）。
-    pub(crate) fn take_connection(&mut self) -> Option<SshConnection> {
-        self.connection.take()
+    /// 取走转发（重试 / 停止要在**锁外**收掉它：停监听 + 断连接）。
+    pub(crate) fn take_forward(&mut self) -> Option<LocalForward> {
+        self.forward.take()
     }
 
-    /// 实体被摘牌时交出连接。
-    pub(crate) fn into_connection(self) -> Option<SshConnection> {
-        self.connection
+    /// 实体被注销时交出转发（调用方在锁外 `shutdown`）。
+    pub(crate) fn into_forward(self) -> Option<LocalForward> {
+        self.forward
     }
 
     pub(crate) const fn id(&self) -> SessionId {
@@ -128,6 +138,12 @@ impl Tunnel {
             name: self.rule_name.clone(),
             state: self.state,
             attempt: self.attempts,
+            // 实际监听地址 —— "有没有端口在听"是这条功能的唯一对外事实，
+            // 它只能从转发那里读（没有它，界面与 probe 就只能说"已连接"而说不清连到哪一步）。
+            bind: self
+                .forward
+                .as_ref()
+                .map(|forward| forward.bound().to_string()),
         }
     }
 }
@@ -140,6 +156,8 @@ pub struct TunnelSummary {
     pub name: String,
     pub state: TunnelState,
     pub attempt: u32,
+    /// 实际监听地址（`127.0.0.1:46010`）。`None` = 还没有端口（连接中 / 失败 / 已停止）。
+    pub bind: Option<String>,
 }
 
 /// 状态过 IPC 的形状。
@@ -224,6 +242,20 @@ pub enum TunnelError {
     #[error("会话 {handle} 不是一条隧道（已停止或未打开）")]
     NotATunnel { handle: SessionHandle },
 
+    /// 这条规则的方向不是本地转发。
+    ///
+    /// 与 [`Self::Failed`] 分开：这不是"这次没连上"，而是**本版本不做这个方向** ——
+    /// 重试一百次也不会变（`-D` / `-R` 分别是 plan 0603 / 0604）。
+    #[error("这条规则的方向不是本地转发（-L）：本版本只支持 local")]
+    Unsupported { direction: ForwardDirection },
+
+    /// 本地端口没拿到：被占用、无权限、绑定地址不可用。
+    ///
+    /// ⚠️ 它在一类失败里出现得最多（端口被占用），而且**发生在握手之前** ——
+    /// 用户不必先答完凭据才被告知端口没拿到。
+    #[error("本地监听 {address} 绑定失败：{message}")]
+    Bind { address: String, message: String },
+
     /// 连接这条路失败。`kind` 是给界面分辨**警报**用的（同 `SshIpcError`）。
     #[error("{message}")]
     Failed {
@@ -263,6 +295,24 @@ impl From<IpcError> for TunnelError {
     }
 }
 
+impl TunnelError {
+    /// 本地监听那条路的说法（`akasha-ssh` 的 [`SshError::Listen`]）。
+    ///
+    /// 绑定失败要单独一档：用户对它的下一步动作是"腾出端口 / 换端口 / 换绑定地址"，
+    /// 与"连接失败"（查网络与远端）完全不同 —— 压进 `Failed` 会让界面把两件事说成一件。
+    fn from_listen(err: SshError) -> Self {
+        match err {
+            SshError::Listen { address, reason } => Self::Bind {
+                address,
+                message: reason,
+            },
+            other => Self::Internal {
+                message: other.to_string(),
+            },
+        }
+    }
+}
+
 /// 一次"打开 / 重试"的结果。
 ///
 /// 为什么不是 `Result<handle, error>`：连接失败时这条隧道**仍然登记着**（状态 `失败`，
@@ -278,14 +328,17 @@ pub struct TunnelAttempt {
     pub failure: Option<TunnelError>,
 }
 
-/// 打开一条隧道：读池里的规则 → 登记 → 建连接 → `已连接`。
+/// 打开一条隧道：读池里的规则 → **绑定本地端口** → 登记 → 建连接 → 起转发 → `已连接`。
 ///
 /// ⚠️ **async**：命令体里有一次会阻塞几秒的握手（最长 `connect_timeout`，跳板链再乘以
-/// 跳数）。同步命令跑在处理 IPC 请求的那条线程上，挡住它就等于挡住全部 IPC ——
+/// 跳数）。同步命令在处理 IPC 请求的那条线程上，挡住它就等于挡住全部 IPC ——
 /// 包括用户回答问题要用的那三条（同 `open_ssh_session`）。
 ///
-/// `Err` 只在**没登记成**时返回（库锁着 / 规则不在池里 / id 装不下）；连不上属于
-/// [`TunnelAttempt::failure`]（隧道已在册、可重试）。
+/// 顺序是刻意的（plan 0602 的第一条）：**先绑定、后连接**。端口被占用是本类功能最常见的
+/// 一类失败，用户此时还不该回答任何凭据询问 —— 拿不到端口就先报错，握手与提问都不发生。
+///
+/// `Err` 只在**没登记成**时返回（库锁着 / 规则不在池里 / 方向不是 `-L` / **端口没拿到**）；
+/// 连不上属于 [`TunnelAttempt::failure`]（隧道已在册、可重试）。
 #[tauri::command]
 #[specta::specta]
 pub async fn tunnel_open(
@@ -293,21 +346,29 @@ pub async fn tunnel_open(
     forward_id: ForwardId,
 ) -> Result<TunnelAttempt, TunnelError> {
     let rule = load_rule(&app, forward_id)?;
+    // 方向与目标先校验：`-R` 的规则不该在**本地**占一个端口（它的绑定端在远端）。
+    let target = rule.local_forward()?;
+    let listener = bind_local(&app, &rule).await?;
+
     let sessions = app.state::<Sessions>().inner().clone();
     let handle = sessions
-        .open_tunnel(rule.id, rule.name, rule.host_id)
+        .open_tunnel(rule.id, rule.name.clone(), rule.host_id)
         .map_err(TunnelError::from)?;
     // 登记本身就是进入「连接中」（见 `Sessions::open_tunnel`）—— 这里只把那条既定事实
     // 通告给前端：连接要花几秒，界面与托盘都该立刻看到"它在连"。
     // ⚠️ 不再走一次状态机：`连接中 → 连接中` 是非法边（同态转移），会被正确拒绝。
     announce(&app, handle, TunnelState::Connecting);
-    connect_and_attach(&app, handle, rule.host_id).await
+    connect_and_attach(&app, handle, &rule, target, listener).await
 }
 
 /// 手动重试（D12：`失败 / 已停止 → 连接中`，尝试次数清零）。
 ///
-/// `Err` 只在"这个句柄不是一条隧道 / 状态推不动"时返回；**又没连上**属于
-/// [`TunnelAttempt::failure`]。
+/// 规则**重新读一遍**：端口与目标可能在上一次失败之后被改过，而重试的用户意图正是
+/// "按现在的配置再来一次"。旧的那条转发（如果还在）先收掉 —— 重试是"重来一次"，
+/// 不是"再来一条"。
+///
+/// `Err` 只在"这个句柄不是一条隧道 / 方向不对 / 端口没拿到 / 状态推不动"时返回；
+/// **又没连上**属于 [`TunnelAttempt::failure`]。
 #[tauri::command]
 #[specta::specta]
 pub async fn tunnel_retry(
@@ -315,19 +376,26 @@ pub async fn tunnel_retry(
     handle: SessionHandle,
 ) -> Result<TunnelAttempt, TunnelError> {
     let sessions = app.state::<Sessions>().inner().clone();
-    let (_, host_id) = sessions
+    let (rule_id, _) = sessions
         .tunnel_origin(handle)
         .ok_or(TunnelError::NotATunnel { handle })?;
 
-    // 上一次那条连接（如果还在）先断开：重试是"重来一次"，不是"再来一条"。
-    if let Some(connection) = sessions.take_tunnel_connection(handle) {
-        disconnect(&app, connection);
+    if let Some(forward) = sessions.take_tunnel_forward(handle) {
+        forward.shutdown();
     }
+
+    let rule_id = ForwardId::try_from(rule_id).map_err(|_| TunnelError::Internal {
+        message: format!("转发规则 id 超出可表示范围（{rule_id}）"),
+    })?;
+    let rule = load_rule(&app, rule_id)?;
+    let target = rule.local_forward()?;
+    let listener = bind_local(&app, &rule).await?;
+
     apply(&app, &sessions, handle, TunnelState::Connecting)?;
-    connect_and_attach(&app, handle, host_id).await
+    connect_and_attach(&app, handle, &rule, target, listener).await
 }
 
-/// 停止一条隧道：`已停止`（发事件）→ 断开连接 → 从注册表摘掉。
+/// 停止一条隧道：`已停止`（发事件）→ 收掉转发（停止监听 + 断开连接）→ 从注册表摘掉。
 ///
 /// 摘牌是**幂等**的：重复点击、或这条已经被别的路径收掉时返回 `Ok`，而不是报一个
 /// 用户没有下一步动作可做的错。
@@ -344,8 +412,9 @@ pub fn tunnel_stop(app: AppHandle, handle: SessionHandle) -> Result<(), TunnelEr
     let Some(tunnel) = sessions.remove_tunnel(handle).map_err(TunnelError::from)? else {
         return Ok(());
     };
-    if let Some(connection) = tunnel.into_connection() {
-        disconnect(&app, connection);
+    if let Some(forward) = tunnel.into_forward() {
+        // 发完信号即返回：收尾（停监听、收在途连接、断开连接）在 runtime 上做。
+        forward.shutdown();
     }
     Ok(())
 }
@@ -368,17 +437,46 @@ pub fn snapshot(sessions: &Sessions) -> serde_json::Value {
                 // 拿不到就不写这个字段（`docs/logging.md`：值不撒谎）——
                 // 这里用 null 而不是 0：0 是一个真出现过的次数（首次连接）。
                 "attempt": entry.state.attempt(),
+                // 实际监听地址。没有端口时是 null（不是空串）：空串看着像"绑在空地址上"。
+                "bind": entry.bind,
             })
         })
         .collect();
     serde_json::json!(entries)
 }
 
-/// 池里那一行规则里，这条隧道要用的三个字段。
+/// 池里那一行规则里，这条隧道要用的字段。
 struct Rule {
     id: i64,
     name: String,
     host_id: HostId,
+    direction: Direction,
+    bind_host: String,
+    bind_port: u16,
+    target_host: Option<String>,
+    target_port: Option<u16>,
+}
+
+impl Rule {
+    /// 这条规则对应的本地转发目标，方向不对就明确拒绝。
+    ///
+    /// `target_host` / `target_port` 从 plan 0602 起**第一次参与**：它们被原样送进
+    /// `direct_tcpip`，由**对端**解析（在本地解析就等于绕开跳板机）。
+    fn local_forward(&self) -> Result<ForwardTarget, TunnelError> {
+        if self.direction != Direction::Local {
+            return Err(TunnelError::Unsupported {
+                direction: ForwardDirection::from(self.direction),
+            });
+        }
+        match (&self.target_host, self.target_port) {
+            (Some(host), Some(port)) => Ok(ForwardTarget::new(host.clone(), port)),
+            // 库的 `CHECK` 保证 `local` 一定有目标，所以走到这里说明那行数据不合不变量。
+            // 报出来而不是 panic：这一行坏了不该带走整个 app。
+            _ => Err(TunnelError::Internal {
+                message: format!("规则 {}（local）没有目标地址", self.id),
+            }),
+        }
+    }
 }
 
 /// 读池里的一行转发规则。**短借**：读完就把库的锁放掉（连接期间不能持锁，
@@ -408,26 +506,76 @@ fn load_rule(app: &AppHandle, forward_id: ForwardId) -> Result<Rule, TunnelError
         id: row.id,
         name: row.name,
         host_id,
+        direction: row.direction,
+        bind_host: row.bind_host,
+        bind_port: row.bind_port,
+        target_host: row.target_host,
+        target_port: row.target_port,
     })
 }
 
-/// 建立连接并挂到实体上；失败则把状态推到 `失败`（**并发出事件**），把原因放进结果里。
+/// 绑定这条规则的本地监听。**在握手之前**（顺序的理由见 [`tunnel_open`]）。
+///
+/// 绑定在 SSH 的 runtime 上做：那个端口随后要在那条 runtime 上被接受循环轮询，
+/// 而 tokio 的 I/O 资源归创建它的 driver（在别处绑、在这儿接受，是把两个 runtime 的
+/// 生命周期绑在一起 —— 不必要且难查）。
+async fn bind_local(app: &AppHandle, rule: &Rule) -> Result<LocalListener, TunnelError> {
+    let runtime = app
+        .state::<Ssh>()
+        .runtime_handle()
+        .ok_or_else(|| TunnelError::Internal {
+            message: "SSH runtime 不可用：它没建起来，端口也无从绑定".to_owned(),
+        })?;
+    let host = rule.bind_host.clone();
+    let port = rule.bind_port;
+    runtime
+        .spawn(async move { LocalListener::bind(&host, port).await })
+        .await
+        .map_err(|err| TunnelError::Internal {
+            message: format!("绑定本地端口的那条任务没有回话：{err}"),
+        })?
+        .map_err(TunnelError::from_listen)
+}
+
+/// 建立连接，把它与监听一起交给转发任务，然后挂到实体上；失败则把状态推到 `失败`
+/// （**并发出事件**），把原因放进结果里。
+///
+/// 失败时 `listener` 随函数结束被 drop —— 端口立刻还给系统，不需要显式清理。
 async fn connect_and_attach(
     app: &AppHandle,
     handle: SessionHandle,
-    host_id: HostId,
+    rule: &Rule,
+    target: ForwardTarget,
+    listener: LocalListener,
 ) -> Result<TunnelAttempt, TunnelError> {
+    let Some(runtime) = app.state::<Ssh>().runtime_handle() else {
+        // 没有 runtime 就连不上（`connect_connection` 也是这个前提）。隧道已经登记着，
+        // 因此要和"连不上"一样落到 `失败` 并把原因交出去 —— 而不是停在永远不动的 `连接中`。
+        let sessions = app.state::<Sessions>().inner().clone();
+        let failure = TunnelError::Internal {
+            message: "SSH runtime 不可用：连接建立不起来".to_owned(),
+        };
+        let _ = apply(app, &sessions, handle, TunnelState::Failed);
+        return Ok(TunnelAttempt {
+            handle,
+            failure: Some(failure),
+        });
+    };
+
     let outcome = {
         let ssh = app.state::<Ssh>();
         let vault = app.state::<Vault>();
-        crate::ssh::connect_connection(&ssh, &vault, host_id).await
+        crate::ssh::connect_connection(&ssh, &vault, rule.host_id).await
     };
 
     let sessions = app.state::<Sessions>().inner().clone();
     match outcome {
         Ok(connection) => {
+            // 连接与监听合成一件事：转发任务持有两者，"已连接"因此意味着
+            // **端口在监听**且**连接活着**（plan 0602）。
+            let forward = listener.serve(&runtime, connection, target);
             sessions
-                .attach_tunnel_connection(handle, connection)
+                .attach_tunnel_forward(handle, forward)
                 .map_err(TunnelError::from)?;
             apply(app, &sessions, handle, TunnelState::Connected)?;
             Ok(TunnelAttempt {
@@ -484,22 +632,5 @@ fn announce(app: &AppHandle, handle: SessionHandle, state: TunnelState) {
     };
     if let Err(err) = app.emit(TunnelStateChanged::NAME, event) {
         tracing::warn!(event = TunnelStateChanged::NAME, %err, "event emit failed");
-    }
-}
-
-/// 显式断开一条连接（`Handle` 一 drop 也会结束它，但那一次没有道别）。
-///
-/// runtime 起不来时只剩"丢掉它"一条路 —— 收尾路径上不报错（`Ssh::runtime_handle` 的理由）。
-fn disconnect(app: &AppHandle, connection: SshConnection) {
-    match app.state::<Ssh>().runtime_handle() {
-        Some(runtime) => {
-            runtime.spawn(connection.disconnect());
-        }
-        None => {
-            tracing::warn!(
-                reason = "ssh-runtime-unavailable",
-                "tunnel disconnect skipped"
-            );
-        }
     }
 }

@@ -17,14 +17,14 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use akasha_ssh::testing::{Observed, Running};
 use akasha_store::pools::{hosts, known_hosts};
 // `Connection` 从 store 那侧取而不是直接依赖 `rusqlite`：它是 store 的**公开类型**
 // （`open` / `create` 的返回值就是它），而版本对齐由 store 一处负责。
 use akasha_store::{Connection, Passphrase, VaultState, vault_state};
-use serde_json::Value;
+use serde_json::{Value, json};
 use victauri_test::VictauriClient;
 
 /// 这些用例自己用的库口令。**不是**用户的。
@@ -405,4 +405,171 @@ pub async fn wait_connected(client: &mut VictauriClient, tabs: usize, what: &str
 /// 服务端记下来的事实（观察点的另一半）。
 pub fn observed(server: &Running) -> Observed {
     server.shared.observed()
+}
+
+/// 挑一个**当前空闲**的本地端口。
+///
+/// 为什么不能写死一个数字：转发规则要真的绑定端口（plan 0602 起），
+/// 写死的端口一旦被开发机上别的东西占着，用例就会红在一条与本次改动无关的原因上。
+/// 库的 `CHECK` 不允许 `bind_port = 0`（内核分配），所以只能用"先绑再放"。
+/// ⚠️ 放掉与 app 绑上之间有极小的竞争窗口 —— 比"写死一个端口"小得多，且失败信息清楚
+/// （绑定失败会带上地址）。
+pub fn free_port() -> u16 {
+    let held = std::net::TcpListener::bind("127.0.0.1:0").expect("取空闲端口失败");
+    held.local_addr().expect("取空闲端口地址失败").port()
+}
+
+// ── 隧道（plan 0601 起，两条 E2E 共用）────────────────────────────────────────
+
+/// `app_state { probe: "tunnels" }` 的原始列表。
+pub async fn tunnel_entries(client: &mut VictauriClient) -> Vec<Value> {
+    let value = client
+        .call_tool("app_state", json!({ "probe": "tunnels" }))
+        .await
+        .expect("读不到 tunnels probe —— 它注册进 lib.rs 了吗？");
+    value.as_array().cloned().unwrap_or_default()
+}
+
+/// 前端记下的 `tunnel_state` 事件（测试接口，见 `src/ipc/tunnels.ts`）。
+pub async fn tunnel_events(client: &mut VictauriClient) -> Vec<Value> {
+    let raw = client
+        .eval_js("JSON.stringify(window.__akashaTunnels?.events ?? [])")
+        .await
+        .unwrap();
+    let encoded = text(&raw);
+    serde_json::from_str(&encoded).unwrap_or_default()
+}
+
+/// 等 probe 里某条隧道到达某个状态，返回它的 handle。
+pub async fn wait_tunnel_state(client: &mut VictauriClient, rule_id: i64, want: &str) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        for entry in tunnel_entries(client).await {
+            let matches_rule = entry.pointer("/ruleId").and_then(Value::as_i64) == Some(rule_id);
+            let state = entry.pointer("/state").and_then(Value::as_str);
+            if matches_rule && state == Some(want) {
+                return entry
+                    .pointer("/handle")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "等不到规则 {rule_id} 变成 {want}：{:?}",
+            tunnel_entries(client).await
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// 等一条隧道从后端消失（停止之后）。
+pub async fn wait_tunnel_gone(client: &mut VictauriClient, handle: u64) {
+    let deadline = Instant::now() + CLOSE_TIMEOUT;
+    loop {
+        let left = tunnel_entries(client).await;
+        if !left
+            .iter()
+            .any(|entry| entry.pointer("/handle").and_then(Value::as_u64) == Some(handle))
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "停掉的隧道还在 probe 里：{left:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// 边答提示边等某条**隧道**连上，返回 `(handle, 收到过哪些提示)`。
+///
+/// 为什么不写死"先密钥后口令"两步：链上每一跳各来一轮（plan 0505 的教训），
+/// 写死步数会在拓扑一变时**静默少答一轮**，表现是"连不上"而不是"用例写错了"。
+///
+/// 与 [`answer_prompts`] 的区别只有"等到什么算完"：那一条等的是**终端标签页**说已连接，
+/// 这一条等的是 probe 里那条隧道说 `connected`（隧道不是标签页，没有标签页可等）。
+pub async fn connect_tunnel_through_prompts(
+    client: &mut VictauriClient,
+    rule_id: i64,
+    fingerprint: &str,
+    password: &str,
+) -> (u64, Vec<String>) {
+    let mut asked = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let any_prompt = "!!document.querySelector('.ssh-prompt[data-prompt-kind=\"hostKey\"]') \
+                      || !!document.querySelector('.ssh-prompt[data-prompt-kind=\"credential\"]')";
+    loop {
+        for entry in tunnel_entries(client).await {
+            if entry.pointer("/ruleId").and_then(Value::as_i64) == Some(rule_id)
+                && entry.pointer("/state").and_then(Value::as_str) == Some("connected")
+            {
+                let handle = entry
+                    .pointer("/handle")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                return (handle, asked);
+            }
+        }
+        if Instant::now() >= deadline {
+            let problem = text_of(client, ".tunnel-failure").await;
+            panic!("提示问答没走完就连不上（问到过的：{asked:?}；面板上的失败={problem:?}）");
+        }
+        let _ = client
+            .wait_for_expression(any_prompt, None, Some(3_000), None)
+            .await;
+
+        let shown = text_of(
+            client,
+            ".ssh-prompt[data-prompt-kind=\"hostKey\"] .ssh-prompt-fingerprint",
+        )
+        .await;
+        if !shown.is_empty() {
+            assert_eq!(shown, fingerprint, "提示里的指纹必须就是服务端的");
+            asked.push(format!("hostKey:{shown}"));
+            click(
+                client,
+                ".ssh-prompt[data-prompt-kind=\"hostKey\"] .ssh-prompt-accept",
+                "接受这把主机密钥",
+            )
+            .await;
+            continue;
+        }
+
+        let hint = text_of(
+            client,
+            ".ssh-prompt[data-prompt-kind=\"credential\"] .ssh-prompt-hint",
+        )
+        .await;
+        if !hint.is_empty() {
+            asked.push(format!("credential:{hint}"));
+            fill_secret(client, password).await;
+            click(
+                client,
+                ".ssh-prompt[data-prompt-kind=\"credential\"] .ssh-prompt-submit",
+                "提交口令",
+            )
+            .await;
+            continue;
+        }
+    }
+}
+
+/// 等某个选择器的文本里出现某段话（失败时把当时那段文本打出来）。
+///
+/// 用于"失败必须在界面上看得见"这一类判据：读的是**界面渲染出来的**那句话，
+/// 而不是后端错误对象 —— 用户看到的是前者。
+pub async fn wait_text_contains(client: &mut VictauriClient, selector: &str, needle: &str) {
+    let deadline = Instant::now() + CLOSE_TIMEOUT;
+    loop {
+        let shown = text_of(client, selector).await;
+        if shown.contains(needle) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "等不到 {selector} 里出现 {needle:?}：{shown:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }

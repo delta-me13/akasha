@@ -49,6 +49,8 @@ mod forward;
 mod handshake;
 mod keys;
 mod known_hosts;
+/// **本地转发 `-L`**：本地监听 + 每条入站连接一条 `direct-tcpip` 通道（plan 0602）。
+mod relay;
 mod target;
 /// **测试脚手架**：进程内的 SSH 服务端（判据的另一半观察点）。
 ///
@@ -69,5 +71,6 @@ pub use known_hosts::{
     HostKeyCache, HostKeyPrompt, KnownHostsVerifier, RecordedHostKey, RecordedIn,
     user_known_hosts_file, user_ssh_config_file,
 };
+pub use relay::{ForwardTarget, LocalForward, LocalListener};
 pub use target::SshTarget;
 pub use transport::SshTransport;

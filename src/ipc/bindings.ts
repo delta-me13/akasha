@@ -101,25 +101,32 @@ export const commands = {
 	 */
 	sshPromptCancel: (id: number) => typedError<null, PromptError>(__TAURI_INVOKE("ssh_prompt_cancel", { id })),
 	/**
-	 *  打开一条隧道：读池里的规则 → 登记 → 建连接 → `已连接`。
+	 *  打开一条隧道：读池里的规则 → **绑定本地端口** → 登记 → 建连接 → 起转发 → `已连接`。
 	 * 
 	 *  ⚠️ **async**：命令体里有一次会阻塞几秒的握手（最长 `connect_timeout`，跳板链再乘以
-	 *  跳数）。同步命令跑在处理 IPC 请求的那条线程上，挡住它就等于挡住全部 IPC ——
+	 *  跳数）。同步命令在处理 IPC 请求的那条线程上，挡住它就等于挡住全部 IPC ——
 	 *  包括用户回答问题要用的那三条（同 `open_ssh_session`）。
 	 * 
-	 *  `Err` 只在**没登记成**时返回（库锁着 / 规则不在池里 / id 装不下）；连不上属于
-	 *  [`TunnelAttempt::failure`]（隧道已在册、可重试）。
+	 *  顺序是刻意的（plan 0602 的第一条）：**先绑定、后连接**。端口被占用是本类功能最常见的
+	 *  一类失败，用户此时还不该回答任何凭据询问 —— 拿不到端口就先报错，握手与提问都不发生。
+	 * 
+	 *  `Err` 只在**没登记成**时返回（库锁着 / 规则不在池里 / 方向不是 `-L` / **端口没拿到**）；
+	 *  连不上属于 [`TunnelAttempt::failure`]（隧道已在册、可重试）。
 	 */
 	tunnelOpen: (forwardId: number) => typedError<TunnelAttempt, TunnelError>(__TAURI_INVOKE("tunnel_open", { forwardId })),
 	/**
 	 *  手动重试（D12：`失败 / 已停止 → 连接中`，尝试次数清零）。
 	 * 
-	 *  `Err` 只在"这个句柄不是一条隧道 / 状态推不动"时返回；**又没连上**属于
-	 *  [`TunnelAttempt::failure`]。
+	 *  规则**重新读一遍**：端口与目标可能在上一次失败之后被改过，而重试的用户意图正是
+	 *  "按现在的配置再来一次"。旧的那条转发（如果还在）先收掉 —— 重试是"重来一次"，
+	 *  不是"再来一条"。
+	 * 
+	 *  `Err` 只在"这个句柄不是一条隧道 / 方向不对 / 端口没拿到 / 状态推不动"时返回；
+	 *  **又没连上**属于 [`TunnelAttempt::failure`]。
 	 */
 	tunnelRetry: (handle: number) => typedError<TunnelAttempt, TunnelError>(__TAURI_INVOKE("tunnel_retry", { handle })),
 	/**
-	 *  停止一条隧道：`已停止`（发事件）→ 断开连接 → 从注册表摘掉。
+	 *  停止一条隧道：`已停止`（发事件）→ 收掉转发（停止监听 + 断开连接）→ 从注册表摘掉。
 	 * 
 	 *  摘牌是**幂等**的：重复点击、或这条已经被别的路径收掉时返回 `Ok`，而不是报一个
 	 *  用户没有下一步动作可做的错。
@@ -512,6 +519,25 @@ export type TunnelError =
 /**  这个句柄不是一条隧道（已经停止 / 从来不存在）。 */
 { kind: "notATunnel"; detail: {
 	handle: number,
+} } | 
+/**
+ *  这条规则的方向不是本地转发。
+ * 
+ *  与 [`Self::Failed`] 分开：这不是"这次没连上"，而是**本版本不做这个方向** ——
+ *  重试一百次也不会变（`-D` / `-R` 分别是 plan 0603 / 0604）。
+ */
+{ kind: "unsupported"; detail: {
+	direction: ForwardDirection,
+} } | 
+/**
+ *  本地端口没拿到：被占用、无权限、绑定地址不可用。
+ * 
+ *  ⚠️ 它在一类失败里出现得最多（端口被占用），而且**发生在握手之前** ——
+ *  用户不必先答完凭据才被告知端口没拿到。
+ */
+{ kind: "bind"; detail: {
+	address: string,
+	message: string,
 } } | 
 /**  连接这条路失败。`kind` 是给界面分辨**警报**用的（同 `SshIpcError`）。 */
 { kind: "failed"; detail: {

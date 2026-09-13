@@ -34,10 +34,10 @@ use akasha_ssh::testing::{ServerOptions, start};
 use akasha_store::pools::{forwards, hosts};
 use serde_json::{Value, json};
 use support::{
-    CLOSE_TIMEOUT, USER, click, connect_and_prepare, fill_secret, forget, open_vault, text,
-    text_of, unlock, wait_js,
+    CLOSE_TIMEOUT, USER, click, connect_and_prepare, connect_tunnel_through_prompts, forget,
+    free_port, open_vault, tunnel_entries, tunnel_events, unlock, wait_js, wait_tunnel_gone,
+    wait_tunnel_state,
 };
-use victauri_test::VictauriClient;
 
 /// 这条用例自己用的**登录**口令（库口令在 `support` 里）。**不是**用户的。
 const PASSWORD: &str = "e2e-ssh-login-password";
@@ -56,14 +56,14 @@ const BROKEN_NAME: &str = "e2e-tunnel-broken";
 /// "连不上"用的端口：1 号端口没有服务、且普通进程连不上它 —— 它给的是拒绝连接，
 /// 不是超时（用例因此不必等满 `connect_timeout`）。
 const UNREACHABLE_PORT: u16 = 1;
-/// 规则里那个绑定端口。**plan 0601 不监听它**（本地监听是 plan 0602），
-/// 但库的 `CHECK` 要求它是一个合法端口。
-const BIND_PORT: u16 = 46_010;
 
 /// 在库里把这次要用的东西摆好：两台主机 + 两条转发规则。
 ///
-/// 返回 `(能连通的那条规则, 连不上的那条规则)`。
-fn seed(path: &Path, port: u16) -> (i64, i64) {
+/// 返回 `(能连通的那条规则, 连不上的那条规则, 绑定端口)`。
+///
+/// ⚠️ 绑定端口由 [`free_port`] 现取：从 plan 0602 起隧道**真的**绑定它，
+/// 写死一个数字会让这条用例在"那个端口恰好被占用"时红在与本次改动无关的原因上。
+fn seed(path: &Path, port: u16) -> (i64, i64, u16) {
     let conn = open_vault(path);
 
     // 先清干净（重跑）：主机行与规则行都按名字清。
@@ -104,13 +104,14 @@ fn seed(path: &Path, port: u16) -> (i64, i64) {
     )
     .unwrap();
 
+    let bind_port = free_port();
     let open = forwards::insert_forward(
         &conn,
         &forwards::NewForward {
             name: TUNNEL_NAME.to_owned(),
             direction: forwards::Direction::Local,
             bind_host: "127.0.0.1".to_owned(),
-            bind_port: BIND_PORT,
+            bind_port,
             target_host: Some("127.0.0.1".to_owned()),
             target_port: Some(port),
             host_id,
@@ -125,7 +126,7 @@ fn seed(path: &Path, port: u16) -> (i64, i64) {
             name: BROKEN_NAME.to_owned(),
             direction: forwards::Direction::Local,
             bind_host: "127.0.0.1".to_owned(),
-            bind_port: BIND_PORT + 1,
+            bind_port: free_port(),
             target_host: Some("127.0.0.1".to_owned()),
             target_port: Some(port),
             // 这一行指向那台**连不上**的主机 —— 失败在这一层。
@@ -135,137 +136,7 @@ fn seed(path: &Path, port: u16) -> (i64, i64) {
     )
     .unwrap();
 
-    (open, broken)
-}
-
-/// `app_state { probe: "tunnels" }` 的原始列表。
-async fn tunnel_entries(client: &mut VictauriClient) -> Vec<Value> {
-    let value = client
-        .call_tool("app_state", json!({ "probe": "tunnels" }))
-        .await
-        .expect("读不到 tunnels probe —— 它注册进 lib.rs 了吗？");
-    value.as_array().cloned().unwrap_or_default()
-}
-
-/// 前端记下的 `tunnel_state` 事件（测试接口，见 `src/ipc/tunnels.ts`）。
-async fn tunnel_events(client: &mut VictauriClient) -> Vec<Value> {
-    let raw = client
-        .eval_js("JSON.stringify(window.__akashaTunnels?.events ?? [])")
-        .await
-        .unwrap();
-    let encoded = text(&raw);
-    serde_json::from_str(&encoded).unwrap_or_default()
-}
-
-/// 等 probe 里某条隧道到达某个状态，返回它的 handle。
-async fn wait_state(client: &mut VictauriClient, rule_id: i64, want: &str) -> u64 {
-    let deadline = Instant::now() + Duration::from_secs(90);
-    loop {
-        for entry in tunnel_entries(client).await {
-            let matches_rule = entry.pointer("/ruleId").and_then(Value::as_i64) == Some(rule_id);
-            let state = entry.pointer("/state").and_then(Value::as_str);
-            if matches_rule && state == Some(want) {
-                return entry
-                    .pointer("/handle")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-            }
-        }
-        assert!(
-            Instant::now() < deadline,
-            "等不到规则 {rule_id} 变成 {want}：{:?}",
-            tunnel_entries(client).await
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-/// 边答提示边等那条隧道连上，返回它收到的提示。
-///
-/// 为什么不写死"先密钥后口令"两步：链上每一跳各来一轮（plan 0505 的教训），
-/// 写死步数会在拓扑一变时**静默少答一轮**，表现是"连不上"而不是"用例写错了"。
-async fn connect_through_prompts(
-    client: &mut VictauriClient,
-    rule_id: i64,
-    fingerprint: &str,
-) -> (u64, Vec<String>) {
-    let mut asked = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(90);
-    let any_prompt = "!!document.querySelector('.ssh-prompt[data-prompt-kind=\"hostKey\"]') \
-                      || !!document.querySelector('.ssh-prompt[data-prompt-kind=\"credential\"]')";
-    loop {
-        for entry in tunnel_entries(client).await {
-            if entry.pointer("/ruleId").and_then(Value::as_i64) == Some(rule_id)
-                && entry.pointer("/state").and_then(Value::as_str) == Some("connected")
-            {
-                let handle = entry
-                    .pointer("/handle")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                return (handle, asked);
-            }
-        }
-        if Instant::now() >= deadline {
-            let problem = text_of(client, ".tunnel-failure").await;
-            panic!("提示问答没走完就连不上（问到过的：{asked:?}；面板上的失败={problem:?}）");
-        }
-        let _ = client
-            .wait_for_expression(any_prompt, None, Some(3_000), None)
-            .await;
-
-        let shown = text_of(
-            client,
-            ".ssh-prompt[data-prompt-kind=\"hostKey\"] .ssh-prompt-fingerprint",
-        )
-        .await;
-        if !shown.is_empty() {
-            assert_eq!(shown, fingerprint, "提示里的指纹必须就是服务端的");
-            asked.push(format!("hostKey:{shown}"));
-            click(
-                client,
-                ".ssh-prompt[data-prompt-kind=\"hostKey\"] .ssh-prompt-accept",
-                "接受这把主机密钥",
-            )
-            .await;
-            continue;
-        }
-
-        let hint = text_of(
-            client,
-            ".ssh-prompt[data-prompt-kind=\"credential\"] .ssh-prompt-hint",
-        )
-        .await;
-        if !hint.is_empty() {
-            asked.push(format!("credential:{hint}"));
-            fill_secret(client, PASSWORD).await;
-            click(
-                client,
-                ".ssh-prompt[data-prompt-kind=\"credential\"] .ssh-prompt-submit",
-                "提交口令",
-            )
-            .await;
-            continue;
-        }
-    }
-}
-
-/// 等一条隧道从后端消失（停止之后）。
-async fn wait_gone(client: &mut VictauriClient, handle: u64) {
-    let deadline = Instant::now() + CLOSE_TIMEOUT;
-    loop {
-        let left = tunnel_entries(client).await;
-        if !left
-            .iter()
-            .any(|entry| entry.pointer("/handle").and_then(Value::as_u64) == Some(handle))
-        {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "停掉的隧道还在 probe 里：{left:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    (open, broken, bind_port)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -288,7 +159,7 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
     };
 
     // ── 3. 种子数据 + 解锁 ─────────────────────────────────────────────────
-    let (open_rule, broken_rule) = seed(&path, server.addr.port());
+    let (open_rule, broken_rule, bind_port) = seed(&path, server.addr.port());
     unlock(&mut client).await;
 
     // 规则池的只读命令：界面凭什么列出规则（plan 0601 新增）。
@@ -323,7 +194,7 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
     )
     .await;
     let (handle, asked) =
-        connect_through_prompts(&mut client, open_rule, &server.fingerprint).await;
+        connect_tunnel_through_prompts(&mut client, open_rule, &server.fingerprint, PASSWORD).await;
     assert!(handle > 0, "probe 里必须有 handle");
     eprintln!("隧道已连接：handle={handle}，问到过 {asked:?}");
 
@@ -338,6 +209,25 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
         "界面上的状态跟着后端变成 connected",
     )
     .await;
+
+    // 从 plan 0602 起「已连接」还意味着**本地端口在监听**：probe 里的 `bind` 就是它。
+    let want = format!("127.0.0.1:{bind_port}");
+    let bound = tunnel_entries(&mut client)
+        .await
+        .into_iter()
+        .find(|entry| entry.pointer("/handle").and_then(Value::as_u64) == Some(handle))
+        .and_then(|entry| {
+            entry
+                .pointer("/bind")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+    assert_eq!(
+        bound.as_deref(),
+        Some(want.as_str()),
+        "已连接的隧道必须报出它监听的端口（plan 0602）：{bound:?}"
+    );
+    eprintln!("监听地址：{want}");
 
     // ── 6. 判据：状态变化**发事件**，且按 `SessionId` 路由 ───────────────────
     let events = tunnel_events(&mut client).await;
@@ -384,7 +274,7 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
         "停止这条隧道",
     )
     .await;
-    wait_gone(&mut client, handle).await;
+    wait_tunnel_gone(&mut client, handle).await;
     let sessions = client
         .call_tool("app_state", json!({ "probe": "sessions" }))
         .await
@@ -445,7 +335,7 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
     eprintln!("打不开的那条：{broken}");
 
     // 状态落在 `失败`（这正是"失败必须可见"的机器可读那一半）。
-    wait_state(&mut client, broken_rule, "failed").await;
+    wait_tunnel_state(&mut client, broken_rule, "failed").await;
     let failed_events = tunnel_events(&mut client).await;
     assert!(
         failed_events.iter().any(|event| {
@@ -483,7 +373,7 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
         .invoke_command("tunnel_stop", Some(json!({ "handle": broken_handle })))
         .await
         .expect("tunnel_stop 调不通");
-    wait_gone(&mut client, broken_handle).await;
+    wait_tunnel_gone(&mut client, broken_handle).await;
     assert!(
         tunnel_entries(&mut client).await.is_empty(),
         "两条都停掉之后 probe 该是空的"

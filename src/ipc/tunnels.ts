@@ -73,6 +73,10 @@ export class TunnelFailed extends Error {
         return `主机池里没有 id ${detail.detail.id} 这台主机`;
       case "notATunnel":
         return `会话 ${detail.detail.handle} 不是一条隧道（已停止或未打开）`;
+      case "unsupported":
+        return `这条规则的方向是 ${detail.detail.direction}：本版本只支持本地转发（local）`;
+      case "bind":
+        return `本地监听 ${detail.detail.address} 绑定失败：${detail.detail.message}`;
       case "failed":
         return `隧道连接失败：${detail.detail.message}`;
       case "transition":

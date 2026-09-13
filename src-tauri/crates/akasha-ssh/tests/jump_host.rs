@@ -19,7 +19,7 @@
 mod support;
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use akasha_ssh::testing::Relay;
 use akasha_ssh::{
@@ -28,7 +28,7 @@ use akasha_ssh::{
 };
 use support::{
     CONNECT_TIMEOUT, CountingProvider, Running, ServerOptions, connect_options, connect_options_to,
-    read_until, start,
+    read_until, start, wait_until,
 };
 
 /// 两跳各自的登录口令 —— **不一样**是有意的：它证明每一跳各问各的凭据（D8 的缓存键含 host）。
@@ -75,21 +75,6 @@ fn inner_options(target: &Running, password: &str, timeout: Duration) -> SshConn
         Arc::new(CountingProvider::new(password)),
         timeout,
     )
-}
-
-/// 等到某件事成立（或者放弃并说明等的是什么）。
-///
-/// 不用固定 `sleep` 猜（`AGENTS.md` §7）：这里轮询的是**对端记下来的事实**，
-/// 而"多久才记上"取决于收尾的往返 —— 猜一个数字就是在写一条随机红。
-fn wait_until(deadline: Duration, what: &str, condition: impl Fn() -> bool) {
-    let until = Instant::now() + deadline;
-    while Instant::now() < until {
-        if condition() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("等不到：{what}");
 }
 
 /// 判据本体：经跳板连上**只有它看得见**的目标，字节能双向流。
