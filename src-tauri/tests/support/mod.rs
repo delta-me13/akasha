@@ -421,6 +421,33 @@ pub fn free_port() -> u16 {
 
 // ── 隧道（plan 0601 起，两条 E2E 共用）────────────────────────────────────────
 
+/// 打开隧道面板，并保证它**重新读一遍**规则池。
+///
+/// 两件事都在这一处解决，缺一条就是一条随执行顺序红的用例：
+///
+/// 1. `.tab-new-tunnel` 是**切换**（`src/App.tsx`），而各个 E2E 目标**共用一个 app** ——
+///    上一个目标可能已经把面板留在打开状态，再点一下就把它关了；
+/// 2. 面板的规则表是**挂载时读一次**的（验证壳层的行为，见 `TunnelPanel`），
+///    所以上一个用例挂载的那一份里不会有本次种下的规则 —— 必须先卸下再挂上。
+pub async fn open_tunnel_panel(client: &mut VictauriClient) {
+    if !text_of(client, ".tunnel-panel").await.is_empty() {
+        click(
+            client,
+            ".tunnel-close",
+            "关闭隧道面板（好让它重新读一次池子）",
+        )
+        .await;
+    }
+    click(client, ".tab-new-tunnel", "打开隧道面板").await;
+    wait_js(
+        client,
+        "!!document.querySelector('.tunnel-panel')",
+        10_000,
+        "隧道面板打开了",
+    )
+    .await;
+}
+
 /// `app_state { probe: "tunnels" }` 的原始列表。
 pub async fn tunnel_entries(client: &mut VictauriClient) -> Vec<Value> {
     let value = client

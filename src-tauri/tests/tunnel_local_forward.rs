@@ -40,8 +40,8 @@ use akasha_store::pools::{forwards, hosts};
 use serde_json::{Value, json};
 use support::{
     CLOSE_TIMEOUT, USER, click, connect_and_prepare, connect_tunnel_through_prompts, forget,
-    free_port, open_vault, text_of, tunnel_entries, unlock, wait_js, wait_text_contains,
-    wait_tunnel_gone,
+    free_port, open_tunnel_panel, open_vault, text_of, tunnel_entries, unlock, wait_js,
+    wait_text_contains, wait_tunnel_gone,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -205,7 +205,7 @@ async fn a_forwarded_port_reaches_a_service_only_the_remote_side_can_name() {
     unlock(&mut client).await;
 
     // ── 3. 界面：打开隧道面板 → 打开那条规则 → 答完提示 ──────────────────────
-    click(&mut client, ".tab-new-tunnel", "打开隧道面板").await;
+    open_tunnel_panel(&mut client).await;
     wait_js(
         &mut client,
         &format!("!!document.querySelector('.tunnel-item[data-rule-id=\"{forward_rule}\"]')"),

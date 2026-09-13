@@ -35,8 +35,8 @@ use akasha_store::pools::{forwards, hosts};
 use serde_json::{Value, json};
 use support::{
     CLOSE_TIMEOUT, USER, click, connect_and_prepare, connect_tunnel_through_prompts, forget,
-    free_port, open_vault, tunnel_entries, tunnel_events, unlock, wait_js, wait_tunnel_gone,
-    wait_tunnel_state,
+    free_port, open_tunnel_panel, open_vault, tunnel_entries, tunnel_events, unlock, wait_js,
+    wait_tunnel_gone, wait_tunnel_state,
 };
 
 /// 这条用例自己用的**登录**口令（库口令在 `support` 里）。**不是**用户的。
@@ -177,7 +177,7 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
     eprintln!("转发规则池：{listed}");
 
     // ── 4. 界面：打开隧道面板，规则列出来 ────────────────────────────────────
-    click(&mut client, ".tab-new-tunnel", "打开隧道面板").await;
+    open_tunnel_panel(&mut client).await;
     wait_js(
         &mut client,
         &format!("!!document.querySelector('.tunnel-item[data-rule-id=\"{open_rule}\"]')"),
