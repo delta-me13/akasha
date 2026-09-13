@@ -279,6 +279,12 @@ impl VaultError {
             StoreError::UnsupportedVersion { found } => Self::Unusable {
                 message: format!("不认识的格式版本 {found}"),
             },
+            // 需要升级但升不动（最常见的是文件不可写）。**与"版本不认识"分开**：
+            // 这里程序**知道**怎么升，只是环境不允许 —— 用户的动作是让文件可写，
+            // 而不是换一个程序版本。plan 0503 起 `open` 会为了迁移而写文件。
+            StoreError::UpgradeFailed { from, detail } => Self::Unusable {
+                message: format!("库需要从 v{from} 升级到当前格式，但升级没成功：{detail}"),
+            },
             StoreError::MissingTable { table } => Self::Unusable {
                 message: format!("缺表 {table}"),
             },

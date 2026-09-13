@@ -39,6 +39,7 @@ mod credential;
 mod error;
 mod handshake;
 mod keys;
+mod known_hosts;
 mod target;
 mod transport;
 
@@ -50,5 +51,9 @@ pub use credential::{
 pub use error::SshError;
 pub use handshake::{HostKey, HostKeyVerifier, PinnedHostKey, SshConfig, SshConnect};
 pub use keys::{KeyCandidate, SshAuth};
+pub use known_hosts::{
+    HostKeyCache, HostKeyPrompt, KnownHostsVerifier, RecordedHostKey, RecordedIn,
+    user_known_hosts_file,
+};
 pub use target::SshTarget;
 pub use transport::SshTransport;

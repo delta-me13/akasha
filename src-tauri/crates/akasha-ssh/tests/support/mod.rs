@@ -102,6 +102,11 @@ pub struct Running {
     pub addr: SocketAddr,
     /// 主机密钥指纹（客户端要钉住的就是它）。
     pub fingerprint: String,
+    /// 主机密钥的 **OpenSSH 形式**（`ssh-ed25519 AAAA…`）。
+    ///
+    /// 与 `fingerprint` 是同一把密钥的两种表示；测试要写一份**用户的** `known_hosts` 时
+    /// 需要的是它（那份文件的第三列就是这串 base64）。
+    pub host_key_openssh: String,
     /// 共享状态。
     pub shared: Shared,
 }
@@ -118,6 +123,7 @@ pub async fn start(options: ServerOptions) -> Running {
         .public_key()
         .fingerprint(HashAlg::Sha256)
         .to_string();
+    let host_key_openssh = host_key.public_key().to_openssh().expect("公钥编码失败");
 
     let mut config = russh::server::Config::default();
     config.keys.push(host_key);
@@ -151,6 +157,7 @@ pub async fn start(options: ServerOptions) -> Running {
     Running {
         addr,
         fingerprint,
+        host_key_openssh,
         shared,
     }
 }

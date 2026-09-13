@@ -1,18 +1,20 @@
-//! **v1 的形状**（plan 0403）：四张表、每张表的列、外键真的生效、`CHECK` 真的拦得住。
+//! **库的形状**：v1 的四张池表 + v2 的 known_hosts（plan 0403 / 0503）、
+//! 外键真的生效、`CHECK` 真的拦得住。
 //!
 //! 这一份守的是"库自己拦下来的不变量"（ADR-0002 D7 里那句"`user_version` 是唯一的格式
 //! 权威"的落地）。它和别的契约测试一样有个共同的对手：**静默失效** ——
 //! 外键写了但 `PRAGMA foreign_keys` 没开、`CHECK` 写了但被拼错的列名引用、
 //! 表建了但 `open` 不看它。这几件事都不会报错，只会让库比以为的更松。
 //!
-//! ⚠️ 其中**形状快照**那条（[`the_shape_of_v1_is_pinned`]）红的时候不要顺手改期望值：
-//! 改列 = 换格式，那要 `FORMAT_VERSION + 1` 加迁移（ADR-0002 D7）。
+//! ⚠️ 其中两条**形状快照**（[`the_shape_of_v1_is_pinned`] / [`the_shape_of_v2_is_pinned`]）
+//! 红的时候不要顺手改期望值：改列 = 换格式，那要 `FORMAT_VERSION + 1` 加迁移
+//! （ADR-0002 D7）。v1 那一份尤其不能改 —— 它是**历史**，[`DDL_V1`] 冻结着它。
 
 #![allow(clippy::unwrap_used)] // 测试里的 unwrap 是断言手段（root Cargo.toml 的 lints 约定）
 
 mod common;
 
-use akasha_store::{StoreError, TABLES, VaultState, create, open, vault_path};
+use akasha_store::{DDL_V1, StoreError, TABLES, TABLES_V1, VaultState, create, open, vault_path};
 use common::{PASSPHRASE, columns_of, fixture_dir, new_vault, pass};
 
 // ── 1. STRICT 表的前提：SQLite 得够新 ────────────────────────────────────────
@@ -34,14 +36,19 @@ fn sqlite_is_new_enough_for_strict_tables() {
     );
 }
 
-// ── 2. 四张表与它们的列：v1 的形状 ──────────────────────────────────────────
+// ── 2. 表与它们的列：v1 与 v2 两个形状 ──────────────────────────────────────
 
 #[test]
-fn the_four_tables_are_the_ones_v1_promises() {
+fn the_tables_are_the_ones_the_current_version_promises() {
+    assert_eq!(
+        TABLES_V1,
+        ["keys", "hosts", "serials", "forwards"],
+        "v1 的清单**冻结**：顺序就是建表顺序（外键的目标要先存在）"
+    );
     assert_eq!(
         TABLES,
-        ["keys", "hosts", "serials", "forwards"],
-        "清单与顺序都是有意的：顺序就是建表顺序（外键的目标要先存在）"
+        ["keys", "hosts", "serials", "forwards", "known_hosts"],
+        "v2 = v1 + known_hosts（plan 0503）"
     );
 
     let (_dir, conn) = new_vault("schema-tables");
@@ -49,11 +56,22 @@ fn the_four_tables_are_the_ones_v1_promises() {
         let columns = columns_of(&conn, table);
         assert!(!columns.is_empty(), "{table} 不存在");
     }
+    // v1 的 DDL 必须与 v1 的表清单对得上：`DDL_V1` 是"v1 是什么"的定义，
+    // 而迁移测试拿它造真 v1 库 —— 两处一旦漂移，那些测试验的就不是历史了。
+    for table in TABLES_V1 {
+        assert!(
+            DDL_V1.contains(&format!("CREATE TABLE {table} ")),
+            "`DDL_V1` 里没有 {table} 的建表语句"
+        );
+    }
+    assert!(
+        !DDL_V1.contains("known_hosts"),
+        "known_hosts 是 v2 加的，不许出现在 v1 的定义里"
+    );
 }
 
-/// **v1 的形状快照。** 它红了意味着"格式变了"，而不是"测试过时了"：
-/// 加列 / 改列 / 删列都要 `FORMAT_VERSION + 1` 并给出迁移（ADR-0002 D7），
-/// 否则老库会被新代码读成一个"能开但形状不对"的东西。
+/// **v1 的形状快照。** 它红了意味着"历史被改了"，而不是"测试过时了"：
+/// v1 已经发布过，[`DDL_V1`] 是它唯一的定义（ADR-0002 D7）。
 #[test]
 fn the_shape_of_v1_is_pinned() {
     let (_dir, conn) = new_vault("schema-shape");
@@ -106,6 +124,30 @@ fn the_shape_of_v1_is_pinned() {
              改列等于换格式，要 `FORMAT_VERSION + 1` 加迁移（ADR-0002 D7）"
         );
     }
+}
+
+/// **v2 的形状快照**（plan 0503 加的 known_hosts）。同一条纪律：加列 / 改列 = 换格式。
+#[test]
+fn the_shape_of_v2_is_pinned() {
+    let (_dir, conn) = new_vault("schema-shape-v2");
+
+    assert_eq!(
+        columns_of(&conn, "known_hosts"),
+        ["id", "host", "port", "key_type", "key_blob", "fingerprint"],
+        "known_hosts 的列变了 —— 同 v1 那条：改列要 `FORMAT_VERSION + 1` 加迁移"
+    );
+
+    // 判定材料是 `key_blob`（逐字节比），`fingerprint` 只给人看 —— 这条约束值得钉住，
+    // 因为"拿指纹文本当判据"是个看起来更省事的做法，而它是有损的。
+    let ddl: String = conn
+        .prepare("SELECT sql FROM sqlite_master WHERE name = 'known_hosts'")
+        .unwrap()
+        .query_row([], |row| row.get(0))
+        .unwrap();
+    assert!(
+        ddl.contains("UNIQUE (host, port, key_type)"),
+        "同一主机同一类型只认一把：{ddl}"
+    );
 }
 
 // ── 3. 外键：声明 ≠ 生效 ────────────────────────────────────────────────────
@@ -394,17 +436,17 @@ fn a_vault_with_the_right_version_but_no_tables_is_refused() {
 
 #[test]
 fn a_version_we_do_not_know_is_refused_before_the_tables_are_checked() {
-    // v2 的库（版本号 +1）要报版本错，而不是报"缺表"：
-    // 将来加表时，先说话的是版本 —— 否则用户会以为自己的库坏了。
+    // 比当前格式**新**的库要报版本错，而不是报"缺表"：先说话的是版本 ——
+    // 否则用户会以为自己的库坏了，而真相是"这个库是更新的程序写的"（ADR-0002 D7 的降级处置）。
     let dir = fixture_dir("version-before-tables");
     let db = vault_path(&dir);
     {
         let conn = create(&db, &mut pass(PASSPHRASE)).unwrap();
-        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
     }
     let err = open(&db, &mut pass(PASSPHRASE)).unwrap_err();
     assert!(
-        matches!(err, StoreError::UnsupportedVersion { found: 2 }),
+        matches!(err, StoreError::UnsupportedVersion { found: 3 }),
         "{err:?}"
     );
 }

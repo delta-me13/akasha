@@ -45,3 +45,9 @@
       与 `introspect { action: "processes" }` 的零残留确认
 - [ ] 与 plan 0505 的接口对齐：`SshTransport` 现在把 `Handle` 交给那条 task（收尾的唯一出口），
       而 D9 的原语要 `direct_tcpip(&Handle, …)` —— 谁持 `Handle`，本 plan 定形状
+- [ ] **库那一侧的适配器**（plan 0503 留下的口子）：`KnownHostsVerifier` 要一个
+      `'static` 的 `HostKeyCache`，而今天 `Vault { unlocked: Mutex<Option<Unlocked>> }`
+      借不出这种句柄（`State<'_, Vault>` 拿不到 `Arc`）。要先把库连接做成可共享的句柄
+      （`Sessions` 就是这么做的），再接 `akasha_store::known_hosts` 的两个函数。
+      ⚠️ 凭证那条路的阻塞问题也一并解决：`CredentialProvider` / `HostKeyPrompt` 都是**同步** trait，
+      而它们在 `russh` 的 async 回调里被调用 —— 要保证这条路上还有富余的 worker。

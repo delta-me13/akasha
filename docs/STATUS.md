@@ -24,16 +24,24 @@
 `direct-tcpip` 原语的形状、隧道状态机与重连判据全部**带出处**写死（上游源码行号 /
 `Cargo.lock` / 本机实测）。它先写是有理由的：这些点一被代码固化，改动就波及 IPC 类型与前端。
 
-**阶段 5 的第一块落地了**：`src-tauri/crates/akasha-ssh` 建起来，能**连接 + 认证**了
-（plan 0502，2026-09-13）—— 纯 Rust（`russh` 0.63.3 + `ring`），认证按
+**阶段 5 的前两块落地了**。第一块（plan 0502，2026-09-13）：`src-tauri/crates/akasha-ssh`
+建起来，能**连接 + 认证**了 —— 纯 Rust（`russh` 0.63.3 + `ring`），认证按
 **agent → 密钥池 → keyboard-interactive → password** 的顺序走，同一台主机的
 第二、第三次连接**不再问凭据**（内存缓存，绝不落盘）。判据「同主机开三个 Session 只问一次凭据」
 在 crate 层用**进程内的 SSH 服务端**实测通过；ADR-0003 §12 挂给它的两条
 （`TransportError::Busy`、能力位那条注释）也一并落地。
 
-⚠️ **边界照实说**：那条判据是**三个连接**（= 三个 Session 的载体）在 crate 层成立的，
-**不是**"界面上能开 SSH 标签页" —— **SSH 还没接进 IPC / 前端**（见「进行中 / 下一步」）。
-与真 OpenSSH 的互操作也**没有**验过（测试服务端是我们自己搭的）。
+第二块（plan 0503，2026-09-13）：**主机密钥的信任**按 ADR-0003 **D11** 落地 ——
+三态判定（库里有且一致 → 连；**有但对不上 → 拒绝并提示两个指纹**；两边都没有 → 问用户，
+确认后进**我们自己的库**），用户的 `~/.ssh/known_hosts` **只读**（逐字节不变的断言守着）。
+它顺带做掉了本仓库的**第一次库格式迁移**：`known_hosts` 表把格式升到 `user_version = 2`，
+`open` 会在解锁时**自动升级** v1 的库（一次事务、失败整体回滚），而 v2 的库**旧版本程序打不开**
+（这是 D7 留给降级的有意处置）。导出件是例外：只读地消费，**升的是副本，来源一个字节不动**。
+
+⚠️ **边界照实说**：那两条判据都在 crate 层成立（进程内的 SSH 服务端 + 测试桩），
+**不是**"界面上能开 SSH 标签页" —— **SSH 还没接进 IPC / 前端**（见「进行中 / 下一步」），
+库那一侧的 `HostKeyCache` 适配器也还没写（它要 app 先把库连接做成可共享的句柄）。
+与真 OpenSSH 的互操作（含它自己的 `known_hosts` 形态）也**没有**验过。
 
 **点叉的语义由配置 × 托盘共同决定**（plan 0302 + 0303）：
 
@@ -106,14 +114,18 @@
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全绿** |
-| `just test` | **208 tests run: 208 passed**（`akasha` 58 + `akasha-core` 15 + `akasha-pty` **39** + `akasha-store` 76 + **`akasha-ssh` 20**）。⚠️ `akasha` 那 58 条里含 `tests/portable.rs` 的 **3 条**：没有 `VICTAURI_E2E` 时它们只打印原因并返回（`just test` 里不跑真 app） |
+| `just test` | **228 tests run: 228 passed**（`akasha` 58 + `akasha-core` 15 + `akasha-pty` 39 + `akasha-store` **89** + `akasha-ssh` **27**）。⚠️ `akasha` 那 58 条里含 `tests/portable.rs` 的 **3 条**：没有 `VICTAURI_E2E` 时它们只打印原因并返回（`just test` 里不跑真 app） |
+| ↑ **判据：host key 变了就拒绝，没见过的要问一次**（plan 0503） | ✅ `akasha-ssh` 的 7 条：未知且没人可问 → `HostKeyUnknown`（带去核对的那串指纹，且**认证一步没开始**）；确认 → 进缓存，**第二个连接 0 次提问**；记录对不上 → `HostKeyChanged`（**两个指纹都在**）且**一次都不问**（问就等于把警报降级成一次点击）；用户否认 → 拒绝且**不记录**；用户文件里认得 → 连上且文件**逐字节没变**；文件里对不上 → 拒绝并指出**真实行号**；外加一条对照（同一份文件在空缓存下判成"变了"） |
+| ↑ **本仓库第一次格式迁移**（plan 0503） | ✅ `akasha-store` 的 6 条：`DDL_V1` 造出**真 v1 库**（灌一条 host）→ `open` 之后 `user_version = 2`、五张表在、**那条 host 还在**；再开一次当前格式的库**一个字节都不写**（迁移只在需要时发生）；版本 0 仍拒绝；缺表的 v1 **不迁移**（先按旧版本校验形状）；加密导出件与明文导出件两条还原路都**升的是副本、来源逐字节不变** |
+| ↑ **形状快照 v1 + v2**（plan 0503） | ✅ `the_shape_of_v1_is_pinned` 与 `the_shape_of_v2_is_pinned` 都在（11 条），并断言 `known_hosts` 的 `UNIQUE (host, port, key_type)` 真的写在库里 |
+| ↑ **池层"不许静默改写"**（plan 0503） | ✅ 6 条：同键同值幂等 / **同键不同值 → `Conflict`**（库里那一把原样留着）/ 类型不同不是同一条 / `clear` 只清缓存不动四套池 / 端口 0 与重复键由库自己拦下 |
 | ↑ **判据：同主机三个连接只问一次凭据**（plan 0502） | ✅ `three_sessions_ask_for_one_credential`：`provider.calls() == 1`、缓存 `len() == 1`、服务端三次都收到**同一句口令**，且三个连接各自跑通一条命令（只数次数会放过"缓存的凭据其实没被拿去认证"） |
 | ↑ **认证顺序是线协议上的事实**（plan 0502） | ✅ 服务端记下的序列：`publickey → password`、`publickey → keyboard-interactive`；`SSH_AUTH_SOCK` 指向不存在的 socket 时序列里**没有** `publickey` 痕迹（agent 那档静默跳过） |
 | ↑ **主机密钥钉错就拒绝，错误里带指纹**（plan 0502） | ✅ `HostKeyRejected { fingerprint }` = 服务端真实指纹，且**认证一步都没开始** |
 | ↑ **字节往返 / 尺寸 / 结局**（plan 0502） | ✅ 写入的字节原样回声；`resize(120x40)` → 服务端收到并把 `window:120x40` 回声回来；`shutdown()` 拿到 `ExitStatus::Code(7)` 且**幂等**；`session_leader() == None` |
 | ↑ **D13 对"凭据缓存"这个新用途的第四次重验**（plan 0502） | ✅ `VmLck` 0 → **32 kB**、`-p`（静止态无权限）页数 **+8**；清空并释放后**两者都回到起点** |
 | ↑ **`russh` 从"读源码核对"变成编译期事实**（plan 0502） | ✅ `cargo tree -p akasha-ssh \| grep -c aws-lc` = **0**；`ring v0.17.14` 是 lock 里**唯一**的 ring；features 只有 `ring` / `rsa`；上游 MSRV 1.89 ≤ 本机 1.98.1 |
-| ↑ 本轮新增 | **6 条**：`config` 3 条（便携目录判定 / 探针可写正负对照）+ `tests/portable.rs` 3 条 |
+| ↑ 便携那条路新增的用例（plan 0405） | **6 条**：`config` 3 条（便携目录判定 / 探针可写正负对照）+ `tests/portable.rs` 3 条 |
 | ↑ **搬走整个文件夹之后，数据还在且能用**（plan 0405 判据） | ✅ 配方 `just portable`：`A 的 vault_status = {path: …-a/akasha-data/akasha.db, state: missing}` → 灌四套池 → `mv` → `B 的 vault_status = {path: …-b/…, state: present}` → **`vault_unlock` 读回 `{keys:1,hosts:1,serials:1,forwards:1}`**；库侧再用同一口令打开逐项比对**内容**（只对行数不够） |
 | ↑ **"app 挑的是哪个数据目录"不靠日志反推** | ✅ 两条独立观察：`lifecycle` probe 里的 `close_behavior`（读到跟着搬走的 `config.json` = `exit`）+ `vault_status` 报的绝对路径分别在 A / B 里 |
 | ↑ **便携目录不可写 → 拒绝启动**（`portable.md` §4 第 3 条） | ✅ 退出码 **2** + `portable data dir not writable err=not writable: 权限不够 (os error 13) path=…/akasha-data`；**落地前的实测是**：app 照常启动、日志只有一句 `config not found`（把"写不进去"说成了"没有配置文件"） |
@@ -124,7 +136,7 @@
 | ↑ **锁定之后进程内存里一处机密都不多**（plan 0407） | ✅ 把**整个进程内存**（匿名段，含 `---p`）扫一遍找那两串字节：口令 `1 → 2 → 2 → 1` 处、派生密钥 `3 → 1` 处。**带正对照**（解锁期间必须比基线多扫到，坑 #87/#90/#91） |
 | ↑ **`VmLck` 走一个来回**（plan 0407） | ✅ 库层 `0 → 4 → 152 → 4 → 0 kB`；**真 app 上 `0 → 176～192 → 0 kB`**（测试进程自己读 `/proc/<pid>/status`，不是 app 自报） |
 | ↑ **导出与还原**（plan 0404） | 加密导出可在另一目录还原（逐字段一致）；明文导出两道门槛（逐字短语 / 文件名自曝 / 独立口令）；不泄密带对照组（**0 命中 vs 1 命中**）；失败不留半成品；导出件 **600** |
-| `just portable`（可搬迁性；自己起 app） | 退出码 **0**，**3 passed**（搬家 / 不可写拒绝 / 没有便携目录也不拒）。⚠️ 不能与别的 akasha 同时跑（单实例）—— 配方先查一遍并说清该关掉什么 |
+| `just portable`（可搬迁性；自己起 app） | 退出码 **0**，**3 passed**（搬家 / 不可写拒绝 / 没有便携目录也不拒）。⚠️ 不能与别的 akasha 同时跑（单实例）—— 配方先查一遍并说清该关掉什么。**plan 0503 之后复跑过**：格式升到 v2 之后 app 这条路照样通（`vault_unlock` 读回四套池 1/1/1/1）。⚠️ 但它建的是**新**库，验不到"v1 库在 app 里被升级"那条路（那条只有 crate 层的用例） |
 | `just test-e2e`（自包含：起 Vite + app → **三段** → 收尾） | 退出码 **0**：**15 个 E2E 用例**（`window_close` 内部**显式跳过**：这台机器 `tray_ready=false`）+ **第三段 3 条**（`portable`）。复用一个开发者的 app 时第三段**跳过并打印原因** |
 | ↑ **§7 的 registry 那一条：当前不可满足**（实测，见坑 #82） | `get_registry` 回 **`[]`** —— 本仓库的命令**都没有 `#[inspectable]`**；`detect_ghost_commands` 的 `reliability` 是 **low**。**替代证据**是真路径上的 `invoke_command` 成功 |
 | ↑ 单实例（0304，Linux 实测） | ✅ probe `{"registered":true}`；隐藏之后再来一个实例 → **204.8 ms** 后 `exit=0`、`activations=1`、`visible=true` |
@@ -200,6 +212,20 @@
   用完即 drop、不进缓存"。
 - **SSH 还没接进 IPC / 前端**（见「进行中」）：今天没有任何界面 / 命令能开一个 SSH 会话 ——
   真路径证据只到 `akasha-ssh` 的集成测试。
+- **库那一侧的 `HostKeyCache` 适配器还不存在**（plan 0503 刻意留下的接口）：
+  verifier 要一个 `'static` 的缓存口，而今天 `Vault { unlocked: Mutex<Option<Unlocked>> }`
+  借不出这种句柄（`State<'_, Vault>` 拿不到 `Arc`）—— 那是 plan 0504 的第一件事。
+  所以"确认过的密钥真的落进库、重启之后还在"这条**没有断言**，只断言到策略层。
+- **只读介质上的 v1 库没有实测**：迁移要写文件，所以那条路会以 `UpgradeFailed`
+  （"文件不可写"那一支）失败 —— 代码有这一支，但没有造出真只读文件系统来验它。
+- **降级没有实测**：v2 的库用旧版本程序打开会得到 `UnsupportedVersion { found: 2 }`
+  （这是 D7 的有意处置），但没有真拿旧二进制开过一次。
+- **与 OpenSSH 的 `known_hosts` 互操作没有实测**：只用到了上游 `check_known_hosts_path`
+  的宿主名匹配（含 `|1|…` 哈希形态），验过的只有"注释行不影响判定"这一条；
+  `@cert-authority` / `@revoked` 这类标记行的行为**没有验过**（当前语义：标记在主机名那一列，
+  匹配不上我们的主机 → 忽略，也就是**不认吊销**）。
+- **用户的 `known_hosts` 里读不动的行**：我们的处置是 `warn` + 当作"未知"（继续去问用户），
+  但没有用例守着它（要造一份带垃圾行的文件）。
 
 ## 当前基线（2026-09-13 实测，workspace root = `src-tauri/`）
 
@@ -223,18 +249,21 @@
 | 前端渲染器 | **WebGL**（WebKitGTK + MESA 软件栈下仍拿到 WebGL2）；`canvas` 元素 2 块 |
 | 大输出实测 | 10.36–11.28 MB / 159–170 批（0202–0305 各轮） |
 | 前端产物 | 843 kB（gzip 231 kB） |
-| **存储层** | `akasha-store`：**全仓库唯一允许出现 `unsafe` 的 crate**（全库 **3 处**：生产 1 处把口令送进 `sqlite3_key()`，加契约测试 2 处直接调 `sqlite3_key` / `sqlite3_rekey` 钉上游语义；都带 `// SAFETY:`，ADR-0002 D4），由 workspace 的 `unsafe_code = "deny"` + `.ast-grep/rules/no-unsafe-outside-store.yml` 两层守。**两条路**：`create(path, &Passphrase)` = 有内容就 `VaultExists`（永不覆盖）→ 送密钥 → **一次事务里建 v1 的四张表 + 写 `user_version = 1`**；`open(path, &Passphrase)` = 不存在的/0 字节就 `NoVault` → 送密钥 → 开外键 → 读一次 `sqlite_master` 逼口令错暴露 → **校验版本号 + 四张表都在**。两条路都收 0600 |
+| **存储层** | `akasha-store`：**全仓库唯一允许出现 `unsafe` 的 crate**（生产 1 处把口令送进 `sqlite3_key()`，加契约/迁移测试 3 处直接调 `sqlite3_key` / `sqlite3_rekey` 钉上游语义；都带 `// SAFETY:`，ADR-0002 D4），由 workspace 的 `unsafe_code = "deny"` + `.ast-grep/rules/no-unsafe-outside-store.yml` 两层守。**两条路**：`create(path, &Passphrase)` = 有内容就 `VaultExists`（永不覆盖）→ 送密钥 → **一次事务里建当前格式的全部表 + 写 `user_version`**；`open(path, &Passphrase)` = 不存在的/0 字节就 `NoVault` → 送密钥 → 开外键 → 读一次 `sqlite_master` 逼口令错暴露 → **按库里写的版本校验形状 → 迁移 → 再按当前版本校验**。两条路都收 0600 |
+| **格式版本与迁移**（plan 0503） | `FORMAT_VERSION = 2`。v1 = 四张池表（`DDL_V1` 冻结、公开 —— 迁移测试靠它造真 v1 库），v2 = v1 + `known_hosts`。`open` 里 `upgrade()`：`== 2` 什么都不做；`1` → 先按 v1 校验形状（缺表就是坏库，**不迁移**）→ **一次事务**里加表 + 写版本号；`> 2` 与 `0` 拒绝；写不动 → `UpgradeFailed`。⚠️ **降级不行**：v2 的库旧版本程序打不开（D7 的有意处置，`portable.md` §3.1 记了"目标机器的程序版本不能更旧"）。**导出/还原不迁移来源**：`restore` 用 `open_unmigrated` 打开来源，`copy_tables` 抄**来源的**版本号，最后由目标那次 `open` 升级 —— 用户的导出件一个字节不动（有用例） |
 | **unsafe 的注释** | 写法 = Linux 内核规范（`AGENTS.md` §3.4）：`// SAFETY:` 说"**为什么 sound**"、`/// # Safety` 说"调用方 / 实现方要守什么契约"，两件事不许互相替代；由 clippy 的 `undocumented_unsafe_blocks` / `unnecessary_safety_comment` / `unnecessary_safety_doc` 三条强制（跑在 `just lint` 里）。⚠️ 它们**也查私有项** —— 唯一那处生产 `unsafe` 就在私有函数 `apply_key` 里（坑 #96） |
 | **四套池** | `keys` / `hosts` / `serials` / `forwards`，各 5 个函数 + 反查（`hosts_using_key` / `hosts_jumping_to` / `forwards_of_host`）。`New*`（没有 id）与 `*`（有 id）**是两种类型**；不变量写在库上（`STRICT` + `CHECK` + 外键 `RESTRICT`，D14）。⚠️ 跳板链的成环**库表达不了**：`update` 时逐跳走链挡住（`MAX_JUMP_DEPTH` = 32） |
 | **私钥** | 池里存 BLOB，**出库直接进受保护页**（`PrivateKey` = `memsafe::Secret<[u8; 16384]>`）；`expose()` 返回**提权窗口**。空私钥与**超过一页**在**构造层**就被拒 |
 | **口令** | `Passphrase` = 口令在进程里的唯一形态：空值**造不出来**、**没有 `Debug`**、无 `Display`/`Serialize`、**不实现 `Clone`**；本体住在 `memsafe::Secret` 的一整页**受保护内存**里（`mlock` + 静止态 `PROT_NONE` + `dd` + `wf`） |
-| **导出与还原** | `to_encrypted(source, 源口令, dest, 导出口令)`：两把口令相同 → `SharedPassphrase`；`to_plaintext(source, dest, PlaintextAck)`：文件名必须含 `plain`，否则**什么都不写**；`restore*` = **替换**，只写进空的库槽。三段式：预建 **0600** 的 `…partial` → `ATTACH … KEY ?`（**口令走绑定参数**）→ `sqlcipher_export` → **显式写 `user_version = 1`** → `DETACH` → **原子改名** → 再用真读者 `open` 自检 |
+| **导出与还原** | `to_encrypted(source, 源口令, dest, 导出口令)`：两把口令相同 → `SharedPassphrase`；`to_plaintext(source, dest, PlaintextAck)`：文件名必须含 `plain`，否则**什么都不写**；`restore*` = **替换**，只写进空的库槽。三段式：预建 **0600** 的 `…partial` → `ATTACH … KEY ?`（**口令走绑定参数**）→ `sqlcipher_export` → **显式写来源的 `user_version`**（不是写死当前版本）→ `DETACH` → **原子改名** → 再用真读者 `open` 自检 |
 | **dump** | `dump::dump(&conn)` → `Dump { format_version, keys, hosts, serials, forwards }` + `row_counts()` + `to_text()`。**结构上不含私钥** |
-| **库文件的磁盘事实** | `akasha.db`；建库后 **36864 字节 = 9 页**；SQLCipher 4.5.7 + vendored OpenSSL 3.6.3 + 内嵌 SQLite **3.46**；`user_version = 1` 是格式权威（**含 0** 一律拒绝）**且要四张表都在**；盐 16 字节随机、就在文件头前 16 字节；显式收紧到 **600**；不带 `-wal` / `-shm`；解锁代价 **~105 ms**（KDF）。`cipher_memory_security` 是**进程级、只能开不能关** |
+| **库文件的磁盘事实** | `akasha.db`；建库后 **36864 字节 = 9 页**（plan 0503 只加表、页面数不变）；SQLCipher 4.5.7 + vendored OpenSSL 3.6.3 + 内嵌 SQLite **3.46**；`user_version = 2` 是格式权威（**含 0** 与"比 2 新"一律拒绝）**且要那个版本的表都在**；盐 16 字节随机、就在文件头前 16 字节；显式收紧到 **600**；不带 `-wal` / `-shm`；解锁代价 **~105 ms**（KDF）。`cipher_memory_security` 是**进程级、只能开不能关** |
+| **known_hosts 缓存**（plan 0503） | 表 `known_hosts(id, host, port, key_type, key_blob, fingerprint)`，`UNIQUE (host, port, key_type)`。**缓存不是池**：没有 `name`、不从界面新建、不进 `dump` 的四套池清单、里面全是公开信息（不涉及受保护页）。判定材料是 `key_blob`（**逐字节比**），`fingerprint` 只给人看。`remember` 遇到同键不同值 → `Conflict`（**写路径上就不许静默改写**）；`forget_host` 删一台主机的全部类型；`clear` 只清缓存 |
+| **主机密钥的三态判定**（`akasha-ssh`，plan 0503） | `KnownHostsVerifier`：**库 → 用户的 `~/.ssh/known_hosts`（只读）→ 提问**。库里同类型对不上 → `HostKeyChanged`（**不看不问**）；文件里对不上 → `HostKeyChanged`（附**自己数出来的真实行号**）；两边都没有 → 有 `HostKeyPrompt` 就问、确认后 `remember`，否则 `HostKeyUnknown`；用户否认 → `HostKeyRejected`。两个注入点是同步 trait（`HostKeyCache` / `HostKeyPrompt`），**库连接由调用方给**（0504 接）。`HostKey` 带一份**密钥本体**（判定材料）+ 上游 `PublicKey`（私有字段）；`Handler` 的拒绝格子存**整个错误**，所以"没见过"与"变了"不会被压成同一句话 |
 | **解锁与锁定** | app 侧 `Vault { unlocked: Mutex<Option<Unlocked>> }`，`Unlocked { conn, passphrase }` —— **同生共死**。`vault_unlock`：`Missing`/`Empty` → 建、`Present` → 开，返回四套池行数（`u32`）；已解开 → `AlreadyUnlocked`（**不替换**）。**只有显式锁**：关窗/退出不锁、无空闲超时 |
 | **口令经 IPC 进来的形态** | `PassphraseInput`（newtype，`specta(transparent)` → TS `string`）：**没有 `Debug`/`Clone`**，唯一出路是 `into_bytes()`。⚠️ tauri 自己那两份够不着（ADR-0002 §7.5） |
-| **SSH 栈**（[ADR-0003](./adr/0003-ssh-stack-and-resource-model.md)，**已有一块代码**） | `russh = "=0.63.3"`、`default-features = false`、features `["ring","rsa"]`（实测 `aws-lc` **0** 命中、ring 只有 lock 里原有的 0.17.14）；`akasha-ssh` **只收 `tokio::runtime::Handle`**；对外是同步 `Transport` 门面 + 两条**有界** mpsc（满 → `TransportError::Busy`，**不用 `blocking_send`**）；capability = `resize + exit_status`、`session_leader() = None`；隧道五态 + 重连 3 次（1s/2s/4s，**认证失败不重连**）仍是阶段 6 的事 |
-| **`akasha-ssh` 的形状** | 五个模块：`target`（`SshTarget`）/ `credential`（`Credential` + `CredentialCache`）/ `keys`（`KeyCandidate` / `SshAuth`）/ `handshake`（`SshConfig` / `SshConnect` / `HostKeyVerifier` + `russh` 的 client `Handler`）/ `transport`（`SshTransport` = 同步门面 + 一条 task）。**凭据缓存键** = `(host, port, user, 认证方式)`，私钥口令那支再加**哪把钥匙**；值住 `akasha-store` 的**同一页受保护内存**（`protected` 已提为 `pub`）；三条失效（库锁定/退出 → `clear`、服务端拒绝 → `forget`、显式忘记）、**没有 TTL** |
+| **SSH 栈**（[ADR-0003](./adr/0003-ssh-stack-and-resource-model.md)，**已有两块代码**：连接+认证 / known_hosts） | `russh = "=0.63.3"`、`default-features = false`、features `["ring","rsa"]`（实测 `aws-lc` **0** 命中、ring 只有 lock 里原有的 0.17.14）；`akasha-ssh` **只收 `tokio::runtime::Handle`**；对外是同步 `Transport` 门面 + 两条**有界** mpsc（满 → `TransportError::Busy`，**不用 `blocking_send`**）；capability = `resize + exit_status`、`session_leader() = None`；隧道五态 + 重连 3 次（1s/2s/4s，**认证失败不重连**）仍是阶段 6 的事 |
+| **`akasha-ssh` 的形状** | 六个模块：`target`（`SshTarget`）/ `credential`（`Credential` + `CredentialCache`）/ `keys`（`KeyCandidate` / `SshAuth`）/ `handshake`（`SshConfig` / `SshConnect` / `HostKeyVerifier` + `russh` 的 client `Handler`）/ **`known_hosts`（三态判定 + 两个注入点）** / `transport`（`SshTransport` = 同步门面 + 一条 task）。**凭据缓存键** = `(host, port, user, 认证方式)`，私钥口令那支再加**哪把钥匙**；值住 `akasha-store` 的**同一页受保护内存**（`protected` 已提为 `pub`）；三条失效（库锁定/退出 → `clear`、服务端拒绝 → `forget`、显式忘记）、**没有 TTL** |
 | **连接取值**（ADR D15，plan 0502 定） | `connect_timeout = 10s`；`keepalive_interval = Some(30s)`、`keepalive_max = 3`（上游默认 `None` / 3）；`nodelay = true`（上游默认 `false`）。默认值只有一处：`SshConfig::default()`。⚠️ 这三个数是**有理由的默认值**，不是实测出来的（本 plan 没造出半死连接与高延迟链路） |
 | 合批参数 | `max_bytes` = 64 KiB、`max_delay` = 16 ms（`BatchPolicy::DEFAULT`，唯一来源） |
 | CSP | `default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:`；`devCsp` 多一个 `ws://localhost:1420 http://localhost:1420` |
@@ -243,31 +272,70 @@
 
 ## 进行中 / 下一步
 
-- [ ] **下一步 = 阶段 5 的 plan 0503**（[known_hosts 校验与缓存](./plans/0503-known-hosts.md)）：
-  它同样是**未规划（骨架）**，要先把「步骤」与「验收命令」补齐。内容是 ADR-0003 **D11**
-  已经定死的策略 —— `~/.ssh/known_hosts` **只读**、已确认的密钥进**我们的库**、
-  未知主机走用户确认、**密钥变化即拒**。落地时会动 `akasha-store` 的 schema：
-  加表 = 本仓库的**第一次格式迁移**（`user_version` 1 → 2），现在 `open` 是
-  "不等于 `FORMAT_VERSION` 一律拒绝"，所以迁移路径本身要一起做出来。
-- [ ] **plan 0504（SSH 接进 IPC / 前端）** —— 本轮发现的那个缺口，2026-09-13 重排时立成条目。
-  `akasha-ssh` 现在没有任何命令或界面碰得到（0502 的判据只到 crate 层）。缺三样：
-  一条**带目标**的会话命令、一条"后端问凭据 → 前端答"的**往返协议**（事件 + 命令）、
-  以及一个提示界面。它排在 0503 之后：未知 host key 谁来问、答案记在哪，是**接口形状**，
-  先定它，0504 才不必自造一套临时信任。
-- [ ] **阶段 5 的编号已按依赖重排**（2026-09-13）：0503 known_hosts · 0504 接进 IPC / 前端 ·
-  0505 `direct-tcpip` 原语（原 0503）· 0506 `~/.ssh/config` 导入（原 0504）。
-  重排理由：信任策略是接口形状（先行），而 `direct-tcpip` 的三处消费者都要先有一条
-  **从 app 打得开的** SSH 会话才验得了 —— 所以它从 0503 挪到 0505。
-  ⚠️ 落地 0505 时它会**改形状**：`SshTransport` 现在把 `Handle` 交给那条 task（收尾的唯一出口），
-  而 D9 的原语要 `direct_tcpip(&Handle, host, port)` —— 谁持 `Handle`，由 0504 的展开定下来。
+- [ ] **下一步 = 阶段 5 的 plan 0504**（[SSH 接进 IPC / 前端](./plans/0504-ssh-into-ipc-frontend.md)）：
+  它是**未规划（骨架）**，要先补齐「步骤」与「验收命令」。0503 已经把它要用的两个接口
+  定好了形状（`HostKeyCache` / `HostKeyPrompt`，都是同步 trait），所以 0504 只需接线：
+  ① 一条**带目标**的会话命令（`Sessions::register` 已经是 `<T: Transport>`，要加的只是"按目标选载体"）；
+  ② 一条"后端问 → 前端答"的**往返协议**（凭据与未知 host key 共用；要有超时与取消）；
+  ③ 一个提示界面（验证壳层级别）。
+  ⚠️ 它的第一件事是**把库连接做成可共享的句柄**：`KnownHostsVerifier` 要一个 `'static` 的
+  `HostKeyCache`，而今天 `Vault { unlocked: Mutex<Option<Unlocked>> }` 借不出来
+  （`Sessions` 已经是可克隆的形态，照它做）。
+- [ ] **plan 0505（`direct-tcpip` 原语）** 会**改形状**：`SshTransport` 现在把 `Handle`
+  交给那条 task（收尾的唯一出口），而 D9 的原语要 `direct_tcpip(&Handle, host, port)`
+  —— 谁持 `Handle` 由 0504 的展开定下来，别两边各定一套。
 - [ ] **阶段 3 收口后的两条复核**（托盘时代带来的前提变化，都还没做）：
   - 0205 的看门狗生命周期仍然 = 一个 app 实例（ADR-0005 §6 的复审条件之一）；
   - 0305/0306 的前提 ② "关最后一个标签页 = 空状态"在"窗口隐藏"成为常态之后是否仍然合适。
+- [ ] **降级路径**：v2 的库在旧版本程序里会以 `UnsupportedVersion { found: 2 }` 被拒
+  （有意），但没有真拿旧二进制开过一次。这是**格式迁移**这类改动唯一没有实测的一条。
 - [~] **plan 0102（CI 平台矩阵）**：本地部分完成，最终判据 = **推上去三个 job 全绿**，卡在没有 remote
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测，剩 CI 三平台格子
 - [ ] **正式 UI**：等设计稿（见上面「UI 现状」）—— 没有验收标准，故**不进 ROADMAP**
 
-### 本轮完成（plan 0502：`akasha-ssh` 连接 + 认证）
+> 阶段 5 的编号按依赖重排过（2026-09-13）：0503 known_hosts · **0504 接进 IPC / 前端** ·
+> 0505 `direct-tcpip` 原语（原 0503）· 0506 `~/.ssh/config` 导入（原 0504）。
+> 理由：信任策略是**接口形状**（先行），而原语的消费者都要先有一条**从 app 打得开的**
+> SSH 会话才验得了。编号与执行顺序现在一致，索引里有一段重排说明。
+
+### 本轮完成（plan 0503：库格式 v2 迁移 + known_hosts 三态判定）
+
+**这一轮先做了一次计划重排**（用户当次指令）：阶段 5 的编号改由**依赖**决定 ——
+信任策略（谁问、问什么、答案存哪）是**接口形状**，必须在"把它送到前端"之前定下来，
+否则那一步只能自造一套临时信任；`direct-tcpip` 的三处消费者都要先有一条**从 app 打得开的**
+会话才验得了，所以它退到 0505。重排只动编号与引用（ROADMAP / 索引 / ADR-0003 §14 /
+四份后继 plan / 三份归档 plan 里的编号），并**新立 plan 0504** = 上一轮发现的缺口
+（SSH 没接进 IPC / 前端）。
+
+- [x] **判据（ROADMAP 原文）**：host key 变化时**拒绝连接并提示**（不静默接受）；
+  未知 host key 由用户**确认后进缓存**。判据在 **crate 层**用进程内服务端 + 两根测试桩实测
+  （策略本身），库那一侧由 `akasha-store` 的 6 条契约用例守
+- [x] **三态判定**：库里同类型一致 → 连；**对不上 → `HostKeyChanged`（两个指纹都在，且不问）**；
+  两边都没有 → 有 `HostKeyPrompt` 就问、确认后进缓存、否则 `HostKeyUnknown`；
+  用户否认 → `HostKeyRejected`（与"没人可问"分开）
+- [x] **用户的 `~/.ssh/known_hosts` 只读**：认它就连，且**逐字节不变的断言**守着 ——
+  文件里认过的密钥也**不抄进我们的库**（那份文件才是它的家，抄一份只会在用户改它之后陈旧）
+- [x] **本仓库第一次格式迁移**：v1 的库在 `open` 时自动升到 v2（**一次事务**，
+  `user_version` 与表一起提交；失败整体回滚 → 只可能是完整的 v1 或完整的 v2）。
+  迁移**先按库里写的版本校验形状** —— 缺表的 v1 是坏库，不是"待迁移"
+- [x] **导出件不被改写**：`restore` 用 `open_unmigrated` 打开来源，`copy_tables` 抄**来源的**
+  版本号，升级发生在**新写出来的目标**上；加密与明文两条路各有一条用例断言"来源逐字节没变"。
+  ⚠️ **偏差照实记**：ADR-0002 §6 讲"还原用来源口令打开导出件"时顺带写了"走 `open`"，
+  而 `open` 现在会为了迁移而**写**那个文件 —— 那条**决定**（来源口令 / 拒绝同口令 / 替换而非合并）
+  一字未变，字面上的函数名改成了 `open_unmigrated`。ADR-0002 已定案不可改，偏差留在这里。
+- [x] **`known_hosts` 表**：`UNIQUE (host, port, key_type)`；判定材料是 `key_blob`（逐字节比），
+  指纹只给人看；`remember` 遇到同键不同值 → `Conflict`（**写路径上就不许静默改写**）
+- [x] **门禁**：`just ready` **6/6**（fmt / clippy / test / deny-offline / gen-types / docs-check）；
+  `cargo nextest run --workspace` = **228 passed**（+20：store +13、ssh +7）
+- [x] **记账**：plan 0503 改「已完成」并 `git mv` 进 `archive/`（索引与 ROADMAP 指针同步）；
+  ADR-0003 §14 记一行（**D11 按原文落地，决定一字未改**）；`portable.md` / `scope.md`
+  补上"库里还有一张 known_hosts 缓存 + 格式会自动升级、降级不行"
+
+⚠️ **没做到的照实记**：库那一侧的 `HostKeyCache` 适配器（要 app 先把库连接做成可共享句柄，
+留给 plan 0504）、只读介质上的 v1 库、降级路径、与 OpenSSH `known_hosts` 的互操作
+（含 `@cert-authority` / `@revoked` 这类标记行）。
+
+### 上一轮完成（plan 0502：`akasha-ssh` 连接 + 认证）
 
 **这一轮的判据来自 ROADMAP**：同主机开三个 Session **只问一次**凭据。做法是先按约定把骨架
 plan 展开成可粘贴的验收命令（骨架不许开工，`docs-check` 会拦），再落 crate。
@@ -295,7 +363,7 @@ plan 展开成可粘贴的验收命令（骨架不许开工，`docs-check` 会�
 ⚠️ **没做到的照实记**：与真 OpenSSH 的互操作、真实 agent 那条路、"半死连接"的保活实测、
 并发未命中时的提问去重、以及**把 SSH 接进 IPC / 前端**（见「进行中」）。
 
-### 上一轮完成（plan 0501：ADR-0003 进入「实现中」）
+### 更早（plan 0501：ADR-0003 进入「实现中」）
 
 **这一轮不动功能代码**：只写 [`docs/adr/0003-ssh-stack-and-resource-model.md`](./adr/0003-ssh-stack-and-resource-model.md)
 （把 SSH 这一层的线协议与资源模型定死），外加随之的记账（`ROADMAP` 勾选、plan 归档、本文）。
@@ -382,27 +450,15 @@ plan 展开成可粘贴的验收命令（骨架不许开工，`docs-check` 会�
 - [x] 门禁：`just ready` **6/6**；`just test` **186 passed**（`akasha` 52 → **58**）；
   `just test-e2e` **退出码 0**（15 个 E2E 用例 + 第三段 3 条）；`just portable` **3 passed**
 
-### 更早（阶段 1–4 的其余 plan，细节在 `docs/plans/archive/` 里，这里只留结果）
-
-- [x] **plan 0407**：解锁与锁定的生命周期 —— 四个问题各一个结论；先量再写（
-  `VmLck` 0→4→152→4→0、口令/派生密钥的副本数）；`just test-e2e` 新增 `vault_unlock`；
-  细节在 [archive/0407](./plans/archive/0407-unlock-lifecycle.md)
-- [x] **plan 0404**：dump 与导出 / 还原；细节在 [archive/0404](./plans/archive/0404-dump-export.md)
-- [x] **plan 0403**：v1 的四张表 + 四套池 CRUD；P2 从散文变成两条判据；私钥按 D13 判据表重验
-- [x] **plan 0406**：口令进 `memsafe` 的受保护页 —— 把上游四条承诺变成断言，并**同时钉住边界**
-- [x] **plan 0402**：口令 → KDF → 库密钥；**拆开 `open` 与 `create`**；`deny.toml` 常驻禁令
-- [x] **plan 0401**：SQLCipher 打开路径 + ADR-0002 §7 的实测清单
-- [x] **plan 0400**：ADR-0002 写完并进入「实现中」；ADR 三态
-- [x] **plan 0301–0306 / 0201–0205 / 0107 / CI 去 Gitea 化 + 布局收口**（见 git 历史与 archive）
-
 ## 结构现状（容易找错地方）
 
 - **workspace root 在 `src-tauri/`**（ADR-0004）。**仓库根没有 `Cargo.toml`** ——
   在根目录直接跑 `cargo …` 会失败（坑 #8），一律用 `just` 转发。⚠️ **临时脚本里也一样**。
-- **四个 crate 的分工**：`akasha-core`（Session 模型 + 配置模型与判据，**零 Tauri 依赖**）、
+- **五个 crate 的分工**：`akasha-core`（Session 模型 + 配置模型与判据，**零 Tauri 依赖**）、
   `akasha-pty`（`Transport` + portable-pty + 合批 + `teardown` + **`watchdog`**）、
-  **`akasha-store`**（库的打开 / 创建 / 四套池 / dump / 导出与还原 —— 唯一允许 `unsafe` 的地方；
-  **app 依赖它**，但只用"落点、状态与解锁"三样）、
+  **`akasha-store`**（库的打开 / 创建 / **格式版本与迁移** / 四套池 / **known_hosts 缓存** /
+  dump / 导出与还原 —— 唯一允许 `unsafe` 的地方；**app 依赖它**，但只用"落点、状态与解锁"三样）、
+  **`akasha-ssh`**（连接 + 认证 + **known_hosts 三态判定** —— 见下一条）、
   `akasha`（app 包 = IPC 薄壳 + 托盘 + 配置 + **数据目录推导与便携目录检查** + 关窗语义 + 单实例 +
   退出钩子 + 看门狗接线 + 事件 + **库的解锁状态**（`vault::Vault`）+ 代码生成 bin）。
 - **前端四层**：`src/ipc/`（唯一允许碰后端）、`src/tabs/`、`src/terminal/`、`src/App.tsx`。
@@ -427,9 +483,12 @@ plan 展开成可粘贴的验收命令（骨架不许开工，`docs-check` 会�
   改路径范围仍要按 `AGENTS.md` §6 用真实路径探针复核一次（坑 #104）。
 - **SSH 这一层的形状在哪**：`docs/adr/0003-ssh-stack-and-resource-model.md`（状态「实现中」，
   §14 有修订记录）。动手前先读 §2 的「事实依据」（版本 / API 都带出处）、D1–D15 与 §12 的未决清单。
-- **SSH 的代码在哪**：`src-tauri/crates/akasha-ssh/`（五个模块；`tests/support/` 里是**进程内**的
+- **SSH 的代码在哪**：`src-tauri/crates/akasha-ssh/`（六个模块；`tests/support/` 里是**进程内**的
   `russh` 测试服务端 —— 改客户端行为时先看它能不能观测到）。⚠️ 它**还没接进 app**：
   `src-tauri/src/` 里没有任何一行引用它，`src/ipc/bindings.ts` 也没有变化。
+- **改了库格式之后先看哪里**：`akasha-store/src/schema.rs`（`DDL_V1` 冻结 + `TABLES`）→
+  `lib.rs` 的 `upgrade()` / `FORMAT_VERSION` → `tests/format_migration.rs`（`DDL_V1` 造真 v1 库）。
+  ⚠️ 加表**必须**升 `FORMAT_VERSION` 并写迁移：只加表不升版本，等于让同一个版本号有两种形状。
 - **加依赖时**：`Cargo.toml` 写 `=` 钉版本（`russh` 与 `tauri-specta` 同一条口径）；
   本沙箱里 `cargo add` 会拒（坑 #105），而 `cargo deny` 还会去拉别的平台的依赖（坑 #106）。
 
@@ -601,7 +660,27 @@ plan 展开成可粘贴的验收命令（骨架不许开工，`docs-check` 会�
     先写、再 resize、然后一次 `read_until` 读到两个证据（服务端把收到的尺寸回声回来）。
     分成两次 `round_trip` 会直接 panic 在"读端只能取一次"上 —— 而那条契约是**故意**的
     （两个读端会互相偷字节，`akasha-pty/src/transport.rs`）。
-109. **`std::env::set_var` 在 Rust 2024 里是 `unsafe`**，而本仓库只允许 `akasha-store`
+109. **`std::env::set_var` 在 Rust 2024 里是 `unsafe`**
+110. **`cargo nextest run -p <crate> <关键词>` 过滤的是测试的**函数名**，不是文件名 ——
+    一个都不匹配时会打印 `Starting 0 tests` 并**以 `error: no tests to run` 退出**，
+    看起来像"这个目标里没有测试"。按文件过滤要用 `--test <目标名>`。
+    计划的「验收命令」里写错过滤器，等于让判据**永远跑不到**（而它还是会"通过"地失败）。
+111. **上游 `russh` 的 `Error::KeyChanged { line }` 跳过注释行时不给行号递增**
+    （`russh-0.63.3/src/keys/known_hosts.rs` 的 `continue` 排在 `line += 1` 之前），
+    于是它给的是"非注释行的序号"。实测：注释行 + 记录行拿到 `1` 而不是 `2` ——
+    **照抄它写进给用户看的消息，就是把用户指到别的行**。要真行号就自己数一遍
+    （`true_line_of`，顺带把 `RecordedIn::UserFile::line` 做成 `Option`：找不到就说文件名，不猜）。
+112. **`thiserror` 把名为 `source` 的字段当成错误源**：`#[error("…{source}…")]` 想要的是
+    文本插值，实际会编译失败（`the method as_dyn_error exists for &T … not satisfied`）。
+    改个名字（`recorded_in`）就好 —— 这条只在**报错信息**里看得出来，别去怀疑 Display 实现。
+113. **`// SAFETY:` 的位置就是它的意思**：把说明写成 `/// SAFETY: …` 挂在**安全函数**上，
+    clippy 会同时报两条 —— `unnecessary_safety_comment`（挂错了地方）与
+    `undocumented_unsafe_blocks`（真正的 `unsafe` 块前一行什么都没有）。
+    正解是把那段说明写成 `//`（不是 `///`）紧贴在 `unsafe` 块之前，函数自己的文档另写。
+114. **迁移必须在动手前先按*旧*版本校验形状**：`open` 原来是"版本号不等就拒"，
+    改成"旧版本 → 迁移"之后，一个**缺表的 v1 库**会被当成"待迁移"接下去 ——
+    结果是升完版本之后才报缺表，库里已经多了一张永远不该出现的表。
+    顺序是：读版本 → 按**那个**版本查表 → 迁移（一次事务里连 `user_version` 一起写）→ 再按当前版本查表。，而本仓库只允许 `akasha-store`
     出现 `unsafe`（§3.4 + ast-grep 规则）—— 也就是说**凡是靠环境变量开关的行为，测试就造不出前提**。
     正解：把它变成**输入**（`SshAuth::agent_socket`），而不是在测试里改环境。
     这条对将来所有"靠 env 配的东西"都适用。

@@ -1,8 +1,8 @@
-//! 库的**磁盘格式**：四套池的表结构（ADR-0002 D7 / D1）。
+//! 库的**磁盘格式**：v1 的四套池（ADR-0002 D7 / D1）+ v2 的 known_hosts 缓存（ADR-0003 D11）。
 //!
-//! 这个模块是 `user_version = 1` 那个 `1` 的**定义处**：v1 的含义就是下面这段 DDL，
-//! 不多不少。改一个列名、加一个列，都等于换了一个格式 —— 那时 `FORMAT_VERSION` 要 +
-//! 并给出迁移，而不是让新代码去读一个"看起来能开、其实形状不同"的库（D7 的意图）。
+//! 这个模块是 `user_version` 那两个取值的**定义处**：写的是几，形状就是下面这几段 DDL，
+//! 不多不少。改一个列名、加一个列、加一张表，都等于换了一个格式 —— 那时 `FORMAT_VERSION`
+//! 要 + 并在这里给出**迁移**，而不是让新代码去读一个"看起来能开、其实形状不同"的库（D7 的意图）。
 //!
 //! 三处刻意的写法：
 //!
@@ -23,6 +23,14 @@
 //! 存"密钥文件在哪"，正是这条要求的实现方式。唯一像路径的是 serial 的 `port`，
 //! 它是**操作系统给的设备名**（`/dev/ttyUSB0` / `COM3`），不是我们的文件位置 ——
 //! 见 `docs/scope.md` §3。
+//!
+//! ## 版本与迁移
+//!
+//! - **v1 = 四张池表**（plan 0403 起）；**v2 = v1 + `known_hosts`**（plan 0503）。
+//! - [`DDL_V1`] 是 v1 的**冻结定义**：验证迁移要能造出一个**真 v1 库**，而"真 v1"只能有
+//!   一个定义处，所以它公开 —— 公开的是**历史格式的文本**，不是一条绕开池的写入路径。
+//! - 迁移的规则（本仓库第一次，以后照抄）：**一次事务**里加表并写 `user_version`，
+//!   失败整体回滚；由 [`crate::open`] 自动做（理由见 [`crate::upgrade`]）。
 
 use rusqlite::Connection;
 
@@ -32,10 +40,20 @@ use crate::StoreError;
 ///
 /// 这份清单同时是 [`check`] 的判据：`user_version = 1` 而缺其中任何一张，
 /// 那个库就不是本程序写的（或写到一半被打断），要明确拒绝而不是"开起来看着像空的"。
-pub const TABLES: [&str; 4] = ["keys", "hosts", "serials", "forwards"];
+pub const TABLES_V1: [&str; 4] = ["keys", "hosts", "serials", "forwards"];
 
-/// v1 的建表语句。只在 [`crate::create`] 里跑**一次**。
-const DDL: &str = "
+/// **当前**格式（v2）的表：v1 那四张 + known_hosts。
+///
+/// known_hosts 是**缓存**不是池：它没有名字、不从界面新建，装的也全是公开信息
+/// （主机密钥本来就是公开的）—— 所以它不进 `dump` 那份"四套池"清单。
+pub const TABLES: [&str; 5] = ["keys", "hosts", "serials", "forwards", "known_hosts"];
+
+/// v1 的建表语句，**冻结**：这是"v1 是什么"的定义（D7）。
+///
+/// ⚠️ 不许改这里一个字符。改了就等于改写历史 —— 而 [`migrate_step`] 与
+/// `tests/format_migration.rs` 都靠它造一个**真正的 v1 库**；历史被改掉之后，
+/// 那些测试验的就不再是"用户的旧库"了。
+pub const DDL_V1: &str = "
 CREATE TABLE keys (
     id          INTEGER PRIMARY KEY,
     name        TEXT    NOT NULL UNIQUE,
@@ -82,25 +100,78 @@ CREATE TABLE forwards (
 ) STRICT;
 ";
 
-/// 建表。**只在空库上跑**（[`crate::create`] 的路径），不在打开路径上跑任何 DDL。
+/// v2 相对 v1 **加**的东西（`user_version` 1 → 2）。
+///
+/// `known_hosts` 的列与理由：
+///
+/// - `key_blob` 是 SSH 线格式的密钥本体 —— **判定的材料**。拿指纹文本比对也行得通，
+///   但那是把"同一把密钥"押在一段有损的字符串表示上；逐字节比 blob 才是同一件事。
+/// - `fingerprint` 是给人核对的那串 `SHA256:…`，**不参与判定**。
+/// - `UNIQUE (host, port, key_type)`：同一台主机的同一种密钥类型只认一把。
+///   **不同类型各记一行**是照上游 `check_known_hosts_path` 的语义来的（类型不同不算不匹配），
+///   免得服务端换掉算法时被误判成"密钥变了"。
+const DDL_V2: &str = "
+CREATE TABLE known_hosts (
+    id          INTEGER PRIMARY KEY,
+    host        TEXT    NOT NULL,
+    port        INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+    key_type    TEXT    NOT NULL,
+    key_blob    BLOB    NOT NULL,
+    fingerprint TEXT    NOT NULL,
+    UNIQUE (host, port, key_type)
+) STRICT;
+";
+
+/// 建当前格式（v2）的全部表。**只在空库上跑**（[`crate::create`] 的路径）。
 pub(crate) fn create(conn: &Connection) -> Result<(), StoreError> {
-    conn.execute_batch(DDL)?;
+    conn.execute_batch(DDL_V1)?;
+    conn.execute_batch(DDL_V2)?;
     Ok(())
 }
 
-/// 查四张表在不在。少任何一张 → [`StoreError::MissingTable`]。
+/// 查**某个版本**的库该有的表在不在。少任何一张 → [`StoreError::MissingTable`]。
 ///
-/// 只查**表**，不查列：列的形状由 `user_version` 负责（[`TABLES`] 上方那段）。
+/// 只查**表**，不查列：列的形状由 `user_version` 负责（[`TABLES_V1`] 上方那段）。
 /// 想在打开时把列也比一遍，就得在这里再写一份 DDL 的镜像 —— 那份镜像迟早与 DDL 不一致，
 /// 而"不一致的检查"比没有检查更坏（它会在正确的事情上报错）。
-pub(crate) fn check(conn: &Connection) -> Result<(), StoreError> {
+///
+/// ⚠️ 带 `version` 参数是本仓库第一处**版本相关**的检查：迁移要**先**按旧版本确认形状
+/// （一个 v1 库缺了 `keys` 表就不是"待迁移"，而是坏了），再动手加表。
+pub(crate) fn check(conn: &Connection, version: i64) -> Result<(), StoreError> {
+    let tables = tables_of(version).ok_or(StoreError::UnsupportedVersion { found: version })?;
     let mut stmt =
         conn.prepare("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1")?;
-    for table in TABLES {
+    for table in tables {
         let found: i64 = stmt.query_row([table], |row| row.get(0))?;
         if found == 0 {
             return Err(StoreError::MissingTable { table });
         }
     }
     Ok(())
+}
+
+/// 某个版本的库该有哪些表。**不认识就是 `None`** —— 由调用方翻成拒绝，不给默认值。
+fn tables_of(version: i64) -> Option<&'static [&'static str]> {
+    match version {
+        1 => Some(TABLES_V1.as_slice()),
+        v if v == crate::FORMAT_VERSION => Some(TABLES.as_slice()),
+        _ => None,
+    }
+}
+
+/// 单步迁移：`from` → `from + 1`，返回**新**版本号。
+///
+/// 这一版只加表、不动已有列 —— 所以不需要重建表、不需要搬数据。真到了要改列的那天，
+/// 这里是"建新表 + `INSERT INTO … SELECT` + 改名"那三步该在的地方（它们的顺序不能反）。
+///
+/// **调用方负责事务与写 `user_version`**：让每一步自带事务，会让"v1 → v3"那种连走两步的
+/// 迁移变成两个事务，中间崩掉就留下一个没人认得的版本号。
+pub(crate) fn migrate_step(conn: &Connection, from: i64) -> Result<i64, StoreError> {
+    match from {
+        1 => {
+            conn.execute_batch(DDL_V2)?;
+            Ok(2)
+        }
+        other => Err(StoreError::UnsupportedVersion { found: other }),
+    }
 }

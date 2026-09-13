@@ -525,7 +525,9 @@ fn dump_shows_what_is_in_the_vault_and_nothing_secret() {
 
     let text = read.to_text();
     for expected in [
-        "format: v1",
+        // 写死当前版本号（plan 0503 起是 v2）：它红了就意味着格式变了，
+        // 而那件事本来就该在这里被看见一次（同 `schema_contract` 的快照）。
+        "format: v2",
         "work",
         "ssh-ed25519 AAAAC3Nza work",
         "bastion",
@@ -555,7 +557,7 @@ fn dump_shows_what_is_in_the_vault_and_nothing_secret() {
     assert_eq!(nothing.row_counts(), [0, 0, 0, 0]);
     let text = nothing.to_text();
     for expected in [
-        "format: v1",
+        "format: v2",
         "keys: 0",
         "hosts: 0",
         "serials: 0",

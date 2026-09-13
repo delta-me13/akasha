@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, DatabaseName, params};
 
-use crate::{FORMAT_VERSION, Passphrase, StoreError, open, schema};
+use crate::{Passphrase, StoreError, open, schema};
 
 /// 明文导出的确认短语（D6 的"二次确认"落地）。
 ///
@@ -118,7 +118,7 @@ pub fn to_plaintext(
     // D6：与加密那条**同一段代码**，只是 key 为空（= 不挂 codec）。
     write_vault(source, dest, &[])?;
     // 明文件用不了 `open`（它要求库里是密文头），改用裸 sqlite 读一次 ——
-    // "读得出来"正是"没有加密"这条判据本身，顺带校验版本与四张表。
+    // "读得出来"正是"没有加密"这条判据本身，顺带校验版本与那个版本该有的表。
     open_plaintext(dest)?;
     Ok(())
 }
@@ -133,6 +133,10 @@ pub fn to_plaintext(
 ///
 /// `source_passphrase` 在这里是**导出件那把口令**：它既用来打开来源，也用来执行
 /// "还原后的库不能与它同口令"这条检查。
+///
+/// ⚠️ 来源用 [`crate::open_unmigrated`] 打开，**不是** [`crate::open`]：后者会为了迁移而
+/// 写那个文件，而导出件是用户的产物（可能在只读介质上）。旧格式的来源由目标那一路升上来
+/// —— 见 [`copy_tables`] 与 [`write_encrypted`]。
 pub fn restore(
     source: &Path,
     source_passphrase: &mut Passphrase,
@@ -140,7 +144,7 @@ pub fn restore(
     dest_passphrase: &mut Passphrase,
 ) -> Result<(), StoreError> {
     refuse_existing(dest)?;
-    let conn = open(source, source_passphrase)?;
+    let (conn, _version) = crate::open_unmigrated(source, source_passphrase)?;
     to_encrypted(&conn, source_passphrase, dest, dest_passphrase)
 }
 
@@ -154,7 +158,7 @@ pub fn restore_plaintext(
     dest_passphrase: &mut Passphrase,
 ) -> Result<(), StoreError> {
     refuse_existing(dest)?;
-    let conn = open_plaintext(source)?;
+    let (conn, _version) = open_plaintext(source)?;
     write_encrypted(&conn, dest, dest_passphrase)
 }
 
@@ -202,16 +206,26 @@ fn copy_tables(source: &Connection) -> Result<(), StoreError> {
     // ⚠️ **必须显式写**：`sqlcipher_export` **不传递** `user_version`（上游文档 + 实测，
     // 见 ADR-0002 D7 与 §7）。不写的话每个导出件都是版本 0 —— 而版本 0 的库我们自己会拒
     // （D7：v1 之前没有版本，"0" 说明它不是本程序写的库）。于是"导出成功、还原打不开"。
+    //
+    // 抄的是**来源的**版本，不是写死的 `FORMAT_VERSION`：还原一个 v1 时代的导出件时，
+    // "导出件就是库"（D6）要求先原样抄成 v1，再由 `write_encrypted` 末尾那次 `open`
+    // 把它升上来 —— 写死当前版本会造出一个"版本号说 v2、表却只有 v1 那四张"的文件，
+    // 而那种文件正是 D7 要防的"能开但形状不对"。
+    let version: i64 = source.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     source.pragma_update(
         Some(DatabaseName::Attached(EXPORT_ALIAS)),
         "user_version",
-        FORMAT_VERSION,
+        version,
     )?;
     Ok(())
 }
 
-/// 加密件写完再开一次 —— 用**真正的读者**（[`crate::open`]：送密钥、校验版本、查四张表、
-/// 收紧权限）。它成功就意味着"这个导出件在另一台机器上也能被同一个代码路径打开"。
+/// 加密件写完再开一次 —— 用**真正的读者**（[`crate::open`]：送密钥、校验版本、
+/// 迁移旧格式、查该版本的表、收紧权限）。它成功就意味着"这个导出件在另一台机器上
+/// 也能被同一个代码路径打开"。
+///
+/// 旧来源（v1）的还原在这里被**升到当前格式**：抄过来的 v1 内容在这条路上变成 v2 的库 ——
+/// 升级发生在**新写出来的目标**上，用户的导出件一个字节都没动。
 fn write_encrypted(
     source: &Connection,
     dest: &Path,
@@ -227,13 +241,16 @@ fn write_encrypted(
     Ok(())
 }
 
-/// 用**裸 sqlite** 打开一个明文件，并校验版本与四张表。
+/// 用**裸 sqlite** 打开一个明文件，并校验版本与**该版本**的表。
 ///
 /// 两种用法共用这一个读者：明文导出写完的自检、明文件还原时的来源检查。
 /// 拿一个**加密**的库喂给它，第一页就读不出来 —— 那时错误是"不是个库"，
 /// 与 [`crate::open`] 收到错口令时的说法一致（SQLCipher 对这两者本来就给同一个
 /// `SQLITE_NOTADB`）。
-fn open_plaintext(path: &Path) -> Result<Connection, StoreError> {
+///
+/// **不迁移**：明文件可能就是用户抽屉里那份 v1 时代的导出，我们不去改写它（同
+/// [`crate::open_unmigrated`]）。返回版本号让调用方原样抄走。
+fn open_plaintext(path: &Path) -> Result<(Connection, i64), StoreError> {
     if crate::file_len(path)? == 0 {
         return Err(StoreError::NoVault(path.to_path_buf()));
     }
@@ -241,11 +258,9 @@ fn open_plaintext(path: &Path) -> Result<Connection, StoreError> {
     let found: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(crate::as_database_error)?;
-    if found != FORMAT_VERSION {
-        return Err(StoreError::UnsupportedVersion { found });
-    }
-    schema::check(&conn)?;
-    Ok(conn)
+    // 认识的旧版本照样认（"导出件会长期躺在用户的抽屉里"，D7）—— 认不出的在这里拒绝。
+    schema::check(&conn, found)?;
+    Ok((conn, found))
 }
 
 /// 导出口令不得与它导出时那把相同（D6："加密导出用独立口令，不复用库口令"）。

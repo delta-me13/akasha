@@ -28,9 +28,14 @@
 //! KDF 根本没跑。于是"打开不存在的库"不会失败，反而会把这把口令当成创建口令。
 //! 拆开之后：`open` 只开已有的库（没有就 `NoVault`），`create` 从不覆盖已有内容。
 //!
-//! 表结构是 v1 的一部分（plan 0403）：[`create`] 在**一次事务**里建四张表并写版本号
-//! （`schema`），[`open`] 除版本号外还要确认这四张表都在 —— `user_version = 1` 的含义是
-//! "**这四张表**"，不是"一个空库"。四套池的增删改查在 [`pools`]。
+//! 表结构是版本的一部分：[`create`] 在**一次事务**里建当前格式的全部表并写版本号
+//! （`schema`），[`open`] 除版本号外还要确认**那个版本该有的表**都在 —— `user_version`
+//! 的含义是"**这些表**"，不是"一个空库"。四套池的增删改查在 [`pools`]。
+//!
+//! **格式到 v2 了**（plan 0503）：v1 = 四张池表，v2 = v1 + `known_hosts`（ADR-0003 D11 的
+//! 信任缓存）。`open` 会自动把 v1 升到 v2（[`upgrade`]），因为 `vault_unlock` 是 app 唯一的
+//! 开门路径 —— 不自动升级等于"用户的旧库突然打不开了"。**降级不行**：v2 的库被旧版本程序
+//! 打开会得到 `UnsupportedVersion { found: 2 }`，这是 D7 有意的处置。
 //!
 //! 库里的东西怎么拿出去：看有什么用 [`dump`]（**结构上不含机密**），拿走用 [`export`]
 //! （加密 / 明文两条路，后者有门槛），放回来用 [`export::restore`]（D6 的"导出件就是库"）。
@@ -52,7 +57,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::ffi;
 
 pub use passphrase::{MAX_LEN, Passphrase};
-pub use pools::{forwards, hosts, keys, serial};
+pub use pools::{forwards, hosts, keys, known_hosts, serial};
 /// 解好的连接 —— **就是上游 `rusqlite` 那个类型**，这里只是把它再导出一遍。
 ///
 /// 为什么要在这一层转一次手：`open` / `create` / [`dump::dump`] 的签名里本来就有它，
@@ -61,7 +66,7 @@ pub use pools::{forwards, hosts, keys, serial};
 /// 两个版本连编都编不过。**这不是给 app 开一条绕开四套池直接写 SQL 的路**：
 /// 想拿到连接仍然只能经 `open` / `create`，而那两条路已经是公开的。
 pub use rusqlite::Connection;
-pub use schema::TABLES;
+pub use schema::{DDL_V1, TABLES, TABLES_V1};
 /// 库文件名（ADR-0002 D1）：四套池与 Bitwarden 缓存**同一个**文件。
 ///
 /// 放在这里而不是调用方：它是**磁盘上的格式**的一部分，改它等于迁移用户数据。
@@ -69,8 +74,10 @@ pub const STORE_FILE_NAME: &str = "akasha.db";
 
 /// 格式版本（ADR-0002 D7）：`PRAGMA user_version` 的当前取值。
 ///
-/// v1 就是 `1`，没有别的语义。`> 1` = 更新版本的程序写的，明确拒绝；`< 1` 见 [`open`]。
-pub const FORMAT_VERSION: i64 = 1;
+/// v1 = 四张池表，**v2 = v1 + known_hosts**（plan 0503，ADR-0003 D11 的信任缓存）。
+/// `> 2` = 更新版本的程序写的，明确拒绝；`1` = 待升级（[`open`] 自动做）；
+/// `0` 见 [`open`]（v1 之前没有版本，非空文件里出现 0 说明它不是本程序的库）。
+pub const FORMAT_VERSION: i64 = 2;
 
 /// 打开之后、密钥送入之后的第一条**读库**语句。
 ///
@@ -122,10 +129,18 @@ pub enum StoreError {
     /// 要创建的位置**已经有内容**。绝不覆盖一个库 —— 那可能是用户全部的数据。
     #[error("vault already exists at {0}")]
     VaultExists(PathBuf),
-    /// `user_version` 不是 [`FORMAT_VERSION`]（ADR-0002 D7）。
+    /// `user_version` **比本程序新**，或是个本程序不认识的值（ADR-0002 D7）。
     #[error("unsupported vault format version {found} (this build writes {FORMAT_VERSION})")]
     UnsupportedVersion { found: i64 },
-    /// 库有版本号、却缺 v1 的某张表（[`TABLES`]）。写到一半被打断、或根本不是本程序写的库。
+    /// 库需要升级到当前格式，但升级没做成。
+    ///
+    /// 与 [`StoreError::UnsupportedVersion`] 分开：那个是"这库太新"，这个是"这库太旧、
+    /// 而我们没能把它改过来"—— 最常见的原因是**文件不可写**（只读挂载 / 权限），
+    /// 而用户看到的症状都是"打不开"。分清它们，用户才知道该去做什么。
+    #[error("vault format upgrade from v{from} failed: {detail}")]
+    UpgradeFailed { from: i64, detail: String },
+    /// 库有版本号、却缺**那个版本**该有的某张表（[`TABLES`]）。
+    /// 写到一半被打断、或根本不是本程序写的库。
     #[error("vault is missing table {table}")]
     MissingTable { table: &'static str },
     /// 要改 / 要删的那一行不在。
@@ -204,8 +219,8 @@ pub fn vault_state(path: &Path) -> Result<VaultState, StoreError> {
 /// 两条路分开的理由见 crate 文档第 4 条 —— 合在一起时，"打开"在新建路径上等于没验证口令。
 ///
 /// 返回的连接已经解好锁：密钥送进去了、已经成功读过一次 `sqlite_master`、
-/// `user_version` 也校验过了。调用方拿到它就等于拿到了一个能用的库，
-/// 不需要（也不应该）自己再设密钥。
+/// `user_version` 也校验过了（旧版本还会被升到当前格式）。调用方拿到它就等于拿到了一个
+/// 能用的库，不需要（也不应该）自己再设密钥。
 ///
 /// `passphrase` 是 `&mut`：读口令是一次需要独占的**提权动作**（它在受保护页里，
 /// 见 [`Passphrase`]），交出 `&mut` 等于把那次提权的窗口借出去。
@@ -214,15 +229,108 @@ pub fn open(path: &Path, passphrase: &mut Passphrase) -> Result<Connection, Stor
         return Err(StoreError::NoVault(path.to_path_buf()));
     }
 
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     unlock(&conn, passphrase)?;
-    check_format_version(&conn)?;
-    schema::check(&conn)?;
+    upgrade(&mut conn)?;
+    schema::check(&conn, FORMAT_VERSION)?;
     restrict_to_owner(path);
     Ok(conn)
 }
 
-/// 在一个**空位置**上建一个新库：建 v1 的四张表 + 写版本号，并把 `passphrase` 钉进去。
+/// 打开一个库、认出版本，但**不迁移**它。
+///
+/// 用在"只读地消费**别人**的库"的路径上（目前只有 [`export::restore`] 的来源）：
+/// [`open`] 会为了迁移而**写**那个文件，而导出件是用户自己的产物 —— 它可能在只读介质上，
+/// 也不该在我们还原它的时候被改写。
+///
+/// 返回版本号是刻意的：调用方需要它来"原样抄走"（`sqlcipher_export` **不传递**
+/// `user_version`，D7），抄对版本，导出件才"就是那个库"。
+pub fn open_unmigrated(
+    path: &Path,
+    passphrase: &mut Passphrase,
+) -> Result<(Connection, i64), StoreError> {
+    if file_len(path)? == 0 {
+        return Err(StoreError::NoVault(path.to_path_buf()));
+    }
+
+    let conn = Connection::open(path)?;
+    unlock(&conn, passphrase)?;
+    let version = format_version(&conn)?;
+    // 不认识的版本在这里就拒绝（`0` 与"比我们新"都在内）—— 与 [`open`] 同一道门。
+    schema::check(&conn, version)?;
+    Ok((conn, version))
+}
+
+/// 把库升到 [`FORMAT_VERSION`]（ADR-0002 D7 的"v1 → v2 加迁移"）。已经是当前版本就什么都不做。
+///
+/// **为什么在 `open` 里自动做**：`vault_unlock` 是 app 唯一的开门路径，所以"不自动升级"
+/// 等于用户的旧库**突然打不开**——而拒绝是 D7 留给**降级**的处置，不是升级的。
+/// 代价照实记：① 升级之后旧版本程序打不开这个库（`UnsupportedVersion { found: 2 }`）；
+/// ② `open` 从此可能**写**文件，只读介质上的 v1 库会以 [`StoreError::UpgradeFailed`] 失败。
+///
+/// 顺序：先按**库里写的版本**确认形状（缺表就不是"待迁移"，是坏了），再逐步迁移。
+/// 迁移在**一次事务**里，`user_version` 与表一起提交 —— 中间崩掉只可能是完整的 v1 或完整的 v2，
+/// 不会出现一个"没人认得的版本号"。
+fn upgrade(conn: &mut Connection) -> Result<(), StoreError> {
+    let found = format_version(conn)?;
+    if found == FORMAT_VERSION {
+        return Ok(());
+    }
+    if !(1..FORMAT_VERSION).contains(&found) {
+        // `> FORMAT_VERSION`：更新版本的程序写的；`< 1`：v1 之前没有版本，而一个非空文件里
+        // 出现 0 说明它不是本程序的库（明文库更早就以 `NotADatabase` 失败）。
+        // 把来路不明的文件当"待迁移"接下去，正是 D7 要防的"能开但内容不对"。
+        return Err(StoreError::UnsupportedVersion { found });
+    }
+    schema::check(conn, found)?;
+
+    let tx = conn
+        .transaction()
+        .map_err(|err| upgrade_failed(found, err))?;
+    let mut version = found;
+    while version < FORMAT_VERSION {
+        version = schema::migrate_step(&tx, version).map_err(|err| match err {
+            StoreError::Sqlite(inner) => upgrade_failed(found, inner),
+            other => other,
+        })?;
+        tx.pragma_update(None, "user_version", version)
+            .map_err(|err| upgrade_failed(found, err))?;
+    }
+    tx.commit().map_err(|err| upgrade_failed(found, err))?;
+    Ok(())
+}
+
+/// 迁移失败的说法。
+///
+/// `readonly` / `cantopen` / `perm` 三种 sqlite 错误**合成一句人话**：用户看到的症状都是
+/// "库打不开"，而真正的原因是"这个库要升级，但文件写不进去" —— 说不出这一点，
+/// 用户就会去怀疑自己的口令（那是一条完全错误的路）。
+fn upgrade_failed(from: i64, err: rusqlite::Error) -> StoreError {
+    use rusqlite::ErrorCode;
+
+    if let rusqlite::Error::SqliteFailure(inner, _) = &err
+        && matches!(
+            inner.code,
+            ErrorCode::ReadOnly | ErrorCode::CannotOpen | ErrorCode::PermissionDenied
+        )
+    {
+        return StoreError::UpgradeFailed {
+            from,
+            detail: "the vault file is not writable".to_owned(),
+        };
+    }
+    StoreError::UpgradeFailed {
+        from,
+        detail: err.to_string(),
+    }
+}
+
+/// 读一次 `PRAGMA user_version`（格式版本的**唯一权威**）。
+fn format_version(conn: &Connection) -> Result<i64, StoreError> {
+    Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+}
+
+/// 在一个**空位置**上建一个新库：建当前格式的全部表 + 写版本号，并把 `passphrase` 钉进去。
 ///
 /// 已经有内容 → [`StoreError::VaultExists`]（永不覆盖）。
 ///
@@ -339,21 +447,6 @@ pub(crate) fn as_database_error(err: rusqlite::Error) -> StoreError {
             StoreError::NotADatabase
         }
         other => StoreError::Sqlite(other),
-    }
-}
-
-/// 校验格式版本（ADR-0002 D7）。
-///
-/// `!= FORMAT_VERSION` 一律拒绝，包括 `< 1`：v1 之前**没有版本**，"0" 出现在一个非空文件里
-/// 说明它不是本程序写的库（明文库走不到这里 —— 它在读第一页时就已经以 `NotADatabase` 失败了，
-/// 实测）。D7 原写的 "`< 1` 走迁移"是给**将来的 v2 读 v1** 留的话，不是给 0 留的；
-/// 把一个来路不明的文件当"待迁移"接下去，正是"能开但内容不对"的入口。已记入 §10。
-fn check_format_version(conn: &Connection) -> Result<(), StoreError> {
-    let found: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if found == FORMAT_VERSION {
-        Ok(())
-    } else {
-        Err(StoreError::UnsupportedVersion { found })
     }
 }
 

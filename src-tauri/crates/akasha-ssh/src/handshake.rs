@@ -19,34 +19,59 @@ use crate::error::{SshError, channel_failed, connect_failed};
 use crate::keys::SshAuth;
 use crate::target::SshTarget;
 
-/// 服务端的主机密钥 —— **指纹是唯一的判据**（算法名只用来给人看）。
+/// 服务端的主机密钥 —— **判定材料是密钥本体，指纹只给人看**（ADR-0003 D11）。
 ///
 /// 单独一个类型而不是直接漏出 `russh` 的公钥类型：`russh` 是 0.x，
-/// 而"我们要核对的东西"是稳定的（RFC 4253 的指纹）。
+/// 而"我们要核对的东西"是稳定的（RFC 4253 的密钥本体与指纹）。
+/// 上游那个公钥类型留在**私有字段**里 —— 对外只有 blob / 指纹 / 算法名。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostKey {
     algorithm: String,
     fingerprint: String,
+    blob: Vec<u8>,
+    /// 上游的公钥本体。`check_known_hosts_path` 要它（那样才认得哈希主机名那类形态），
+    /// 所以留着而不是每次从 blob 重新解析。**不公开**：上层不该跟着 `russh` 的 0.x API 走。
+    public: PublicKey,
 }
 
 impl HostKey {
-    /// 密钥算法（`ssh-ed25519` 一类）。给人看，**不参与判定**。
+    /// 密钥算法（`ssh-ed25519` 一类）。给人看；**参与判定的是类型对不对**，
+    /// 因为"同一台主机的不同类型"不算同一条记录（D11 / `schema.rs` 的 `UNIQUE`）。
     pub fn algorithm(&self) -> &str {
         &self.algorithm
     }
 
-    /// `SHA256:…` 指纹。这是用户能在服务器上核对的那串东西。
+    /// `SHA256:…` 指纹。这是用户能在服务器上核对的那串东西。**不参与判定**。
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
     }
 
+    /// SSH 线格式的密钥本体 —— **判定的材料**（逐字节比）。
+    pub fn blob(&self) -> &[u8] {
+        &self.blob
+    }
+
+    /// 上游的公钥本体（内部用：`check_known_hosts_path` 与横向比较）。
+    pub(crate) fn public_key(&self) -> &PublicKey {
+        &self.public
+    }
+
     /// 从上游的公钥形态取值。
-    fn from_public(key: &PublicKey) -> Self {
-        Self {
+    ///
+    /// `Err` = 这把密钥**用不了**（编不出线格式本体 = 拿不到判定材料）——
+    /// 调用方必须**拒绝**，而不是拿一段空字节顶替。
+    pub(crate) fn from_public(key: &PublicKey) -> Result<Self, SshError> {
+        let blob = key.to_bytes().map_err(|err| SshError::HostKeyUnusable {
+            algorithm: key.algorithm().as_str().to_owned(),
+            reason: err.to_string(),
+        })?;
+        Ok(Self {
             algorithm: key.algorithm().as_str().to_owned(),
             // SHA256 而不是 MD5：OpenSSH 的现代默认，且 MD5 指纹早已不该用于核对。
             fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
-        }
+            blob,
+            public: key.clone(),
+        })
     }
 }
 
@@ -146,13 +171,14 @@ pub struct SshConnect {
 pub(crate) struct Handler {
     target: SshTarget,
     verifier: Arc<dyn HostKeyVerifier>,
-    /// 被拒的密钥指纹（有就说明**为什么**连不上）。
+    /// 被拒的**原因**（有就说明为什么连不上）。
     ///
     /// 为什么要有这个格子：`check_server_key` 只能回一个 `bool`，而上游拿到 `false`
-    /// 之后给的是一个笼统的"未知主机密钥"。可"哪个指纹"正是用户要去核对的东西 ——
-    /// 丢了它就等于让用户自己去猜。所以拒绝的理由在这里留一份，`establish` 拿它
-    /// 换成 [`SshError::HostKeyRejected`]。
-    rejection: Arc<Mutex<Option<String>>>,
+    /// 之后给的是一个笼统的"未知主机密钥"。可"为什么"正是用户要的东西 ——
+    /// 指纹（要拿去核对）、是"没见过"还是"**变了**"（后者是警报），全靠它带出来。
+    /// 所以这里存**整个错误**，而不是只存一个指纹字符串：三态在 `establish` 那边
+    /// 原样浮现，不被压成一句话。
+    rejection: Arc<Mutex<Option<SshError>>>,
 }
 
 impl client::Handler for Handler {
@@ -162,7 +188,26 @@ impl client::Handler for Handler {
         &mut self,
         server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        let key = HostKey::from_public(&server_public_key.public_key());
+        let reject = |rejection: &Arc<Mutex<Option<SshError>>>, err: SshError| {
+            *rejection
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(err);
+        };
+
+        let key = match HostKey::from_public(&server_public_key.public_key()) {
+            Ok(key) => key,
+            Err(err) => {
+                tracing::warn!(
+                    host = self.target.host(),
+                    port = self.target.port(),
+                    %err,
+                    "ssh host key unusable"
+                );
+                reject(&self.rejection, err);
+                return Ok(false);
+            }
+        };
+
         match self.verifier.verify(&self.target, &key) {
             Ok(()) => {
                 tracing::debug!(
@@ -175,12 +220,7 @@ impl client::Handler for Handler {
                 Ok(true)
             }
             Err(err) => {
-                *self
-                    .rejection
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                    Some(key.fingerprint().to_owned());
-                // **拒绝就是拒绝**：不重试、不改写用户的 known_hosts，把指纹带出去让用户核对。
+                // **拒绝就是拒绝**：不重试、不改写用户的 known_hosts，把原因带出去。
                 tracing::warn!(
                     host = self.target.host(),
                     port = self.target.port(),
@@ -188,6 +228,7 @@ impl client::Handler for Handler {
                     %err,
                     "ssh host key rejected"
                 );
+                reject(&self.rejection, err);
                 Ok(false)
             }
         }
@@ -249,16 +290,13 @@ pub(crate) async fn establish(options: &mut SshConnect) -> Result<Established, S
     let mut session = match client::connect_stream(config, stream, handler).await {
         Ok(session) => session,
         Err(err) => {
-            // 主机密钥被拒时上游只会说"未知的主机密钥" —— 把指纹换回来，
-            // 它是用户唯一能拿去核对的东西。
+            // 主机密钥被拒时上游只会说"未知的主机密钥" —— 把**原因**换回来：
+            // 指纹（用户唯一能拿去核对的东西），以及是"没见过"还是"**变了**"。
             let rejected = rejection
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .take();
-            return Err(match rejected {
-                Some(fingerprint) => SshError::HostKeyRejected { fingerprint },
-                None => connect_failed(&target, err),
-            });
+            return Err(rejected.unwrap_or_else(|| connect_failed(&target, err)));
         }
     };
 

@@ -7,7 +7,7 @@
   capability 取值；`Session` ↔ 连接的**所有权**；隧道状态机与事件；`akasha` 侧的 tokio runtime；
   阶段 6 / 7 的接口形状
 - **关联**：[plan 0501](../plans/archive/0501-adr-0003-ssh-stack.md)（本文的落地）、
-  [0502](../plans/archive/0502-ssh-connect-auth.md) / [0503](../plans/0503-known-hosts.md) /
+  [0502](../plans/archive/0502-ssh-connect-auth.md) / [0503](../plans/archive/0503-known-hosts.md) /
   [0504](../plans/0504-ssh-into-ipc-frontend.md) / [0505](../plans/0505-direct-tcpip-primitive.md) /
   [0506](../plans/0506-ssh-config-subset-import.md)、阶段 6 全部
 - **取代**：无
@@ -332,3 +332,4 @@
 | 2026-09-12 | 初稿；状态置「实现中」 | plan 0501：动 `akasha-ssh` 之前先把线协议与资源模型定下来 |
 | 2026-09-13 | D3 / D4 里"落地时要补"的两条改成**已落地**（`TransportError::Busy`、能力位注释）；新增 **D15**（超时 / 保活 / `nodelay`）；§12 删掉已定的三条；把"`-R` 远端监听消失"这条验收的归属从 0502 改到 **0604** | plan 0502 落地了 D3 / D4 挂给它的两条；`-R` 属于阶段 6，原先把这条验收写在 D4 的 0502 段里是**归属写错**（改它要在 ADR 状态之外留痕，见 `docs/adr/README.md` 的三态） |
 | 2026-09-13 | 本 ADR 引用的阶段 5 plan 编号**全部重排**（known_hosts 0505 → **0503**、`direct-tcpip` 0503 → **0505**、config 导入 0504 → **0506**；新增 **0504** = SSH 接进 IPC / 前端）；§12 补上"未知 host key 的提问形态"这条跨 0503 / 0504 的问题 | 执行顺序改由依赖决定：D11 的信任策略（谁问、问什么、答案存哪）是**接口形状**，必须在 0504 把它送到前端之前定下来，否则 0504 只能自造一套临时信任；`direct-tcpip`（D9）的三处消费者都要先有一条从 app 打得开的会话才验得了 |
+| 2026-09-13 | **D11 按原文落地**（plan 0503）：三态判定（库里有且一致 → 连 / 有但对不上 → 拒 / 未知 → 问）、`~/.ssh/known_hosts` **只读**、确认过的进**我们自己的库**；本 ADR 的**决定一字未改**，只把关联指针改到归档路径（§12 里"提问形态"那条仍然成立：策略接口已定，接前端在 plan 0504） | D11 当初就把策略写死了，实现没有推翻它，所以本文没有必要改内容。落地时带出一个新事实（库格式 `user_version` 1 → 2，本仓库第一次迁移），它属于 ADR-0002 的辖区 —— 已记在归档的 plan 0503 与 `docs/STATUS.md` |

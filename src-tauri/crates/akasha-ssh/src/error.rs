@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use akasha_store::protected::PageError;
 
+use crate::known_hosts::RecordedIn;
 use crate::target::SshTarget;
 
 /// 连接、认证或通道操作失败的原因。
@@ -52,12 +53,57 @@ pub enum SshError {
     },
 
     /// 服务端的主机密钥没被接受。**这条永远不该被自动重试**（ADR-0003 D13）。
+    ///
+    /// 两种情形共用一个变体：钉住的指纹对不上（[`crate::PinnedHostKey`]），
+    /// 或者**用户明确否认**了一把没见过的密钥。两者对用户的下一步动作是同一个 ——
+    /// 核对指纹，然后决定要不要改配置 / 重新确认。
     #[error("主机密钥未被接受：{fingerprint}")]
     HostKeyRejected {
         /// 服务端给的密钥指纹。**必须在错误里**：用户要拿它去核对，
         /// 只说"密钥不对"等于什么都没说。
         fingerprint: String,
     },
+
+    /// 服务端给的密钥与**记下来的**不一样（ADR-0003 D11：拒绝并提示，既不静默接受、
+    /// 也不静默改写）。
+    ///
+    /// 与 [`SshError::HostKeyRejected`] 分开是刻意的：这一条是**警报**（中间人攻击的典型
+    /// 形态就是这一步），而"没见过"只是一种常态。阶段 6 的重连判据也靠这个区分
+    /// —— D13 把"主机密钥不匹配"列为**不重连**。
+    #[error(
+        "主机密钥变了：{host}:{port} 记的是 {recorded}，现在给的是 {presented}（记录在{recorded_in}）"
+    )]
+    HostKeyChanged {
+        host: String,
+        port: u16,
+        /// 记录里的那一把（用户上次确认的）。
+        recorded: String,
+        /// 服务端这次给的。
+        presented: String,
+        /// 记录在哪 —— 我们的缓存，还是用户的 `~/.ssh/known_hosts`。
+        recorded_in: RecordedIn,
+    },
+
+    /// 没见过这把密钥，而**没有可问的人**（`HostKeyPrompt` 没配）。
+    ///
+    /// ⚠️ 它**不是**"接受"的近义词：这条路径必须由调用方翻译成一次用户提问
+    /// （plan 0504），在那之前它就是一句明确的拒绝。D11 写死了这一点。
+    #[error("主机密钥没见过，需要确认：{host}:{port} {fingerprint}")]
+    HostKeyUnknown {
+        host: String,
+        port: u16,
+        /// 要请用户核对的那串 `SHA256:…`。
+        fingerprint: String,
+    },
+
+    /// 主机密钥**用不了**：上游给的那把我们编码不出线格式的本体。
+    ///
+    /// 这不是"密钥不对"，而是"我们连它是哪把都说不出" —— 而判定材料正是本体
+    /// （逐字节比，见 [`crate::KnownHostsVerifier`]），所以只能拒绝。
+    /// 触发它的是服务端报了本版本 `ssh-key` 不认识的算法名；实际很难遇到，
+    /// 但"很难遇到"不等于可以拿一段空字节顶替（那会让判定退化成"比空"）。
+    #[error("主机密钥无法编码（{algorithm}）：{reason}")]
+    HostKeyUnusable { algorithm: String, reason: String },
 
     /// 认证失败：我们有的方式全试过了，服务端还剩别的。
     #[error("认证失败：{target} 上没有可用的方式（服务端还剩 {remaining}）")]
