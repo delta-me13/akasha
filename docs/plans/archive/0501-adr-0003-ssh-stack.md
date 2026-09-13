@@ -96,4 +96,4 @@ $ grep -c 'russh' docs/adr/0003-*.md
 
 **留给后续 plan 的**（ADR §12 的清单，逐条已挂到具体 plan）：`TransportError` 的背压变体与
 `transport.rs:47` 注释的修改、`keepalive` 的取值 → plan 0502；隧道状态机的转移表 → 0601；
-库内 known_hosts 表（要动 `user_version` 迁移）→ 0505。
+库内 known_hosts 表（要动 `user_version` 迁移）→ 0503。

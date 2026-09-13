@@ -14,11 +14,11 @@
 
 ## 非目标
 
-- 端口转发与 `direct-tcpip` 原语（plan 0503 / 阶段 6）
-- `~/.ssh/config` 导入（plan 0504）与 known_hosts 的**持久化**（plan 0505）——
+- 端口转发与 `direct-tcpip` 原语（plan 0505 / 阶段 6）
+- `~/.ssh/config` 导入（plan 0506）与 known_hosts 的**持久化**（plan 0503）——
   本 plan 只留**接口**（`HostKeyVerifier`），策略与库表由那两份定
 - SFTP（阶段 7）
-- **把 SSH 会话接进 IPC / 前端**：本 plan **不接**（理由见下）
+- **把 SSH 会话接进 IPC / 前端**：本 plan **不接**（理由见下；那条缺口后来立成 plan 0504）
 - 断线重连与隧道状态机（阶段 6；本 plan 只把"握手 + 认证"的失败分类交出去）
 
 ## 判据怎么验，以及它的边界（先说清）
@@ -34,7 +34,8 @@
   失效、字节往返），**不是**"与 OpenSSH 的互操作"。互操作要等真机实测，
   记进 `docs/STATUS.md` 的待验证，别把本 plan 的绿说成"能连所有服务器"。
 - 接 IPC / 前端是**另一件事**：那需要一条"向后端问凭据 → 前端答"的往返协议与提示界面，
-  属于尚未规划的工作（本 plan 结束时记进 `docs/STATUS.md`，不偷偷夹带）。
+  本 plan 结束时记进了 `docs/STATUS.md`（不偷偷夹带）。后来它立成 **plan 0504**
+  （2026-09-13 重排：编号与执行顺序对齐）。
 
 ## 前置检查
 
@@ -61,7 +62,7 @@ grep -n '^name = "ring"' -A 1 Cargo.lock            # 0.17.14：选 ring 不新�
   （ADR-0002 D13 对每个新用途的要求）。
 - **S5 握手 + 主机密钥**：`client::connect_stream` 吃我们自己的 `TcpStream`（好放超时），
   `Handler::check_server_key` **强制覆写**（上游默认拒绝一切，D11）；`HostKeyVerifier` 是
-  策略接口，本 plan 提供"钉住一把密钥"，known_hosts 交给 plan 0505。
+  策略接口，本 plan 提供"钉住一把密钥"，known_hosts 交给 plan 0503。
   验收 = 钉对 → 连上；钉错 → 连不上且错误里带**指纹**。
 - **S6 认证顺序**（D7）：agent（`SSH_AUTH_SOCK`，unix）→ 密钥池 → keyboard-interactive →
   password；`AuthResult::Failure { partial_success: true }` 时按 `remaining_methods`

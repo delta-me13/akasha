@@ -111,15 +111,20 @@
 |---|---|---|---|---|
 | 0501 | 写 ADR-0003（SSH 栈与资源模型） | 已完成（2026-09-12：ADR-0003 进入「实现中」，调研结论带版本号与出处） | 阶段 5 开工前 | [0501](./archive/0501-adr-0003-ssh-stack.md) |
 | 0502 | `src-tauri/crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存） | 已完成（2026-09-13：三个连接只问一次凭据；`just ready` 6/6） | plan 0501（ADR-0003 实现中） | [0502](./archive/0502-ssh-connect-auth.md) |
-| 0503 | `direct-tcpip` 原语 | 未规划（骨架） | 展开时机：plan 0502 **已完成**（`akasha-ssh` 能连上并认证） | [0503](./0503-direct-tcpip-primitive.md) |
-| 0504 | `~/.ssh/config` 受限子集导入 | 未规划（骨架） | 展开时机：plan 0502 之后（可与 0503 并行） | [0504](./0504-ssh-config-subset-import.md) |
-| 0505 | known_hosts 校验与缓存 | 未规划（骨架） | 展开时机：plan 0502 之后 | [0505](./0505-known-hosts.md) |
+| 0503 | known_hosts 校验与缓存（含库格式 v2 迁移） | 未规划（骨架） | 展开时机：plan 0502 **已完成** → **立即** | [0503](./0503-known-hosts.md) |
+| 0504 | SSH 接进 IPC / 前端（带目标的命令 + 凭据往返 + 提示界面） | 未规划（骨架） | 展开时机：plan 0503 之后（信任策略先定） | [0504](./0504-ssh-into-ipc-frontend.md) |
+| 0505 | `direct-tcpip` 原语 | 未规划（骨架） | 展开时机：plan 0504 之后（要有一条看得见的会话才验得了） | [0505](./0505-direct-tcpip-primitive.md) |
+| 0506 | `~/.ssh/config` 受限子集导入 | 未规划（骨架） | 展开时机：plan 0505 之后（导入的 `ProxyJump` 要能真用） | [0506](./0506-ssh-config-subset-import.md) |
+
+> 本阶段的顺序由**依赖**决定，不按原立项号（2026-09-13 重排）：信任策略 → 接进 app → 原语 → 配置导入。
+> 重排后**编号与执行顺序一致**；`direct-tcpip` 从 0503 挪到 0505，因为它的三处消费者
+> （跳板 / 端口转发 / SFTP）都要先有一条从 app 打得开的 SSH 会话才验得了。
 
 ### 阶段 6 — SSH 端口转发
 
 | 编号 | 标题 | 状态 | 前置 / 展开时机 | 文件 |
 |---|---|---|---|---|
-| 0601 | 隧道实体 + 状态机 | 未规划（骨架） | 展开时机：plan 0503 之后 | [0601](./0601-tunnel-entity-state-machine.md) |
+| 0601 | 隧道实体 + 状态机 | 未规划（骨架） | 展开时机：plan 0505 之后 | [0601](./0601-tunnel-entity-state-machine.md) |
 | 0602 | 本地转发 `-L` | 未规划（骨架） | 展开时机：plan 0601 之后 | [0602](./0602-local-forward.md) |
 | 0603 | 动态转发 `-D`（SOCKS5） | 未规划（骨架） | 展开时机：plan 0601 之后 | [0603](./0603-dynamic-forward-socks5.md) |
 | 0604 | 远程转发 `-R` | 未规划（骨架） | 展开时机：plan 0601 之后 | [0604](./0604-remote-forward.md) |
@@ -132,7 +137,7 @@
 |---|---|---|---|---|
 | 0701 | 双栏界面骨架 + 两侧独立选主机 | 未规划（骨架） | 展开时机：阶段 7 开工时 | [0701](./0701-sftp-dual-pane.md) |
 | 0702 | local ↔ host：临时名 + 原子重命名 | 未规划（骨架） | 展开时机：plan 0701 之后 | [0702](./0702-transfer-atomic-rename.md) |
-| 0703 | host ↔ host：B 档优先，回退 A 档 | 未规划（骨架） | 展开时机：plan 0503 / 0702 之后 | [0703](./0703-host-to-host-topology.md) |
+| 0703 | host ↔ host：B 档优先，回退 A 档 | 未规划（骨架） | 展开时机：plan 0505 / 0702 之后 | [0703](./0703-host-to-host-topology.md) |
 | 0704 | 并发 in-flight 请求 | 未规划（骨架） | 展开时机：plan 0702 之后 | [0704](./0704-pipelining.md) |
 
 ### 阶段 8 — serial

@@ -1,7 +1,7 @@
 # Plan 0601: 隧道实体 + 状态机
 
 - **关联**：ROADMAP 阶段 6 ·「隧道实体（独立于终端 `Session`）+ 状态机」
-- **前置**：plan 0503（`direct-tcpip` 原语）· plan 0103（`Session` 模型）
+- **前置**：plan 0505（`direct-tcpip` 原语）· plan 0103（`Session` 模型）
 - **状态**：未规划（骨架）
 - **展开时机**：`direct-tcpip` 原语可用之后（阶段 6 的第一件事，其余五项都依赖它）
 

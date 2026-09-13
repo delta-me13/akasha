@@ -151,15 +151,18 @@
 - [x] `src-tauri/crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存）
       验收：同主机开三个 Session **只问一次**凭据（`scope.md` §2.2）
       → [plan 0502](./docs/plans/archive/0502-ssh-connect-auth.md)
+- [ ] known_hosts 校验与缓存
+      验收：host key 变化时拒绝连接并提示（不静默接受）；未知 host key 由用户确认后进缓存
+      → [plan 0503](./docs/plans/0503-known-hosts.md)
+- [ ] **SSH 接进 IPC / 前端**（今天没有任何命令或界面碰得到 `akasha-ssh`）
+      验收：真 app 上开一个 SSH 会话 —— 字节能双向流、凭据只问一次、关标签页零残留
+      → [plan 0504](./docs/plans/0504-ssh-into-ipc-frontend.md)
 - [ ] **`direct-tcpip` 原语**（本阶段先用于跳板，之后三处复用）
       验收：ProxyJump 可连通只对跳板机可见的目标
-      → [plan 0503](./docs/plans/0503-direct-tcpip-primitive.md)
+      → [plan 0505](./docs/plans/0505-direct-tcpip-primitive.md)
 - [ ] `~/.ssh/config` **受限子集**导入（`Match` / `Include` 显式报错）
       验收：含 `Match` 的配置产生**明确报错**，不是静默误解析
-      → [plan 0504](./docs/plans/0504-ssh-config-subset-import.md)
-- [ ] known_hosts 校验与缓存
-      验收：host key 变化时拒绝连接并提示（不静默接受）
-      → [plan 0505](./docs/plans/0505-known-hosts.md)
+      → [plan 0506](./docs/plans/0506-ssh-config-subset-import.md)
 
 ---
 
