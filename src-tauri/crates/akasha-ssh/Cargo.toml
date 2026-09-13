@@ -1,0 +1,44 @@
+# akasha-ssh —— SSH 客户端：连接 + 认证（[ADR-0003](../../../docs/adr/0003-ssh-stack-and-resource-model.md) 的落地）。
+#
+# 为什么单独一个 crate：`russh` 还是 0.x，API 换得快（ADR-0003 §11）。用法集中在**这里**，
+# app 只认 `akasha_pty::Transport` —— 于是"升级 `russh`"要改的面被关在一个 crate 里。
+# `crates/*` 不得 `use tauri::*`（AGENTS.md §3.1），本 crate 没有也不该有 Tauri 依赖。
+#
+# **库不自建 runtime**（ADR-0003 D2）：要异步的入口都收 `tokio::runtime::Handle`。
+
+[package]
+name = "akasha-ssh"
+version = "0.1.0"
+edition = "2024"
+description = "akasha 的 SSH 客户端：连接、认证与同步 Transport 门面"
+# 桌面应用的一部分，不发布到 crates.io（同 akasha-pty）。
+publish = false
+
+[dependencies]
+# 对外就是 `Transport` 这个门面（D3）：SSH **不改会话层、不改前端**。
+akasha-pty = { version = "0.1.0", path = "../akasha-pty" }
+# 受保护页（ADR-0002 D13 的**同一个原语**）：凭据缓存里的口令也要住在那里面。
+# 依赖它而不是自己抄一份 `memsafe` 封装 —— 理由写在 `akasha_store::protected` 的模块文档里。
+akasha-store = { version = "0.1.0", path = "../akasha-store" }
+# D1：精确钉版本（上游 130 个版本仍在 0.x），crypto 后端只开 `ring`。
+# `ring` 要的 0.17.14 **就是** lock 里已有的那个（rustls / quinn-proto / reqwest 带入），
+# 所以这条选择不新增第二个 crypto 后端；`aws-lc-rs` 要 cmake + bindgen（Windows 还要 NASM），
+# 与四平台目标冲突。`flate2` / `dsa` / `des` 明确不开。
+russh = { version = "=0.63.3", default-features = false, features = ["ring", "rsa"] }
+# AGENTS.md §3.4：错误用 thiserror 分域定义。
+thiserror = "2"
+# 只用到 traits 与 runtime handle：`rt` 给 `Handle`，`sync` 给两条队列，`net` 给 TcpStream，
+# `time` 给超时。**不要** `rt-multi-thread` —— 建 runtime 是 app 的事（D2）。
+tokio = { version = "1", features = ["rt", "sync", "net", "time", "io-util"] }
+# 日志消息是事件名（AGENTS.md §3.4 / docs/logging.md）。本 crate 不装 subscriber：
+# app 那边已经有了，库再装一份只会把日志分成两处。
+tracing = "0.1.44"
+
+[dev-dependencies]
+# 进程内测试服务端要一个 runtime（`Handle` 得由调用方给）与随机生成的密钥。
+# 两者都**已在 lock 里**（同一个版本），不是新依赖。
+rand = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
+
+[lints]
+workspace = true

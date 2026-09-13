@@ -66,7 +66,7 @@ impl PrivateKey {
     /// 造不出来**（[`PrivateKey::new`] 拒绝空字节），那个方法只会永远返回 `false`。
     /// 提供一个永远说假话的方法，比换一个名字坏。
     pub fn byte_len(&self) -> usize {
-        self.page.len()
+        self.page.byte_len()
     }
 
     /// 返回一个**提权窗口**：读到的东西只在守卫活着时有效，drop 即降权（Unix 上回到 `PROT_NONE`）。

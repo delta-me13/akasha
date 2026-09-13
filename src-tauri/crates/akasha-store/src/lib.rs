@@ -42,7 +42,9 @@ pub mod dump;
 pub mod export;
 mod passphrase;
 pub mod pools;
-mod protected;
+/// 受保护的一页内存（ADR-0002 D13 的**同一个原语**）。公开的理由见模块文档：
+/// 口令与私钥用它，SSH 的凭据缓存也用**它**——而不是各自抄一份。
+pub mod protected;
 mod schema;
 
 use std::path::{Path, PathBuf};

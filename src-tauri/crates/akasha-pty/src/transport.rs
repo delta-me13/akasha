@@ -42,9 +42,13 @@ impl Default for TerminalSize {
 /// 等有了 `signal()` 再加它。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
-    /// 能否 `resize`。serial 没有窗口尺寸；SSH 也没有本地窗口语义。
+    /// 能否 `resize`。serial 没有窗口尺寸。
     pub resize: bool,
-    /// 能否给出退出结局。serial 与 SSH 没有本地进程语义。
+    /// 能否给出退出结局。serial 没有这一套；SSH **有**（远端 shell 会报 exit-status / signal）。
+    ///
+    /// ⚠️ 它问的是"有没有结局"，**不是**"有没有本地进程" —— 后者是
+    /// [`Transport::session_leader`] 的事。SSH 正好是这两者分岔的例子：
+    /// 没有本地 pid（`session_leader()` = `None`），但远端 shell 的结局照报（ADR-0003 D4）。
     pub exit_status: bool,
 }
 
@@ -103,6 +107,16 @@ pub enum TransportError {
     /// 载体已关闭（或写端已取走）。继续写没有意义。
     #[error("载体已关闭")]
     Closed,
+    /// 载体**暂时**收不下（队列积压）。**不是异常，也没有失败**：调用方可以稍后重试。
+    ///
+    /// 存在的理由是一条具体的约束（ADR-0003 D3）：跨 IPC 的写入是**同步**方法，而它背后
+    /// 可能是异步载体（SSH）。同步门面把字节交给一条有界队列，
+    /// 队列满时**不能**阻塞调用线程（在 tokio 上下文里 `blocking_send` 会 panic，
+    /// 在别处会把 UI 拖住），所以这条路径必须有一个**显式**的说法。
+    /// `Unsupported` 说的是"这个载体没有这个能力"（永久），`Closed` 说的是"再写也没用"，
+    /// 两者都不对 —— 这一条是三者里唯一**可能自愈**的。
+    #[error("载体暂时收不下：{0}")]
+    Busy(&'static str),
     /// 底层 IO 失败。
     #[error("IO 失败：{0}")]
     Io(#[from] std::io::Error),
@@ -169,4 +183,46 @@ pub trait Transport: Send {
     /// ⚠️ 这是回收子进程的**唯一**正当入口。不调用它，子进程就会留下来 ——
     /// 这是刻意的（`AGENTS.md` §3.3：`drop` 不能代替 kill + wait）。
     fn shutdown(&mut self) -> Result<Option<ExitStatus>, TransportError>;
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)] // 测试里的 unwrap 是断言手段（root Cargo.toml 的 lints 约定）
+
+    use super::*;
+
+    #[test]
+    fn busy_is_the_only_retryable_transport_error() {
+        // 这条变体存在的理由（ADR-0003 D3）就是"队列满时能显式说出来"，所以它必须：
+        // ① 打得出来（日志与 IPC 都靠 `Display`）；② 与另外两条**分得开**。
+        let busy = TransportError::Busy("write");
+        assert_eq!(busy.to_string(), "载体暂时收不下：write");
+
+        // 分得开：`Unsupported` 是永久的、`Closed` 是不可逆的，都不该被当成"稍后重试"。
+        assert_ne!(busy.to_string(), TransportError::Closed.to_string());
+        assert_ne!(
+            busy.to_string(),
+            TransportError::Unsupported("write").to_string()
+        );
+    }
+
+    #[test]
+    fn exit_status_and_session_leader_are_two_questions() {
+        // capability 位问的是"有没有结局"，`session_leader` 问的是"有没有本地进程"。
+        // SSH 正好是这两个问题答案相反的例子（ADR-0003 D4）：远端 shell 报结局、
+        // 本地一个 pid 都没有。这条断言把那个组合钉在类型层 —— 它是本 crate 的公共事实，
+        // 不该只写在 SSH crate 的注释里。
+        let ssh_terminal = Capabilities {
+            resize: true,
+            exit_status: true,
+        };
+        assert!(ssh_terminal.exit_status && ssh_terminal.resize);
+        assert_eq!(
+            Transport::session_leader(&crate::testing::FakeTransport::new(
+                ssh_terminal,
+                TerminalSize::DEFAULT,
+            )),
+            None
+        );
+    }
 }

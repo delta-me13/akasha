@@ -1,0 +1,54 @@
+//! akasha-ssh —— **SSH 客户端**：连接、认证，以及给会话层用的**同步 `Transport` 门面**。
+//!
+//! 这个 crate 是 [ADR-0003](../../../docs/adr/0003-ssh-stack-and-resource-model.md) 的落地。
+//! 形状（`Transport` 映射、连接所有权、凭据缓存、认证顺序）都在那份 ADR 里定死了，
+//! 这里只实现它，并把它**没写死**的几处（保活取值、`nodelay`、超时）在下面的
+//! [`SshConfig`] 里给出默认值。
+//!
+//! ## 三件事，与它们各自的理由
+//!
+//! 1. **纯 Rust，不调系统 `ssh`**（`scope.md` §2.1）：握手、认证、终端通道全在
+//!    [`russh`] 上，进程里没有 `ssh` 子进程。
+//! 2. **库不自建 runtime**（ADR D2）：入口收 [`tokio::runtime::Handle`]，
+//!    由 app 在启动时建**一个**专用 runtime。库偷偷建 runtime 的代价是
+//!    "谁 drop、几个 worker、什么时候停"都变成库的隐式行为。
+//! 3. **同步门面，异步在门后面**（ADR D3）：对外是 [`akasha_pty::Transport`]，
+//!    SSH 因此**不改会话层、不改前端** —— 这正是"用 capability flag 而不是新 trait"的兑现。
+//!
+//! ## 凭据从哪来（ADR D7 / D8）
+//!
+//! 认证按 **agent → 密钥池 → keyboard-interactive → password** 的顺序尝试，
+//! 每一档只在前一档失败之后才执行；服务端说"这一档过了、还要再来一种"
+//! （`partial_success`）时**续接**而不是从头重来。
+//!
+//! "同一台主机开三个 Session 会被问三次"是不复用连接的已知副作用（`scope.md` §2.2），
+//! 对策是 [`CredentialCache`]：键是 `(host, port, user, 认证方式)`，值是**口令**
+//! （不是私钥）住在一页受保护内存里。**绝不落盘**，也**没有 TTL** ——
+//! 超时后自动忘会让挂着的隧道在重连时突然弹问。
+//!
+//! ## 一句话说清边界
+//!
+//! 明文私钥在握手期间会短暂存在于普通堆：`russh` 要一个
+//! [`ssh_key::PrivateKey`](russh::keys::PrivateKey) 才能签名，而它解析出来的明文
+//! **我们放不进受保护页**。缓解 = 只在握手窗口内存在、签完即 drop、**不进缓存**。
+//! 登录口令同理有一份 `String`（`russh` 的认证接口只收 `Into<String>`）。这两条副本
+//! 照实记在 ADR-0003 D8 与 `docs/STATUS.md`，不假装它们不存在。
+
+mod auth;
+mod credential;
+mod error;
+mod handshake;
+mod keys;
+mod target;
+mod transport;
+
+pub use akasha_pty::{TerminalSize, Transport, TransportError};
+pub use credential::{
+    CacheKey, Credential, CredentialCache, CredentialKind, CredentialProvider, CredentialRequest,
+    MAX_CREDENTIAL_LEN,
+};
+pub use error::SshError;
+pub use handshake::{HostKey, HostKeyVerifier, PinnedHostKey, SshConfig, SshConnect};
+pub use keys::{KeyCandidate, SshAuth};
+pub use target::SshTarget;
+pub use transport::SshTransport;

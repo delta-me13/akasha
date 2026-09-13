@@ -8,6 +8,19 @@
 //! 上游 `memsafe` 做的那些系统调用见 `memsafe` 的文档与 ADR-0002 §7.2（实测）；
 //! 这里只管两件事：**长度上限**与**把字节交出去的那一次提权**。
 //!
+//! ## 为什么这个模块是 `pub`（plan 0502）
+//!
+//! 第三个用途来了：SSH 的**内存凭据缓存**（ADR-0003 D8）也要把口令放进受保护页。
+//! 它是**另一种**机密 —— 口令在这里要能被 SSH 栈读出来送进握手，
+//! 与 [`crate::Passphrase`] 那条"只对本 crate 开一个口"的通道**要求不同**。
+//! 于是选择是：① 在本模块再抄一份（两份必然漂移，理由是上面那段）；
+//! ② 把**原语**公开，让每个用途各自决定自己的暴露面 —— 取 ②。
+//! ⚠️ 公开的是"受保护的一页"这件事，不是"谁都能读口令"：[`crate::Passphrase`] 的
+//! `expose` 仍然是 `pub(crate)`，一个字节都没多给。
+//!
+//! **只往这里放机密。** 它每次构造都要一整页 `mlock` + 两个 `madvise`，
+//! 用来装普通数据是纯粹的浪费，也会让"`VmLck` 涨了就是有机密"这条判据失去意义。
+//!
 //! ## 为什么 `Secret<[u8; N]>` 而不是 `Secret<Vec<u8>>`
 //!
 //! 后者只保护 `Vec` 的 24 字节头，真正的字节还在普通堆上（上游文档把这条叫
@@ -32,7 +45,7 @@ use memsafe::{MemSafeRead, Secret};
 /// 而"太长"那句话对这两者的说法不同（`PassphraseTooLong` / `SecretTooLong`）。
 /// 各自的模块把它翻成自己的错误 —— 翻译只有两处，且都是穷尽 `match`。
 #[derive(Debug)]
-pub(crate) enum PageError {
+pub enum PageError {
     /// 比这一页还长。**不截断**。
     TooLong { max: usize },
     /// 要不到一块能锁住的页（`mmap` / `mlock` 被拒）。上游没有降级路径：
@@ -40,8 +53,19 @@ pub(crate) enum PageError {
     Memory(memsafe::error::MemoryError),
 }
 
+impl std::fmt::Display for PageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLong { max } => write!(f, "超过一页（上限 {max} 字节）"),
+            Self::Memory(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for PageError {}
+
 /// 一整页受保护内存，装着"最多 `N` 字节"的机密与它的实际长度。
-pub(crate) struct Protected<const N: usize> {
+pub struct Protected<const N: usize> {
     secret: Secret<N>,
     /// 实际长度。**页里剩下的字节是 0**，所以长度必须单独记 —— 一条长度不是机密，
     /// 而它挡住的正是"为了知道几字节而把秘密读一遍"。
@@ -50,7 +74,7 @@ pub(crate) struct Protected<const N: usize> {
 
 impl<const N: usize> Protected<N> {
     /// 把 `bytes` 搬进受保护页。成功时**源缓冲已被擦零**（上游做的）。
-    pub(crate) fn new(bytes: Vec<u8>) -> Result<Self, PageError> {
+    pub fn new(bytes: Vec<u8>) -> Result<Self, PageError> {
         let mut bytes = bytes;
         if bytes.len() > N {
             // ⚠️ 这条路上 `bytes` 还是明文，而它马上要被 drop（= 释放一块存着秘密的
@@ -68,12 +92,16 @@ impl<const N: usize> Protected<N> {
     }
 
     /// 实际长度（不是页大小）。
-    pub(crate) fn len(&self) -> usize {
+    ///
+    /// 名字带 `byte_` 而不是 `len()`：`len()` 在 Rust 里属于"容器"，于是 clippy 会要求
+    /// 配一个 `is_empty` —— 而**空机密在这里造不出来**（空口令 / 空私钥都在上游被拒），
+    /// 那个方法只会永远返回 `false`。与 [`crate::pools::keys::PrivateKey::byte_len`] 同一口径。
+    pub fn byte_len(&self) -> usize {
         self.len
     }
 
     /// 临时取得字节。返回的守卫 drop 时向 OS 交还权限（Unix 上回到 `PROT_NONE`）。
-    pub(crate) fn expose(&mut self) -> Result<Exposed<'_, N>, PageError> {
+    pub fn expose(&mut self) -> Result<Exposed<'_, N>, PageError> {
         let len = self.len;
         let guard = self.secret.read().map_err(PageError::Memory)?;
         Ok(Exposed { guard, len })
@@ -85,7 +113,7 @@ impl<const N: usize> Protected<N> {
 /// 它 derefs 成 `&[u8]`（秘密本体）；一 drop 权限就交还 OS。刻意不实现 `Debug` /
 /// `Display` / `AsRef<[u8]>`：前者让它打不出来，后者会诱使调用方把 `&[u8]` 存起来 ——
 /// 那就等于把提权窗口延长到守卫的生命期之外。
-pub(crate) struct Exposed<'a, const N: usize> {
+pub struct Exposed<'a, const N: usize> {
     guard: MemSafeRead<'a, [u8; N]>,
     len: usize,
 }
@@ -125,7 +153,7 @@ mod tests {
         for bytes in [vec![0x00], vec![0xff; SMALL], b"abcd".to_vec()] {
             let expected = bytes.clone();
             let mut page = Protected::<SMALL>::new(bytes).unwrap();
-            assert_eq!(page.len(), expected.len());
+            assert_eq!(page.byte_len(), expected.len());
             assert_eq!(&*page.expose().unwrap(), &expected[..]);
         }
     }
