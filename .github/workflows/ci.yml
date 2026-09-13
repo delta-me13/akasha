@@ -67,7 +67,7 @@ env:
   # 唯一一份系统依赖列表。Tauri 官方 Debian/Ubuntu 列表：
   # https://v2.tauri.app/start/prerequisites/
   # 注意是 libayatana-appindicator3-dev —— 旧名 libappindicator3-dev 在
-  # ubuntu-latest 上已经不存在（STATUS 坑 #10）。
+  # ubuntu-latest 上已经不存在（STATUS 问题 #10）。
   APT_DEPS: >-
     libwebkit2gtk-4.1-dev build-essential curl wget file
     libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev

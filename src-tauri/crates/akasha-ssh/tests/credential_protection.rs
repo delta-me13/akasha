@@ -59,7 +59,7 @@ fn a_cached_credential_is_locked_while_it_lives_and_released_after() {
         let during_locked = locked_kb();
         let during_pages = prot_none_pages();
         // 正对照：**必须比基线高**，否则"没有泄漏"与"这一页根本没被锁"是同一条绿
-        // （`docs/STATUS.md` 坑 #87）。一页 = 4 kB。
+        // （`docs/STATUS.md` 问题 #87）。一页 = 4 kB。
         assert!(
             during_locked >= baseline_locked + 4 * COUNT as u64,
             "{COUNT} 条凭据应当至少多锁 {} kB（{baseline_locked} → {during_locked}）",

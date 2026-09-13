@@ -298,7 +298,7 @@ mod tests {
     /// 在截止时间内等 `pid` 消失。
     ///
     /// ⚠️ 不能发完信号立刻断言：**SIGKILL 的投递是异步的**，内核只是打上记号，
-    /// 真正消失要等被调度（坑 #45）。
+    /// 真正消失要等被调度（问题 #45）。
     fn waits_until_gone(pid: u32, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {

@@ -219,7 +219,7 @@ pub async fn type_line(client: &mut VictauriClient, line: &str) {
 /// ⚠️ React 的受控输入认的是**原生 setter + `input` 事件**（直接改 `.value` 它看不见），
 /// 而且**必须与提交分成两次 `eval_js`**：要等它把这一次事件之后的重渲染提交完，
 /// `onSubmit` 闭包里的值才是新的 —— 同一个 JS 任务里紧接着 `.click()` 会提交**上一次渲染**
-/// 的旧值（空串）。这个坑是 `ssh_session` 上实测出来的。
+/// 的旧值（空串）。这一点由 `ssh_session` 实测得出。
 pub async fn fill_input(client: &mut VictauriClient, selector: &str, value: &str) {
     let selector = serde_json::to_string(selector).unwrap();
     let value = serde_json::to_string(value).unwrap();

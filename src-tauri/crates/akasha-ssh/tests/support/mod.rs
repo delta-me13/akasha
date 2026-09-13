@@ -144,7 +144,7 @@ pub fn connect_options_with(
 /// 从一个载体上读到出现 `needle` 为止（或超时）。
 ///
 /// 为什么用一个线程 + `recv_timeout` 而不是 `set_read_timeout`：`Transport::output_stream`
-/// 给的是 `Box<dyn Read>`，而阻塞读与"按时间交付"天生冲突（`docs/STATUS.md` 坑 #26）。
+/// 给的是 `Box<dyn Read>`，而阻塞读与"按时间交付"天生冲突（`docs/STATUS.md` 问题 #26）。
 pub fn read_until(mut reader: Box<dyn Read + Send>, needle: &[u8], timeout: Duration) -> Vec<u8> {
     let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {

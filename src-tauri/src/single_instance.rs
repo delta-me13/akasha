@@ -23,7 +23,7 @@
 //! 1. 注册之前先问一次会话总线（[`available`]）；
 //! 2. 问到的结果记进 probe（[`snapshot`]），E2E 靠它决定"真跑还是跳过"；
 //! 3. 那条 `warn` 留到 `.setup()` 里再打（[`report`]）—— 日志插件是 builder 的一环，
-//!    在它注册之前 `tracing` 没有 `log` 出口，那时打出去的记录会**静默消失**（坑 #47）。
+//!    在它注册之前 `tracing` 没有 `log` 出口，那时打出去的记录会**静默消失**（问题 #47）。
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -38,7 +38,7 @@ static ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// 单实例在这次启动里的结局。与 `watchdog::Startup` 同一个理由：**先决定、后记**
-/// （日志插件是 builder 的一环，坑 #47）。
+/// （日志插件是 builder 的一环，问题 #47）。
 pub enum Startup {
     /// 已注册：第二个实例会被叫回已有窗口。
     Registered,
@@ -60,7 +60,7 @@ pub fn start() -> (Startup, Option<tauri::plugin::TauriPlugin<Wry>>) {
     (Startup::Registered, Some(plugin))
 }
 
-/// 启动的结局记一笔 —— 调用点在 `.setup()`（理由见模块文档，坑 #47）。
+/// 启动的结局记一笔 —— 调用点在 `.setup()`（理由见模块文档，问题 #47）。
 pub fn report(startup: &Startup) {
     match startup {
         Startup::Registered => tracing::info!("single instance registered"),

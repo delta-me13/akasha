@@ -50,7 +50,7 @@ impl CloseBehavior {
 /// 关窗请求**实际**会怎么做。
 ///
 /// 与 [`CloseBehavior`] 分开是刻意的：用户的意愿与这台机器能做到的事**不是一回事**，
-/// 把它们合成一个枚举，就等于默认"想要的 = 做得到的"，而那正是坑 #60 的形状。
+/// 把它们合成一个枚举，就等于默认"想要的 = 做得到的"，而那正是问题 #60 的形状。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseAction {
     /// 拦下关闭、把窗口藏起来（会话与终端缓冲都还在）。
@@ -66,7 +66,7 @@ impl CloseAction {
     /// |---|---|---|---|
     /// | `exit` | 任意 | 退出 | 用户明确要求；**这时不看托盘** —— "直接退出"就是直接退出 |
     /// | `tray` | 是 | 隐藏 | 常规路径：托盘能把窗口叫回来 |
-    /// | `tray` | **否** | **退出** | 隐藏之后就**再也叫不回窗口**了 —— 用户看不见进程、也关不掉它（坑 #60） |
+    /// | `tray` | **否** | **退出** | 隐藏之后就**再也叫不回窗口**了 —— 用户看不见进程、也关不掉它（问题 #60） |
     pub const fn decide(behavior: CloseBehavior, tray_ready: bool) -> Self {
         match (behavior, tray_ready) {
             (CloseBehavior::Exit, _) => Self::Exit,
@@ -145,7 +145,7 @@ mod tests {
         );
     }
 
-    /// 坑 #60：只读 runtime dir / 容器 / 没有托盘宿主的机器上**建不起托盘**，
+    /// 问题 #60：只读 runtime dir / 容器 / 没有托盘宿主的机器上**建不起托盘**，
     /// 这时若还"关窗 = 隐藏"，窗口就再也叫不回来了 —— 用户看见的是一个收不回的进程。
     #[test]
     fn tray_behavior_degrades_to_exit_without_a_tray() {

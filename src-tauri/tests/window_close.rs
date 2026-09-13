@@ -4,7 +4,7 @@
 //! tauri 的 `CloseRequested`（`AGENTS.md` §7 的反面例子正是"绕过被测的那一段"）。
 //!
 //! ⚠️ **前提是"托盘真的建成了"**：配置要收托盘、但这台机器上建不起托盘时，本步的语义是
-//! **降级为直接退出**（坑 #60）—— 那种情况下这条用例**显式跳过**，判据来自 app 自己上报的
+//! **降级为直接退出**（问题 #60）—— 那种情况下这条用例**显式跳过**，判据来自 app 自己上报的
 //! probe（`app_state { probe: "lifecycle" }`），不是"猜它可能不满足"。
 //! 也就是说：CI（xvfb，没有会话总线 / 没有 runtime dir）上它会跳过 —— **托盘宿主是它的前提**，
 //! 这一点与托盘本身没有自动化门禁是同一件事（`STATUS.md` 的「待验证」）。
@@ -13,7 +13,7 @@
 //!
 //! 1. **进程还在** —— 关窗不是退出；
 //! 2. **窗口不可见** —— `window get_state` 的 `visible == false`："藏起来了"要机器可查，
-//!    不能靠人看（坑 #64）；
+//!    不能靠人看（问题 #64）；
 //! 3. **会话还在** —— 一个明确忽略 SIGHUP 的后台进程仍然活着。
 //!    ⚠️ **这是预期行为，不是泄漏**（`AGENTS.md` §3.3：收托盘时窗口关闭**不是回收时机**）；
 //! 4. **终端没被重建** —— 隐藏期间屏幕内容照旧读得到，显示回来之后还能继续敲命令。
@@ -84,7 +84,7 @@ async fn wait_js(client: &mut VictauriClient, expression: &str, timeout_ms: u64,
     );
 }
 
-/// 进程是否**真的**活着（`/proc/<pid>` 存在 ≠ 活着：僵尸也有目录项，坑 #48）。
+/// 进程是否**真的**活着（`/proc/<pid>` 存在 ≠ 活着：僵尸也有目录项，问题 #48）。
 fn alive(pid: u32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
@@ -106,7 +106,7 @@ fn waits_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
     condition()
 }
 
-/// app 自己的 pid：discovery 目录的名字就是它（坑 #40）。
+/// app 自己的 pid：discovery 目录的名字就是它（问题 #40）。
 fn app_pid_for_port(port: u16) -> Option<u32> {
     let base = std::env::temp_dir().join("victauri");
     for entry in std::fs::read_dir(base).ok()?.flatten() {
@@ -224,7 +224,7 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
     {
         eprintln!(
             "Skipping: 这个 app 的关窗语义不是「隐藏」（{state}）—— \n\
-             要么托盘建不起来（只读 `$XDG_RUNTIME_DIR` / 没有会话总线，坑 #60 的降级 → 关窗即退出），\n\
+             要么托盘建不起来（只读 `$XDG_RUNTIME_DIR` / 没有会话总线，问题 #60 的降级 → 关窗即退出），\n\
              要么配置里写的是 close_behavior=exit（那是 `exit_residue` 的对象）。\n\
              本用例只验「隐藏」那条路，判据是 app 自己上报的状态，不猜。"
         );

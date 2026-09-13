@@ -44,7 +44,7 @@ pub fn record(close_behavior: CloseBehavior, tray_ready: bool) -> &'static Lifec
 /// 关窗判据（表见 [`CloseAction::decide`] 与 `AGENTS.md` §3.3）。
 ///
 /// 还没登记就按**退出**处理：那是"没有托盘"时的降级行为，也是唯一不会把用户关在
-/// "窗口没了、进程还在、也没地方叫回来"里的取值（坑 #60）。
+/// "窗口没了、进程还在、也没地方叫回来"里的取值（问题 #60）。
 fn close_action() -> CloseAction {
     LIFECYCLE
         .get()

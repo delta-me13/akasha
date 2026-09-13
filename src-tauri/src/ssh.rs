@@ -49,7 +49,7 @@ use crate::vault::{ConnError, Vault};
 /// SSH runtime 的 worker 数。
 ///
 /// 为什么不是 `Runtime::new()`（= 按 CPU 数铺线程）：这条 runtime 上的活儿很少，
-/// 唯一的坑是**提问会占住一个 worker**（`check_server_key` / 认证回调是同步的，
+/// 唯一的代价是**提问会占住一个 worker**（`check_server_key` / 认证回调是同步的，
 /// 提问期间就停在那儿，最长 [`crate::prompt::PROMPT_TIMEOUT`]）。
 /// 4 个 worker 够两三条连接同时提问而不至于把 runtime 攥死，也不会在大机器上空铺线程。
 const SSH_WORKERS: usize = 4;

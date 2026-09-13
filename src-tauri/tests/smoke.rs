@@ -123,7 +123,7 @@ async fn ipc_integrity_passes() {
     }
     // 失败时把 `detail` 一起打出来：只报「哪条检查失败」定位不到东西 ——
     // 这条用例第一次红就是因为探针在频道结束帧上抛了 TypeError，而当时报告里
-    // 只有一句 `no console errors`（坑 #39）。
+    // 只有一句 `no console errors`（问题 #39）。
     assert!(
         report.all_passed(),
         "IPC integrity checks should pass:\n{}",

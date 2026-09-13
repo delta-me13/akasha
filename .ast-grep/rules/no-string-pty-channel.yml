@@ -3,7 +3,7 @@ language: Rust
 severity: error
 message: PTY 字节流不能走 `Channel<String>` / `Channel<Vec<数字>>` —— 那是 JSON 数组，不是二进制通道（AGENTS.md §3.2）
 note: |
-  这条规则守的是**终端应用最容易踩的坑**：以为"用了 Channel 就是二进制通道"。
+  这条规则守的是**终端应用最容易出错的一处判断**：把"使用了 Channel"与"走二进制通道"等同。
 
   实际发生的事：`Channel<TSend>` 的 `send` 要求 `TSend: IpcResponse`，而 tauri 有
 

@@ -17,7 +17,7 @@ default:
 #
 # ⚠️ 必须显式带 `--workspace`：just 的 cwd 是 `src-tauri/`，而 **cargo 默认只选当前目录所在的包**。
 # 少了它，`crates/*` 的类型检查、lint 与单测会被**静默漏掉** —— `just ready` 照样全绿，
-# 但那些 crate 根本没被编译过（见 docs/STATUS.md 坑 #20）。
+# 但那些 crate 根本没被编译过（见 docs/STATUS.md 问题 #20）。
 # `cargo fmt --all` 是例外：`--all` 本来就指 workspace 全部成员。
 
 # 类型检查（含 tests / benches），覆盖 workspace 全部成员
@@ -45,7 +45,7 @@ test:
     cargo nextest run --workspace
 
 # E2E 用例清单（`tests/` 下的目标名）。**新增目标必须加进来** ——
-# 否则它会像坑 #36 那样"生成了但没人跑"，而 `just ready` 照样全绿。
+# 否则它会像问题 #36 那样"生成了但没人跑"，而 `just ready` 照样全绿。
 # 运行时这条清单由下面的 guard 与 `tests/*.rs` 对账。
 #
 # ⚠️ **顺序有意义**：清单的顺序就是执行顺序，而它们**共用同一个 app**。
@@ -72,7 +72,7 @@ E2E_TARGETS_EXIT := "exit_residue"
 # **不需要真 app** 的集成测试（显式清单，理由写在各自的文件头）。
 #
 # 为什么要有这个清单：下面的 guard 会把"tests/ 里没接进 `test-e2e` 的目标"判红
-# （坑 #36：生成了但没人跑），但有些集成测试本来就**不碰 app** —— 例如
+# （问题 #36：生成了但没人跑），但有些集成测试本来就**不碰 app** —— 例如
 # `session_watchdog`：它只把 app 二进制以看门狗身份再跑一次（没有窗口、没有 IPC、
 # 不碰 Victauri），进 E2E 只会白起一套 Vite + app，而 `just test` 才是它该在的地方。
 E2E_NO_APP := "session_watchdog"
@@ -92,7 +92,7 @@ E2E_SELF_APP := "portable"
 #     生产构建会把它整段摇掉；
 #   * 后端用 debug 构建（`cfg(dev)` → 走 `devUrl`）。
 # 为什么要自包含：这个配方不能假设"上一秒有别的进程在跑"（受限环境每次调用一个新
-# 命名空间，坑 #33），而"请你自己先起 app"的入口最后就是没人跑（坑 #36）。
+# 命名空间，问题 #33），而"请你自己先起 app"的入口最后就是没人跑（问题 #36）。
 # 平台能力差异由用例自己**显式跳过并写明原因**（Wayland 截不了窗口等），
 # 多平台覆盖面交给 CI 矩阵（AGENTS.md §12）。
 #

@@ -5,7 +5,7 @@ valid:
   - "let _ = \"Channel<String>\";"
 invalid:
   - "fn f(c: Channel<Vec<u8>>) { let _ = c; }"
-  # ↓ 这条是限定路径写法：`^Channel$` 曾经漏掉它（STATUS 坑 #101），留着当回归
+  # ↓ 这条是限定路径写法：`^Channel$` 曾经漏掉它（STATUS 问题 #101），留着当回归
   - "fn f(c: tauri::ipc::Channel<Vec<u8>>) { let _ = c; }"
   - "fn f(c: Channel<String>) { let _ = c; }"
   - "fn f(c: Channel<Vec<u32>>) { let _ = c; }"

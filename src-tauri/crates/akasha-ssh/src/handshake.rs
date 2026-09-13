@@ -273,7 +273,7 @@ pub(crate) async fn tcp_stream(options: &SshConnect) -> Result<TcpStream, SshErr
     // ⚠️ **必须在这里显式关 Nagle**：上游只在 `client::connect` 里看 `Config::nodelay`
     // （`client/mod.rs:1089`），而 `connect_stream` —— 我们两条路都用它 —— **不看**。
     // 也就是说"把 config.nodelay 设成 true"在 `connect_stream` 下是一句**空话**，
-    // 而 Nagle 会让"一次按键一个小包"的交互式输入攒着等确认（`docs/STATUS.md` 坑 #120）。
+    // 而 Nagle 会让"一次按键一个小包"的交互式输入攒着等确认（`docs/STATUS.md` 问题 #120）。
     if let Err(err) = stream.set_nodelay(true) {
         tracing::warn!(%err, "ssh nodelay failed");
     }

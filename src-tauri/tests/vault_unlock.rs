@@ -125,7 +125,7 @@ fn is_ours(path: &Path) -> bool {
 }
 
 /// app 进程的 pid：victauri 的发现目录是 `<temp>/victauri/<pid>/`，
-/// 而那个 `port` 文件里就是它监听的端口（坑 #40）。
+/// 而那个 `port` 文件里就是它监听的端口（问题 #40）。
 fn app_pid(port: u16) -> Option<u32> {
     let root = std::env::temp_dir().join("victauri");
     for entry in fs::read_dir(root).ok()? {

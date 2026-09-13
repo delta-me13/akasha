@@ -24,7 +24,7 @@
 //! ⚠️ 本用例不关 app，但会把界面留在"只剩一个标签页"的状态 —— 排在它后面的
 //! `exit_residue` 依赖"活动终端能敲命令"，所以不能留下一个空界面（顺序见 `E2E_TARGETS`）。
 //!
-//! 探针命令必须 fish / bash / sh 都成立（坑 #41）：`(cmd) &` 在 fish 里是**命令替换**，
+//! 探针命令必须 fish / bash / sh 都成立（问题 #41）：`(cmd) &` 在 fish 里是**命令替换**，
 //! 会把 shell 挂住；`sh -c '…' &` 三边语义相同。
 //!
 //! 本文件是测试，unwrap 在这里就是断言手段。
@@ -141,8 +141,8 @@ async fn wait_js(client: &mut VictauriClient, expression: &str, timeout_ms: u64,
 
 /// 进程是否**真的**活着。
 ///
-/// ⚠️ `/proc/<pid>` 存在 ≠ 活着：僵尸（`Z`）也有目录项（坑 #48）。而 SIGKILL 的投递
-/// 又是异步的（坑 #45）—— 所以判据一律是"**在截止时间内消失**"，不是"信号发过了"。
+/// ⚠️ `/proc/<pid>` 存在 ≠ 活着：僵尸（`Z`）也有目录项（问题 #48）。而 SIGKILL 的投递
+/// 又是异步的（问题 #45）—— 所以判据一律是"**在截止时间内消失**"，不是"信号发过了"。
 fn alive(pid: u32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;

@@ -242,7 +242,7 @@ async fn raw_channel_carries_ten_megabytes() {
 
     // 7. 结束帧必须到达，而且探针**认得它**。
     //    这不是内部细节：官方 `Channel` 就是靠这个 `{end:true}` 帧把回调注销掉的
-    //    （`cleanupCallback`），所以它是线上格式的一部分。同时它也是坑 #39 的哨兵 ——
+    //    （`cleanupCallback`），所以它是线上格式的一部分。同时它也是问题 #39 的哨兵 ——
     //    收尾帧被当成数据帧解，就会在 console 里留下一个 TypeError。
     let ended = client
         .wait_for_expression(

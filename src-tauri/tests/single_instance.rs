@@ -82,7 +82,7 @@ async fn wait_js(client: &mut VictauriClient, expression: &str, timeout_ms: u64,
     );
 }
 
-/// app 自己的 pid：discovery 目录的名字就是它（坑 #40）。
+/// app 自己的 pid：discovery 目录的名字就是它（问题 #40）。
 fn app_pid_for_port(port: u16) -> Option<u32> {
     let base = std::env::temp_dir().join("victauri");
     for entry in std::fs::read_dir(base).ok()?.flatten() {
@@ -95,7 +95,7 @@ fn app_pid_for_port(port: u16) -> Option<u32> {
     None
 }
 
-/// 窗口的可见性（`window get_state`）—— "藏起来了没有"由机器判，不靠人看（坑 #64）。
+/// 窗口的可见性（`window get_state`）—— "藏起来了没有"由机器判，不靠人看（问题 #64）。
 async fn visible(client: &mut VictauriClient) -> Option<bool> {
     let state = client
         .call_tool("window", serde_json::json!({ "action": "get_state" }))
@@ -187,7 +187,7 @@ fn is_app_binary(target: &std::path::Path, want: &std::path::Path) -> bool {
 /// 同一个可执行文件、且**不是看门狗**的进程（= 有几个 app 实例）。
 ///
 /// 比对 argv 而不是"命令行里含某段文本"：沙箱包装进程自己的命令行里带着整段脚本文本，
-/// 子串匹配会误伤（坑 #49）。看门狗按 [`WATCHDOG_FLAG`] **整参数**排除。
+/// 子串匹配会误伤（问题 #49）。看门狗按 [`WATCHDOG_FLAG`] **整参数**排除。
 #[cfg(target_os = "linux")]
 fn app_instances() -> Vec<u32> {
     let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_akasha")).expect("app 二进制不在？");

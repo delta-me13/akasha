@@ -35,7 +35,7 @@
 //! | 其他 unix | 只 `killpg`（同一个进程组；作业控制下的作业收不到） |
 //! | Windows | 什么都不做（没有 POSIX 会话；等价物要上 Job Object） |
 //!
-//! 后两行的缺口是**已知且被记录**的（plan 0204 的实施记录、`docs/STATUS.md` 的坑），
+//! 后两行的缺口是**已知且被记录**的（plan 0204 的实施记录、`docs/STATUS.md` 的已知问题），
 //! 不是"顺手忽略了"。
 
 use rustix::process::{Pid, Signal};

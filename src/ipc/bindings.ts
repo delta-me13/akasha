@@ -422,7 +422,7 @@ export type State =
 export type VaultContents = {
 	/**
 	 *  计数是 `u32` 而不是 `usize`：生成器**拒绝**把 64 位整数导出成 TS
-	 *  （BigInt 的精度问题，坑 #32 的同一个坑）。这里不做 `as` 截断，而是 checked 转换。
+	 *  （BigInt 的精度问题，与问题 #32 同类）。这里不做 `as` 截断，而是 checked 转换。
 	 */
 	keys: number,
 	hosts: number,

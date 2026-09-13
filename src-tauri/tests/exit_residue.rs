@@ -93,7 +93,7 @@ fn alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
-/// app 自己的 pid：discovery 目录的名字就是它（坑 #40）。
+/// app 自己的 pid：discovery 目录的名字就是它（问题 #40）。
 fn app_pid_for_port(port: u16) -> Option<u32> {
     let base = std::env::temp_dir().join("victauri");
     for entry in std::fs::read_dir(base).ok()?.flatten() {
