@@ -25,12 +25,26 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::vault::vault_status,
             crate::vault::vault_unlock,
             crate::vault::vault_lock,
+            // 池的只读读取（plan 0504）：界面据此列出主机。
+            crate::pools::vault_hosts,
             crate::session::open_session,
+            // SSH 会话（plan 0504）。⚠️ 它**必须**留着 async：命令体里有一次会阻塞几秒的
+            // 握手（最长 `connect_timeout`），而同步命令跑在处理 IPC 请求的那条线程上 ——
+            // 挡住它就等于挡住全部 IPC，包括用户回答问题要用的那三条。
+            crate::ssh::open_ssh_session,
             crate::session::write_session,
             crate::session::resize_session,
             crate::session::close_session,
+            // 提问往返（plan 0504）：后端问 → 前端答。
+            crate::prompt::ssh_prompt_credential,
+            crate::prompt::ssh_prompt_host_key,
+            crate::prompt::ssh_prompt_cancel,
         ])
-        .events(collect_events![crate::session::SessionEnded])
+        .events(collect_events![
+            crate::session::SessionEnded,
+            crate::prompt::PromptRequest,
+            crate::prompt::PromptDismissed,
+        ])
 }
 
 /// 生成物的落点，**相对 manifest 而不是相对 cwd** —— 从哪个目录跑都落到同一个地方。

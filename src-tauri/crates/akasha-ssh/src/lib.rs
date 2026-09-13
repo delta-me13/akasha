@@ -41,6 +41,10 @@ mod handshake;
 mod keys;
 mod known_hosts;
 mod target;
+/// **测试脚手架**：进程内的 SSH 服务端（判据的另一半观察点）。
+///
+/// ⚠️ 生产代码不要用它 —— 它开监听端口、接受任何带对口令的连接。理由与用法见模块文档。
+pub mod testing;
 mod transport;
 
 pub use akasha_pty::{TerminalSize, Transport, TransportError};

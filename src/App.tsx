@@ -1,6 +1,10 @@
 import { useCallback, useRef, useState } from "react";
 import "./App.css";
-import { TabStrip, type TabView } from "./tabs/TabStrip";
+import type { HostEntry } from "./ipc/hosts";
+import type { SessionTarget } from "./ipc/session";
+import { HostPicker } from "./ssh/HostPicker";
+import { PromptPanel } from "./ssh/PromptPanel";
+import { TabStrip, type TabKind, type TabView } from "./tabs/TabStrip";
 import { TerminalPane } from "./terminal/TerminalPane";
 
 /** 一个标签页都没有时 `active` 的取值。刻意用 `-1` 而不是 `null`：一路是数字，比较省事。 */
@@ -13,24 +17,61 @@ const NO_TAB = -1;
  * （local / ssh / serial）的标签页关闭 = **立刻丢弃**它的 `Session`；仅渲染的视图标签页
  * （转发 / 密码库 / 文件传输）**没有关闭按钮** —— 它们到来时**新增** `kind`，
  * 不复用 `"terminal"`（复用会让"关掉 = 后端照跑"和"关掉 = 立刻丢弃"混成同一个值）。
+ *
+ * `target` 与 `kind` **不是同一件事**：`kind` 管呈现与关闭语义，`target` 管"后端照哪条路
+ * 开会话"（本地 shell / 主机池里的一台）。合成一个字段的话，将来 serial 到来时
+ * "要不要 ×"就得从载体类型里推 —— 而那是一条会推错的规则。
  */
 interface OpenTab {
   readonly key: number;
-  readonly kind: "terminal";
+  readonly kind: TabKind;
+  readonly target: SessionTarget;
+  /** 标签页标题。SSH 用池里那台主机的名字。 */
+  readonly title: string;
 }
 
 function App() {
   // `key` 单调递增、**永不复用**：React 的 key 一旦被复用，"卸载旧面 / 挂载新面"就不再是
   // 我们以为的那两个动作 —— 而卸载就是关会话（见 `closeTab`），认错面等于关错会话。
-  const [tabs, setTabs] = useState<OpenTab[]>([{ key: 0, kind: "terminal" }]);
+  const [tabs, setTabs] = useState<OpenTab[]>([
+    { key: 0, kind: "terminal", target: { kind: "local" }, title: "终端 1" },
+  ]);
   const [active, setActive] = useState(0);
+  /** 主机选择器开着没有（选中一台、或者取消之后关掉）。 */
+  const [picking, setPicking] = useState(false);
   const nextKey = useRef(1);
 
-  const openTab = useCallback(() => {
+  const openLocalTab = useCallback(() => {
     const key = nextKey.current;
     nextKey.current += 1;
-    setTabs((current) => [...current, { key, kind: "terminal" }]);
+    setTabs((current) => [
+      ...current,
+      {
+        key,
+        kind: "terminal",
+        target: { kind: "local" },
+        // 标题暂时就是序号：OSC 标题同步是后续的事（plan 0305 的非目标）。
+        title: `终端 ${current.filter((tab) => tab.kind === "terminal").length + 1}`,
+      },
+    ]);
     setActive(key);
+  }, []);
+
+  /**
+   * 选好一台主机 → 开一个 SSH 标签页。
+   *
+   * 这里只做"开一个面"：**连接是那个面自己发起的**（`attachTerminal`）—— 于是连接中途的
+   * 提问（凭据 / 没见过的主机密钥）由应用级的提示面板接，不需要这一个动作去等它。
+   */
+  const openSshTab = useCallback((host: HostEntry) => {
+    const key = nextKey.current;
+    nextKey.current += 1;
+    setTabs((current) => [
+      ...current,
+      { key, kind: "ssh", target: { kind: "ssh", hostId: host.id }, title: host.name },
+    ]);
+    setActive(key);
+    setPicking(false);
   }, []);
 
   /**
@@ -58,11 +99,10 @@ function App() {
     [tabs, active],
   );
 
-  const views: TabView[] = tabs.map((tab, index) => ({
+  const views: TabView[] = tabs.map((tab) => ({
     key: tab.key,
     kind: tab.kind,
-    // 标题暂时就是序号：OSC 标题同步是后续的事（plan 0305 的非目标）。
-    title: `终端 ${index + 1}`,
+    title: tab.title,
   }));
 
   return (
@@ -72,8 +112,12 @@ function App() {
         active={active}
         onSelect={setActive}
         onClose={closeTab}
-        onNew={openTab}
+        onNew={openLocalTab}
+        onNewSsh={() => setPicking(true)}
       />
+      {picking && <HostPicker onConnect={openSshTab} onClose={() => setPicking(false)} />}
+      {/* 提示面板是**应用级**的：提问发生在"会话开起来之前"，不属于任何一个标签页。 */}
+      <PromptPanel />
       <div className="tab-panes">
         {tabs.map((tab) => (
           <div
@@ -88,6 +132,7 @@ function App() {
                 会话**自己**结束时（终端里敲了 `exit`）走的是同一条关标签页路径：
                 后端收掉它 + 发事件 → 这里 `closeTab`。 */}
             <TerminalPane
+              target={tab.target}
               active={tab.key === active}
               onSessionEnded={() => closeTab(tab.key)}
             />

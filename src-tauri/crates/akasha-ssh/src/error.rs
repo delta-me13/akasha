@@ -105,6 +105,16 @@ pub enum SshError {
     #[error("主机密钥无法编码（{algorithm}）：{reason}")]
     HostKeyUnusable { algorithm: String, reason: String },
 
+    /// **库那一侧的 known_hosts 缓存读写失败**（plan 0504 的适配器）。
+    ///
+    /// 最常见的形态是"库锁着"：信任记录与密钥池都在库里，所以 app 的连接命令会先要求解锁 ——
+    /// 但这条错误还要覆盖"库出错 / 写入被拒"那几种（写冲突 = 有人在我们之后记了另一把密钥）。
+    ///
+    /// ⚠️ **它一律意味着拒绝连接**，不是"当作未知继续"：把"读不到信任记录"降级成"没记录"
+    /// 会把 D11 的三态判定退化成两态，而缺的那一态正是警报那一态。
+    #[error("主机密钥缓存不可用：{0}")]
+    HostKeyCache(String),
+
     /// 认证失败：我们有的方式全试过了，服务端还剩别的。
     #[error("认证失败：{target} 上没有可用的方式（服务端还剩 {remaining}）")]
     AuthenticationFailed {

@@ -37,7 +37,7 @@
 //! （那是 [`vault_unlock`] 的错误）—— 所以这里没有第四个文件状态，也没有"错误口令"那条分支。
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use akasha_store::{Connection, Passphrase, StoreError, VaultState, dump, vault_path};
 use tauri::{AppHandle, Manager, Wry};
@@ -74,9 +74,12 @@ impl From<VaultState> for State {
     }
 }
 
-/// 口令**经 IPC 进来的形态**（`PassphraseInput`）。
+/// 口令 / 凭据**经 IPC 进来的形态**（`PassphraseInput`）。
 ///
-/// 它是口令在 IPC 边界上的唯一类型，而它唯一能做的事是 [`PassphraseInput::into_bytes`]。
+/// 它是"一句秘密从前端进来"在 IPC 边界上的唯一类型 —— 库解锁（plan 0407）与 SSH 的凭据
+/// 提问（plan 0504）共用它。共用而不是各写一个，是因为它的性质正是两者都要的：
+/// 它唯一能做的事是 [`PassphraseInput::into_bytes`]。
+///
 /// 刻意**没有** `Debug`：`tracing::info!(?input)` 是**编译错误**，而不是"打码" ——
 /// 与 `Passphrase` 同一手法（`AGENTS.md` §3.4）。
 ///
@@ -88,9 +91,15 @@ impl From<VaultState> for State {
 pub struct PassphraseInput(String);
 
 impl PassphraseInput {
-    /// 把字节**搬**出去（不是拷贝）：随后 [`Passphrase::new`] 会把它擦零。
-    fn into_bytes(self) -> Vec<u8> {
+    /// 把字节**搬**出去（不是拷贝）：随后 [`Passphrase::new`] / `Credential::new` 会把它擦零。
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.0.into_bytes()
+    }
+
+    /// 单测里造一个（真的路径只有一个来路：IPC 反序列化）。
+    #[cfg(test)]
+    pub(crate) fn for_test(secret: &str) -> Self {
+        Self(secret.to_owned())
     }
 }
 
@@ -105,18 +114,42 @@ struct Unlocked {
 }
 
 /// 库的解锁状态。app 启动时是锁着的（不自动解锁：口令只从 [`vault_unlock`] 进来）。
-#[derive(Default)]
+///
+/// `inner` 是 `Arc` 的（照 `Sessions` 的形状，plan 0504）：**解锁窗口之外也有读者** ——
+/// `KnownHostsVerifier` 要一个活到连接结束（`'static`）的主机密钥缓存口，而
+/// `tauri::State<'_, Vault>` 借不出这样的句柄。`Clone` 出来的是同一个 `Arc`，不是两份状态。
+#[derive(Default, Clone)]
 pub struct Vault {
-    unlocked: Mutex<Option<Unlocked>>,
+    inner: Arc<Mutex<Option<Unlocked>>>,
 }
 
 impl Vault {
     /// 取那个槽位。Mutex 中毒 = 上一次有人在持锁时 panic 了 —— 这不是用户错误，
     /// 但也不能 `unwrap`（`AGENTS.md` §0 绝对禁止 #4）。
     fn slot(&self) -> Result<MutexGuard<'_, Option<Unlocked>>, VaultError> {
-        self.unlocked.lock().map_err(|_| VaultError::Internal {
+        self.inner.lock().map_err(|_| VaultError::Internal {
             message: "vault lock poisoned".to_owned(),
         })
+    }
+
+    /// **短借**解好的连接：闭包用完即还。
+    ///
+    /// 为什么不把 `&Connection` 返回出去：`Connection` 不是 `Sync`，而"借出去的引用
+    /// 活多久"这件事我们说了不算 —— 短借是唯一能保证的形态。
+    ///
+    /// ⚠️ **闭包里不要做会再锁库的事**（`known_hosts::remember` 就会）：那是自己等自己。
+    /// 连接中途要写库的地方，都是先把锁放掉再进去的。
+    pub(crate) fn with_conn<R>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<R, StoreError>,
+    ) -> Result<R, ConnError> {
+        let slot = self
+            .slot()
+            .map_err(|err| ConnError::Internal(err.to_string()))?;
+        let Some(unlocked) = slot.as_ref() else {
+            return Err(ConnError::Locked);
+        };
+        f(&unlocked.conn).map_err(ConnError::Store)
     }
 }
 
@@ -242,6 +275,14 @@ pub enum VaultError {
     #[error("内存锁不住（mlock 失败），出于安全拒绝解锁：{message}")]
     NotLockable { message: String },
 
+    /// 库**锁着**，而这条路径需要一个解开的库。
+    ///
+    /// 与 [`VaultError::AlreadyUnlocked`] 是一对：那个说"已经有连接了，别再开一个"，
+    /// 这个说"还没有连接，先解开"。目前只有 SSH 那条路会走到这里（它的信任记录与
+    /// 密钥池都在库里），但文案不写"SSH" —— 错误说的是**库的状态**，不是谁在问。
+    #[error("库是锁着的：这条路径需要先解锁（口令只从解锁命令进来）")]
+    Locked,
+
     /// 这个库用不了：版本不认识、缺表、或者文件在半路没了。
     #[error("库不可用：{message}")]
     Unusable { message: String },
@@ -252,7 +293,43 @@ pub enum VaultError {
     Internal { message: String },
 }
 
+/// [`Vault::with_conn`] 借库时的两种失败。
+///
+/// 为什么不直接给 `VaultError`：**怎么说，由调用方决定**。
+/// `vault_hosts` 把它翻成 `VaultError`（用户的动作是"看消息"），而 SSH 那条路要
+/// 单独认出 [`StoreError::NoSuchRow`]（用户的动作是"回池子里重挑一台"）——
+/// 在这一层就折成一句话，那个区别就没了。锁着这一档两条路都要单独认，所以它在类型里。
+#[derive(Debug)]
+pub(crate) enum ConnError {
+    /// 库是锁着的（还没有解开的连接）。
+    Locked,
+    /// 库那一侧报的错（表 / 行 / 文件 / 机密页……）。
+    Store(StoreError),
+    /// 连槽位都拿不到（Mutex 中毒）。**不是用户错误**，但也不能 `unwrap`。
+    Internal(String),
+}
+
+impl std::fmt::Display for ConnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // 与 `VaultError::Locked` 的文案同源：同一个状态不该有两种说法。
+            Self::Locked => write!(f, "库是锁着的：这条路径需要先解锁"),
+            Self::Store(err) => write!(f, "{err}"),
+            Self::Internal(message) => write!(f, "{message}"),
+        }
+    }
+}
+
 impl VaultError {
+    /// [`ConnError`] → IPC 这一侧的说法（`vault_hosts` 那条路的唯一入口）。
+    pub(crate) fn from_conn(err: ConnError) -> Self {
+        match err {
+            ConnError::Locked => Self::Locked,
+            ConnError::Store(err) => Self::from_store(err),
+            ConnError::Internal(message) => Self::Internal { message },
+        }
+    }
+
     /// 把存储层的错误翻成 IPC 这一侧的说法。
     ///
     /// 穷尽 `match`：`akasha-store` 加一个变体，**这里编译不过** ——

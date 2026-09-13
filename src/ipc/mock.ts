@@ -215,6 +215,16 @@ export function installDevBackend(): void {
       case "resize_session":
         // 模拟后端不需要尺寸；真载体在这里 SETSIZE（"尽力"语义）。
         return null;
+      // SSH 那一路（plan 0504）在 dev-web 里**没有模拟后端**：没有 SSH 客户端、也没有库。
+      // 两条命令都**明确报错**，而不是返回一个空列表 —— 后者会让"主机池是空的"与
+      // "这个模拟后端不支持 SSH"混成一件事（前端会照着第一句去显示）。
+      case "vault_hosts":
+        throw { kind: "locked" };
+      case "open_ssh_session":
+        throw {
+          kind: "failed",
+          detail: { kind: "other", message: "dev-web 的模拟后端没有 SSH 客户端（用 just dev）" },
+        };
       case "close_session": {
         const handle = Number(field(payload, "handle"));
         shells.get(handle)?.stop();

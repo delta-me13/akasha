@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { SessionTarget } from "../ipc/session";
 import { attachTerminal, type TerminalStatus } from "./attach";
 import { activateProbe, type RendererKind } from "./surface";
 
@@ -8,6 +9,13 @@ interface Status {
 }
 
 interface TerminalPaneProps {
+  /**
+   * 这个面要开的**载体**（本地 shell / 主机池里的一台）。
+   *
+   * ⚠️ 只在挂载时读一次（`attachTerminal` 的依赖是 `[]`）：一个面开起来之后它属于哪个
+   * 会话是**定死**的 —— 改它等于换一个会话，而那应该是一个新标签页，不是原地换载体。
+   */
+  readonly target: SessionTarget;
   /**
    * 这个面是不是**当前显示的那个**标签页。
    *
@@ -30,7 +38,7 @@ interface TerminalPaneProps {
  * 命令式闭包里直接进了 xterm 的写入缓冲。这个组件从 `attachTerminal` 拿到的
  * 只有"连接状态"和"渲染器种类"，没有任何一条路径会把终端字节交给 `setState`。
  */
-export function TerminalPane({ active, onSessionEnded }: TerminalPaneProps) {
+export function TerminalPane({ target, active, onSessionEnded }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
   const [renderer, setRenderer] = useState<RendererKind | null>(null);
@@ -47,7 +55,7 @@ export function TerminalPane({ active, onSessionEnded }: TerminalPaneProps) {
     const host = hostRef.current;
     if (!host) return;
     // effect 的清理函数就是 detach：卸载时关会话、拆渲染面、断开尺寸观察。
-    return attachTerminal(host, {
+    return attachTerminal(host, target, {
       onStatus: (kind, detail) => setStatus({ kind, detail }),
       onRenderer: setRenderer,
       onEnded: () => endedRef.current(),

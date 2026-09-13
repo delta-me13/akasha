@@ -2,14 +2,18 @@
 pub mod bindings;
 pub mod config;
 pub mod lifecycle;
+pub mod pools;
+pub mod prompt;
 pub mod session;
 pub mod single_instance;
+pub mod ssh;
 pub mod tray;
 pub mod vault;
 pub mod watchdog;
 
 use akasha_core::CloseBehavior;
 use session::{Sessions, ShutdownReport};
+use tauri::Manager;
 
 /// 模板留下的探针命令：用来验证 IPC 通道本身是通的（`docs/STATUS.md` 的 IPC 端到端检查）。
 ///
@@ -61,6 +65,16 @@ pub fn run() {
     let startup = watchdog::start_early(&sessions);
     install_panic_reclaim(sessions.clone());
 
+    // SSH 的三样长住状态（plan 0504）：专用 runtime（ADR-0003 D2）、内存凭据缓存（D8）、
+    // 提问往返。**起 runtime 失败不挡启动**（`AGENTS.md` §3.3）—— 与看门狗同一个处置：
+    // 起得比日志插件早，所以**不能在这里记日志**，把原因留到 `.setup()` 里再说。
+    //
+    // 提问表要单独 `manage` 一份（同一个 `Arc`，不是两份表）：三条回答命令只认它，
+    // 而它们不该为了拿一份表去穿过 `Ssh`。
+    let ssh = ssh::Ssh::start();
+    let ssh_error = ssh.startup_error().map(str::to_owned);
+    let prompts = ssh.prompts().clone();
+
     let mut app_builder = tauri::Builder::default();
     if let Some(plugin) = instance_plugin {
         app_builder = app_builder.plugin(plugin);
@@ -73,16 +87,22 @@ pub fn run() {
         // 库的解锁状态（plan 0407）。**启动时是锁着的** —— 口令只从 `vault_unlock` 进来，
         // 没有自动解锁，也没有从配置文件 / 环境变量读取的路径（ADR-0002 D5）。
         .manage(vault::Vault::default())
+        .manage(ssh)
+        .manage(prompts)
         .invoke_handler(builder.invoke_handler())
-        // 比 `victauri_plugin::init()` 只多注册两个 probe：**关窗语义**（plan 0302/0303）
-        // 与**单实例**（plan 0304）。它们给 E2E 一个"这台机器该验哪条、还是该显式跳过"
-        // 的判据（`AGENTS.md` §7：观察后端状态用 probe 读，不靠 grep 日志反推）。
+        // 比 `victauri_plugin::init()` 只多注册三个 probe：**关窗语义**（plan 0302/0303）、
+        // **单实例**（plan 0304）与**会话表**（plan 0504）。它们给 E2E 一个"这台机器该验哪条、
+        // 还是该显式跳过"的判据（`AGENTS.md` §7：观察后端状态用 probe 读，不靠 grep 日志反推）。
         // `build()` 只在 port / 容量这类配置非法时失败，而这里全是默认值 —— 与
         // `victauri_plugin::init()` 内部的 `expect` 是同一条保证（默认配置永远合法）。
         .plugin(
             victauri_plugin::VictauriBuilder::new()
                 .probe("lifecycle", lifecycle::snapshot)
                 .probe("single_instance", single_instance::snapshot)
+                .probe("sessions", {
+                    let sessions = sessions.clone();
+                    move || session::snapshot(&sessions)
+                })
                 .build()
                 .expect("default Victauri configuration is always valid"),
         )
@@ -111,9 +131,18 @@ pub fn run() {
             }
             watchdog::report(&startup);
             single_instance::report(&instance);
+            // SSH 那三样起不来时只降级：app 照常能用，只是开不了 SSH 会话
+            //（命令会回一句"runtime 起不来"）。这里才说得出来 —— 日志出口刚刚就绪。
+            if let Some(reason) = &ssh_error {
+                tracing::error!(reason = reason.as_str(), "ssh runtime unavailable");
+            }
             // ⚠️ 事件必须在 setup 里挂上：`tauri-specta` 的 `Builder::invoke_handler`
             // 只覆盖命令，事件缺了这一步会在**发**的时候 panic（`EventRegistry not found`）。
             builder.mount_events(app);
+            // 提问往返接上真正的前端（**必须在 `mount_events` 之后**：事件没注册时
+            // `emit` 会 panic）。装在这里而不是启动时，是因为它依赖上面那一句。
+            app.state::<prompt::Prompts>()
+                .to_frontend(app.handle().clone());
             // 关窗语义的两个输入在这里定下来。**顺序有讲究**：先读配置、再建托盘、
             // 最后登记 —— 判据要同时看这两样，而"托盘建成没有"只有 `tray::setup` 的
             // 返回值知道，事后没人能再问出来。

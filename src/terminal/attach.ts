@@ -4,7 +4,12 @@
 // （`AGENTS.md` §4.2）。这个文件是"不进 state"这条纪律的落点：它在 React 之外，
 // 用闭包持有会话与渲染面，`TerminalPane` 只负责挂载/卸载它。
 
-import { openTerminalSession, type TerminalSession } from "../ipc/session";
+import {
+  openSshTerminalSession,
+  openTerminalSession,
+  type SessionTarget,
+  type TerminalSession,
+} from "../ipc/session";
 import {
   describeError,
   mountTerminalSurface,
@@ -30,8 +35,15 @@ export interface TerminalHandlers {
  *
  * 为什么是"返回函数"而不是"返回对象"：React 19 的 effect 清理就是 `() => void`，
  * 这里不做多余的包装，调用方也不必再写一层闭包。
+ *
+ * `target` 决定**哪条命令去开会话**（本地 shell / 主机池里的一台）：两条路的字节进出、
+ * 尺寸、收尾完全一样（后端那边也只是两种 `Transport` 装进同一张表）。
  */
-export function attachTerminal(host: HTMLElement, handlers: TerminalHandlers): () => void {
+export function attachTerminal(
+  host: HTMLElement,
+  target: SessionTarget,
+  handlers: TerminalHandlers,
+): () => void {
   let disposed = false;
   let session: TerminalSession | null = null;
   let frame = 0;
@@ -94,26 +106,49 @@ export function attachTerminal(host: HTMLElement, handlers: TerminalHandlers): (
   refit(); // 首帧也算一次：初始尺寸可能就是最终尺寸
 
   handlers.onStatus("connecting");
-  void openTerminalSession(
-    (bytes) => surface.write(bytes),
-    // 会话自己结束 → 交回壳层（关标签页）。`disposed` 之后不再回调：那时这个面已经没人要了，
-    // 而"关标签页"会由清理函数负责。
-    () => {
-      if (!disposed) handlers.onEnded();
-    },
-  )
-    .then((opened) => {
-      if (disposed) {
-        // React StrictMode 在 dev 里会"挂载 → 卸载 → 再挂载"。这次会话已经没人要了 ——
-        // 不显式关掉的话，每挂载一次就多留一个真 PTY 在进程表里。
-        void opened.close().catch(() => {});
-        return;
-      }
-      session = opened;
-      handlers.onStatus("open");
-      refit(true); // 把真实行列数补给载体（开会话时它只知道默认尺寸）
-    })
-    .catch(fail);
+  // 会话自己结束 → 交回壳层（关标签页）。`disposed` 之后不再回调：那时这个面已经没人要了，
+  // 而"关标签页"会由清理函数负责。
+  const onEnded = () => {
+    if (!disposed) handlers.onEnded();
+  };
+
+  /**
+   * 真的去开那个会话。
+   *
+   * ⚠️ **SSH 这条路要推迟一个微任务**再发出去，本地那条不用 —— 差别在"开的过程中要不要问人"：
+   *
+   * React 的 StrictMode（dev 构建）把 effect 走两遍（挂载 → 清理 → 挂载，**同一次 commit
+   * 里同步完成**）。本地终端多起一个 shell 再立刻收掉是无害的，而 SSH 会话在连的过程中会
+   * **弹出提示**（凭据 / 没见过的主机密钥）—— 被丢掉的那一次如果已经发出去了，它的问题会与
+   * 真正那次**叠在同一个面板里**，而用户只会答其中一个：另一个一直等（最长
+   * `PROMPT_TIMEOUT`），于是"点了 SSH 却一直连不上"。
+   *
+   * 同一次 commit 里排的微任务在清理**之后**才跑，所以第一遍那次根本没发出去。
+   */
+  const start = () =>
+    target.kind === "ssh"
+      ? openSshTerminalSession(target.hostId, (bytes) => surface.write(bytes), onEnded)
+      : openTerminalSession((bytes) => surface.write(bytes), onEnded);
+
+  const begin = () => {
+    if (disposed) return;
+    void start()
+      .then((opened) => {
+        if (disposed) {
+          // 这一次会话已经没人要了（面板被卸载 / StrictMode 的第一次挂载）—— 不显式关掉的
+          // 话，每挂载一次就多留一个真会话在进程里。
+          void opened.close().catch(() => {});
+          return;
+        }
+        session = opened;
+        handlers.onStatus("open");
+        refit(true); // 把真实行列数补给载体（开会话时它只知道默认尺寸）
+      })
+      .catch(fail);
+  };
+
+  if (target.kind === "ssh") queueMicrotask(begin);
+  else begin();
 
   return () => {
     if (disposed) return;

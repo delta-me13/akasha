@@ -11,7 +11,7 @@
 //   2. 除了这里，前端不许在别处出现裸 `invoke("字符串命令名")`（`AGENTS.md` §0 绝对禁止 #1）。
 
 import { Channel } from "@tauri-apps/api/core";
-import { commands, events, type IpcError } from "./bindings";
+import { commands, events, type IpcError, type SshIpcError } from "./bindings";
 
 /** 后端返回的错误，原样带着 [`IpcError`] 的结构抛出（调用方多半只是显示它）。 */
 export class IpcInvokeError extends Error {
@@ -47,6 +47,54 @@ export interface TerminalSession {
   resize(cols: number, rows: number): Promise<void>;
   /** 关闭会话：后端会显式 kill + wait 收尸。 */
   close(): Promise<void>;
+}
+
+/**
+ * 一个终端标签页要开的**载体**。
+ *
+ * 本地与 SSH 走同一条尾巴（`adoptSession` + 同一批命令），差的是"哪条命令去开"：
+ * 所以这里只是**选择**，不是两套会话模型 —— 后端那边同样只是两种 `Transport`
+ * 装进同一张表（ADR-0003 D3）。
+ */
+export type SessionTarget =
+  | { readonly kind: "local" }
+  | { readonly kind: "ssh"; readonly hostId: number };
+
+/**
+ * 把"后端已经开好了"这件事包成一个可控的会话。
+ *
+ * 本地终端与 SSH 共用它：句柄、`session_ended` 的订阅、结束后一律不再发命令 —— 这三件事
+ * 抄第二份的下场是两条路对"会话已经走了"有不同判断（一条静默、一条报错）。
+ */
+export function adoptSession(handle: number, onEnded: () => void): TerminalSession {
+  // 会话结束之后**一律不再发命令**：后端已经把它摘牌收掉了，再发只会收到 `NotFound` ——
+  // 那不是错误，是"它已经走了"。所以这里记住这件事，让 write / resize / close 变成空操作。
+  let ended = false;
+  const unsubscribe = subscribeSessionEnded(handle, () => {
+    if (ended) return;
+    ended = true;
+    onEnded();
+  });
+
+  return {
+    handle,
+    async write(bytes: Uint8Array) {
+      if (ended) return;
+      const result = await commands.writeSession(handle, Array.from(bytes));
+      if (result.status === "error") throw new IpcInvokeError(result.error);
+    },
+    async resize(cols: number, rows: number) {
+      if (ended) return;
+      const result = await commands.resizeSession(handle, cols, rows);
+      if (result.status === "error") throw new IpcInvokeError(result.error);
+    },
+    async close() {
+      unsubscribe();
+      if (ended) return; // 后端已经收过尾了：再发 close_session 只会收到 NotFound
+      const result = await commands.closeSession(handle);
+      if (result.status === "error") throw new IpcInvokeError(result.error);
+    },
+  };
 }
 
 // ── 会话**自己**结束（plan 0306）──────────────────────────────────────────────
@@ -131,34 +179,68 @@ export async function openTerminalSession(
 
   const opened = await commands.openSession(channel.toJSON());
   if (opened.status === "error") throw new IpcInvokeError(opened.error);
-  const handle = opened.data;
+  return adoptSession(opened.data, onEnded);
+}
 
-  // 会话结束之后**一律不再发命令**：后端已经把它摘牌收掉了，再发只会收到 `NotFound` ——
-  // 那不是错误，是"它已经走了"。所以这里记住这件事，让 write / resize / close 变成空操作。
-  let ended = false;
-  const unsubscribe = subscribeSessionEnded(handle, () => {
-    if (ended) return;
-    ended = true;
-    onEnded();
-  });
+/**
+ * SSH 那条路失败时的错误。
+ *
+ * 与 [`IpcInvokeError`] 分开：那一族说的是"某个会话坏了"，这一族说的是"连不上 / 不让连"
+ * —— 前端能据此做的动作不同（后者里还有**警报**那一档）。
+ */
+export class SshInvokeError extends Error {
+  readonly detail: SshIpcError;
 
-  return {
-    handle,
-    async write(bytes: Uint8Array) {
-      if (ended) return;
-      const result = await commands.writeSession(handle, Array.from(bytes));
-      if (result.status === "error") throw new IpcInvokeError(result.error);
-    },
-    async resize(cols: number, rows: number) {
-      if (ended) return;
-      const result = await commands.resizeSession(handle, cols, rows);
-      if (result.status === "error") throw new IpcInvokeError(result.error);
-    },
-    async close() {
-      unsubscribe();
-      if (ended) return; // 后端已经收过尾了：再发 close_session 只会收到 NotFound
-      const result = await commands.closeSession(handle);
-      if (result.status === "error") throw new IpcInvokeError(result.error);
-    },
-  };
+  constructor(detail: SshIpcError) {
+    super(SshInvokeError.describe(detail));
+    this.name = "SshInvokeError";
+    this.detail = detail;
+  }
+
+  /** 库没解锁：界面该说的是"先解锁"，而不是"连不上"。 */
+  get isLocked(): boolean {
+    return this.detail.kind === "locked";
+  }
+
+  /** **警报**：服务端的密钥与记下来的不一样（ADR-0003 D11）—— 这一档要显眼。 */
+  get isHostKeyChanged(): boolean {
+    return this.detail.kind === "failed" && this.detail.detail.kind === "hostKeyChanged";
+  }
+
+  private static describe(detail: SshIpcError): string {
+    switch (detail.kind) {
+      case "locked":
+        return "库是锁着的：先解锁再开 SSH 会话（主机密钥记录与密钥池都在库里）";
+      case "noSuchHost":
+        return `主机池里没有这台主机（id ${detail.detail.id}）`;
+      case "failed":
+        // ⚠️ **警报那一档单独说**：主机密钥变了是中间人攻击的典型形态，
+        // 让它与"连不上"长成一个样子，正是 D11 要避免的那种降级。
+        return detail.detail.kind === "hostKeyChanged"
+          ? `⚠️ 主机密钥变了，连接已拒绝：${detail.detail.message}`
+          : detail.detail.message;
+      case "internal":
+        return `内部状态不可用：${detail.detail.message}`;
+    }
+  }
+}
+
+/**
+ * 打开一个 **SSH** 终端会话，输出逐批交给 `onBatch`。
+ *
+ * 与上面那条的区别只有一处：后端**照主机池里的一行**去连（`hostId`），而在连的过程中
+ * 它可能需要用户回答问题（凭据 / 没见过的主机密钥）—— 那些提示走
+ * [`subscribePrompts`] 那条路，**不属于**这个会话（一个会话可能问好几次，也可能一次不问）。
+ */
+export async function openSshTerminalSession(
+  hostId: number,
+  onBatch: (bytes: Uint8Array) => void,
+  onEnded: () => void,
+): Promise<TerminalSession> {
+  const channel = new Channel<ArrayBuffer>();
+  channel.onmessage = (payload) => onBatch(new Uint8Array(payload));
+
+  const opened = await commands.openSshSession(channel.toJSON(), hostId);
+  if (opened.status === "error") throw new SshInvokeError(opened.error);
+  return adoptSession(opened.data, onEnded);
 }

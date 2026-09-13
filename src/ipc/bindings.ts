@@ -43,6 +43,12 @@ export const commands = {
 	 */
 	vaultLock: () => typedError<boolean, VaultError>(__TAURI_INVOKE("vault_lock")),
 	/**
+	 *  库里主机池的全部行（按名字排序 —— 顺序确定，界面才不会每次刷新换一个样）。
+	 * 
+	 *  库锁着 → [`VaultError::Locked`]：池在库里，没有别的来路。
+	 */
+	vaultHosts: () => typedError<HostEntry[], VaultError>(__TAURI_INVOKE("vault_hosts")),
+	/**
 	 *  打开一个终端会话，输出经 `channel` 以 **raw 字节**送出。
 	 * 
 	 *  返回的 id 是前端后续 `write_session` / `resize_session` / `close_session` 要用的句柄。
@@ -51,20 +57,71 @@ export const commands = {
 	 *  负责：收掉它 + 发 [`SessionEnded`] 让前端关掉那个标签页。
 	 */
 	openSession: (channel: RawChannel) => typedError<number, IpcError>(__TAURI_INVOKE("open_session", { channel })),
+	/**
+	 *  打开一个 SSH 终端会话，输出经 `channel` 以 **raw 字节**送出。
+	 * 
+	 *  与 [`crate::session::open_session`] 的关系：**同一条尾巴**（注册 → 频道 → 收尾线程），
+	 *  差的是载体怎么来 —— 本地那条是 `PtyTransport::spawn_default()`，这条是
+	 *  "照池里那一行连过去"。
+	 * 
+	 *  ⚠️ **async**：命令体里有一次会阻塞几秒的握手（最长 `connect_timeout`），而
+	 *  同步 command 跑在处理 IPC 请求的那条线程上（挡住它就等于挡住全部 IPC ——
+	 *  包括用户回答问题要用的那三条命令）。
+	 */
+	openSshSession: (channel: RawChannel, hostId: number) => typedError<number, SshIpcError>(__TAURI_INVOKE("open_ssh_session", { channel, hostId })),
 	/**  把用户输入（按键字节）送进会话。 */
 	writeSession: (handle: number, data: number[]) => typedError<null, IpcError>(__TAURI_INVOKE("write_session", { handle, data })),
 	/**  调整会话的窗口尺寸（列 / 行）。 */
 	resizeSession: (handle: number, cols: number, rows: number) => typedError<null, IpcError>(__TAURI_INVOKE("resize_session", { handle, cols, rows })),
 	/**  关闭会话：显式 kill + wait 收尸，之后这个 id 不再有效。 */
 	closeSession: (handle: number) => typedError<null, IpcError>(__TAURI_INVOKE("close_session", { handle })),
+	/**  回答一句秘密（口令 / 验证码 / 私钥口令）。 */
+	sshPromptCredential: (id: number, secret: PassphraseInput) => typedError<null, PromptError>(__TAURI_INVOKE("ssh_prompt_credential", { id, secret })),
+	/**  回答"这把没见过的主机密钥认不认"。 */
+	sshPromptHostKey: (id: number, accept: boolean) => typedError<null, PromptError>(__TAURI_INVOKE("ssh_prompt_host_key", { id, accept })),
+	/**
+	 *  撤销这一问（用户关掉了提示面板）。**不是"接受"的另一种写法**：
+	 *  它让连接以"用户取消"结束。
+	 */
+	sshPromptCancel: (id: number) => typedError<null, PromptError>(__TAURI_INVOKE("ssh_prompt_cancel", { id })),
 };
 
 /** Events */
 export const events = {
 	sessionEnded: makeEvent<SessionEnded>("session_ended"),
+	sshPrompt: makeEvent<PromptRequest>("ssh_prompt"),
+	sshPromptDismissed: makeEvent<PromptDismissed>("ssh_prompt_dismissed"),
 };
 
 /* Types */
+/**
+ *  认证方式过 IPC 的形状。
+ * 
+ *  与 `akasha_store::pools::hosts::Auth` 分开：存储 crate **不依赖 specta**
+ *  （那是 app 钉住版本的东西），所以这里做一次显式映射 —— 而映射写成穷尽 `match`，
+ *  池里加一种认证方式时**这里编译不过**。
+ */
+export type AuthMethod = "password" | "publicKey" | "agent";
+
+/**  界面看得见的一台主机。 */
+export type HostEntry = {
+	/**  池里的行 id（`open_ssh_session` 要的就是它）。 */
+	id: number,
+	/**  用户给这台主机起的名字（池里唯一）。标签页标题用它。 */
+	name: string,
+	/**  主机名或 IP。 */
+	host: string,
+	port: number,
+	user: string,
+	/**  认证方式（池里的取值，见 [`AuthMethod`]）。 */
+	auth: AuthMethod,
+	/**
+	 *  配了哪把钥匙（`keys.id`）。只有 `publickey` 时可能非空 —— 而它也可能是空的
+	 *  （走 ssh-agent 的钥匙不在我们的池里）。
+	 */
+	keyId: number | null,
+};
+
 /**
  *  IPC 边界的错误。
  * 
@@ -94,9 +151,12 @@ export type IpcError =
 } };
 
 /**
- *  口令**经 IPC 进来的形态**（`PassphraseInput`）。
+ *  口令 / 凭据**经 IPC 进来的形态**（`PassphraseInput`）。
  * 
- *  它是口令在 IPC 边界上的唯一类型，而它唯一能做的事是 [`PassphraseInput::into_bytes`]。
+ *  它是"一句秘密从前端进来"在 IPC 边界上的唯一类型 —— 库解锁（plan 0407）与 SSH 的凭据
+ *  提问（plan 0504）共用它。共用而不是各写一个，是因为它的性质正是两者都要的：
+ *  它唯一能做的事是 [`PassphraseInput::into_bytes`]。
+ * 
  *  刻意**没有** `Debug`：`tracing::info!(?input)` 是**编译错误**，而不是"打码" ——
  *  与 `Passphrase` 同一手法（`AGENTS.md` §3.4）。
  * 
@@ -105,6 +165,59 @@ export type IpcError =
  *  因为频道句柄的语义生成器表达不出来）。
  */
 export type PassphraseInput = string;
+
+/**
+ *  这次提问**不用答了**（超时被撤下）。
+ * 
+ *  为什么要有它：界面上一份提示不能永远留着 —— 没有人答的那一问在
+ *  [`PROMPT_TIMEOUT`] 之后会被撤掉，前端必须**看得见**这件事，否则它会一直显示一个
+ *  早已不存在的提问（用户再点"确定"只会得到 `Gone`）。
+ */
+export type PromptDismissed = {
+	id: number,
+};
+
+/**
+ *  回答提问时可能出的错。
+ * 
+ *  变体按**前端能做什么**分：`Gone` 什么都不用做（那一问已经超时了，界面自己也收到了
+ *  `ssh_prompt_dismissed`），`Invalid` 要用户改一下再提交，`Internal` 只该记日志。
+ */
+export type PromptError = 
+/**  这个编号没有在等的提问：已经超时被撤下，或者已经答过了。 */
+{ kind: "gone"; detail: {
+	id: number,
+} } | 
+/**  答案本身不合法（空 / 比一页受保护内存还长）。**不是截断**。 */
+{ kind: "invalid"; detail: {
+	message: string,
+} } | 
+/**  内部状态不可用（待答表中毒）。 */
+{ kind: "internal"; detail: {
+	message: string,
+} };
+
+/**
+ *  后端要问用户一件事。前端据此打开提示界面。
+ * 
+ *  两个变体放在同一个事件里，是因为它们**在同一条路上**发生（连接中途、同一个往返机制、
+ *  同一个超时）—— 分成两个事件只会让"谁在问"多一份要维护的契约。
+ *  ⚠️ 但**策略**完全不同：主机密钥那一问只有"接受 / 拒绝"两个答案（见 `ssh.rs` 的接线），
+ *  凭据那一问是一句秘密。
+ */
+export type PromptRequest = 
+/**  一把没见过的服务端主机密钥，请用户核对指纹（ADR-0003 D11）。 */
+{ kind: "hostKey"; id: number; host: string; port: number; 
+/**  密钥算法（`ssh-ed25519` 一类）—— 与指纹一起显示，用户核对的是指纹。 */
+algorithm: string; 
+/**  `SHA256:…`，**要用户拿去核对的那串东西**。 */
+fingerprint: string } | 
+/**  要一句秘密。 */
+{ kind: "credential"; id: number; 
+/**  `user@host:port`（`SshTarget` 的 `Display`）—— 用户得知道在给谁输口令。 */
+target: string; credential: SecretKind; 
+/**  直接可以显示给用户的一句话（`CredentialRequest::prompt`）。 */
+prompt: string };
 
 /**
  *  前端 raw 字节频道的句柄。
@@ -116,6 +229,14 @@ export type PassphraseInput = string;
  *  校验在 Rust 侧：解析不出 `<id>` 就报 `IpcError::Channel`，不会静默丢掉输出。
  */
 export type RawChannel = string;
+
+/**
+ *  **要哪一种凭据** —— 过 IPC 的形态（`akasha-ssh` 的 `CredentialKind` 没有 `specta`）。
+ * 
+ *  前端用它决定提示语的语气（验证码 / 口令 / 私钥口令），**不决定行为**：
+ *  三种都是"一句秘密"，答案的走法完全相同。
+ */
+export type SecretKind = "loginPassword" | "keyboardInteractive" | "keyPassphrase";
 
 /**
  *  一个会话**自己**结束了：载体（PTY 里的 shell）退出 —— 用户敲了 `exit`、shell 崩了、
@@ -130,6 +251,44 @@ export type SessionEnded = {
 	/**  结局的可读描述（`None` = 这个载体不报结局，或收尾时出了岔子 —— 见 `retire`）。 */
 	status: string | null,
 };
+
+/**
+ *  连接失败的类别。**前端据此决定"要不要让用户核对什么"** —— 不是把消息字符串
+ *  拿去匹配（那是最容易在改文案时静默失效的一种判据）。
+ */
+export type SshFailureKind = 
+/**  **服务端的密钥与记下来的不一样**（ADR-0003 D11 的警报，阶段 6 也不重连）。 */
+"hostKeyChanged" | 
+/**  用户否认了一把没见过的密钥 —— 与上一档分开：那是常态，这是明确拒绝。 */
+"hostKeyRejected" | 
+/**  没见过这把密钥，而没问成（超时 / 没人可问）。**不是"接受"的近义词**。 */
+"hostKeyUnknown" | 
+/**  库内的主机密钥缓存用不了（写了 / 读不出）—— 提示里那条"先解锁"多半是它。 */
+"hostKeyCache" | 
+/**  认证失败：我们有的方式都试过了。 */
+"auth" | 
+/**  连不上 / 超时 / 通道开不出来。 */
+"connect" | 
+/**  其余（错误消息里说得清）。 */
+"other";
+
+/**  IPC 边界的 SSH 错误。变体按**用户的下一步动作**分（见模块文档）。 */
+export type SshIpcError = 
+/**  库没解锁。**不连**：信任记录与密钥池都在库里，绕过去就等于把三态判定降成两态。 */
+{ kind: "locked" } | 
+/**  池里没有这一行（`id` 不存在，或者它引用的密钥不见了）。 */
+{ kind: "noSuchHost"; detail: {
+	id: number,
+} } | 
+/**  连接这条路失败。`kind` 是给界面分辨**警报**用的，`message` 是给人看的整句话。 */
+{ kind: "failed"; detail: {
+	kind: SshFailureKind,
+	message: string,
+} } | 
+/**  内部状态不可用（runtime 起不来、会话表中毒、连接线程起不来）。 */
+{ kind: "internal"; detail: {
+	message: string,
+} };
 
 /**
  *  库文件的状态。**与 `akasha_store::VaultState` 分开**：这是 IPC 类型（要生成 TS），
@@ -222,6 +381,14 @@ export type VaultError =
 { kind: "notLockable"; detail: {
 	message: string,
 } } | 
+/**
+ *  库**锁着**，而这条路径需要一个解开的库。
+ * 
+ *  与 [`VaultError::AlreadyUnlocked`] 是一对：那个说"已经有连接了，别再开一个"，
+ *  这个说"还没有连接，先解开"。目前只有 SSH 那条路会走到这里（它的信任记录与
+ *  密钥池都在库里），但文案不写"SSH" —— 错误说的是**库的状态**，不是谁在问。
+ */
+{ kind: "locked" } | 
 /**  这个库用不了：版本不认识、缺表、或者文件在半路没了。 */
 { kind: "unusable"; detail: {
 	message: string,

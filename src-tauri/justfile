@@ -53,6 +53,8 @@ test:
 # （也不关 app），`single_instance` 藏起窗口再让第二个实例把它叫回来（同样不关 app），
 # `vault_status` 只读一次文件元数据（什么都不改），
 # `vault_unlock` 自己造一个库、解锁、锁定、**跑完删掉**（前置是 `vault_status` 已经读过同一份元数据），
+# `ssh_session`（plan 0504）同样自己造库、自己起一台进程内的 SSH 服务端，**跑完删掉** ——
+# 它**必须排在 `vault_unlock` 之后**（那两个用例都在动 data 目录里那同一个库文件）。
 # `exit_residue` 会把 app 关掉 —— 所以它排在**另一段**的最后。
 #
 # ⚠️ **两段，两套配置**（plan 0302 + 0303）：关窗语义由数据目录里的 `config.json` 决定，
@@ -60,7 +62,7 @@ test:
 #   * 第一段（本清单）：没有配置文件 = 默认"收托盘" → `window_close` 有判据；
 #   * 第二段（`E2E_TARGETS_EXIT`）：写 `close_behavior=exit` 再起一次 app → `exit_residue`
 #     拿到的就是"关窗即退出"这条**可移植**的刺激（不需要托盘宿主，CI 上照样成立）。
-E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status vault_unlock"
+E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status vault_unlock ssh_session"
 
 # 需要 `close_behavior=exit` 的目标：**只能**在第二段跑（见上）。
 E2E_TARGETS_EXIT := "exit_residue"

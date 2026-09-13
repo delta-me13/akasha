@@ -33,11 +33,14 @@ tokio = { version = "1", features = ["rt", "sync", "net", "time", "io-util"] }
 # 日志消息是事件名（AGENTS.md §3.4 / docs/logging.md）。本 crate 不装 subscriber：
 # app 那边已经有了，库再装一份只会把日志分成两处。
 tracing = "0.1.44"
+# `testing`（进程内测试服务端）要给每次 `start` 现生成一把主机密钥。
+# 它是**真依赖**而不是 dev-dependency：app 的 E2E 也要起那台服务端（`src/testing.rs`
+# 的模块文档写了理由）—— 而 `tests/` 里的东西跨不了 crate。
+rand = "0.10"
 
 [dev-dependencies]
-# 进程内测试服务端要一个 runtime（`Handle` 得由调用方给）与随机生成的密钥。
-# 两者都**已在 lock 里**（同一个版本），不是新依赖。
-rand = "0.10"
+# 进程内测试服务端要一个 runtime（`Handle` 得由调用方给）。
+# 版本与 features 都**已在 lock 里**，不是新依赖。
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
 
 [lints]

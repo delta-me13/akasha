@@ -7,8 +7,17 @@
 //
 // 所以 `×` 是**按 `kind` 渲染**的，而不是"所有标签页都长一样"。
 
-/** 标签页的种类。当前只有终端；转发 / 密码库 / 文件传输到来时**新增**变体，不复用终端。 */
-export type TabKind = "terminal";
+/** 标签页的种类。转发 / 密码库 / 文件传输到来时**新增**变体，不复用终端。 */
+export type TabKind = "terminal" | "ssh";
+
+/**
+ * **有关闭按钮**的种类（`docs/scope.md` §5.6：三大终端 local / ssh / serial）。
+ *
+ * 它是**按种类**判定的，不是"所有标签页都长一样"：转发 / 密码库 / 文件传输是**仅渲染**的
+ * 视图（无 ×），它们的停止是各自的显式动作。把这条规则写成一个清单而不是散在 JSX 里，
+ * 是为了让"哪一类能关"只有一处可改。
+ */
+const CLOSABLE: readonly TabKind[] = ["terminal", "ssh"];
 
 /** 标签栏要显示的一项。**只是呈现数据** —— 会话的归属与回收在后端（`Session`）。 */
 export interface TabView {
@@ -23,10 +32,13 @@ interface TabStripProps {
   readonly active: number;
   onSelect(key: number): void;
   onClose(key: number): void;
+  /** 新建一个**本地**终端标签页。 */
   onNew(): void;
+  /** 打开主机选择器（新建 SSH 会话的第一步）。 */
+  onNewSsh(): void;
 }
 
-export function TabStrip({ tabs, active, onSelect, onClose, onNew }: TabStripProps) {
+export function TabStrip({ tabs, active, onSelect, onClose, onNew, onNewSsh }: TabStripProps) {
   return (
     <div className="tab-strip" role="tablist" aria-label="终端标签页">
       {tabs.map((tab) => (
@@ -44,7 +56,7 @@ export function TabStrip({ tabs, active, onSelect, onClose, onNew }: TabStripPro
           >
             {tab.title}
           </button>
-          {tab.kind === "terminal" && (
+          {CLOSABLE.includes(tab.kind) && (
             <button
               type="button"
               className="tab-close"
@@ -62,11 +74,20 @@ export function TabStrip({ tabs, active, onSelect, onClose, onNew }: TabStripPro
       <button
         type="button"
         className="tab-new"
-        title="新建终端标签页"
+        title="新建终端标签页（本地 shell）"
         aria-label="新建终端标签页"
         onClick={onNew}
       >
         +
+      </button>
+      <button
+        type="button"
+        className="tab-new tab-new-ssh"
+        title="新建 SSH 会话（先选主机）"
+        aria-label="新建 SSH 会话"
+        onClick={onNewSsh}
+      >
+        SSH
       </button>
     </div>
   );

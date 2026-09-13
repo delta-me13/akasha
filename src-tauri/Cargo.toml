@@ -137,6 +137,13 @@ akasha-pty = { version = "0.1.0", path = "crates/akasha-pty" }
 # 本步只用了它的两样东西：落点（`vault_path`）与状态（`vault_state`）——
 # 解锁生命周期（谁持有 `Connection`、口令从哪来、何时抹掉）是 plan 0407。
 akasha-store = { version = "0.1.0", path = "crates/akasha-store" }
+# SSH 客户端（plan 0504 起 app 真的用它）。它对外只是 `akasha_pty::Transport`，
+# 所以会话层与前端**不需要**为 SSH 另立一条契约 —— 这正是 ADR-0003 D3 的兑现。
+akasha-ssh = { version = "0.1.0", path = "crates/akasha-ssh" }
+# 专用 runtime（ADR-0003 D2：库不自建 runtime，app 建**一个**并注入 `Handle`）。
+# features 与 D2 写下的那份一致（rt-multi-thread / time / sync / io-util / net）；
+# ⚠️ `sync` 是 plan 0504 加的：连接线程与 async 命令之间那条 oneshot 用它。
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync", "io-util", "net"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # 只为了 single_instance.rs 里的**一条判据**：会话总线连得上吗。

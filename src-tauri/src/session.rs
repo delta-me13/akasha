@@ -47,6 +47,25 @@ use tauri_specta::Event;
 #[specta(transparent)]
 pub struct RawChannel(String);
 
+impl RawChannel {
+    /// 把线上那个字符串还原成一条**能收 raw 字节**的频道。
+    ///
+    /// 校验在这里（解析不出就报 [`IpcError::Channel`]），本地终端与 SSH 两条路共用 ——
+    /// 两条路各写一遍的话，"哪一种手柄是合法的"就会有两份说法。
+    pub(crate) fn into_channel(
+        self,
+        webview: Webview,
+    ) -> Result<Channel<InvokeResponseBody>, IpcError> {
+        Ok(self
+            .0
+            .parse::<JavaScriptChannelId>()
+            .map_err(|message| IpcError::Channel {
+                message: message.to_string(),
+            })?
+            .channel_on(webview))
+    }
+}
+
 /// 过 IPC 的**会话句柄**。
 ///
 /// 为什么不直接用过线 `u64`：生成器拒绝把 `u64` 导出成 TS（BigInt 精度问题），
@@ -517,6 +536,21 @@ impl Sessions {
     }
 }
 
+/// 会话表的**只读快照**（Victauri probe `sessions`，plan 0504）。
+///
+/// 为什么需要它：SSH 会话**没有本地进程**（ADR-0003 D4：`session_leader()` 永远是 `None`），
+/// 所以"关标签页之后零残留"这句话在进程表上**看不到** —— 能看到的只有注册表。
+/// 靠 grep 日志反推"会话没了"是不行的（`AGENTS.md` §7），于是把内部状态摆出来读。
+///
+/// 返回的两个数**必须相等**才有意义：`live` 是"谁在跑"，`registered` 是"注册表里登记着谁"
+/// —— 两张表分叉就说明有会话"查得到、却没人管"（或反过来）。
+pub fn snapshot(sessions: &Sessions) -> serde_json::Value {
+    serde_json::json!({
+        "live": sessions.len(),
+        "registered": sessions.registered(),
+    })
+}
+
 /// 转发循环：把批次一个个交给 `sink`，源结束（EOF / 读错误 / 载体关闭）就收工。
 ///
 /// 单独提出来只为一个理由：**它必须能脱离 Tauri 测**。命令里的 sink 是 IPC 频道，
@@ -546,16 +580,23 @@ pub fn open_session(
     channel: RawChannel,
     state: State<'_, Sessions>,
 ) -> Result<SessionHandle, IpcError> {
-    let channel: Channel<InvokeResponseBody> = channel
-        .0
-        .parse::<JavaScriptChannelId>()
-        .map_err(|message| IpcError::Channel {
-            message: message.to_string(),
-        })?
-        .channel_on(webview);
-
+    let channel = channel.into_channel(webview)?;
     let transport = PtyTransport::spawn_default(TerminalSize::DEFAULT)?;
-    let (handle, batches) = state.register(transport, BatchPolicy::DEFAULT)?;
+    open_terminal(&app, &state, transport, channel)
+}
+
+/// 注册一个载体、把它的批次流接上频道，并起一条收尾线程。**两条载体共用这一段。**
+///
+/// 抽出来的理由：本地 PTY 与 SSH 会话在"注册之后"的每一件事都相同（句柄、频道、
+/// `session_ended`、收尾），差的只是载体从哪来。抄第二份的代价不是几行代码，
+/// 而是**收尾与会话结束的语义会有两种写法**（那正是"敲了 `exit` 标签页不关"这类 bug 的家）。
+pub(crate) fn open_terminal(
+    app: &AppHandle,
+    sessions: &Sessions,
+    transport: impl Transport + 'static,
+    channel: Channel<InvokeResponseBody>,
+) -> Result<SessionHandle, IpcError> {
+    let (handle, batches) = sessions.register(transport, BatchPolicy::DEFAULT)?;
 
     let pump = forward(batches, move |batch| {
         // 发不出去只可能是前端已经走了（频道已 drop）—— 那条流没有意义了，
@@ -569,7 +610,7 @@ pub fn open_session(
     //
     // 为什么不在原地收尾：`forward` 的线程要在流结束的那一瞬退出，而收尾里有一次
     // `wait`（收尸）—— 混在一起会让"最后一批送达"被收尾时长拖住。
-    let sessions = Sessions::clone(&state);
+    let sessions = Sessions::clone(sessions);
     let app = app.clone();
     std::thread::Builder::new()
         .name("akasha-session-retire".into())
