@@ -148,9 +148,9 @@
 - [x] **ADR-0003 进入实现中**（动 `akasha-ssh` 之前；含线协议与资源模型）
       验收：状态为「实现中」，且有可核对的 `russh` 版本结论
       → [plan 0501](./docs/plans/archive/0501-adr-0003-ssh-stack.md)
-- [ ] `src-tauri/crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存）
+- [x] `src-tauri/crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存）
       验收：同主机开三个 Session **只问一次**凭据（`scope.md` §2.2）
-      → [plan 0502](./docs/plans/0502-ssh-connect-auth.md)
+      → [plan 0502](./docs/plans/archive/0502-ssh-connect-auth.md)
 - [ ] **`direct-tcpip` 原语**（本阶段先用于跳板，之后三处复用）
       验收：ProxyJump 可连通只对跳板机可见的目标
       → [plan 0503](./docs/plans/0503-direct-tcpip-primitive.md)

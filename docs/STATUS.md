@@ -4,7 +4,7 @@
 > 会话结束前必须更新 —— 下一个会话（或另一个 agent）只读这个文件 + 相关 plan 就能接手，
 > 不需要回溯对话历史。规则见 [`docs/README.md`](./README.md)。
 
-**最后更新**：2026-09-12
+**最后更新**：2026-09-13
 
 ## 一句话
 
@@ -19,16 +19,21 @@
 **搬走文件夹之后数据还在且能用**（0405 —— 四套池 1/1/1/1，库侧逐项比对内容）、
 **便携目录不可写时拒绝启动**（0405 —— 一条 `error` + 退出码 2，不再静默退回 OS 目录）。
 
-**阶段 5（SSH 栈）已开工**：**ADR-0003 进入「实现中」**（plan 0501 完成并归档）——
-`russh` 的版本与 feature、运行时归谁、`Transport` 在 SSH 上的映射、`direct-tcpip` 原语的形状、
-隧道状态机与重连判据全部定死，且**每条结论都带出处**（上游源码行号 / `Cargo.lock` / 本机实测）。
-它之所以要先写：这些点一旦被代码固化，改动会波及 IPC 类型与前端。
-**本轮不改任何功能代码**，只写 ADR-0003 与随之的文档记账（`ROADMAP` 勾选、plan 归档、本文）。
+**阶段 5（SSH 栈）的形状先定死在 [ADR-0003](./adr/0003-ssh-stack-and-resource-model.md) 里**
+（plan 0501，2026-09-12）：`russh` 的版本与 feature、运行时归谁、`Transport` 在 SSH 上的映射、
+`direct-tcpip` 原语的形状、隧道状态机与重连判据全部**带出处**写死（上游源码行号 /
+`Cargo.lock` / 本机实测）。它先写是有理由的：这些点一被代码固化，改动就波及 IPC 类型与前端。
 
-**下一步是阶段 5 的 plan 0502**：`src-tauri/crates/akasha-ssh` 的连接 + 认证 ——
-但它的状态是**未规划（骨架）**，开工前要先把「步骤」与「验收命令」补齐（骨架 plan 不许开工，
-`docs-check` 会拦）。ADR-0003 §12 里挂给 0502 的两条（`TransportError` 的背压变体、
-`transport.rs:47` 那条注释）要在展开时一并吃进去。
+**阶段 5 的第一块落地了**：`src-tauri/crates/akasha-ssh` 建起来，能**连接 + 认证**了
+（plan 0502，2026-09-13）—— 纯 Rust（`russh` 0.63.3 + `ring`），认证按
+**agent → 密钥池 → keyboard-interactive → password** 的顺序走，同一台主机的
+第二、第三次连接**不再问凭据**（内存缓存，绝不落盘）。判据「同主机开三个 Session 只问一次凭据」
+在 crate 层用**进程内的 SSH 服务端**实测通过；ADR-0003 §12 挂给它的两条
+（`TransportError::Busy`、能力位那条注释）也一并落地。
+
+⚠️ **边界照实说**：那条判据是**三个连接**（= 三个 Session 的载体）在 crate 层成立的，
+**不是**"界面上能开 SSH 标签页" —— **SSH 还没接进 IPC / 前端**（见「进行中 / 下一步」）。
+与真 OpenSSH 的互操作也**没有**验过（测试服务端是我们自己搭的）。
 
 **点叉的语义由配置 × 托盘共同决定**（plan 0302 + 0303）：
 
@@ -101,7 +106,13 @@
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全绿** |
-| `just test` | **186 tests run: 186 passed**（`akasha` 58 + `akasha-pty` 37 + `akasha-core` 15 + **`akasha-store` 76**）。⚠️ `akasha` 那 58 条里含 `tests/portable.rs` 的 **3 条**：没有 `VICTAURI_E2E` 时它们只打印原因并返回（`just test` 里不跑真 app） |
+| `just test` | **208 tests run: 208 passed**（`akasha` 58 + `akasha-core` 15 + `akasha-pty` **39** + `akasha-store` 76 + **`akasha-ssh` 20**）。⚠️ `akasha` 那 58 条里含 `tests/portable.rs` 的 **3 条**：没有 `VICTAURI_E2E` 时它们只打印原因并返回（`just test` 里不跑真 app） |
+| ↑ **判据：同主机三个连接只问一次凭据**（plan 0502） | ✅ `three_sessions_ask_for_one_credential`：`provider.calls() == 1`、缓存 `len() == 1`、服务端三次都收到**同一句口令**，且三个连接各自跑通一条命令（只数次数会放过"缓存的凭据其实没被拿去认证"） |
+| ↑ **认证顺序是线协议上的事实**（plan 0502） | ✅ 服务端记下的序列：`publickey → password`、`publickey → keyboard-interactive`；`SSH_AUTH_SOCK` 指向不存在的 socket 时序列里**没有** `publickey` 痕迹（agent 那档静默跳过） |
+| ↑ **主机密钥钉错就拒绝，错误里带指纹**（plan 0502） | ✅ `HostKeyRejected { fingerprint }` = 服务端真实指纹，且**认证一步都没开始** |
+| ↑ **字节往返 / 尺寸 / 结局**（plan 0502） | ✅ 写入的字节原样回声；`resize(120x40)` → 服务端收到并把 `window:120x40` 回声回来；`shutdown()` 拿到 `ExitStatus::Code(7)` 且**幂等**；`session_leader() == None` |
+| ↑ **D13 对"凭据缓存"这个新用途的第四次重验**（plan 0502） | ✅ `VmLck` 0 → **32 kB**、`-p`（静止态无权限）页数 **+8**；清空并释放后**两者都回到起点** |
+| ↑ **`russh` 从"读源码核对"变成编译期事实**（plan 0502） | ✅ `cargo tree -p akasha-ssh \| grep -c aws-lc` = **0**；`ring v0.17.14` 是 lock 里**唯一**的 ring；features 只有 `ring` / `rsa`；上游 MSRV 1.89 ≤ 本机 1.98.1 |
 | ↑ 本轮新增 | **6 条**：`config` 3 条（便携目录判定 / 探针可写正负对照）+ `tests/portable.rs` 3 条 |
 | ↑ **搬走整个文件夹之后，数据还在且能用**（plan 0405 判据） | ✅ 配方 `just portable`：`A 的 vault_status = {path: …-a/akasha-data/akasha.db, state: missing}` → 灌四套池 → `mv` → `B 的 vault_status = {path: …-b/…, state: present}` → **`vault_unlock` 读回 `{keys:1,hosts:1,serials:1,forwards:1}`**；库侧再用同一口令打开逐项比对**内容**（只对行数不够） |
 | ↑ **"app 挑的是哪个数据目录"不靠日志反推** | ✅ 两条独立观察：`lifecycle` probe 里的 `close_behavior`（读到跟着搬走的 `config.json` = `exit`）+ `vault_status` 报的绝对路径分别在 A / B 里 |
@@ -125,7 +136,7 @@
 | `just docs-check` | 全过（ROADMAP 条目在 3 行内且无代码块 / plan ≤200 行且索引一致） |
 | `ast-grep scan` + `ast-grep test`（同一行：**真代码** / **规则自己**） | 都退出 **0**。六条规则走了**两道**：先按 §6 用真实路径探针重验（正例 **10 命中** / 诱饵 **0 误报**），再把正反例固化成 `rule-tests/`（6 个文件 + `__snapshots__/`；删掉快照从零重建后 **6 passed**），由 `just lint` 里的 `ast-grep test` 跑。**这一轮抓到两处规则缺陷**：`no-string-pty-channel` 漏限定路径写法（坑 #101）、`no-ui-vocab-in-types` 按子串误伤 `Table` / `Panel` / `Viewport`（坑 #103） |
 | **三条 unsafe 注释 lint**（本轮新增的强制，`just lint` 的 clippy 那一步） | 退出码 **0**；三条各用一个探针证明**它们真的会红**：`undocumented_unsafe_blocks` → 把 `apply_key` 的 `// SAFETY:` 改名即报（**私有函数也报**）；`unnecessary_safety_comment` → 在安全语句上挂一条 `// SAFETY:` 即报；`unnecessary_safety_doc` → 给安全函数加 `/// # Safety` 即报。探针跑完即撤，仓库里不留 |
-| **文档一致性与正确性核查**（本轮：核对了 17 份文档 —— 规范 1 + 顶层 2 + `docs/` 7 + ADR 5 + plan 索引与在办 plan 2，逐处改掉过时说法） | ✅ 相对链接 **231 条全部可解析**；`cargo nextest list --workspace` 逐 crate 计数与本文的 **58 / 37 / 15 / 76 = 186** 一致；`unsafe` **3 处**（库 1 + 它的契约测试 2，都带 `// SAFETY:`）；`BatchPolicy::DEFAULT` = 64 KiB + 16 ms、`MAX_LEN` = 256、`MAX_JUMP_DEPTH` = 32、私钥页 16384 字节逐条对上代码 |
+| **文档一致性与正确性核查**（本轮：核对了 17 份文档 —— 规范 1 + 顶层 2 + `docs/` 7 + ADR 5 + plan 索引与在办 plan 2，逐处改掉过时说法） | ✅ 相对链接 **231 条全部可解析**；`cargo nextest list --workspace` 逐 crate 计数与**那一轮**本文的 **58 / 37 / 15 / 76 = 186** 一致；`unsafe` **3 处**（库 1 + 它的契约测试 2，都带 `// SAFETY:`）；`BatchPolicy::DEFAULT` = 64 KiB + 16 ms、`MAX_LEN` = 256、`MAX_JUMP_DEPTH` = 32、私钥页 16384 字节逐条对上代码 |
 | `cargo tree -p akasha-core` \| `grep -c tauri` | **0**（分层成立） |
 | `just bench`（criterion） | 52.7 GiB/s / 14.1 ns 每批 / 9.64 GiB/s（**0201 的数字，本轮未复跑**） |
 
@@ -171,18 +182,30 @@
 - **三条 unsafe 注释 lint 的行为随 clippy 版本变**：本机 1.98 实测**也查私有项**，
   所以**没有**照抄内核的 `check-private-items`（理由见坑 #96）。若升级后私有项不再被查，
   表现是**静默失效** —— 那时才需要补一个 `clippy.toml`。
-- **`russh` 只做过"读源码级"的核对，没有真编译过**：ADR-0003 的事实来自 crates.io 元数据 +
-  下载的源码，**没有**任何一行 `russh` 代码进过我们的依赖树。真正的编译期结论（feature 组合是否
-  真能编、`ring` 是否复用同一个版本、MSRV 是否够）要到 plan 0502 加依赖时才成立。
-- **本沙箱里 `cargo add` 会被拒**（坑 #105）：写 `~/.cargo/registry` 的索引缓存报
-  "只读文件系统"；`--dry-run` 也因此提前中止 —— 所以"能不能解析出这个 feature 组合"
-  今天**没被验证过**。
+- **SSH 的测试服务端是我们自己搭的（`akasha-ssh/tests/support`）**：它证明的是**客户端这条链**
+  （顺序、缓存、失效、字节往返），**不是**与 OpenSSH 的互操作 —— 没连过真的 `sshd`，
+  也没连过任何真实服务器。协议细节（算法协商、`exit-status` 的时序、`ssh-rsa` 那类历史包袱）
+  都可能在我们这套服务端上恰好成立而在真服务器上不成立。
+- **真实 agent 那条路只有"不可用"被覆盖了**：`an_unavailable_agent_falls_through` 验的是
+  "agent 不在 → 静默落到下一档"；**agent 里真有钥匙、且服务端认它**这条从未跑过
+  （要一个真的 agent 或自己实现一份 agent 协议服务端）。
+- **并发未命中会各问一次**：`CredentialCache::resolve` 没有 single-flight ——
+  两条连接**同时**未命中同一个键时会问两次。判据说的是**顺序**开三个，那条成立；
+  并发那条要等真有"一次开多个会话"的场景再做。
+- **保活那三个数是默认值、不是实测值**（ADR D15）：本 plan 没造出"半死连接"（对端不响应、
+  TCP 也没断）与高延迟链路，`keepalive_interval = 30s` / `max = 3` 是按理由选的，
+  真机验收要等阶段 6 的重连用例。
+- **私钥与口令各有一份够不着的明文副本**（D8 照实记）：`russh` 要 `ssh_key::PrivateKey` 才能
+  签名、要 `String` 才能送口令，两者都在**普通堆**上，我们擦不掉。缓解只有"活在握手窗口内、
+  用完即 drop、不进缓存"。
+- **SSH 还没接进 IPC / 前端**（见「进行中」）：今天没有任何界面 / 命令能开一个 SSH 会话 ——
+  真路径证据只到 `akasha-ssh` 的集成测试。
 
-## 当前基线（2026-09-12 实测，workspace root = `src-tauri/`）
+## 当前基线（2026-09-13 实测，workspace root = `src-tauri/`）
 
 | 项 | 实测结果 |
 |---|---|
-| workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` / **`akasha-store`** |
+| workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` / `akasha-store` / **`akasha-ssh`** |
 | 二进制落点 | `src-tauri/target/debug/akasha`（另有代码生成工具 `gen-types`，故必须 `default-run`，坑 #29） |
 | 后端模块 | `bindings` / `session` / `tray` / `config`（载体 + **数据目录 + 便携目录的可写性检查**）/ `lifecycle` / `single_instance` / **`vault`（库的落点、状态与解锁生命周期）** / `watchdog` |
 | **关窗语义** | 判据 = `akasha-core::CloseAction::decide(close_behavior, tray_ready)`；app 侧 `CloseRequested` → **先 `hide()`、成功才 `prevent_close()`**。**不挂 `RunEvent::ExitRequested`**（理由见 `lib.rs` 注释与坑 #65） |
@@ -210,7 +233,9 @@
 | **库文件的磁盘事实** | `akasha.db`；建库后 **36864 字节 = 9 页**；SQLCipher 4.5.7 + vendored OpenSSL 3.6.3 + 内嵌 SQLite **3.46**；`user_version = 1` 是格式权威（**含 0** 一律拒绝）**且要四张表都在**；盐 16 字节随机、就在文件头前 16 字节；显式收紧到 **600**；不带 `-wal` / `-shm`；解锁代价 **~105 ms**（KDF）。`cipher_memory_security` 是**进程级、只能开不能关** |
 | **解锁与锁定** | app 侧 `Vault { unlocked: Mutex<Option<Unlocked>> }`，`Unlocked { conn, passphrase }` —— **同生共死**。`vault_unlock`：`Missing`/`Empty` → 建、`Present` → 开，返回四套池行数（`u32`）；已解开 → `AlreadyUnlocked`（**不替换**）。**只有显式锁**：关窗/退出不锁、无空闲超时 |
 | **口令经 IPC 进来的形态** | `PassphraseInput`（newtype，`specta(transparent)` → TS `string`）：**没有 `Debug`/`Clone`**，唯一出路是 `into_bytes()`。⚠️ tauri 自己那两份够不着（ADR-0002 §7.5） |
-| **SSH 栈（形状已定，代码未落）** | [ADR-0003](./adr/0003-ssh-stack-and-resource-model.md) 已进入「实现中」：`russh = "=0.63.3"` + `ring`（lock 里已有 0.17.14，不新增 crypto 后端）；`akasha-ssh` **只收 `tokio::runtime::Handle`**（库不自建 runtime）；对外是同步 `Transport` 门面 + 双向 mpsc；一实体一连接（不复用）；隧道五态 + 重连 3 次（1s / 2s / 4s，**认证失败不重连**）；`session_leader() = None`。⚠️ `akasha-ssh` **还没创建**，`russh` **还没进 `Cargo.toml`** |
+| **SSH 栈**（[ADR-0003](./adr/0003-ssh-stack-and-resource-model.md)，**已有一块代码**） | `russh = "=0.63.3"`、`default-features = false`、features `["ring","rsa"]`（实测 `aws-lc` **0** 命中、ring 只有 lock 里原有的 0.17.14）；`akasha-ssh` **只收 `tokio::runtime::Handle`**；对外是同步 `Transport` 门面 + 两条**有界** mpsc（满 → `TransportError::Busy`，**不用 `blocking_send`**）；capability = `resize + exit_status`、`session_leader() = None`；隧道五态 + 重连 3 次（1s/2s/4s，**认证失败不重连**）仍是阶段 6 的事 |
+| **`akasha-ssh` 的形状** | 五个模块：`target`（`SshTarget`）/ `credential`（`Credential` + `CredentialCache`）/ `keys`（`KeyCandidate` / `SshAuth`）/ `handshake`（`SshConfig` / `SshConnect` / `HostKeyVerifier` + `russh` 的 client `Handler`）/ `transport`（`SshTransport` = 同步门面 + 一条 task）。**凭据缓存键** = `(host, port, user, 认证方式)`，私钥口令那支再加**哪把钥匙**；值住 `akasha-store` 的**同一页受保护内存**（`protected` 已提为 `pub`）；三条失效（库锁定/退出 → `clear`、服务端拒绝 → `forget`、显式忘记）、**没有 TTL** |
+| **连接取值**（ADR D15，plan 0502 定） | `connect_timeout = 10s`；`keepalive_interval = Some(30s)`、`keepalive_max = 3`（上游默认 `None` / 3）；`nodelay = true`（上游默认 `false`）。默认值只有一处：`SshConfig::default()`。⚠️ 这三个数是**有理由的默认值**，不是实测出来的（本 plan 没造出半死连接与高延迟链路） |
 | 合批参数 | `max_bytes` = 64 KiB、`max_delay` = 16 ms（`BatchPolicy::DEFAULT`，唯一来源） |
 | CSP | `default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:`；`devCsp` 多一个 `ws://localhost:1420 http://localhost:1420` |
 | capabilities | 仍只有 `core:default` + `opener:default`（+测试用的 `victauri`）。**托盘、配置、单实例、便携目录检查都没有加任何 permission**（全在 Rust 侧）；库的三条命令是**我们自己的 command**，不需要 ACL permission |
@@ -218,10 +243,17 @@
 
 ## 进行中 / 下一步
 
-- [ ] **下一步 = 阶段 5 的 plan 0502**（[`akasha-ssh`：连接 + 认证](./plans/0502-ssh-connect-auth.md)）：
-  先把骨架展开成可粘贴的验收命令再开工；[ADR-0003 §12](./adr/0003-ssh-stack-and-resource-model.md)
-  挂给它的两条（`TransportError` 的背压变体、`transport.rs:47` 那条注释）一并吃进去。
-  ⚠️ 真加依赖时 `cargo add` 要写 `~/.cargo` 的索引缓存，本沙箱会拒（坑 #105）。
+- [ ] **下一步 = 阶段 5 的 plan 0503**（[`direct-tcpip` 原语](./plans/0503-direct-tcpip-primitive.md)）：
+  它同样是**未规划（骨架）**，要先把「步骤」与「验收命令」补齐。落地时它会**改本轮的形状**：
+  `SshTransport` 现在把 `Handle` 交给那条 task（收尾的唯一出口），而 D9 的原语要
+  `direct_tcpip(&Handle, host, port)` —— 两者得先对齐（这也正是 0503 骨架里"本 plan 一旦定了
+  形状，另两处只能适配它"那条清单项）。
+- [ ] **⚠️ 新发现的缺口：SSH 还没有接进 IPC / 前端**（本轮判据只到 crate 层）。
+  要"界面上能开 SSH 会话"还缺三样：`open_session` 之外的一条**带目标**的命令、
+  一条"后端问凭据 → 前端答"的**往返协议**（事件 + 命令）、以及一个提示界面。
+  **它不在 ROADMAP 里** —— 需要先补一个条目（编号 0506 起）再动手，别夹在 0503 里做。
+- [ ] **plan 0505（known_hosts）会改 `akasha-store` 的 schema**（加表 = `user_version` 迁移），
+  而本轮的 `HostKeyVerifier` 只有"钉住一把密钥"这一个实现 —— 策略层留着口子，没实现。
 - [ ] **阶段 3 收口后的两条复核**（托盘时代带来的前提变化，都还没做）：
   - 0205 的看门狗生命周期仍然 = 一个 app 实例（ADR-0005 §6 的复审条件之一）；
   - 0305/0306 的前提 ② "关最后一个标签页 = 空状态"在"窗口隐藏"成为常态之后是否仍然合适。
@@ -229,7 +261,35 @@
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测，剩 CI 三平台格子
 - [ ] **正式 UI**：等设计稿（见上面「UI 现状」）—— 没有验收标准，故**不进 ROADMAP**
 
-### 本轮完成（plan 0501：ADR-0003 进入「实现中」）
+### 本轮完成（plan 0502：`akasha-ssh` 连接 + 认证）
+
+**这一轮的判据来自 ROADMAP**：同主机开三个 Session **只问一次**凭据。做法是先按约定把骨架
+plan 展开成可粘贴的验收命令（骨架不许开工，`docs-check` 会拦），再落 crate。
+
+- [x] **新建 `src-tauri/crates/akasha-ssh`**（第五个成员）：`target` / `credential` / `keys` /
+  `handshake` / `transport` 五个模块。对外**只是 `akasha_pty::Transport`** —— 会话层与前端
+  一行都没改（这正是 ADR-0003 D3 要的"装进同一个 trait"）
+- [x] **判据实测**：三个连接（= 三个 Session 的载体）到同一台**进程内 SSH 服务端**，
+  `provider.calls() == 1`、缓存一条、服务端三次收到同一句口令，且每个连接都跑通一条命令
+- [x] **认证顺序是线协议上的事实**：服务端记下的序列 `publickey → password` /
+  `publickey → keyboard-interactive`；agent 不可用时序列里**没有** `publickey` 痕迹
+- [x] **凭据缓存**（D8）：键带用户与"哪把钥匙"（实现时发现同一主机两把钥匙各有各的口令）；
+  值住**同一页受保护内存**（`akasha-store::protected` 提为 `pub`，不抄第二份）；
+  三条失效各有用例；**没有 TTL**
+- [x] **ADR-0003 §12 挂给它的两条一并落地**：`TransportError::Busy`（队列满时的唯一说法，
+  不用 `blocking_send`）、`transport.rs` 那条把"没有本地进程"与"没有结局"混成一句的注释
+- [x] **D13 第四次重验**：`VmLck` 0 → 32 kB、静止态无权限页 +8，清空后**都回到起点**
+  （`Credential` 这个新用途）
+- [x] **顺带改了两处 ADR 自己的错**（实现中状态可改，§14 记了修订）：`-R` 的验收原先挂在
+  plan 0502 名下，实际属于 **plan 0604**；新增 **D15**（超时 10s / 保活 30s×3 / `nodelay`）
+- [x] **门禁**：`just ready` **6/6**（test **208 passed**，`akasha-ssh` **20** 条）；
+  `cargo tree` 实测 `aws-lc` **0** 命中、`ring` 只有 lock 里原有的 0.17.14
+- [x] **记账**：plan 0502 改「已完成」并 `git mv` 进 `archive/`（索引与 ROADMAP 指针同步）
+
+⚠️ **没做到的照实记**：与真 OpenSSH 的互操作、真实 agent 那条路、"半死连接"的保活实测、
+并发未命中时的提问去重、以及**把 SSH 接进 IPC / 前端**（见「进行中」）。
+
+### 上一轮完成（plan 0501：ADR-0003 进入「实现中」）
 
 **这一轮不动功能代码**：只写 [`docs/adr/0003-ssh-stack-and-resource-model.md`](./adr/0003-ssh-stack-and-resource-model.md)
 （把 SSH 这一层的线协议与资源模型定死），外加随之的记账（`ROADMAP` 勾选、plan 归档、本文）。
@@ -254,7 +314,7 @@
 - [x] **记账**：plan 0501 改「已完成」并 `git mv` 进 `archive/`（索引与 ROADMAP 指针同步），
   `docs/adr/README.md` 的 0003 行改「实现中（2026-09-12）」，`ROADMAP.md` 阶段 5 第一条勾选
 
-### 上一轮完成（文档一致性与正确性核查 + unsafe 注释按 Linux 内核规范强制）
+### 更早（文档一致性与正确性核查 + unsafe 注释按内核规范强制）
 
 **这一轮不动功能代码**：做的是"文档说的与代码做的是不是同一件事"，外加把 unsafe 的注释
 规范从一句话（"要有 `// SAFETY:`"）变成**可按内核做法执行的规定**。
@@ -294,7 +354,7 @@
   最后才是 `grep` / `read`」挑，理由（token 与语义，附本次的实测例子）写在里面
 - [x] 门禁：`just ready` **6/6**（lint 3s / test 58s —— 因 `Cargo.toml` 变了而全量重编）
 
-### 更早（plan 0405：可搬迁性验证 + ADR-0002 定案）
+### 更早（plan 0405 / ADR-0002 定案）
 
 **判据是 ROADMAP 那一句**：移动整个文件夹后重启，**原有主机 / 密钥 / 规则都在**
 （只验证"能开"不算过）。
@@ -359,9 +419,13 @@
 - **规则测试在哪**：`rule-tests/`（每条规则一个文件 + `__snapshots__/` 基线），
   由 `just lint` 里的 `ast-grep test` 跑；⚠️ 它**不覆盖** `files:` / `ignores:` ——
   改路径范围仍要按 `AGENTS.md` §6 用真实路径探针复核一次（坑 #104）。
-- **SSH 这一层的形状在哪**：`docs/adr/0003-ssh-stack-and-resource-model.md`（状态「实现中」）。
-  动手前先读它 §2 的「事实依据」（版本 / API 都带出处）与 §12 的未决清单；
-  `src-tauri/crates/akasha-ssh/` **目前不存在**，根 `Cargo.toml` 里也**没有** `russh`。
+- **SSH 这一层的形状在哪**：`docs/adr/0003-ssh-stack-and-resource-model.md`（状态「实现中」，
+  §14 有修订记录）。动手前先读 §2 的「事实依据」（版本 / API 都带出处）、D1–D15 与 §12 的未决清单。
+- **SSH 的代码在哪**：`src-tauri/crates/akasha-ssh/`（五个模块；`tests/support/` 里是**进程内**的
+  `russh` 测试服务端 —— 改客户端行为时先看它能不能观测到）。⚠️ 它**还没接进 app**：
+  `src-tauri/src/` 里没有任何一行引用它，`src/ipc/bindings.ts` 也没有变化。
+- **加依赖时**：`Cargo.toml` 写 `=` 钉版本（`russh` 与 `tauri-specta` 同一条口径）；
+  本沙箱里 `cargo add` 会拒（坑 #105），而 `cargo deny` 还会去拉别的平台的依赖（坑 #106）。
 
 ## 踩过的坑（避免重复踩）
 
@@ -515,3 +579,23 @@
      会因此**在解析之前就中止**（输出仍以"aborting add due to dry run"收尾，看起来像成功）。
      → 加依赖时别把 `--dry-run` 的退出码当成"解析通过"；真要加就按坑 #11 那一类**直接提权**。
      这也是"ADR 里的版本结论只到源码级、没有编译级证据"的原因（见「待验证」）。
+106. **`cargo deny` 会为 `cargo metadata` 去拉**别的平台**的依赖**：加了 `russh` 之后，
+    `just deny-offline` 开始尝试下载 `pageant` / `windows-numerics`（`russh` 的
+    `cfg(windows)` 那一支），而 `~/.cargo/registry/cache` 在沙箱里是只读的 →
+    `failed to open … Read-only file system (os error 30)`。这与坑 #11 同一类（写工作区之外），
+    **提权重试即过**。教训：一条依赖**跨平台**的 crate 会让门禁在**所有平台**上拉齐依赖树 ——
+    `cargo build` 成功不代表 `cargo deny` 能跑（后者要全目标）。
+107. **edition 2024 的 `impl Trait` 会捕获输入生命期**：`russh::server::Server::run_on_socket`
+    返回的 future 借了 `&mut self` 与 `&listener`，于是它**不能**被丢进 `tokio::spawn`
+    （`E0597: does not live long enough`，而报错指向那两个局部变量，不指向 `impl Trait`）。
+    正解不是 `Box::leak`，而是**别用那个便利方法**：自己写 accept 循环 +
+    `russh::server::run_stream(config, socket, handler)` —— 三样都被 move 进任务，没有借出。
+    测试服务端（`akasha-ssh/tests/support`）就是这么搭的。
+108. **`Transport::output_stream()` 只能取一次**，所以"同一载体上的多段断言"要**读在同一次**里：
+    先写、再 resize、然后一次 `read_until` 读到两个证据（服务端把收到的尺寸回声回来）。
+    分成两次 `round_trip` 会直接 panic 在"读端只能取一次"上 —— 而那条契约是**故意**的
+    （两个读端会互相偷字节，`akasha-pty/src/transport.rs`）。
+109. **`std::env::set_var` 在 Rust 2024 里是 `unsafe`**，而本仓库只允许 `akasha-store`
+    出现 `unsafe`（§3.4 + ast-grep 规则）—— 也就是说**凡是靠环境变量开关的行为，测试就造不出前提**。
+    正解：把它变成**输入**（`SshAuth::agent_socket`），而不是在测试里改环境。
+    这条对将来所有"靠 env 配的东西"都适用。

@@ -7,7 +7,7 @@
   capability 取值；`Session` ↔ 连接的**所有权**；隧道状态机与事件；`akasha` 侧的 tokio runtime；
   阶段 6 / 7 的接口形状
 - **关联**：[plan 0501](../plans/archive/0501-adr-0003-ssh-stack.md)（本文的落地）、
-  [0502](../plans/0502-ssh-connect-auth.md) / [0503](../plans/0503-direct-tcpip-primitive.md) /
+  [0502](../plans/archive/0502-ssh-connect-auth.md) / [0503](../plans/0503-direct-tcpip-primitive.md) /
   [0504](../plans/0504-ssh-config-subset-import.md) / [0505](../plans/0505-known-hosts.md)、阶段 6 全部
 - **取代**：无
 
@@ -113,12 +113,29 @@
     `std::io::Read`（`output_stream()`），再交给现有的合批器 `akasha_pty::spawn_batcher`。
 - **理由**：`src-tauri/src/session.rs:102` 已经持有 `Box<dyn Transport>`，SSH 因此**不需要**改动
   会话层与前端 —— 这正是 `scope.md` §2 要求"用 capability flag 而不是新 trait"的兑现。
-- ⚠️ **落地时要补的一条契约**（记进 plan 0502）：`write_session` 现在是**同步** command
+- ✅ **这条契约已落地**（plan 0502）：`TransportError::Busy(&'static str)` 是队列满时的唯一说法。
+  背景照记：`write_session` 是**同步** command
   （`session.rs:643`），而 async command 走 `crate::async_runtime::spawn`
   （`tauri-2.11.5/src/ipc/mod.rs:329`）—— 也就是说调用点**是否在 tokio 上下文里**取决于
   command 怎么写，门面不能假设。所以队列满时的行为必须是一个**显式错误**（`TransportError`
   需要一个新的背压变体，`Unsupported` / `Closed` 都不合适），而不是阻塞调用线程的
   `blocking_send`（它在 tokio 上下文里会 panic，在任何上下文里都可能把 UI 拖住）。
+
+### D15 —— 连接取值：超时 10 s、保活 30 s × 3、`nodelay = true`（plan 0502 定案）
+
+- **决定**：`connect_timeout = 10s`；`keepalive_interval = Some(30s)`、`keepalive_max = 3`
+  （上游默认是 `None` / 3）；`nodelay = true`（上游默认 `false`，即 Nagle 开着）。
+  默认值写在 `akasha-ssh` 的 `SshConfig::default()` 一处。
+- **理由**：
+  - **保活必须给一个值**：上游默认 `None` = 永不发保活，于是一条"半死"的连接
+    （对端不响应、TCP 也没断）会一直挂着，而症状是**用户以为还连着**。
+    30 s × 3 ≈ 90 s 发现它；更短会在长连接设备上多出可观的空包。
+  - **`nodelay = true`**：交互式终端的输入是"一次按键一个小包"，Nagle 会把它们攒起来
+    等确认 —— 那是可感知的输入延迟，而 SSH 交互**正是**这个场景。
+  - 超时 10 s 是"够慢的网络也来得及、又不至于让用户以为卡死"，与阶段 6 的重连退避
+    （1 s / 2 s / 4 s）是两件事：这一条管**一次**尝试活多久。
+- ⚠️ 实测回填：本 plan 没有造出真实的"半死连接"与高延迟链路，所以这三个数值是
+  **有理由的默认值**，不是实测出来的最优值。真机验收（阶段 6 的重连用例）时再回填。
 
 ## 4. `Transport` 的 SSH 映射（D4）
 
@@ -131,14 +148,18 @@
 | 本地 PTY（现状） | ✅ | ✅ | 有（看门狗用） |
 
 - **理由**："能力"按**载体**取值，不按后端。隧道是一条纯字节管道，它没有尺寸也没有结局。
-- ⚠️ **现有注释与本条冲突，实现时改**：`akasha-pty/src/transport.rs:47` 写的是
+- ✅ **那条冲突的注释已改**（plan 0502）：`akasha-pty/src/transport.rs` 里 `Capabilities::exit_status`
+  现在的文档写的是"有没有结局"，并点明"没有本地进程"是 `session_leader()` 的事。
+  原先写的是
   "能否给出退出结局。serial 与 SSH 没有本地进程语义。" —— **"没有本地进程"与"没有结局"是两件事**：
   SSH 没有本地 pid，但远端 shell 会报 exit-status / exit-signal。`scope.md` §2 的那句话
   （"SSH 没有本地进程语义"）因此仍然成立，它说的是 pid。
 - `session_leader() = None` 是 ADR-0005 §6 要求**每个新载体**回答的那一问：SSH 这条路上没有
   本地进程要代收。app 被 SIGKILL 时 socket 由内核关闭，服务端随之拆掉 `-R` 的监听 ——
-  所以看门狗对 SSH 无事可做。⚠️ 这条**不许靠推断**：plan 0502 的验收里要有
-  "真退出（含 `kill -9`）之后 `-R` 的远端监听消失"的实测。
+  所以看门狗对 SSH 无事可做。
+  ✅ plan 0502 验的是**这一档本身**（`session_leader()` 返回 `None` 的断言在能力位那条用例里）。
+  ⚠️ **"真退出（含 `kill -9`）之后 `-R` 的远端监听消失"这句原先挂错了地方** —— 它是
+  **plan 0604** 的验收（`-R` 属于阶段 6，plan 0502 里连 `-R` 都还不存在）。改它的那次修订见 §14。
 
 ## 5. 所有权与生命周期（D5–D6）
 
@@ -291,9 +312,6 @@
 - 库内 known_hosts 的**表结构**：阶段 4 的四套池里还没有它，加表意味着 `user_version` 的
   一次迁移 —— plan 0505 要动 `akasha-store` 的 schema。
 - SFTP 的 B 档消费 D9 原语的具体接法 —— plan 0703。
-- `TransportError` 的背压变体、以及 `transport.rs:47` 那条注释的修改 —— plan 0502（见 D3 / D4）。
-- 连接保活的具体取值（`keepalive_interval` 上游默认 `None`，我们必须给一个值才可能发现
-  "半死"的连接）—— plan 0502 定，实测后回填。
 
 ## 13. 复审条件
 
@@ -309,3 +327,4 @@
 | 日期 | 改了什么 | 为什么 |
 |---|---|---|
 | 2026-09-12 | 初稿；状态置「实现中」 | plan 0501：动 `akasha-ssh` 之前先把线协议与资源模型定下来 |
+| 2026-09-13 | D3 / D4 里"落地时要补"的两条改成**已落地**（`TransportError::Busy`、能力位注释）；新增 **D15**（超时 / 保活 / `nodelay`）；§12 删掉已定的三条；把"`-R` 远端监听消失"这条验收的归属从 0502 改到 **0604** | plan 0502 落地了 D3 / D4 挂给它的两条；`-R` 属于阶段 6，原先把这条验收写在 D4 的 0502 段里是**归属写错**（改它要在 ADR 状态之外留痕，见 `docs/adr/README.md` 的三态） |
