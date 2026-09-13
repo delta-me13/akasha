@@ -170,9 +170,9 @@
 
 目标：本地/远程/动态三类转发，独立 Session，失败可见。
 
-- [ ] 隧道实体（独立于终端 `Session`）+ 状态机
+- [x] 隧道实体（独立于终端 `Session`）+ 状态机
       验收：五态可观测；状态变化发事件
-      → [plan 0601](./docs/plans/0601-tunnel-entity-state-machine.md)
+      → [plan 0601](./docs/plans/archive/0601-tunnel-entity-state-machine.md)
 - [ ] 本地转发 `-L`（复用阶段 5 的 `direct-tcpip`）
       验收：转发端口可访问远端服务
       → [plan 0602](./docs/plans/0602-local-forward.md)
