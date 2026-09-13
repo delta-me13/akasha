@@ -171,20 +171,25 @@ ready:
 #    * 独立配方 docs-style 实现在上面，本配方第一步调用它
 #
 # 文档纪律（四部分，规则见 AGENTS.md §8 / §8.1 / §8.2，plan 规则见 docs/plans/README.md）。
-# 文档语体：剥离代码块与行内代码后匹配禁用语表（规范见 AGENTS.md §8.2）
+# 文档语体：剥离代码块与行内代码后匹配禁用语表。
+#   表在 docs/style.md 的 BANNED 标记之间（唯一数据源；加词步骤见该文件 §2），
+#   规则本体与术语对照见 AGENTS.md §8.2。片段拼成一条正则后逐份文档 grep -E。
 docs-style:
-    @bad=0; \
-    pat='你|您|咱们|各位|吧|嘛|呀|哦|啦|嗯|哎|其实|反正|干脆|顺便|搞定|收尸|摘牌|挂住|够不着|白送|收工|人眼|坑|弄|搞|跑|关掉|收掉|半截|顺手|踩到|搬家|搬走|四套池|真 app|打出来'; \
+    @pat=$(awk '/<!-- BANNED:BEGIN -->/{f=1;next} /<!-- BANNED:END -->/{f=0} f' docs/style.md \
+             | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
+             | grep -vE '^(#|```|$)' | paste -sd'|'); \
+    if [ -z "$pat" ]; then echo "❌ 读不到禁用语表 —— 检查 docs/style.md 的 BANNED 标记与内容"; exit 1; fi; \
+    bad=0; \
     for f in AGENTS.md CLAUDE.md README.md ROADMAP.md $(find docs -name '*.md' | sort); do \
-      hits=$(awk 'BEGIN{n=0} /^[[:space:]]*```/{n=!n;next} n==0{print}' "$f" | sed -E 's/`[^`]*`//g' | grep -nE "$pat" || true); \
+      hits=$(awk 'BEGIN{n=0} /^[[:space:]]*```/{n=!n;next} n==0{print}' "$f" | sed -E 's/`[^`]*`//g' | grep -nE -e "$pat" || true); \
       if [ -n "$hits" ]; then \
-        echo "❌ $f 命中禁用语（AGENTS.md §8.2）:"; \
+        echo "❌ $f 命中禁用语（表见 docs/style.md，规则见 AGENTS.md §8.2）:"; \
         printf '%s\n' "$hits" | head -n 20; \
         bad=1; \
       fi; \
     done; \
-    if [ "$bad" != "0" ]; then echo "→ 语体规范与术语对照见 AGENTS.md §8.2"; exit 1; fi; \
-    echo "✅ 文档语体通过（禁用语表无命中）"
+    if [ "$bad" != "0" ]; then echo "→ 术语对照见 AGENTS.md §8.2；加词与收窄见 docs/style.md §2"; exit 1; fi; \
+    echo "✅ 文档语体通过（docs/style.md 的禁用语表无命中）"
 
 docs-check:
     @just docs-style

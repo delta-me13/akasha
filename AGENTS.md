@@ -426,6 +426,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 | `docs/portable.md` | **可搬迁性怎么落地**：要求、数据目录、验证方法 | 随实测变 |
 | `docs/bitwarden.md` | **Bitwarden 集成的展开**：许可证、条目字段、指纹语义 | 随上游版本与实测变 |
 | `docs/logging.md` | **日志怎么写**：消息形态（含反面例子）、字段词汇、级别 | 几乎不变 |
+| `docs/style.md` | **文档语体怎么执行**：禁用语表（`just docs-style` 的唯一数据源）+ 加词步骤 | 几乎不变 |
 | `docs/STATUS.md` | 现在在哪 | **每次会话覆盖写，不追加** |
 | `docs/adr/NNNN-*.md` | 为什么这样定 | **三态**：提议中 → 实现中（**可改**，每次改动记一行）→ 已定案（**不可变**，只能被新 ADR 取代）。判据见 `docs/adr/README.md` |
 | `docs/plans/TTxx-*.md` | 这次怎么做（一个工作项一个文件） | 进行中就地修改；**完成后整份移入 `docs/plans/archive/`** |
@@ -508,9 +509,10 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 - 一切数字、实测结论、命令输出与基线；
 - 强调标记（`**…**`、`⚠️`、`✅`/`❌`）与表格结构 —— `⚠️` 只标"静默失败"类约束。
 
-**执行**：`just docs-style` 在剥离代码块与行内代码后匹配上表的禁用语，并由 `just docs-check`
-调用，因此 `just ready` 覆盖它（§7）。禁用语表是回归护栏，不替代人工判断：改动文档时按本节判断，
-不得只求门禁转绿。
+**执行**：`just docs-style` 在剥离代码块与行内代码后匹配**禁用语表**，并由 `just docs-check`
+调用，因此 `just ready` 覆盖它（§7）。表本身在 [`docs/style.md`](./docs/style.md) —— 它是唯一
+数据源，含「怎么加一条、怎么收窄」的步骤；本节只回答「该写成什么」。禁用语表是回归护栏，
+不替代人工判断：改动文档时按本节判断，不得只求门禁转绿。
 
 ---
 

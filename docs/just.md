@@ -47,7 +47,7 @@
 | `just syscheck` | 检查系统库是否齐（缺 webkit2gtk 会提前报错） | 根 |
 | `just tools` | 按 `mise.toml` 装齐全局 CLI 工具 | 根 |
 | `just tools-ls` | 看工具版本与来源 | 根 |
-| `just docs-style` | 文档语体：剥离代码块与行内代码后匹配禁用语表（第二人称、语气词、口语虚词、填充语、比喻类术语）。由 `just docs-check` 第一步调用（规范见 `AGENTS.md` §8.2） | 根 |
+| `just docs-style` | 文档语体：剥离代码块与行内代码后匹配禁用语表（第二人称、语气词、口语虚词、比喻与纯口语动词）。表在 [`style.md`](./style.md)，由 `just docs-check` 第一步调用（规则见 `AGENTS.md` §8.2） | 根 |
 | `just docs-check` | 文档纪律：① 文档语体（调用 `just docs-style`）② 命令未漂移 ③ ROADMAP 没长细节（每条 ≤3 行、无代码块、无命令调用）④ plan 预算（≤200 行）+ 索引一致 + 骨架不许开工 | 根 |
 
 > 裸 `just`（不带配方名）命中的是 `default`：它只输出 `just --list`，因此**不上表**，

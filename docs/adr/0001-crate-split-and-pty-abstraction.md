@@ -63,10 +63,14 @@ ssh / serial / sftp / store / 托盘与隧道都会各自成 crate。
 |---|---|
 | 单 crate 布局：`src-tauri` 是包根，无 workspace | 根目录无 `Cargo.toml` |
 | 依赖已就位：`portable-pty 0.9.0`、`vte 0.15.0`、`tauri-specta 2.0.0-rc.25`、`insta`、`criterion` | `src-tauri/Cargo.toml` |
-| **项目当前无法编译** | `just check` 退出码 101；`javascriptcore-rs-sys` 构建脚本报 `Package 'javascriptcoregtk-4.1' was not found`（缺 `webkit2gtk-4.1` 系统库） |
+| **项目当时无法编译**（起草本 ADR 时） | `just check` 退出码 101；`javascriptcore-rs-sys` 构建脚本报 `Package 'javascriptcoregtk-4.1' was not found`（缺 `webkit2gtk-4.1` 系统库） |
 | **CI workflow 当前已失效** | `.github/workflows/victauri.yml` 在仓库根执行 `cargo build` 与 `cargo metadata`，但根目录没有 `Cargo.toml` |
 | ~~`cargo deny init` 无法执行~~ **已更正** | 报缺少 `Cargo.toml`；但**实测在 `src-tauri/` 中执行退出码 0**，正常生成 `deny.toml`。它只要求"当前目录含 `Cargo.toml`"，见 §2.1 |
-| 项目已可编译，质量门禁全绿 | `just check` / `just lint` / `just deny-offline` 均退出码 0（装好 `webkit2gtk-4.1 2.52.6` 后复测） |
+| **项目已可编译，质量门禁全绿**（同日的复测） | `just check` / `just lint` / `just deny-offline` 均退出码 0（装好 `webkit2gtk-4.1 2.52.6` 后复测） |
+
+> 表中两条编译状态是**同一天的先后两步**：起草本 ADR 时项目尚未开工，`webkit2gtk-4.1` 也还没有
+> 安装，因此 `just check` 退出码 101；装好 `webkit2gtk-4.1 2.52.6` 之后复测，编译与门禁全部通过 ——
+> 本节其余结论以**复测后**的状态为准。
 
 ### 1.2 待解决的问题
 
@@ -325,7 +329,8 @@ pub trait PtySession: Send + Sync {
 ## 6. 未决问题
 
 1. **Tauri CLI 在根 workspace 下的 target 目录与 dev watcher 行为**——
-   必须在 `webkit2gtk-4.1` 装好后实测 `just dev`，确认产物路径与重启行为符合预期。
+   必须实测 `just dev`，确认产物路径与重启行为符合预期
+   （2026-09-11 已由 [plan 0104](../plans/archive/0104-dev-loop-retest.md) 复测，结论见该文件的实施记录）。
 2. **Windows ConPTY 差异**——`process_group_leader` / `as_raw_fd` / `get_termios`
    是 unix-only（返回 `Option`）；`ChildKiller` 在 Windows 上的可靠性未验证。
    需要 CI 矩阵（当前只有 ubuntu + xvfb）。
