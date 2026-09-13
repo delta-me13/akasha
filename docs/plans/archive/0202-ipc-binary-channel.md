@@ -9,7 +9,7 @@
 ## 目标
 
 把合批后的字节流经 **`tauri::ipc::Channel<Vec<u8>>`**（或 raw body）送到前端，
-**不走默认 JSON IPC** —— 默认路径会把字节流序列化成数组/字符串，吞吐直接崩（`AGENTS.md` §3.2）。
+**不走默认 JSON IPC** —— 默认路径会把字节流序列化成数组/字符串，吞吐会急剧下降（`AGENTS.md` §3.2）。
 
 同时把这条路径**变成结构性规则**，而不是靠自觉：
 `no-string-pty-channel`（拦截 `Channel<String>` 承载 PTY 字节流）。
@@ -46,7 +46,7 @@ just gen-types        # 期望在当前状态下有明确行为（生成或提�
 ## 验收命令
 
 ```bash
-# 1. 大输出走 raw 通道（真 app、真 PTY、10 MB）
+# 1. 大输出走 raw 通道（真实 app、真 PTY、10 MB）
 just dev                                        # 另开终端常驻
 cd src-tauri
 VICTAURI_E2E=1 cargo test --test session_channel -- --test-threads=1
@@ -60,7 +60,7 @@ ast-grep scan             # 期望退出码 0
 just test                 # 期望全绿（含 app 侧 5 条会话单测）
 ```
 
-**规则负例自检**（用 `cp` 备份还原，别用 `git checkout`，坑 #12）：
+**规则负例自检**（用 `cp` 备份还原，别用 `git checkout`，问题 #12）：
 
 ```bash
 # 在 src-tauri/src/ 下临时放一个探针文件，同时写命中的与被诱饵的：
@@ -93,7 +93,7 @@ impl<T: Serialize> IpcResponse for T      // ← blanket impl，Vec<u8> 也命�
 真正走 raw 的只有 `Channel<InvokeResponseBody>` + `InvokeResponseBody::Raw(bytes)`：
 小包经 eval 送成 `ArrayBuffer`，大包走 fetch 通道；JS 侧 `new Uint8Array(payload)`。
 
-连带两个后果，都记在 `docs/STATUS.md` 的坑里：
+连带两个后果，都记在 `docs/STATUS.md` 的已知问题里：
 
 * **`InvokeResponseBody` 没有 `specta::Type`** → 生成器写不出它的 TS 类型。
   所以命令参数声明成"频道句柄是个字符串"（`RawChannel(String)`，线上本来就是
@@ -102,7 +102,7 @@ impl<T: Serialize> IpcResponse for T      // ← blanket impl，Vec<u8> 也命�
 * **`u64` 不能直接过 IPC**：生成器拒绝它（BigInt 精度），而"危险地当 number 用"是全局开关。
   改用壳层的 `u32` 句柄 + **checked** 转换 —— 截断会把用户的按键送进另一个会话。
 
-### 大输出实测（真 app + 真 PTY）
+### 大输出实测（真实 app + 真 PTY）
 
 ```
 open_session → 1
@@ -119,17 +119,17 @@ write_session → true
 10 MB，不是这条通道。
 
 **帧类型也要断言，不能只看字节数**：`number[]` 的 `byteLength` 是 `undefined`，
-但一旦有人"顺手"改成 `Channel<Vec<u8>>`，字节数在**别的方式**下照样能对上 ——
+但一旦有人改成 `Channel<Vec<u8>>`，字节数在**别的方式**下照样能对上 ——
 所以用例直接数"JSON 帧"并要求为 0。这个哨兵不是多余的：上游
 [PR #13268](https://github.com/tauri-apps/tauri/pull/13268) 修过一次回归 ——
 **小消息**（<1 KiB）的 raw 帧曾变成 `number[]` 而不是 `ArrayBuffer`。
 本机 2.11.5 实测：大包（走 fetch 通道）与小包（<1 KiB 走 eval）都是 `ArrayBuffer`。
 
-### 顺手修掉的两个坑（都不是本 plan 的目标，但不修走不下去）
+### 一并修掉的两个问题（都不是本 plan 的目标，但不修则无法继续）
 
 * **仓库里出现第二个 bin 后，`tauri dev` 直接失败**：
   `cargo run could not determine which binary to run`。症状极具迷惑性 ——
-  Vite 起得来、tauri 开始监听、看起来"什么都正常"，但 app 根本没启动。
+  Vite 可启动、tauri 开始监听、看起来"什么都正常"，但 app 根本没启动。
   修法是 `default-run = "akasha"`。
 * **只写 `path` 的依赖会被 `cargo deny` 判成 wildcard**（`wildcards = "deny"`）：
   `found 2 wildcard dependencies for crate 'akasha'`。path 依赖要同时写 `version`。
@@ -143,9 +143,9 @@ ast-grep scan                                     → 退出码 0（新规则已
 just test                                         → 45 tests run: 45 passed
 ```
 
-⚠️ 沙箱里跑 E2E 有个**环境约束**：每次 bash 调用是独立的 bwrap（私有 PID / 临时目录），
-所以 `just dev` 与 E2E 用例**必须在同一次调用里**起，否则找不到 Victauri 的发现文件。
-本机（非沙箱）分开跑没有这个问题。
+⚠️ 在沙箱里执行 E2E 有个**环境约束**：每次 bash 调用是独立的 bwrap（私有 PID / 临时目录），
+所以 `just dev` 与 E2E 用例**必须在同一次调用里**启动，否则找不到 Victauri 的发现文件。
+本机（非沙箱）分开执行没有这个问题。
 
 ### 与计划的偏差
 

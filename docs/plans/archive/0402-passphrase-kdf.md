@@ -12,12 +12,12 @@
 
 把"口令"变成**只有一条路能进来的类型**，并把 0401 的打开路径补成**能真的验证口令**的路径。
 
-三件具体的事，前两件来自 0401 之后暴露出来的东西，第三件是 §6 欠的账：
+三件具体的事，前两件来自 0401 之后暴露出来的东西，第三件是 §6 尚未覆盖的一项：
 
-1. **`Passphrase` 类型**：空值**不可表示**（不是"打开函数里有个 if"）、`Debug` 打不出内容、
+1. **`Passphrase` 类型**：空值**不可表示**（不是"打开函数里有个 if"）、`Debug` 输出不含内容、
    没有 `Display` / `Serialize` —— 于是"口令进日志"不是靠自觉，而是**写不出来**（D5）。
 2. **`open` / `create` 拆开**：实测（见实施记录）**文件不存在或为 0 字节时，任何口令都能"打开"** ——
-   空的库里没有任何东西可解，KDF 根本没跑。也就是说 0401 的 `open()` 在"新建"这条路上
+   空的库里没有任何东西可解，KDF 根本没有运行。也就是说 0401 的 `open()` 在"新建"这条路上
    **没有验证过口令**，而它同时把这把错口令当成了创建口令。
    `create` 用 `PRAGMA user_version = 1`（D7 的 v1）把口令**钉进文件**，此后只有这一把能开。
 3. **`cipher_memory_security = ON`**（§6 的"建议开"）：让 SQLCipher 的密钥材料在释放时被擦除。
@@ -51,8 +51,8 @@
 - `Passphrase::new(Vec<u8>) -> Result<Self, StoreError>`：空 → `EmptyPassphrase`（D5）。
   "碰文件之前就拒绝"因此变成"空值根本造不出来"；
 - **不实现 `Clone`**（多一份副本就得回答为什么）；`expose()` 是 `pub(crate)` ——
-  口令流出本 crate 必须是显式动作，reviewer 一眼看得见它去了哪；
-- 手写 `Debug`：只打 `<redacted>`，**不打长度**；
+  口令流出本 crate 必须是显式动作，reviewer 能直接看到它去了哪；
+- 手写 `Debug`：只输出 `<redacted>`，**不输出长度**；
 - 口令是任意字节（`Vec<u8>`，不是 `String`）：`String` 会强制 UTF-8，还会在堆上多留一份。
 
 ### 2. `open` 与 `create` 分开
@@ -77,32 +77,32 @@ pub fn create(path: &Path, passphrase: &Passphrase) -> Result<Connection, StoreE
 - 位置：**送密钥之前**。它不读库（pragma handler 直接返回字符串），所以与 D4 不冲突 ——
   而排在前面才有意义：`sqlite3_key` 会复制一份口令进 codec context，那一份才该落在安全分配器上。
   D4 的措辞据此改成"先于任何**读页**的操作"。
-- 三项实测（都会让想当然的断言失败）：默认 **0**（关）；设 `OFF` **关不掉**；读回值是
+- 三项实测（都会让想当然的断言失败）：默认 **0**（关）；设 `OFF` **无法关闭**；读回值是
   `on && executed` 的合取 → 只能断言"我们打开过之后读回来是 1"，**不能**断言"默认是 0"
   （进程级，测试顺序会串）。
 
 ### 4. 测试
 
-- `tests/sqlcipher_contract.rs` **增补**（上游行为，换版本时该红）：盐 = 文件头前 16 字节且每库不同、
+- `tests/sqlcipher_contract.rs` **增补**（上游行为，换版本时应当失败）：盐 = 文件头前 16 字节且每库不同、
   `cipher_memory_security` 只能开不能关；
 - `tests/passphrase_contract.rs`（我们的行为）：类型层拒空、`Debug` 不含口令、`create` 之后
   只认那一把、`create` 不覆盖已有库、`open` 对"没有文件/0 字节"给 `NoVault`、
   `user_version` 2 与 0 都给 `UnsupportedVersion`、`vault_path` 是 `akasha.db`；
-- `tests/passphrase_on_disk.rs`（**判据本身**）：用一眼能认出来的标记口令跑完
+- `tests/passphrase_on_disk.rs`（**判据本身**）：用一眼能认出来的标记口令执行完
   `create` + 解锁 + 解锁失败，再**递归扫数据目录里每一个文件** —— 0 命中；
   另有一个**对照目录**放含标记的文件，扫描器必须找到它（否则"0 命中"可能只是扫描器坏了）。
   fixture 留在 `target/store-passphrase/` 供人工复核。
 
-### 5. 判据 ①：无 `keyring` 类依赖 → **永久门禁**（并修好一个先于本 plan 的洞）
+### 5. 判据 ①：无 `keyring` 类依赖 → **永久门禁**（并修复一个先于本 plan 的缺口）
 
 - `deny.toml` 的 `[bans] deny` 加上 `keyring` 与各平台后端（名字取自 `cargo add --dry-run` 的
   真实特性名，不是猜的）；不禁 `security-framework` / `windows` / `dbus`（通用平台绑定）；
 - ⚠️ **必须给 cargo-deny 加 `--workspace`**（`src-tauri/justfile` 的 `deny` / `deny-offline`）。
   实测：不加时图根**只有 `akasha`**（workspace root 同时是真实包），于是 `akasha-store` 与
-  **它独有的整棵子树**根本不在图里 —— `[bans] deny` 写了 `keyring` 也一声不响地不生效。
-  这一条同时补上一个**先于 0402 的洞**：`akasha-store` 的 vendored OpenSSL 此前从未被许可证门禁看过；
+  **它独有的整棵子树**根本不在图里 —— `[bans] deny` 写了 `keyring` 也静默地不生效。
+  这一条同时补上一个**先于 0402 的缺口**：`akasha-store` 的 vendored OpenSSL 此前从未被许可证门禁看过；
 - 负例（`AGENTS.md` §6）：临时把 `keyring` 加进 `akasha-store` 的依赖 → `just deny-offline`
-  必须红且逐个报出它们，然后撤掉。
+  必须失败且逐个报出它们，然后撤掉。
 
 ## 验收命令
 
@@ -128,7 +128,7 @@ head -c 16 src-tauri/target/store-passphrase/only-one-passphrase/akasha.db | od 
 # 期望：不是 "SQLite format 3"（那是明文库的特征）；**文件非空** —— 0 字节就说明口令没被钉住。
 # ⚠️ 字节数**不是**定值：`create` 自己写一页（4096，用例内有断言），之后建表会长大（这个 fixture 是 8192）
 
-# ⑤ 口令不可能被打进日志：本 crate 连日志设施都没有，
+# ⑤ 口令不会被写入日志：本 crate 连日志设施都没有，
 #    也没有 argv / 环境变量 / 配置文件的读取口（口令只能作为 &Passphrase 传进来）
 cd src-tauri && cargo tree -p akasha-store -e normal --prefix none \
   | grep -cE '^(tracing|log|clap|argh|structopt|dotenv|envy)$'   # 期望 0
@@ -141,7 +141,7 @@ just ready
 
 `git revert` 整个提交：`akasha-store` 仍**没有消费者**，删掉 `create` / 版本校验 / `Passphrase`
 之后 app 行为不变。**唯一不该回滚的是 `--workspace` 那一条** —— 它修的是门禁的盲区，
-不是本 plan 的产物（回滚它等于把洞放回去）。
+不是本 plan 的产物（回滚它等于把缺口放回去）。
 
 ## 实施记录
 
@@ -149,15 +149,15 @@ just ready
 
 | 要测的 | 实测 |
 |---|---|
-| 文件不存在 / 0 字节时 `open(任意口令)` | **都能打开**：库 0 字节、KDF 根本没跑（耗时 **~0.19 ms**，对比真实解锁 **~105 ms**）→ 于是"错误口令打不开"在新建这条路上**不成立** |
+| 文件不存在 / 0 字节时 `open(任意口令)` | **都能打开**：库 0 字节、KDF 根本没有运行（耗时 **~0.19 ms**，对比真实解锁 **~105 ms**）→ 于是"错误口令打不开"在新建这条路上**不成立** |
 | `create`（= 送密钥 + `PRAGMA user_version = 1`）之后 | 文件 **4096 字节**、头部不是 SQLite 魔数、正确口令读回 `user_version = 1`、错一个字节的口令 → `NotADatabase` |
 | `PRAGMA cipher_salt` | 32 位十六进制，**逐字节等于文件头前 16 字节**（D2 的"盐存于头部"由此证实）；同一口令建的两个库盐不同、字节不同 |
-| 真实解锁耗时 | **105–108 ms**（256,000 次 PBKDF2-HMAC-SHA512，本机）；**错误口令也是 ~104 ms** —— KDF 先跑完才轮到读页失败 |
-| `cipher_memory_security` | 默认 **0**；设 `ON` 后读回 `1`；**设 `OFF` 关不掉**（上游 `sqlcipher_set_mem_security` 的实现是 `if(on)`）；且是**进程级**全局 → §6 的"连接级开关"两半都不对 |
-| 明文 sqlite 文件喂给 `open` | `NotADatabase` —— 所以版本校验不可能被一个明文库骗过 |
+| 真实解锁耗时 | **105–108 ms**（256,000 次 PBKDF2-HMAC-SHA512，本机）；**错误口令也是 ~104 ms** —— KDF 先运行完才轮到读页失败 |
+| `cipher_memory_security` | 默认 **0**；设 `ON` 后读回 `1`；**设 `OFF` 无法关闭**（上游 `sqlcipher_set_mem_security` 的实现是 `if(on)`）；且是**进程级**全局 → §6 的"连接级开关"两半都不对 |
+| 明文 sqlite 文件喂给 `open` | `NotADatabase` —— 所以明文库不可能绕过版本校验 |
 | `sqlite3_key` 能否排在 `cipher_memory_security` 之后 | 可以，且库照样加密（这就是 §3 敢把顺序反过来写的原因） |
 
-**门禁的洞（不在原计划里，但必须修）**：cargo-deny 默认只把 **manifest 指向的那个包**当图根
+**门禁的缺口（不在原计划里，但必须修复）**：cargo-deny 默认只把 **manifest 指向的那个包**当图根
 （workspace root 同时是真实包 `akasha`），于是 `akasha-store` 及其独有子树（`keyring`、
 `openssl-src`、`openssl-sys`）**不在图里**：`[bans] deny` 写 `keyring` 也静默不生效。
 加 `--workspace` 后图 **580 → 583** 个 crate，负例从 `bans ok` 变成

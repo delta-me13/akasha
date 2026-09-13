@@ -18,4 +18,4 @@
 `0106` 之后，Rust 成员从仓库根 `crates/` 挪到了 `src-tauri/crates/`（见
 [ADR-0004](../../adr/0004-rust-workspace-under-src-tauri.md)）。更早的归档 plan
 （`0101` / `0103` / `0104` / `0105`）里出现的 `crates/…` 是**历史事实，不回改** ——
-今天要跑它们的验收命令，把路径读作 `src-tauri/crates/…`（`0106` 起的 plan 本来就按新布局写）。
+今天要运行它们的验收命令，把路径读作 `src-tauri/crates/…`（`0106` 起的 plan 本来就按新布局写）。

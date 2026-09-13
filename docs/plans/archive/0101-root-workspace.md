@@ -10,8 +10,8 @@
 
 在仓库根建立 Cargo workspace，把 `src-tauri` 降为一个成员。
 
-顺带消失的一类问题：仓库根没有 `Cargo.toml`，导致一切未显式指定 manifest 的 cargo 命令在根目录失败
-（`cargo build` / `cargo metadata` / `cargo fmt --all`，见坑 #8 与 `docs/adr/0001` §2.2）。
+同时消失的一类问题：仓库根没有 `Cargo.toml`，导致一切未显式指定 manifest 的 cargo 命令在根目录失败
+（`cargo build` / `cargo metadata` / `cargo fmt --all`，见问题 #8 与 `docs/adr/0001` §2.2）。
 
 ## 非目标
 
@@ -78,8 +78,8 @@ test -d target && echo "OK: target 在根"
 test ! -d src-tauri/target && echo "OK: 旧 target 已消失"
 ```
 
-> 起窗口、热重载、IPC 的复测**不在这里** —— 见 plan 0104。
-> 本 plan 只保证"结构对了且门禁绿"，**不要**用它的验收冒充开发循环验过。
+> 启动窗口、热重载、IPC 的复测**不在这里** —— 见 plan 0104。
+> 本 plan 只保证"结构对了且门禁绿"，**不得**用它的验收冒充开发循环验过。
 
 ## 回滚
 
@@ -89,7 +89,7 @@ git revert <commit>
 
 新增 1 个文件、移动 2 个、改 3 个配置；无数据迁移、无代码改动，回滚无残留。
 
-⚠️ 不要用 `git checkout <file>` 去"还原"**未提交**的改动 —— 它是破坏性操作（坑 #12）；
+⚠️ 不得用 `git checkout <file>` 去"还原"**未提交**的改动 —— 它是破坏性操作（问题 #12）；
 负例自检请用 `cp` 备份 + `cp` 还原。
 
 ## 实施记录
@@ -118,14 +118,14 @@ git revert <commit>
 
 - ⚠️ **`[profile.release]` 留在成员里会被静默忽略**：cargo 只认 workspace root 的那份
   （`warning: profiles for the non root package will be ignored`）→ 上移到根 `Cargo.toml`。
-  不迁等于**悄悄丢掉 lto / strip / panic=abort**，且没有任何门禁会红（坑 #18）。
+  不迁等于**静默丢掉 lto / strip / panic=abort**，且没有任何门禁会红（问题 #18）。
 - ⚠️ **整体 `mv` 构建缓存会留下写死的绝对路径**：`mv src-tauri/target target` 省下 9.8G 重建，
   但 14 个包的 `target/debug/build/<pkg>/output` 里记录着 `…/src-tauri/target/…`，
   而 cargo 会把这些 `DEP_*` 原样重放给下游 —— 于是 tauri 的构建脚本去读一个已不存在的
-  permissions 目录，报错看起来像"代码坏了"。处置：删掉那 14 个构建脚本产物目录让它们重跑
-  （不必全量重建）。**下次迁 target 应直接删掉重建**，别为了省时间搬缓存（坑 #19）。
+  permissions 目录，报错看起来像"代码坏了"。处置：删掉那 14 个构建脚本产物目录让它们重新运行
+  （不必全量重建）。**下次迁 target 应直接删掉重建**，不得为了省时间而搬运缓存（问题 #19）。
 
-### workspace lints 真的会咬人
+### workspace lints 已实际生效
 
 `unsafe_code = "forbid"` + `clippy::unwrap_used = "warn"`，配上 `just clippy` 的 `-D warnings`
 = **clippy 里 warn 即错误**。7 处违规全部落在两个 E2E 测试文件
@@ -133,7 +133,7 @@ git revert <commit>
 `#![allow(clippy::unwrap_used)]` 并写明理由：测试里 unwrap 就是断言手段，不属于 `AGENTS.md` §0
 说的「command 边界或长驻任务」。**生产代码零豁免** —— 正是这条 lint 想要的区分。
 
-### 顺带清掉的
+### 一并清掉的
 
 `src-tauri/target`（9.8G）整体移到根后旧目录消失，`.gitignore` 的 `/target/` 规则也随之
 从 `src-tauri/.gitignore` 上移到根。

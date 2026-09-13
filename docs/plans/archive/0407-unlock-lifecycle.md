@@ -2,7 +2,7 @@
 
 - **关联**：ROADMAP 阶段 4 ·「解锁与锁定的生命周期」；
   [ADR-0002](../../adr/0002-secret-storage.md) D4 / D5 / D6 / D13
-- **前置**：plan 0403（四套池能读写）· plan 0404（导出要库口令 → 本步的约束）·
+- **前置**：plan 0403（四类池能读写）· plan 0404（导出要库口令 → 本步的约束）·
   plan 0406（口令的受保护页）
 - **状态**：已完成（2026-09-12）—— `just ready` 6/6；`just test` 180 passed；`just test-e2e` 退出码 0
 
@@ -32,7 +32,7 @@
 
 三件事因此从"上游说"变成"实测"：
 
-- **口令与派生密钥在连接 drop 之后一处不剩**（剩下的那个命中就是跑扫描的测试自己那份）。
+- **口令与派生密钥在连接 drop 之后一处不剩**（剩下的那个命中就是运行扫描的测试自己那份）。
   派生密钥是用 `openssl` CLI 按 SQLCipher 4 的默认参数算出来的：PBKDF2-HMAC-SHA512、
   256000 轮、32 字节，盐 = 库文件前 16 字节 —— 这与 ADR-0002 §7 的磁盘事实一致；
 - **那条 wipe 是 `cipher_memory_security = ON` 真的在做**：它把 SQLite 的分配器换成
@@ -44,12 +44,12 @@
 ## 非目标
 
 - **口令的输入 UI**（设计稿未定，`AGENTS.md` §4.0）：本步只到"命令能收、能锁、能观测"
-- **空闲超时自动锁**：没有 UI 也没有配置项，超时会变成"偶尔要重新输口令"的谜题；
-  它要防的（人不在时有人动你的机器）是**锁屏**那件事，交给 OS 更合适
+- **空闲超时自动锁**：没有 UI 也没有配置项，超时会变成"偶尔需要重新输入口令"这类难以解释的行为；
+  它要防的场景（无人值守时机器被他人操作）属于**锁屏**，交给 OS 更合适
 - **忘记口令的恢复路径**：ADR-0002 D5 已裁定不可恢复，这里不重开
-- **口令走 raw body 的那条更紧的通道**：实测代价是"前端必须手写一行裸 `invoke`"
+- **口令走 raw body 的那条更紧的通道**：实测代价是"前端必须手写一行直接调用 `invoke`"
   （生成的包装函数会把参数包成对象，而 raw body 必须是整个 payload），
-  那与 `AGENTS.md` §0 绝对禁止 #1 冲突 —— 为**少一份够不着的副本**去破一条架构规则，
+  那与 `AGENTS.md` §0 绝对禁止 #1 冲突 —— 为**少一份不可达的副本**去破一条架构规则，
   不划算。**记录为后续收紧路径**，等有 UI 时连同 §5 的例外一起改
 
 ## 决定
@@ -80,14 +80,14 @@ struct Unlocked { conn: Connection, passphrase: Passphrase }
 
 | 副本在哪 | 谁擦得掉 | 依据 |
 |---|---|---|
-| JS 里那个 `string` | 前端的事（够不着） | plan 0406 非目标 |
+| JS 里那个 `string` | 前端的事（不可达） | plan 0406 非目标 |
 | tauri 的请求体缓冲 + `serde_json::Value` | **擦不掉**（我们没有 `&mut`） | 生命周期 = 这一次调用，之后 free **不擦** |
 | 反序列化出来的那个 `String` | **擦得掉**：`into_bytes()` 把缓冲搬进 `Passphrase::new` | 实测：解锁中 3 处 → 丢口令后 1 处 |
 | 受保护页里的那一份 | drop 时 `munmap`（实测 `VmLck` 归零、`---p` 段数回落） | plan 0406 |
 | SQLCipher 内部的副本 | drop 连接时擦零（实测：派生密钥 3 处 → 1 处） | `cipher_memory_security` |
 
-**够不着的那两份照实记**（写进 ADR-0002 的边界表，与 `/proc/self/mem` 那条并列）：
-它们不是"忘了处置"，是"这一层没有接口"；能收紧的方向是 raw body，代价见「非目标」。
+**不可达的那两份照实记**（写进 ADR-0002 的边界表，与 `/proc/self/mem` 那条并列）：
+它们不是"遗漏处置"，是"这一层没有接口"；能收紧的方向是 raw body，代价见「非目标」。
 
 ### 3. 什么时候锁：只有显式锁
 
@@ -95,10 +95,10 @@ struct Unlocked { conn: Connection, passphrase: Passphrase }
 |---|---|---|
 | 用户 / 前端显式 `vault_lock` | **锁** | 唯一有条目的入口 |
 | **关窗口** | **不锁** | 默认语义是**收托盘**（plan 0302）：进程、会话、终端缓冲全都留着 —— 库也一样 |
-| **进程退出** | **不锁** | 进程一死，解好的连接与锁住的那一页一起消失（实测 `VmLck` 归零）。写一个 exit hook 只是**仪式** |
+| **进程退出** | **不锁** | 进程退出后，解好的连接与锁住的那一页一起消失（实测 `VmLck` 归零）。写一个 exit hook **并不产生实际效果** |
 | 空闲超时 | 不锁 | 见「非目标」 |
 
-"锁"抹掉的是**口令与连接**，不是会话：终端里正在跑的作业与这个库无关。
+"锁"抹掉的是**口令与连接**，不是会话：终端里正在运行的作业与这个库无关。
 
 ### 4. 并发：一个 `Mutex` 就够了
 
@@ -112,14 +112,14 @@ struct Unlocked { conn: Connection, passphrase: Passphrase }
    （`AlreadyUnlocked`、`NotLockable`、`WrongPassphrase`、`UnlockFailed`、`Internal`）；
    `StoreError` → `VaultError` 写成**穷尽 `match`**（存储层加变体时这里编译不过）；
    `VaultState` → 建还是开，抽成纯函数并配单测（`Missing` / `Empty` → `create`，`Present` → `open`）。
-2. 三个命令：`vault_unlock`（解锁 → 读一次四套池 → 返回各池行数）、`vault_lock`、
-   `vault_status`（加一个 `unlocked`）。登记进 `bindings.rs`，跑 `just gen-types`。
+2. 三个命令：`vault_unlock`（解锁 → 读一次四类池 → 返回各池行数）、`vault_lock`、
+   `vault_status`（加一个 `unlocked`）。登记进 `bindings.rs`，运行 `just gen-types`。
 3. 日志：`vault unlocked` / `vault locked` / `vault unlock failed`（英文、消息是事件名、
    数字进字段，`docs/logging.md`）。
-4. `akasha-store` 的 `tests/unlock_lifecycle.rs`：把上面那张表变成**三条会红的测试**
-   （`VmLck` 轨迹 + 内存扫描 + 派生密钥）。扫描器只在 Linux 上跑；
+4. `akasha-store` 的 `tests/unlock_lifecycle.rs`：把上面那张表变成**三条会失败的测试**
+   （`VmLck` 轨迹 + 内存扫描 + 派生密钥）。扫描器只在 Linux 上运行；
    `openssl` CLI 不在时**显式跳过并写明原因**（不静默通过）。
-5. E2E（`src-tauri/tests/vault_unlock.rs`）：真是真 app 上走一遍
+5. E2E（`src-tauri/tests/vault_unlock.rs`）：在真实 app 上走一遍
    `vault_status` → 造库 → `vault_unlock` → 断言行数 → `vault_lock` →
    断言**app 进程自己的 `VmLck` 回落到解锁前**（读 `/proc/<app pid>/status`），
    再加一条"锁上之后错误口令解不开"——锁必须是真的。
@@ -136,7 +136,7 @@ cd src-tauri && cargo test -p akasha-store --test unlock_lifecycle -- --nocaptur
 
 just gen-types && git diff --stat src/ipc/bindings.ts   # 预期：新增 vaultUnlock / vaultLock 与字段
 just test-e2e                                            # 预期：退出码 0，含 vault_unlock 一条
-just test                                                # 预期：全绿（akasha-store 增加 3 条）
+just test                                                # 预期：全部通过（akasha-store 增加 3 条）
 just ready                                               # 预期：6/6
 ```
 
@@ -165,12 +165,12 @@ just ready                                               # 预期：6/6
 | 解锁中口令的处数 | 3 处 | **2 处** | 探针除了那根针还留着一份 `baseline = pass.clone()`。**第三处不是 SQLCipher 的，是探针自己的** —— 这条差别推翻了一个想当然（ADR-0002 §7.5 第 2 条） |
 
 以此为准的是测试那一份：它复用一块 1 MiB 的缓冲（读完即擦）、没有多余的拷贝、并且带**正对照**。
-两条都进了 STATUS 的坑（#90 / #91）。
+两条都进了 STATUS 的已知问题（#90 / #91）。
 
 ### 中途改过的决定
 
 - **口令的副本清单少了一行**：原以为 SQLCipher 的 codec 里也留着一份口令 —— 量下来它只有派生密钥。
-- **`VaultContents` 的计数用 `u32`**：生成器**拒绝**把 `usize` 导出成 TS（BigInt 精度，坑 #32 的同一个坑）；
+- **`VaultContents` 的计数用 `u32`**：生成器**拒绝**把 `usize` 导出成 TS（BigInt 精度，与问题 #32 同源）；
   转换写成 checked，不写 `as`。
 - **加了一条判据**：`open` 那条路（不只是 `create`）也要把内存还回来 —— 重新打开才是真实使用里那条路。
 - **为让 app 侧不必依赖某个 `rusqlite` 版本**，`akasha-store` 把 `Connection` 再导出一遍：
@@ -178,7 +178,7 @@ just ready                                               # 预期：6/6
 
 ### 没有做的事
 
-- **没接四套池的 IPC 命令**（库层能读能写，但还没有能写的前端命令）：E2E 造数据直接调
+- **没接四类池的 IPC 命令**（库层能读能写，但还没有能写的前端命令）：E2E 造数据直接调
   `akasha-store` 的库函数，落到 `vault_status` 报出来的那个路径上。
 - **没做 raw body 的口令通道**、**没做空闲超时**：理由在「非目标」里。
 - **没做解锁 UI**：没有设计稿就没有验收标准（`AGENTS.md` §4.0）。

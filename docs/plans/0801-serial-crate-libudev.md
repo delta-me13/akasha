@@ -10,7 +10,7 @@
 serial 后端 crate：`Transport` 的串口实现，**零 Tauri 依赖**。
 
 **`libudev` 只做 cargo feature，且只在 `target_os = "linux"` 时编译** ——
-于是 Windows / macOS / Android 的构建完全不碰它（`scope.md` §8 风险 5，已定案）。
+于是 Windows / macOS / Android 的构建完全不涉及它（`scope.md` §8 风险 5，已定案）。
 
 副作用要一并处理：Linux 上串口热插拔依赖 libudev，某些发行版缺失时，
 串口列表应退化为"手动指定路径"，而不是硬失败。
@@ -26,6 +26,6 @@ Windows / macOS 构建**不链接 libudev**（构建产物与 `cargo tree` 都�
 
 ## 展开时要补
 
-- [ ] 「## 步骤」：feature 名与 `cfg` 写法；`serialport` 的实际依赖形态（先验证再定）
+- [ ] 「## 步骤」：feature 名与 `cfg` 写法；`serialport` 的实际依赖形态（先验证后确定）
 - [ ] 「## 验收命令」：Linux 上带 feature 构建 + 交叉 `cargo check --target` 证明另一侧不带
 - [ ] `capability` flag：serial 没有窗口尺寸、没有信号、没有退出码（`scope.md` §2）

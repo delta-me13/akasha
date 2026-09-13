@@ -13,8 +13,8 @@
 **仓库根不再有任何 Rust 成员或 manifest**：workspace root 改为 `src-tauri/Cargo.toml`，
 纯逻辑 crate 落在 `src-tauri/crates/*`。
 
-顺带消掉一条**静默约束**：tauri CLI 默认只监听 `src-tauri`，成员在它里面就自动被监听，
-`build.additionalWatchFolders` 不再需要（它配错时只打一行警告，见 plan 0104 / 坑 #21）。
+同时消掉一条**静默约束**：tauri CLI 默认只监听 `src-tauri`，成员在它里面就自动被监听，
+`build.additionalWatchFolders` 不再需要（它配错时只打一行警告，见 plan 0104 / 问题 #21）。
 
 ## 非目标
 
@@ -43,7 +43,7 @@ just ready                  # 期望：全绿（作为迁移前基线）
 5. `src-tauri/tauri.conf.json`：删 `build.additionalWatchFolders`（成员已在监听树内）。
 6. `.ast-grep/rules/*`：`files:` 的 `crates/**/*.rs` → `src-tauri/crates/**/*.rs`。
 7. `target/` 搬到 `src-tauri/target/`，**并删掉写死了旧绝对路径的构建脚本产物目录** ——
-   搬运缓存会留下 `DEP_*` 里重放的旧路径，不处理会在构建脚本阶段报"文件不存在"（坑 #19）。
+   搬运缓存会留下 `DEP_*` 里重放的旧路径，不处理会在构建脚本阶段报"文件不存在"（问题 #19）。
 8. 文档同步：新 ADR-0004 + ADR-0001 追加取代指针 + ADR 索引；`AGENTS.md` §1/§3.1/§7/§9/§11；
    `ROADMAP.md`；`docs/scope.md`、`docs/just.md`、`docs/plans/**` 的路径；
    `docs/plans/archive/README.md` 说明归档 plan 的路径按当时布局书写。
@@ -134,12 +134,12 @@ Running `target/debug/akasha`
 成员在 `src-tauri` **里面**，默认监听就覆盖它们 —— `build.additionalWatchFolders`
 已从 `tauri.conf.json` 删除。这条静默约束（配错只打一行 `Warn`）从此不存在。
 
-### 两个坑
+### 两个问题
 
 - **`target/` 是搬过来的，不是重建的**：13G 缓存同级 `mv` 是瞬时的，但
   `target/debug/build/*/output` 里有 13 处写死的旧绝对路径
-  （`…/akasha/target/…`），cargo 会把它们当 `DEP_*` 重放给下游 —— 处置同坑 #19：
-  删掉那些构建脚本产物目录让它们重跑，然后 `just ready` 转绿。
+  （`…/akasha/target/…`），cargo 会把它们当 `DEP_*` 重放给下游 —— 处置同问题 #19：
+  删掉那些构建脚本产物目录让它们重新运行，然后 `just ready` 转绿。
 - **cargo 产物文件名带 workspace root 的痕迹**：`Running target/debug/akasha`
   从"相对仓库根"变成了"相对 `src-tauri`"，因为 CLI 的 cwd 就是那里。
   这只影响日志观感，不影响产物位置。

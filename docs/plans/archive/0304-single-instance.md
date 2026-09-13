@@ -7,7 +7,7 @@
 
 ## 目标
 
-第二个实例**唤起已有窗口**，而不是各跑一套 —— 否则会出现两条隧道指向同一目标、
+第二个实例**唤起已有窗口**，而不是各自运行一套 —— 否则会出现两条隧道指向同一目标、
 两套托盘图标、以及"退出一个还剩一个"的困惑（`scope.md` §5.5）。
 
 ## 非目标
@@ -35,8 +35,8 @@ pgrep -c -f 'target/debug/akasha' || echo 0      # 开工前应为 0
 ## 验收命令
 
 ```bash
-cargo build --manifest-path src-tauri/Cargo.toml    # 或用 just dev 起第一个实例
-# 1) 起第一个实例后，再起第二个（同一二进制）：
+cargo build --manifest-path src-tauri/Cargo.toml    # 或用 just dev 启动第一个实例
+# 1) 启动第一个实例后，再启动第二个（同一二进制）：
 pgrep -c -f 'target/debug/akasha'     # 期望：1（第二个实例已退出）
 # 2) 第二个实例应把已有窗口唤起并置前（人工确认：窗口出现并获得焦点）
 # 3) 退出唯一实例后零残留：
@@ -47,7 +47,7 @@ pgrep -af 'target/debug/akasha'       # 期望：无输出
 
 ## 回滚
 
-移除单实例注册，回到"可以起多个实例"的行为；无数据影响。
+移除单实例注册，回到"可以启动多个实例"的行为；无数据影响。
 
 ## 实施记录
 
@@ -56,8 +56,8 @@ pgrep -af 'target/debug/akasha'       # 期望：无输出
 - `tauri-plugin-single-instance = "2.4.4"`。机制按平台分：Linux = D-Bus 会话总线上的一个
   名字（`<identifier>.SingleInstance`）、Windows = 命名 mutex、macOS = `/tmp/<identifier>_si.sock`。
 - 注册在**第一个插件位**（上游 README 也这么要求：插件的 setup 在 `build()` 里按注册顺序
-  跑，排在前面 = 第二个实例在别的插件的 setup 之前就退掉）。
-  ⚠️ **不是**为了"避免闪一个窗口"：全部插件的 setup 都跑在窗口创建（`RunEvent::Ready`）
+  运行，排在前面 = 第二个实例在别的插件的 setup 之前就退掉）。
+  ⚠️ **不是**为了"避免闪一个窗口"：全部插件的 setup 都运行在窗口创建（`RunEvent::Ready`）
   之前，与顺序无关 —— 步骤 1 说的"窗口创建之前"本来就由 tauri 的时序保证。
 - 第二个实例"退出自身"（步骤 2 的后半）由插件做：名字被占 → 发一次 D-Bus 调用 →
   `cleanup_before_exit()` → `std::process::exit(0)`。
@@ -77,8 +77,8 @@ pgrep -af 'target/debug/akasha'       # 期望：无输出
 - Linux 上机制依赖**外部服务**（会话总线），容器 / CI 的 xvfb 里没有。注册之前先问一次
   （`zbus::blocking::Connection::session()` —— 与插件随后要建立的是**同一条**连接）；
   连不上就不注册，`warn` + probe `registered=false`，**app 照常启动**（§3.3 的降级口径）。
-- ⚠️ 那条 `warn` 留到 `.setup()` 里打：日志插件是 builder 的一环，在它注册之前 `tracing`
-  没有 `log` 出口，那时打出去的记录会**静默消失**（坑 #47）。
+- ⚠️ 那条 `warn` 留到 `.setup()` 里记录：日志插件是 builder 的一环，在它注册之前 `tracing`
+  没有 `log` 出口，那时输出的记录会**静默消失**（问题 #47）。
 - Windows / macOS 的机制不依赖外部服务，`available()` 直接为真。
 - 加 `zbus` 只为了这一条判据（`target.'cfg(target_os = "linux")'`）。**不是新增 crate**：
   同一个版本早已在树里（`tauri-plugin-opener` → `zbus 5.19`）。
@@ -86,8 +86,8 @@ pgrep -af 'target/debug/akasha'       # 期望：无输出
 
 ### 步骤 4 的结论：**没有出现互相顶掉，因此不加 dev 专属 instance key**
 
-实测：起实例 A → `kill -9`（`tauri dev` 重载是同一回事）→ 立刻起实例 B —— B 照常成为主实例
-并打出 `single instance registered`。原因很具体：D-Bus 的名字挂在**连接**上，进程一死总线
+实测：启动实例 A → `kill -9`（`tauri dev` 重载是同一回事）→ 立刻启动实例 B —— B 照常成为主实例
+并输出 `single instance registered`。原因很具体：D-Bus 的名字挂在**连接**上，进程退出后总线
 立刻释放，没有"陈旧的锁"要清。
 
 不加 key 的理由：插件的 `dbus_id` 只影响 Linux，加了会变成"只有 Linux 上能多开"，
@@ -97,25 +97,25 @@ pgrep -af 'target/debug/akasha'       # 期望：无输出
 
 | 动作 | 结果 |
 |---|---|
-| 起第一个实例 | probe `{"activations":0,"registered":true}`；日志 `single instance registered` |
+| 启动第一个实例 | probe `{"activations":0,"registered":true}`；日志 `single instance registered` |
 | `window manage hide` | `visible=false` |
-| 再起同一个二进制 | **154–205 ms** 后 `exit=0`；probe `activations=1`；`visible=true` |
+| 再启动同一个二进制 | **154–205 ms** 后 `exit=0`；probe `activations=1`；`visible=true` |
 | 进程表 | 只有 app 与它的看门狗（`--akasha-session-watchdog`，plan 0205 的同一个可执行文件） |
 | `kill -9` 后立刻重启 | 新实例照常注册（开发循环不被挡） |
-| `unset DBUS_SESSION_BUS_ADDRESS` + runtime dir 里没有 `bus` | `single instance unavailable`、probe `{"registered":false}`、窗口照常起来 |
+| `unset DBUS_SESSION_BUS_ADDRESS` + runtime dir 里没有 `bus` | `single instance unavailable`、probe `{"registered":false}`、窗口照常启动 |
 
 ### E2E
 
 新增 `tests/single_instance.rs`，五层判据：第二个实例自己以 0 退出 / app 上报的 `activations`
-加一 / **藏起来的**窗口重新可见 / 藏之前屏幕上的内容仍在（同窗口同会话）/ 只有一个 app 进程。
+加一 / **隐藏的**窗口重新可见 / 隐藏之前屏幕上的内容仍在（同窗口同会话）/ 只有一个 app 进程。
 已接进 `E2E_TARGETS`（排在 `window_close` 之后，两者都不关 app）。
 
 - 前提不满足（`registered != true`）时**显式跳过**并打印 probe —— 与 `window_close` 靠
-  `lifecycle` 决定跳过是同一个做法：判据来自 app 自己的状态，不是"试着起一个看看"。
-- "只有一个 app 进程"那层靠 `/proc` 数：非 Linux 显式跳过；看门狗按 **argv 整参数**排除（坑 #49）。
-- ⚠️ 本轮踩了一个新的（STATUS 坑 #68）：cargo 重建时会拿**新的 hardlink** 换掉
-  `target/debug/akasha`，正在跑的那个进程的 `/proc/<pid>/exe` 于是带 ` (deleted)` 后缀、
-  `canonicalize` 直接 NotFound —— 拿它做相等比较的结果是"一个实例都找不到"，用例红得毫无线索。
+  `lifecycle` 决定跳过是同一个做法：判据来自 app 自己的状态，不是"试着启动一个看看"。
+- "只有一个 app 进程"那层靠 `/proc` 数：非 Linux 显式跳过；看门狗按 **argv 整参数**排除（问题 #49）。
+- ⚠️ 本轮出现了一个新问题（STATUS 问题 #68）：cargo 重建时会拿**新的 hardlink** 换掉
+  `target/debug/akasha`，正在运行的那个进程的 `/proc/<pid>/exe` 于是带 ` (deleted)` 后缀、
+  `canonicalize` 直接 NotFound —— 拿它做相等比较的结果是"一个实例都找不到"，用例失败且无提示线索。
 
 ### 未覆盖
 

@@ -16,7 +16,7 @@
 ## 非目标
 
 - **不**实现多标签 / 分屏（`Session` 的呈现方式尚未定型，见 `scope.md` §1.2）
-- **不**做 DOM renderer 兜底（高吞吐下必卡，不作为默认；WebGL 不可用只退到 canvas）
+- **不**做 DOM renderer 兜底（高吞吐下必然卡顿，不作为默认；WebGL 不可用只退到 canvas）
 - **不**做 OSC 52 / OSC 8 白名单之外的处理（安全项见 `AGENTS.md` §4.3，按需另开 plan）
 
 ## 前置检查
@@ -42,7 +42,7 @@ just dev-web      # 浏览器里迭代（不启动 app）
 #   期望：终端由 canvas 渲染 —— 打开 devtools 执行：
 #   document.querySelectorAll('.xterm-screen canvas').length   // 期望 ≥1
 
-just dev          # 再在真 app 里确认一次（Victauri 能看到真实 webview）
+just dev          # 再在真实 app 中确认一次（Victauri 能看到真实 webview）
 just doctor       # 期望识别到本项目
 
 pnpm build        # 期望前端能构建（类型与依赖都齐）
@@ -64,8 +64,8 @@ Victauri 侧（app 运行中）：
   选定结果写进 `host.dataset.renderer` 供验收读；`term.write` 是**全工程唯一调用点**；
   WebGL 丢上下文（`onContextLoss`）时 dispose 后装 canvas。
 - `attach.ts`：命令式接线（会话 ↔ 渲染面）。`ResizeObserver` 按帧合并，
-  会话刚开时 `force` 补发一次真实行列数（载体是按默认尺寸起的）；
-  **StrictMode 双挂载**时把没人要的会话显式关掉（否则每挂载一次多留一个真 PTY）；
+  会话刚开时 `force` 补发一次真实行列数（载体是按默认尺寸启动的）；
+  **StrictMode 双挂载**时把无人持有的会话显式关闭（否则每挂载一次多留一个真 PTY）；
   挂载失败折成报错，**不让异常冒到 React** —— 那会卸载整棵树，用户看到的是白屏。
 - `TerminalPane.tsx`：React 只管宿主 DOM + 壳层状态。`useState` 命中只有两处
   （连接状态、渲染器种类），**写入路径上没有任何 state**（`grep` 可复核）。
@@ -74,29 +74,29 @@ Victauri 侧（app 运行中）：
   路径与真后端一致。只在 `import.meta.env.DEV && 没有 __TAURI_INTERNALS__` 时动态
   import；生产包里 `模拟后端` / `mockIPC` / `__akashaTerminal` 命中数**均为 0**（实测）。
 
-**踩到的坑**（已进 STATUS）：`addon-unicode11` 的 `term.unicode` 是 **proposed API**，
+**遇到的问题**（已进 STATUS）：`addon-unicode11` 的 `term.unicode` 是 **proposed API**，
 不开 `allowProposedApi` 就在 effect 里抛 —— 症状是**整个界面白屏**；而 Victauri
 读不到 webview console，是靠临时往 `index.html` 塞 `window.onerror` 钩子才定位到的。
 
-**实测**（`VICTAURI_E2E=1 cargo test --test terminal_render -- --test-threads=1`，真 app）：
+**实测**（`VICTAURI_E2E=1 cargo test --test terminal_render -- --test-threads=1`，真实 app）：
 
 | 项 | 结果 |
 |---|---|
 | 渲染器 | **webgl**（WebKitGTK/MESA 软件栈下仍是 WebGL2）；`canvas` 2 块；DOM 行容器 **0 个** |
 | 按键来回 | `printf 'akasha-probe-%s\n' 42` → 屏幕出现 `akasha-probe-42`（**求值结果**，不是命令行回显） |
-| 8 MB 灌流 | 135–141 批送达；排空哨兵出现即队列归零；**之后还能继续敲命令**（"暂停"而非"卡死"） |
+| 8 MB 灌流 | 135–141 批送达；排空哨兵出现即队列归零；**之后还能继续敲命令**（"暂停"而非"无响应"） |
 | WebGL 丢上下文 | `WEBGL_lose_context` → 落到 **canvas**，屏幕内容**保留**（不是重建终端） |
 | console | **零 error**；只有 xterm 自己的 2 条 `warn`（`task queue exceeded allotted deadline`，本机软件渲染下出现） |
 
 **CSP**（`STATUS.md` 待办里点名属于本 plan）：`csp` 与 `devCsp` 都从 `null` 换成最小放行，
 两者只差 `connect-src` 里的 `ws://localhost:1420`（Vite HMR）。把 `devCsp` 临时设成与
-`csp` **完全相同**也真跑过一轮：渲染 / IPC / 灌流全部照常、零 console error ——
-所以生产那条字符串**是被跑过的**，不是纸面推测。`style-src 'unsafe-inline'` 必需
+`csp` **完全相同**也真实运行过一轮：渲染 / IPC / 灌流全部照常、零 console error ——
+所以生产那条字符串**是实际运行过的**，不是纸面推测。`style-src 'unsafe-inline'` 必需
 （xterm 自己注入 `<style>`）。
 
 **未覆盖（照实记）**：
 
-- `just dev-web` 的模拟后端只做了 `pnpm build` + 代码审查，**没在真浏览器里点过**
+- `just dev-web` 的模拟后端只做了 `pnpm build` + 代码审查，**未在真实浏览器中验证过**
   —— 本环境没有可用浏览器。
 - plan 里写的"大流量后看 `get_performance` 的 JS heap 是否回落"**没有取数**：
   只验到"8 MB 灌完队列归零、界面仍可交互"，没拿 heap 数字。

@@ -11,21 +11,21 @@
 常驻系统托盘：图标 + 菜单（显示/隐藏窗口、**隧道列表与各自状态**、退出）。
 
 菜单里的隧道列表是 `scope.md` §5.2 指定的**"失败可见"落点** —— 有限次重连后标记失败必须有
-地方显示，否则就是最危险的失败模式：用户以为隧道还在转发，实际早已死掉。
+地方显示，否则就是最危险的失败模式：用户以为隧道仍在转发，实际已经终止。
 
 ## 非目标
 
 - **不**做关闭行为配置（plan 0303）；**不**做单实例（plan 0304）
 - **不**在本步实现隐藏语义（plan 0302）—— 本步只保证托盘存在与菜单可用。
   ⚠️ 所以"点叉后进程仍在"**不属于本步的验收**：它要求 `prevent_close`，那是 0302 的行为。
-  （原判据把它写在了本步，已修正 —— 判据写在错的 plan 里，做的人只会做出一个半成品。）
+  （原判据把它写在了本步，已修正 —— 判据写在错误的 plan 里，实现者只能交付一个不完整的实现。）
 - **不**做隧道（阶段 6）：本步的隧道列表先渲染"空列表"，数据结构按 `SessionId` 路由预留
 
 ## 前置检查
 
 ```bash
 just syscheck                        # 期望系统库齐（托盘走 libayatana-appindicator3）
-grep -n 'appindicator' .github/workflows/ci.yml    # 期望 apt 列表里已有（坑 #10）
+grep -n 'appindicator' .github/workflows/ci.yml    # 期望 apt 列表里已有（问题 #10）
 cargo metadata --no-deps --format-version 1 >/dev/null && echo OK
 ```
 
@@ -44,7 +44,7 @@ cargo metadata --no-deps --format-version 1 >/dev/null && echo OK
 ```bash
 just dev
 # 1) 托盘注册到宿主的 StatusNotifierWatcher
-#    ⚠️ 别 grep 进程名：SNI 用的是**唯一名** `:1.<n>`，路径里才是我们的标识
+#    ⚠️ 不得用 grep 匹配进程名：SNI 用的是**唯一名** `:1.<n>`，路径里才是我们的标识
 gdbus call --session --dest org.kde.StatusNotifierWatcher --object-path /StatusNotifierWatcher \
   --method org.freedesktop.DBus.Properties.Get \
   org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems
@@ -56,7 +56,7 @@ gdbus call --session --dest :1.<n> --object-path <那个>/Menu \
 # 期望：显示/隐藏窗口 / 隧道（下挂 enabled=false 的"（暂无隧道）"）/ 退出 akasha
 
 # 3) 点菜单项（`Event <id> clicked "<\"\">" 0`）触发显示/隐藏与退出；
-#    ⚠️ **每次点击前重读布局** —— 菜单一重建 item id 就换（坑 #62）
+#    ⚠️ **每次点击前重读布局** —— 菜单一重建 item id 就换（问题 #62）
 pgrep -af 'target/debug/akasha'      # 退出之后期望：无输出
 ```
 
@@ -65,7 +65,7 @@ pgrep -af 'target/debug/akasha'      # 退出之后期望：无输出
 
 ## 回滚
 
-关掉 `tray-icon` feature、删掉 `src-tauri/src/tray.rs` 与 `lib.rs` 的接线；
+关闭 `tray-icon` feature、删掉 `src-tauri/src/tray.rs` 与 `lib.rs` 的接线；
 `Sessions::on_change` 没有订阅者时是空操作，可以留着。
 
 ## 实施记录（2026-09-12）
@@ -85,9 +85,9 @@ pgrep -af 'target/debug/akasha'      # 退出之后期望：无输出
 | 菜单 → 退出 → 零残留 | ✅ app 退出码 0；忽略 SIGHUP 的探针（pid 329）消失；日志 `sessions reclaimed reclaimed=1 trigger="tray"` |
 | 退化路径 | ✅ 只读 `$XDG_RUNTIME_DIR`（沙箱）下只记一条 `tray unavailable` warn，app 照常启动 |
 
-环境两条（都记进了 STATUS 坑）：本机**只装了 2012 年的 libappindicator 12.10.1**，
+环境两条（都记进了 STATUS 的已知问题）：本机**只装了 2012 年的 libappindicator 12.10.1**，
 而 `tray-icon` 的加载顺序是 `libayatana-appindicator3.so.1` → `libappindicator3.so.1`
-—— 验证时把 libayatana 0.6.0 解到临时目录用 `LD_LIBRARY_PATH` 跑（**不改系统**）。
+—— 验证时把 libayatana 0.6.0 解到临时目录用 `LD_LIBRARY_PATH` 运行（**不改系统**）。
 
 遗留（**不属本步**）："点叉 = 收托盘"没做（plan 0302）。它与 0303 **耦合**：
 没有配置项之前，面板里没有托盘模块的用户将**无法退出 app**；而 `exit_residue`（E2E）

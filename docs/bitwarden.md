@@ -4,7 +4,7 @@
 > **结论在 `scope.md`，条款原文、条目结构与推导过程在这里** —— 分开是因为两者时效不同：
 > 结论偶尔变，上游条款与字段会随版本变。
 >
-> 之所以单独成文：这些内容一度住在 `scope.md` 里，把它撑到 600 行以上，
+> 之所以单独成文：这些内容一度放在 `scope.md` 里，使它增长到 600 行以上，
 > 而"能力清单"不该装条款原文。规则见 `AGENTS.md` §8.1。
 
 ---
@@ -50,7 +50,7 @@ transfer the Commercial Modules to any third party"*，以及
 | 运行时下载官方二进制 | ⚠️ 有先例（Raycast 扩展[这样做过](https://github.com/raycast/extensions/pull/8315)），但那个 PR 合并于 **2023-09**，**早于** 2024.6.1 的许可证分叉 —— **不能作为分叉后的先例** |
 
 **因此"前置检查"要做的不止是"有没有 `bw`"**：还要**分辨变体**，
-探测到专有变体时给出提示。别让用户在生产里用专有变体而我们一声不吭。
+探测到专有变体时给出提示。不得让用户在生产环境中使用专有变体而无任何提示。
 
 > **体积是次要原因**：约 100 MB 的 Node SEA 自包含二进制（好处是不需另装 Node）。
 > 两个原因结论一致，但**法律那条才是决定性的**。
@@ -70,7 +70,7 @@ transfer the Commercial Modules to any third party"*，以及
 
 **选 `bw` 的理由**：它是唯一**官方维护且可靠支持 SSH key 条目**的路径。
 `rbw` 更符合"纯 Rust"审美，但非官方、依赖外部 `pinentry`，且作者已声明不添功能 ——
-把新条目类型的支持押在它身上风险太高。
+依赖它来支持新条目类型的风险过高。
 
 ---
 
@@ -86,14 +86,16 @@ pub struct SshKey {
 }
 ```
 
-**先把 fingerprint 说准**：它是**公钥的 SHA-256**。
-不要与 SHA-512 混 —— Bitwarden SSH agent 对 RSA 密钥一律用 sha512 **签名**
+**先明确 fingerprint 的定义**：它是**公钥的 SHA-256**。
+不得与 SHA-512 混淆 —— Bitwarden SSH agent 对 RSA 密钥一律用 sha512 **签名**
 （[clients#16681](https://github.com/bitwarden/clients/issues/16681)），
-那是**签名哈希**，与指纹是两件事。
+那是**签名哈希**，与指纹是两个不同的概念。
 
 ---
 
 ## 5. `revisionDate` 与 `fingerprint`：两个字段、两个职责
+
+（上游字段名为 `revisionDate`；库内列名与 §5.3 缓存元组写作 `revision_date`，两者指同一件事。）
 
 **它们覆盖不同的失效模式，都不可省。**
 

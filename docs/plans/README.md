@@ -24,7 +24,7 @@
 ## 单文件预算（硬规则，由 `just docs-check` 强制）
 
 - **每份 plan ≤ 200 行**（目标 60–120 行）。超了**拆成两份**，在前者头部写「后继：NNNN」——
-  不要把细节继续堆进同一个文件。
+  不得将细节继续堆进同一个文件。
 - **骨架 plan 不许标「进行中」**：没有「## 验收命令」节就不许开工
   （`docs-check` 会拦下来）。判据来自 ROADMAP，但**手段必须能粘贴执行**。
 
@@ -53,7 +53,7 @@
 ## 实施记录（边做边追加，记录验收命令的实际输出）
 ```
 
-能把验收变成 `just` 配方的，就不要写成散文；新增/改名配方要同步 [`../just.md`](../just.md) §2。
+能把验收变成 `just` 配方的，就不应写成散文；新增/改名配方要同步 [`../just.md`](../just.md) §2。
 
 ---
 
@@ -65,11 +65,11 @@
 |---|---|---|---|---|
 | 0101 | 落地根 workspace | 已完成 | ADR-0001 已定案 | [0101](./archive/0101-root-workspace.md) |
 | 0106 | Rust 成员收进 `src-tauri/`（**取代 0101 的布局**） | 已完成 | plan 0101 / 0104 | [0106](./archive/0106-workspace-under-src-tauri.md) |
-| 0102 | CI 平台矩阵（Linux + Windows + macOS，GitHub Actions 一份） | 进行中（本地已完成，待 CI 实跑） | plan 0101 | [0102](./0102-ci-platform-matrix.md) |
+| 0102 | CI 平台矩阵（Linux + Windows + macOS，GitHub Actions 一份） | 进行中（本地已完成，待 CI 实际运行） | plan 0101 | [0102](./0102-ci-platform-matrix.md) |
 | 0103 | `src-tauri/crates/akasha-core`：`Session` 模型骨架 | 已完成 | plan 0101 | [0103](./archive/0103-core-session-model.md) |
 | 0104 | 迁移后复测开发循环 | 已完成（监听范围曾失效，已修） | plan 0103（要有 `src-tauri/crates/` 成员才测得了） | [0104](./archive/0104-dev-loop-retest.md) |
 | 0105 | `src-tauri/crates/akasha-pty`：通用 `Transport` trait | 已完成 | plan 0103（命名与规则先立） | [0105](./archive/0105-pty-transport-trait.md) |
-| 0107 | E2E 入口（`just test-e2e` 自包含） | 进行中（本地已实测；CI 三平台待实跑） | plan 0202 / 0203 | [0107](./0107-e2e-entry.md) |
+| 0107 | E2E 入口（`just test-e2e` 自包含） | 进行中（本地已实测；CI 三平台待实际运行） | plan 0202 / 0203 | [0107](./0107-e2e-entry.md) |
 
 ### 阶段 2 — 端到端最小终端
 
@@ -78,7 +78,7 @@
 | 0201 | `Transport` 输出合批 | 已完成 | plan 0105 | [0201](./archive/0201-output-batching.md) |
 | 0202 | IPC 二进制通道（输出走 raw 字节） | 已完成 | plan 0201 | [0202](./archive/0202-ipc-binary-channel.md) |
 | 0203 | 前端 xterm + WebGL 渲染 | 已完成 | plan 0202 | [0203](./archive/0203-xterm-webgl-render.md) |
-| 0204 | 真正退出零残留（能跑代码的两条路径） | 已完成 | plan 0203 | [0204](./archive/0204-exit-zero-residue.md) |
+| 0204 | 真正退出零残留（能执行代码的两条路径） | 已完成 | plan 0203 | [0204](./archive/0204-exit-zero-residue.md) |
 | 0205 | 被 SIGKILL 的退出路径也零残留（看门狗进程 + 管道 EOF） | 已完成 | plan 0204 / ADR-0005 | [0205](./archive/0205-sigkill-exit-residue.md) |
 
 ### 阶段 3 — 托盘与应用生命周期
@@ -90,7 +90,7 @@
 | 0303 | 关闭行为可配置 | 已完成（数据目录里的 `config.json`；非法值回默认 + warn） | plan 0302 | [0303](./archive/0303-close-behavior-config.md) |
 | 0304 | 单实例 | 已完成（第二个实例 150 ms 内退出并唤起**藏着的**窗口，E2E `single_instance`） | plan 0302 | [0304](./archive/0304-single-instance.md) |
 | 0305 | 关闭终端标签页 = 立刻丢弃该 Session | 已完成 | plan 0204 | [0305](./archive/0305-tab-close-discards-session.md) |
-| 0306 | 会话自己结束 = 收掉它 + 关掉那个标签页 | 已完成 | plan 0305 | [0306](./archive/0306-session-ended-closes-tab.md) |
+| 0306 | 会话自己结束 = 回收它 + 关闭那个标签页 | 已完成 | plan 0305 | [0306](./archive/0306-session-ended-closes-tab.md) |
 
 ### 阶段 4 — 存储与凭据池
 
@@ -99,26 +99,26 @@
 | 0400 | 写 ADR-0002（机密存储与可搬迁） | 已完成 | 阶段 4 开工前 | [0400](./archive/0400-adr-0002-secret-storage.md) |
 | 0401 | `rusqlite` + SQLCipher 打开加密库 | 已完成（2026-09-12） | plan 0400（ADR-0002 实现中） | [0401](./archive/0401-sqlcipher-open.md) |
 | 0402 | 口令 → KDF → 库密钥 | 已完成（2026-09-12） | plan 0401（库能开） | [0402](./archive/0402-passphrase-kdf.md) |
-| 0403 | 四套池的 CRUD（含库内的不变量与私钥的受保护页） | 已完成（2026-09-12） | plan 0401 / 0402 / 0406 | [0403](./archive/0403-pools-crud.md) |
+| 0403 | 四类池的 CRUD（含库内的不变量与私钥的受保护页） | 已完成（2026-09-12） | plan 0401 / 0402 / 0406 | [0403](./archive/0403-pools-crud.md) |
 | 0407 | 解锁与锁定的生命周期（谁持有连接、口令从哪来、锁定时抹什么） | 已完成（2026-09-12） | plan 0403 / 0404 / 0406 | [0407](./archive/0407-unlock-lifecycle.md) |
-| 0404 | dump 与导出（加密 / 明文两条路 + 还原） | 已完成（2026-09-12） | plan 0403（四套池能读写） | [0404](./archive/0404-dump-export.md) |
+| 0404 | dump 与导出（加密 / 明文两条路 + 还原） | 已完成（2026-09-12） | plan 0403（四类池能读写） | [0404](./archive/0404-dump-export.md) |
 | 0406 | 口令的内存防护（`memsafe`） | 已完成（2026-09-12） | plan 0402（`Passphrase` 已就位） | [0406](./archive/0406-memsafe-passphrase-page.md) |
-| 0405 | 可搬迁性验证 | 已完成（2026-09-12：配方 `portable`；搬家后四套池 1/1/1/1；便携目录不可写 → 退出码 2） | plan 0403 / 0407（有数据、能读） | [0405](./archive/0405-portability-verify.md) |
+| 0405 | 可搬迁性验证 | 已完成（2026-09-12：配方 `portable`；迁移后四类池 1/1/1/1；便携目录不可写 → 退出码 2） | plan 0403 / 0407（有数据、能读） | [0405](./archive/0405-portability-verify.md) |
 
 ### 阶段 5 — SSH 栈（`russh`）
 
 | 编号 | 标题 | 状态 | 前置 / 展开时机 | 文件 |
 |---|---|---|---|---|
-| 0501 | 写 ADR-0003（SSH 栈与资源模型） | 已完成（2026-09-12：ADR-0003 进入「实现中」，调研结论带版本号与出处） | 阶段 5 开工前 | [0501](./archive/0501-adr-0003-ssh-stack.md) |
-| 0502 | `src-tauri/crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存） | 已完成（2026-09-13：三个连接只问一次凭据；`just ready` 6/6） | plan 0501（ADR-0003 实现中） | [0502](./archive/0502-ssh-connect-auth.md) |
+| 0501 | 写 ADR-0003（SSH 栈与资源模型） | 已完成（2026-09-12：ADR-0003 置为「实现中」，调研结论带版本号与出处） | 阶段 5 开工前 | [0501](./archive/0501-adr-0003-ssh-stack.md) |
+| 0502 | `src-tauri/crates/akasha-ssh`：连接 + 认证（密钥池 / agent / 内存凭据缓存） | 已完成（2026-09-13：三个连接共享一次凭据询问；`just ready` 6/6） | plan 0501（ADR-0003 实现中） | [0502](./archive/0502-ssh-connect-auth.md) |
 | 0503 | known_hosts 校验与缓存（含库格式 v2 迁移） | 已完成（2026-09-13：三态判定 + 自动迁移；`just ready` 6/6） | plan 0502（ADR-0003 D11 已定策略） | [0503](./archive/0503-known-hosts.md) |
-| 0504 | SSH 接进 IPC / 前端（带目标的命令 + 凭据往返 + 提示界面） | 已完成（2026-09-13：真 app 上界面选主机 → 提示 → 双向流；凭据只问一次；关标签页零残留） | plan 0503（信任策略已定） | [0504](./archive/0504-ssh-into-ipc-frontend.md) |
-| 0505 | `direct-tcpip` 原语 | 已完成（2026-09-13：跳板链走通；库内 4 用例 + 真 app E2E；`just ready` 6/6） | plan 0504（已完成）· 形状见 ADR-0003 D9 | [0505](./archive/0505-direct-tcpip-primitive.md) |
-| 0506 | `~/.ssh/config` 受限子集导入 | 已完成（2026-09-13：三档边界落地；导入的行**经跳板真连上**；含 `Match` 的整份报错且一行不写；`just ready` 6/6） | plan 0505（已完成）· 边界见 ADR-0003 D14 | [0506](./archive/0506-ssh-config-subset-import.md) |
+| 0504 | SSH 接进 IPC / 前端（带目标的命令 + 凭据往返 + 提示界面） | 已完成（2026-09-13：真实 app 上界面选主机 → 提示 → 双向流；凭据只询问一次；关闭标签页零残留） | plan 0503（信任策略已定） | [0504](./archive/0504-ssh-into-ipc-frontend.md) |
+| 0505 | `direct-tcpip` 原语 | 已完成（2026-09-13：跳板链连通；库内 4 用例 + 真实 app E2E；`just ready` 6/6） | plan 0504（已完成）· 形状见 ADR-0003 D9 | [0505](./archive/0505-direct-tcpip-primitive.md) |
+| 0506 | `~/.ssh/config` 受限子集导入 | 已完成（2026-09-13：三档边界落地；导入的行经跳板真实连通；含 `Match` 的整份报错且一行不写；`just ready` 6/6） | plan 0505（已完成）· 边界见 ADR-0003 D14 | [0506](./archive/0506-ssh-config-subset-import.md) |
 
-> 本阶段的顺序由**依赖**决定，不按原立项号（2026-09-13 重排）：信任策略 → 接进 app → 原语 → 配置导入。
-> 重排后**编号与执行顺序一致**；`direct-tcpip` 从 0503 挪到 0505，因为它的三处消费者
-> （跳板 / 端口转发 / SFTP）都要先有一条从 app 打得开的 SSH 会话才验得了。
+> 本阶段的执行顺序由**依赖**决定，不按原立项编号（2026-09-13 重排）：信任策略 → 接入 app →
+> 原语 → 配置导入。重排后编号与执行顺序一致；`direct-tcpip` 由 0503 移到 0505，
+> 因为它的三处消费者（跳板 / 端口转发 / SFTP）都需要先有一条从 app 建立起来的 SSH 会话才能验证。
 
 ### 阶段 6 — SSH 端口转发
 

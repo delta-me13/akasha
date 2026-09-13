@@ -35,7 +35,7 @@ doctor:
 # ── 开发循环 ────────────────────────────────────────────────────────────────
 
 # 监听范围**不需要额外配置**：workspace 就在 `src-tauri/` 里（ADR-0004），
-# 而 tauri CLI 默认监听 `src-tauri` —— 成员天然被覆盖，实测见 docs/STATUS.md 坑 #21。
+# 而 tauri CLI 默认监听 `src-tauri` —— 成员天然被覆盖，实测见 docs/STATUS.md 问题 #21。
 # ⚠️ 别把成员挪到 `src-tauri/` 外面：一旦挪出去，开发循环会**静默失效**
 # （门禁全绿，但改了代码看不到效果），那时才需要 `build.additionalWatchFolders`。
 #
@@ -160,15 +160,34 @@ ready:
 #    * 索引 docs/plans/README.md 双向一致：有文件必有索引行，有索引行必有文件
 #    * 标「进行中」却没有「## 验收命令」的 plan 直接红 —— 骨架 plan 不许开工
 #
-# 踩过的坑，写在这里免得重蹈：
+# 已知问题，记录在此避免重复：
 #   1. 反斜杠转义的反引号在 grep -E 里会把反引号本身吞掉，于是 sed 剥不掉 "just " 前缀。
 #      改用「just <名> + 右侧边界」判定，不依赖 markdown 写法。
 #   2. 正向检查若不限定在 §2 表格内就形同虚设 —— 某条命令可能只在排错段落里被顺带提及，
 #      而表格里其实已经删掉了。所以用 awk 取出 §2 段落，只在那里面找。
 #   3. 含反引号的 grep 模式必须整体放进**单引号**里，否则会被 bash 当命令替换执行。
 #
-# 文档纪律（三部分，规则见 AGENTS.md §8 与 §8.1，plan 规则见 docs/plans/README.md）。
+# D. 文档语体 —— 口语、语气词、第二人称、比喻一律不许进文档（规范见 AGENTS.md §8.2）
+#    * 独立配方 docs-style 实现在上面，本配方第一步调用它
+#
+# 文档纪律（四部分，规则见 AGENTS.md §8 / §8.1 / §8.2，plan 规则见 docs/plans/README.md）。
+# 文档语体：剥离代码块与行内代码后匹配禁用语表（规范见 AGENTS.md §8.2）
+docs-style:
+    @bad=0; \
+    pat='你|您|咱们|各位|吧|嘛|呀|哦|啦|嗯|哎|其实|反正|干脆|顺便|搞定|收尸|摘牌|挂住|够不着|白送|收工|人眼|坑|弄|搞|跑|关掉|收掉|半截|顺手|踩到|搬家|搬走|四套池|真 app|打出来'; \
+    for f in AGENTS.md CLAUDE.md README.md ROADMAP.md $(find docs -name '*.md' | sort); do \
+      hits=$(awk 'BEGIN{n=0} /^[[:space:]]*```/{n=!n;next} n==0{print}' "$f" | sed -E 's/`[^`]*`//g' | grep -nE "$pat" || true); \
+      if [ -n "$hits" ]; then \
+        echo "❌ $f 命中禁用语（AGENTS.md §8.2）:"; \
+        printf '%s\n' "$hits" | head -n 20; \
+        bad=1; \
+      fi; \
+    done; \
+    if [ "$bad" != "0" ]; then echo "→ 语体规范与术语对照见 AGENTS.md §8.2"; exit 1; fi; \
+    echo "✅ 文档语体通过（禁用语表无命中）"
+
 docs-check:
+    @just docs-style
     @miss=0; \
     recipes=$( { just --summary; just --justfile {{SRC}}/justfile --summary; } | tr ' ' '\n' | sort -u ); \
     sec2=$(awk '/^## 2\. /{f=1} /^## 3\. /{f=0} f' docs/just.md); \
@@ -200,4 +219,4 @@ docs-check:
       find docs/plans -name "$id-*.md" | grep -q . || { echo "❌ docs/plans/README.md 索引里的 plan 没有文件: $id"; miss=1; }; \
     done; \
     if [ "$miss" = "1" ]; then echo "→ 命令类问题同步 docs/just.md §2；纪律类问题见 AGENTS.md §8.1；plan 类问题见 docs/plans/README.md"; exit 1; fi; \
-    echo "✅ 文档纪律通过（命令与 justfile 同步；ROADMAP $(grep -cE '^- \[[ x~!]\]' ROADMAP.md) 个条目均在 3 行内、无代码块与命令调用；plan $(printf '%s\n' "$plans" | grep -c . ) 份 ≤200 行且索引一致）"
+    echo "✅ 文档纪律通过（语体符合 AGENTS.md §8.2；命令与 justfile 同步；ROADMAP $(grep -cE '^- \[[ x~!]\]' ROADMAP.md) 个条目均在 3 行内、无代码块与命令调用；plan $(printf '%s\n' "$plans" | grep -c . ) 份 ≤200 行且索引一致）"

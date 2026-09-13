@@ -41,7 +41,7 @@ ls .ast-grep/rules/          # 现有规则（no-println 应已在）
    - `no-tauri-in-core-crates` —— `crates/**` 里出现 `use tauri::`
    - `no-ui-vocab-in-types` —— 类型名里出现 UI 词汇
 5. 单测覆盖：ID 分配唯一；关闭一个 `Session` 不影响另一个；关闭后不再向它投递事件；
-   同时注册 / 关闭多个不串号。
+   同时注册 / 关闭多个会话不发生编号错配。
 
 ## 验收命令
 
@@ -63,7 +63,7 @@ ast-grep scan
 cp crates/akasha-core/src/lib.rs /tmp/lib.rs.bak
 printf '\nuse tauri::AppHandle;\n' >> crates/akasha-core/src/lib.rs
 ast-grep scan                                 # 期望报告 no-tauri-in-core-crates
-cp /tmp/lib.rs.bak crates/akasha-core/src/lib.rs   # ⚠️ 用 cp 还原，别用 git checkout（坑 #12）
+cp /tmp/lib.rs.bak crates/akasha-core/src/lib.rs   # ⚠️ 用 cp 还原，别用 git checkout（问题 #12）
 ```
 
 ## 回滚
@@ -82,7 +82,7 @@ cp /tmp/lib.rs.bak crates/akasha-core/src/lib.rs   # ⚠️ 用 cp 还原，别�
 
 ### 负例验证（规则必须能红，否则分不清"在工作"与"写错了"）
 
-在 `crates/akasha-core/src/negprobe.rs` 放探针文件后跑 `ast-grep scan --json`：
+在 `crates/akasha-core/src/negprobe.rs` 放探针文件后执行 `ast-grep scan --json`：
 
 | 探针 | 期望 | 实际 |
 |---|---|---|
@@ -99,16 +99,16 @@ cp /tmp/lib.rs.bak crates/akasha-core/src/lib.rs   # ⚠️ 用 cp 还原，别�
 
 ### plan 没预判的：crates/* 的检查与单测会被**静默漏掉**
 
-`just test` 只报了 **5** 个测试（全是 `akasha`），`akasha-core` 的 8 个**一个都没跑**。
+`just test` 只报了 **5** 个测试（全是 `akasha`），`akasha-core` 的 8 个**一个都未执行**。
 原因：just 的 cwd 是 `src-tauri/`，而 **cargo 默认只选当前目录所在的包**。
 `cargo clippy --all-targets` 同理（只 lint `akasha`）。后果是 DoD 会在
 "`crates/*` 根本没被编译过"的情况下全绿 —— 正是门禁最该挡住的那类失败。
 
 处置：`check` / `clippy` / `test` 三条配方显式加 `--workspace`（`fmt --all` 本来就覆盖全
 workspace）。加回后 `just test` = **13 tests run: 13 passed**（akasha-core 8 + akasha 5）。
-已记入坑 #20，并在 `docs/just.md` §2 的三行里写明"workspace 全成员"。
+已记入问题 #20，并在 `docs/just.md` §2 的三行里写明"workspace 全成员"。
 
-### 两个顺带的记录
+### 两条附加记录
 
 - `cargo new` 会把成员**显式**写进根 members（`"crates/akasha-core"`）；按步骤 1 改回
   `crates/*`，此后新增 crate 不必再动根 `Cargo.toml`。

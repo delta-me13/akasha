@@ -12,13 +12,13 @@
 |---|---|
 | **规则**：什么能做什么不能做、命令入口 | 本文件 |
 | **下一步做什么** | [`ROADMAP.md`](./ROADMAP.md) |
-| **现在到哪了、有哪些坑** | [`docs/STATUS.md`](./docs/STATUS.md) |
+| **现在到哪了、有哪些已知问题** | [`docs/STATUS.md`](./docs/STATUS.md) |
 | **某个决定为什么这样定** | [`docs/adr/`](./docs/adr/) |
 | **某个工作项怎么做** | [`docs/plans/`](./docs/plans/) |
 | 文档索引与骨架 | [`docs/README.md`](./docs/README.md) |
 
 > 本文件**只放规则**。状态与待办不写在这里 —— 规则的时效是"几乎不变"，
-> 状态的时效是"每次会话"，混在一起两边都会烂。
+> 状态的时效是"每次会话"，混在一起会使两者都无法维护。
 
 ---
 
@@ -43,7 +43,7 @@
 
 ---
 
-## 1. 开发循环（先读这一节，能省掉最多无效劳作）
+## 1. 开发循环（先读这一节，可省去最多的无效劳作）
 
 ### 热重载的真相
 
@@ -56,31 +56,31 @@
 
 **Victauri 不提供热重载。** 它是在*已运行*进程内嵌的 MCP 服务，35 个工具全部是
 检查/驱动（DOM、IPC、后端状态、数据库、窗口）。它的价值不是"不用重启"，而是
-**"不重启也能验证"**：不用加临时调试 UI、不用重跑场景，就能 `eval_js`、
+**"不重启也能验证"**：不需要加临时调试 UI、不需要重新执行场景，就能 `eval_js`、
 `invoke_command`、`dom_snapshot` 直接观察并驱动运行中的 app。
 
 ### 由此推出的规则
 
-- **常驻一个 `just dev`，不要每次手动重跑。** Rust 保存后 CLI 自动重编译 + 重启；
+- **常驻一个 `just dev`，不要每次手动重启。** Rust 保存后 CLI 自动重编译 + 重启；
   重启后 Victauri bridge 会**重新发现端口**，MCP 无需重连 —— 继续调用即可。
-- **Rust 侧提速的正解是"下沉 + 独立循环"，而不是等重启**：
+- **Rust 侧提速的正确路径是"下沉 + 独立循环"，而不是等待重启**：
   - 纯逻辑（PTY 抽象、VT 解析、状态机、布局）放 `src-tauri/crates/`，零 Tauri 依赖；
   - `just watch`（bacon）提供秒级 `check`/`test`，**全程不启动 app**；
   - `src-tauri` 只留 IPC 编组，改它的频率越低，重编译成本越低。
-- **前端迭代不启动 app**：`just dev-web` + Tauri `mockIPC`，浏览器里跑 Vite HMR。
+- **前端迭代不启动 app**：`just dev-web` + Tauri `mockIPC`，在浏览器中运行 Vite HMR。
 - **没有 `.taurignore`，也不需要**：监听范围就是 `src-tauri/`（ADR-0004），成员天然被覆盖
-  （坑 #21）。真出现"改某个文件就白重建一次"时再建它，并在这里登记 ——
-  别照着一条并不存在的机制去排查。
-- 跨平台差异交给 CI 矩阵，本地不必反复跑全平台。
+  （问题 #21）。真出现"改某个文件就无谓重建一次"时再建立它，并在此处登记 ——
+  不得照一条并不存在的机制去排查。
+- 跨平台差异交给 CI 矩阵，本地不必反复在所有平台上运行。
 
 ### ⚠️ 一类会被误判成 bug 的失败：写工作区之外被沙箱拒绝
 
 在受限环境（agent 沙箱 / 容器 / 只读家目录）里，**需要写工作区之外**的命令会失败，
-而且失败信息看起来像工具或代码故障。已知两例：
+且失败信息与工具或代码故障相似。已知两例：
 
 | 命令 | 症状 | 想写的路径 |
 |---|---|---|
-| `just dev` | dconf 警告后 panic：`Failed to setup app: 只读文件系统 (os error 30)`。**发生在 `cargo build` 成功之后**，极易被误判成"编译过了但跑不起来" | `$HOME/.local/share/...`、`/run/user/1000/dconf` |
+| `just dev` | dconf 警告后 panic：`Failed to setup app: 只读文件系统 (os error 30)`。**发生在 `cargo build` 成功之后**，容易被误判成"编译成功但无法启动" | `$HOME/.local/share/...`、`/run/user/1000/dconf` |
 | `just deny` | `failed to acquire advisory database lock: ... failed to create parent directories` | `~/.cargo/advisory-dbs` |
 
 **这些是环境权限，不是项目 bug** —— 同一份代码在完整权限下实测正常启动、正常检查
@@ -90,8 +90,8 @@
 
 1. 先判断是否属于这一类：错误里出现「只读文件系统 / 无法创建目录 / 无法获取 lock」，
    且目标路径在**工作区之外**。
-2. 确认属于这一类后，**直接对同一条命令申请提权重试**。不要当成项目 bug 去翻代码，
-   不要只报错一次就收工，也不要换一条命令绕开。
+2. 确认属于这一类后，**直接对同一条命令申请提权重试**。不得当成项目 bug 去翻代码，
+   不得只报错一次即结束，也不得换一条命令绕开。
 3. **只在提权不可用**（被拒绝 / 无人审批）时，才退到替代方案（例如 `just dev` 的
    XDG 重定向 —— 它有副作用，见 `docs/just.md` §6）。
 
@@ -107,27 +107,27 @@
 | 结构化找代码（"所有 `.unwrap()` 调用"） | `ast-grep` / `sg` | 语法树匹配，不误伤注释与字符串 |
 | 符号级理解、跳转、重构 | **rust-analyzer MCP** | 类型/引用级，跨 crate |
 | 纯文本、日志、配置查找 | `grep` / `glob` | 非代码场景 |
-| 运行中 app 的 DOM / IPC / 后端状态 | **Victauri MCP** | Tauri 的事不要用 CDP/Playwright |
+| 运行中 app 的 DOM / IPC / 后端状态 | **Victauri MCP** | Tauri 的场景不要用 CDP/Playwright |
 | 运行中 app 的验收与回归 | `victauri-test` + `VICTAURI_E2E=1` | 见 §7 |
 | 约束执行（把"禁止"变成机器检查） | `ast-grep scan` + `.ast-grep/rules/` | 见 §6 |
 
 > `ast-grep` 在本项目有**双重身份**：既是搜索工具，也是**约束执行器**。
-> 只把它当搜索用是浪费它的价值。
+> 仅将其当作搜索工具会浪费它作为约束执行器的能力。
 
-**开工时的"找代码"按上表从上往下挑，不要默认 `grep` / 逐个 `read`** —— 这不是风格偏好，
-而是两个会立刻见效的代价：
+**开工时的"找代码"按上表自上而下选择，不要默认 `grep` / 逐个 `read`** —— 这不是风格偏好，
+而是两项立刻可衡量的代价：
 
-- **token**：`grep` 会把注释、字符串、测试里的同名文本一起倒出来，还得人眼筛；
-  `ast-grep` 只回命中的**语法节点**（`--json` 可直接喂 `jq`），rust-analyzer 直接给
-  符号 / 引用 / 类型。同一个问题，结构查询的输出常常只有文本搜索的十分之一。
-- **语义**：有些"形状"用文本描述既不干净也不可靠。实测过的例子：查 PTY 频道的真实用法时
-  `grep "Channel<"` 在 `session.rs` 上回四条、其中**三条是注释里的反例**；
-  换成 `ast-grep`（`kind: generic_type` + 正则 `Channel<`）只回**一条**真实用法，
-  而且只有它才不会被限定路径的写法（`tauri::ipc::Channel<…>`）骗过去。
-  "这个符号是什么、谁在用它"是 IDE 的问题，不该靠读整个文件来回答。
+- **token**：`grep` 会把注释、字符串、测试里的同名文本一并输出，仍需人工判读；
+  `ast-grep` 只返回命中的**语法节点**（`--json` 可直接传给 `jq`），rust-analyzer 直接给出
+  符号 / 引用 / 类型。同一个问题，结构查询的输出通常只有文本搜索的十分之一。
+- **语义**：有些"形状"用文本描述既不精确也不可靠。实测过的例子：查 PTY 频道的真实用法时
+  `grep "Channel<"` 在 `session.rs` 上返回四条、其中**三条是注释里的反例**；
+  换成 `ast-grep`（`kind: generic_type` + 正则 `Channel<`）只返回**一条**真实用法，
+  且只有它才不会被限定路径的写法（`tauri::ipc::Channel<…>`）遗漏。
+  "这个符号是什么、谁在使用它"是 IDE 的问题，不应通过读整个文件来回答。
 
-**允许降级的只有两种情形**：纯文本 / 配置 / 日志（那本来就是 `grep` 的活），
-或者结构性工具确实给不出答案（那时才退回 `read`，并优先读**一个函数**而不是整个文件）。
+**允许降级的只有两种情形**：纯文本 / 配置 / 日志（那本就是 `grep` 的适用场景），
+或者结构性工具确实无法给出答案（那时才退回 `read`，并优先读**一个函数**而不是整个文件）。
 
 ---
 
@@ -136,28 +136,29 @@
 ### 3.1 分层
 
 ```
-src-tauri/crates/akasha-pty/   # PTY 抽象：trait + portable-pty 实现；无 Tauri 依赖，可 mock
-src-tauri/crates/akasha-vt/    # VT 解析 / 屏幕状态 / 回滚缓冲；纯函数式，可快照测试
-src-tauri/crates/akasha-core/  # (按需) 会话模型、配置、布局
-src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
+src-tauri/crates/akasha-pty/     # 载体抽象：`Transport` trait + PTY（portable-pty）实现、合批、回收、看门狗；无 Tauri 依赖，可 mock
+src-tauri/crates/akasha-core/    # 会话模型、事件、会话注册表、配置
+src-tauri/crates/akasha-ssh/     # SSH：russh 封装、认证、凭据、known_hosts、direct-tcpip（ADR-0003）
+src-tauri/crates/akasha-store/   # 持久化：SQLCipher 库、四类池、格式迁移、导出与导入（ADR-0002）
+src-tauri/src/                   # IPC 薄壳：command + Channel + 事件 + 状态注入
 ```
 
 - 依赖方向**单向**：`src-tauri` → `src-tauri/crates/*`，反向依赖视为架构违规。
 - `src-tauri/crates/*` 不得 `use tauri::*`。这条用 ast-grep 规则强制（§6）。
-- 范围扩大后还会引入更多 crate（ssh / serial / sftp / store / 托盘与隧道），
-  能力与切分见 `docs/scope.md`；**依赖方向规则同上，对新 crate 一律适用**。
+- 范围扩大后还会引入更多 crate（serial / sftp / 隧道），能力与切分见 `docs/scope.md`；
+  **依赖方向规则同上，对新 crate 一律适用**。
 - **命名：后端类型名不得编码 UI 呈现方式。** 前端把 `Session` 渲染成标签页 / 面板 /
-  分屏 / 独立窗口都行，后端只按语义命名。词汇表与理由见 `docs/scope.md` §1.2 ——
+  分屏 / 独立窗口均可以，后端只按语义命名。词汇表与理由见 `docs/scope.md` §1.2 ——
   要点：**`Session`** = 资源的归属单位（用户打开的一个工作单元）、
   **`Transport`** = 字节载体（PTY / SSH shell 通道 / 串口）、
-  **`Connection`** = 一条 SSH 连接。不要用 `Tab` / `Pane` / `View`，
-  也不要用 `Workspace`（本仓库已指 Cargo workspace）。
+  **`Connection`** = 一条 SSH 连接。不要用 `Tab` / `Pane` / `Window` / `View`（由 §6 的
+  `no-ui-vocab-in-types` 按词边界强制），也不要用 `Workspace`（本仓库已指 Cargo workspace）。
 - 本节的**分层与命名**以 **ADR-0001 为准**（已定案）；**workspace 的物理位置**
   （root 在 `src-tauri/`、成员在其 `crates/` 下、仓库根不放 Rust 成员）以
   [`docs/adr/0004`](./docs/adr/0004-rust-workspace-under-src-tauri.md) 为准 ——
   它取代了 ADR-0001 的决策一。
-- ADR-0001 决策二仍有效：`akasha-vt` **维持延后**，若确有必要则建于
-  `src-tauri/crates/akasha-vt/`，**不在仓库根平铺**。
+- ADR-0001 决策二仍有效：`akasha-vt`（VT 解析 / 屏幕状态 / 回滚缓冲，纯函数式、可快照测试）
+  **维持延后**；若确有必要则建于 `src-tauri/crates/akasha-vt/`，**不在仓库根平铺**。
 
 ### 3.2 数据流与背压（终端应用的成败点）
 
@@ -165,7 +166,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
   `InvokeResponseBody::Raw(bytes)`（JS 侧收到 `ArrayBuffer`）。
   ⚠️ **`Channel<Vec<u8>>` 不是二进制通道** —— tauri 有
   `impl<T: Serialize> IpcResponse for T` 这条 blanket impl，所以它发出去的是
-  "六万多个数字的 JSON 数组"，与默认 JSON IPC 是同一条慢路。
+  "六万多个数字的 JSON 数组"，与默认 JSON IPC 属于同一条低速路径。
   由 `.ast-grep/rules/no-string-pty-channel.yml` 强制（§6）。
 - **合批后再发**：read loop 按「≥16ms 或 ≥64KiB」聚合一次，禁止逐字节 / 逐行 emit。
 - **绝不假设 UTF-8**：字节流可以被切在任意多字节序列中间。解码只能在 VT 层做，
@@ -179,34 +180,35 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 | 事件 | PTY / 隧道 | 何时回收 |
 |---|---|---|
-| **会话自己结束**（终端里敲了 `exit` / shell 崩溃 / PTY 关闭） | 回收**它自己** | **立即**（收尸 + 摘牌 + 撤销兜底登记，并发事件让标签页跟着关） |
+| **会话自己结束**（终端中输入 `exit` / shell 崩溃 / PTY 关闭） | 回收**它自己** | **立即**（kill + wait 回收子进程 + 注销注册 + 撤销兜底登记，并发事件使标签页随之关闭） |
 | **关闭终端标签页**（local / ssh / serial） | 回收**该标签页自己的**会话 | **立即**（无宽限期、无二次确认） |
 | 窗口关闭（默认：收托盘） | **必须存活** | 不回收 |
 | 窗口关闭（配置为"直接退出"） | 回收 | 立即 |
 | **真正退出**（托盘退出 / app 重载 / panic / `kill -9`） | 回收 | **零残留** |
 
-- **关标签页 ≠ 关窗口。** 只有**三大终端**的标签页有关闭按钮，关掉 = 立刻丢弃它自己的
+- **关标签页 ≠ 关窗口。** 只有**三大终端**的标签页有关闭按钮，关闭标签页 = 立刻丢弃它自己的
   `Session`（**只丢那一个**）。转发 / 密码库 / 文件传输是**仅渲染**的前端视图，
   **没有关闭按钮**：关前端不影响后端执行，它们的停止是各自的显式动作 ——
   分类与理由见 `docs/scope.md` §5.6。
-- **标签页与它自己的会话同生命期，两个方向都要成立**：用户关标签页 → 丢弃会话；
-  会话自己结束（敲 `exit`）→ 标签页跟着关。**谁结束都必须把牌摘干净** ——
-  "自己结束"那条路上没人等结果，所以它更要显式收尸（否则留僵尸）与撤销兜底登记
-  （否则端到端退出时会对着一个复用掉的 pid 再发一次 SIGKILL）。
-- 每个 PTY / SSH 子进程与隧道必须在上述回收路径上**显式 kill + wait 收尸**；
+- **标签页与自身会话的生命期相同，两个方向都须成立**：用户关闭标签页 → 丢弃会话；
+  会话自身结束（执行 `exit`）→ 标签页随之关闭。**任一方向结束都必须注销干净** ——
+  "自身结束"这条路径上没有等待结果的调用方，因此更须显式回收子进程（kill + wait，
+  否则残留僵尸进程）与撤销兜底登记
+  （否则端到端退出时会对着一个已复用的 pid 再发送一次 SIGKILL）。
+- 每个 PTY / SSH 子进程与隧道必须在上述回收路径上**显式 kill + wait 回收子进程**；
   drop 不能代替。**窗口关闭默认不在其中。**
 - 有一条路径**进程里没有任何代码会执行**（`tauri dev` 重载的 SIGKILL、`kill -9`），
-  所以还有**进程外**的一道兜底：伴生看门狗读一条管道，EOF 就收掉登记过的会话。
+  所以还有**进程外**的一道兜底：伴生看门狗读一条管道，EOF 即回收已登记的会话。
   决定与边界见 [ADR-0005](./docs/adr/0005-sigkill-exit-watchdog.md)。
 - **新增载体必须回答 `Transport::session_leader()`**（没有本地进程就 `None`）——
-  看门狗靠它认会话。答错/漏答的表现是"这条路径上收不掉"，而其它三条路径照样绿。
+  看门狗依靠它识别会话。答错/漏答的表现是"这条路径上无法回收"，而其它三条路径仍然通过。
 - 验收方式：用 Victauri `introspect { action: "processes" }` 在**真正退出之后**确认零残留。
   在"收托盘"状态下**存在子进程是预期行为，不是泄漏** —— 不要把存活误报成 bug。
 - 托盘行为**可配置**，所以回收逻辑必须**读配置**，不能硬编码"关窗即杀"。
 - **启动路径上的可选能力失败不得挡住启动**：日志目录（`TargetKind::LogDir`）与托盘
   （Linux 上图标要写 `$XDG_RUNTIME_DIR/tray-icon`）都可能在只读环境里建不起来。
   处理方式固定：**降级 + 一条 `warn`**，并且连**降级之后的行为**一起定下来 ——
-  没有托盘就不能只把窗口藏起来（那会让用户再也叫不回窗口），只能维持"关窗即退出"。
+  没有托盘就不能只把窗口藏起来（否则用户将无法再次唤出窗口），只能维持"关窗即退出"。
 - 默认不继承不必要的 fd / 环境变量；shell 启动参数集中管理，不散落。
 
 ### 3.4 错误、日志、unsafe
@@ -218,18 +220,18 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
   - **英文、小写、常量** —— `session retired` / `watchdog registration failed`。
     一种事件一个 grep 模式；**变量一律进字段**（`handle=8 exit_code=0`），不拼进消息。
   - **不写"为什么"**：原因、后果（"否则…"）、命令、示例、plan 号都进注释或文档。
-    "括号里塞一句解释"是这条规则最常被违反的样子。
-  - **不把 `Debug` 倒进字段**：`?opt` 会打 `Some(Code(0))`、`?vec` 会打整个集合。
-    要打就展开成值、分两支，或只打 `len()` —— 数字进字段，细节各自成行。
-  - 字段值**不撒谎**：拿不到就不写这个字段，不填 `0` / `unknown` 顶替。
-  - `no-non-ascii-log-message` 拦"消息里有非 ASCII"这一半（§6）。
+    "在括号中附加一句解释"是违反本条规则最常见的形态。
+  - **不得将 `Debug` 输出写入字段**：`?opt` 会输出 `Some(Code(0))`、`?vec` 会输出整个集合。
+    要输出就展开成值、分两支，或只输出 `len()` —— 数字进字段，细节各自成行。
+  - 字段值**不得虚构**：拿不到就不写这个字段，不填 `0` / `unknown` 顶替。
+  - `no-non-ascii-log-message` 拦截"消息里有非 ASCII"这一半（§6）。
 - 敏感内容（用户键入的终端输入）**默认不落盘**，debug 级需显式开关。
 - **内存里长住的机密统一经 `memsafe` 的受保护页**（口令、私钥、会话令牌、Bitwarden 主密码
   与 `BW_SESSION`；ADR-0002 D13）：不得放进普通 `Vec` / `String`，**也不得自己写
   `mlock` / `mprotect` / `VirtualLock` 封装** —— Unix 与 Windows 是两套 syscall，再加
-  macOS 缺的分支，自研等于两百来行 `cfg` 加一处新 `unsafe`。
+  macOS 缺的分支，自研等于约两百行 `cfg` 加一处新 `unsafe`。
   ⚠️ 它的防护**有明确边界**（Windows 静止只读、macOS 没有 `dd`/`wf`、`/proc/self/mem` 仍读得到），
-  所以**新增一个用途就要按 ADR-0002 D13 那张判据表重验一遍**，别只说"用了 memsafe"。
+  所以**新增一个用途就要按 ADR-0002 D13 那张判据表重验一遍**，不得只说"已使用 memsafe"。
 - `unsafe`：默认禁止；**只有 `src-tauri/crates/akasha-store/` 允许出现它**（把口令送进
   SQLCipher 的 C API，ADR-0002 D4）—— 由 `.ast-grep/rules/no-unsafe-outside-store.yml` 强制，
   放宽它等于改架构。⚠️ 上一条（机密的防护交给 `memsafe`）正是这条能守住的**前提之一**：
@@ -243,14 +245,14 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
     所以它不写"这里不安全"这类同义反复，也不留 `TODO` 占位。
   - **`/// # Safety` 是文档节**：`unsafe fn` / `unsafe trait` 必须有，写明
     **调用方 / 实现方要遵守什么契约**。`# Safety` 是"要求"，`// SAFETY:` 是
-    "我已经满足了它"的举证 —— 内核专门提醒过这对概念最容易混。
+    "我已经满足了它"的举证 —— 内核专门提醒过这对概念最易混淆。
   - 标签本身必须**大写、紧跟冒号**：`// SAFETY:` / `# Safety`（clippy 认的就是这两个
     字面量）；**解释用仓库的注释语言写（中文可以）**，句末收尾。⚠️ 内核注释里的"英文、
-    句首大写"是**它自己的语种约定**，不属于 unsafe 规范 —— 不要一起搬过来。
+    句首大写"是**它自己的语种约定**，不属于 unsafe 规范 —— 不得一并沿用。
   - 由 `just lint` 里 clippy 那一步的三条 lint 强制（内核的 Makefile 里也是这三条）：
     `undocumented_unsafe_blocks`（该写没写）、`unnecessary_safety_comment`（写在了安全块上）、
     `unnecessary_safety_doc`（`# Safety` 挂在了安全函数上）。它们**也查私有项**，
-    所以单点 `unsafe` 跑不掉 —— 判据与实测见 `docs/STATUS.md`。
+    所以单点 `unsafe` 也无法规避检查 —— 判据与实测见 `docs/STATUS.md`。
   - 单测覆盖要求不变。
 
 ---
@@ -262,11 +264,11 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 **正式 UI 的布局 / 视觉 / 交互尚未有设计稿。** `src/**` 现有的界面（标签栏、状态栏、
 配色、空状态文案……）只有一个用途：**让后端行为能被看见、能被验证**。因此：
 
-- **不要**把当前界面当成产品约束或"既有风格"：不要照着它推导设计系统，也不要为了
-  "和现有 UI 一致"而把一个本该改的交互留下来；
-- **不要**在它上面做视觉/版式打磨（那是在给一份会被整体替换的东西加细节）——
-  要改就改**能让某条后端行为被验证**的部分；
-- 评审前端改动时，判据是"**这条后端行为能不能被验证**"，不是"好不好看"；
+- **不要**把当前界面当成产品约束或"既有风格"：不得照其推导设计系统，也不得为
+  "和现有 UI 一致"而保留一个本应修改的交互；
+- **不要**在其上做视觉/版式打磨（该界面会被整体替换，此类细节投入无意义）——
+  需要修改就修改**能让某条后端行为被验证**的部分；
+- 评审前端改动时，判据是"**这条后端行为能否被验证**"，而非视觉效果；
 - 后端**不得**依赖前端的呈现方式（§3.1 的命名规则、`docs/scope.md` §1.2 / §1.3）：
   将来按设计稿重做界面时，`src-tauri` 的命令与事件契约应当**原样可用**。
 
@@ -275,7 +277,7 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 ### 4.1 渲染选型（已定，勿反复推翻）
 
 - `@xterm/xterm` + `@xterm/addon-webgl`（不可用时回退 `addon-canvas`）。
-  **DOM renderer 在高吞吐下必卡**，不作为默认。
+  **DOM renderer 在高吞吐下必然阻塞**，不作为默认。
 - 配套：`addon-fit`（尺寸）、`addon-search`（搜索）、`addon-serialize`（会话恢复）、
   `addon-unicode11`（宽字符）。
 
@@ -299,13 +301,13 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 - 用 `tauri-specta`（+ `specta-typescript`）从 Rust command/event **生成**
   `src/ipc/bindings.ts`；该文件为生成物，**禁止手改**。
-- 任何新增/修改 command 或 event 后**必须**跑 `just gen-types` 并提交产物差异 ——
-  **`just ready` 里的 `gen-types-check` 会比对生成物是否已提交**（没提交就红）。
+- 任何新增/修改 command 或 event 后**必须**执行 `just gen-types` 并提交产物差异 ——
+  **`just ready` 里的 `gen-types-check` 会比对生成物是否已提交**（未提交即失败）。
 - 前端只允许通过 `src/ipc/` 的包装函数调后端，不出现裸命令名字符串。
 - ⚠️ **一处刻意的手写**：raw 字节通道那条命令的参数在生成物里只能是 `string`
   （`InvokeResponseBody` 没有 `specta::Type`，生成器写不出它的 TS 类型），
   所以"怎么建频道、怎么把 `ArrayBuffer` 变成字节"留在 `src/ipc/session.ts`。
-  手写的**只有这一段**，签名仍来自生成物 —— 别把它当成"可以手写第二份签名"的先例。
+  手写的**只有这一段**，签名仍来自生成物 —— 不得将其视为"可以手写第二份签名"的先例。
 
 ---
 
@@ -313,8 +315,8 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 
 - 配置：根目录 `sgconfig.yml`，规则目录 `.ast-grep/rules/`。
 - `just lint` 包含 `ast-grep scan`（真代码）与 `ast-grep test`（规则自己的正反例）；
-  本地与 CI 都跑（CI 见 `.github/workflows/ci.yml`）。
-- **规则与它守护的代码同 PR 落地**：规则先红、代码补上后转绿。
+  本地与 CI 均执行（CI 见 `.github/workflows/ci.yml`）。
+- **规则与它守护的代码同 PR 落地**：规则先失败、代码补齐后通过。
 - 计划的规则清单（按需逐条添加）：
 
 | 规则 | 拦截 |
@@ -324,34 +326,34 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | `no-unwrap-in-commands` | command / 长驻任务中的 `unwrap()` |
 | `no-tauri-in-core-crates` ✅ 已落地 | `src-tauri/crates/**` 里 `use tauri::` |
 | `no-std-command-bypass` | 绕过 `akasha-pty` 直接用 `std::process::Command` |
-| `no-string-pty-channel` ✅ 已落地 | PTY 字节流走 `Channel<Vec<u8>>` / `Channel<String>`（其实是 JSON 数组）而不是 raw 通道（§3.2） |
+| `no-string-pty-channel` ✅ 已落地 | PTY 字节流走 `Channel<Vec<u8>>` / `Channel<String>`（实际为 JSON 数组）而不是 raw 通道（§3.2） |
 | `no-ui-vocab-in-types` ✅ 已落地 | `src-tauri/crates/**` 与 `src-tauri/src/**` 类型名中的 `Tab`/`Pane`/`Window`/`View`（见 §3.1 命名规则） |
 | `no-non-ascii-log-message` ✅ 已落地 | `tracing::*!` 的消息里的非 ASCII 字符（消息必须是英文短语，§3.4） |
 | `no-unsafe-outside-store` ✅ 已落地 | `src-tauri/crates/akasha-store/` 之外的 `unsafe`（**唯一放行的 crate**；`// SAFETY:` 与 `# Safety` 怎么写见 §3.4） |
 
 > 现阶段这些规则尚**未全部创建** —— 每条规则应与它守护的代码一起落地，
-> 否则只是噪音。新增规则时同步更新上表。
+> 否则只会产生噪音。新增规则时同步更新上表。
 >
-> ⚠️ **规则必须用负例验证过**才算落地：只跑一次"全绿"分不清"规则在工作"与
-> "规则写错了、什么都没匹配到"。负例要一对 —— 一个应当命中、一个诱饵应当**不**命中
+> ⚠️ **规则必须用负例验证过**才算落地：一次"全部通过"无法区分"规则在工作"与
+> "规则写错、未匹配任何内容"。负例需成对 —— 一个应当命中、一个诱饵应当**不**命中
 > （例如 `no-ui-vocab-in-types` 命中 `NegTabProbe` 但不命中 `Previewer`）。
-> 验证后删掉探针文件，别留在仓库里。
+> 验证后删除探针文件，不得留在仓库中。
 >
 > ⚠️ **探针要放进规则 `files:` 覆盖的真实路径**（例如 `src-tauri/src/probe_rule_check.rs`），
-> 且**正例与诱饵都要有**：只有正例分不清"规则在工作"与"范围写窄了"（`files:` 与正则
-> 都算），只有诱饵分不清"规则在工作"与"什么都没匹配到"。跑完用 `--json` 逐条对账再删。
-> 正则要按**节点实际文本**写，不是按心里那个短名字 —— 实例：`^Channel$` 匹配不到
+> 且**正例与诱饵都要有**：仅有正例无法区分"规则在工作"与"范围过窄"（`files:` 与正则
+> 都算），仅有诱饵无法区分"规则在工作"与"未匹配任何内容"。执行后用 `--json` 逐条核对再删除。
+> 正则要按**节点实际文本**写，不是按预期的短名称 —— 实例：`^Channel$` 匹配不到
 > `tauri::ipc::Channel<Vec<u8>>`（那个节点的文本是整条路径），得写 `(^|::)Channel$`。
 >
-> ⚠️ **改了规则的 `files:` / `ignores:` 之后要重跑一次负例**（目录搬家、crate 改名都算）：
+> ⚠️ **改了规则的 `files:` / `ignores:` 之后要重新执行一次负例**（目录迁移、crate 改名都算）：
 > 路径写错的表现是"不匹配任何文件"，即**静默失效** —— `ast-grep scan` 照样退出码 0。
 
 - **规则自己的正反例是回归测试，不是一次性探针**：仓库里有 `rule-tests/`（每条规则一个
   文件：`valid` = 不许命中、`invalid` = 必须命中；基线在 `rule-tests/__snapshots__/`），
-  由 `just lint` 里的 **`ast-grep test`** 跑。改了规则就跟着改测例；基线变了先看差异对不对，
+  由 `just lint` 里的 **`ast-grep test`** 执行。改了规则就跟着改测例；基线变了先确认差异是否正确，
   再用 `ast-grep test -U` 更新 —— **那份差异就是"规则行为变了"的评审点**。
   ⚠️ **它不覆盖 `files:` / `ignores:`**（测例不是真实路径下的文件），所以上面那条
-  "真实路径探针"仍要手工做一次。两者一正一侧：`ast-grep test` 守**规则逻辑**，
+  "真实路径探针"仍要手工做一次。两者互补：`ast-grep test` 守**规则逻辑**，
   真实路径探针守**路径范围**。
 
 ---
@@ -367,23 +369,23 @@ src-tauri/src/       # IPC 薄壳：command + Channel + 事件 + 状态注入
 | 性能基线 | `criterion` | 解析与写路径吞吐 | 否 |
 | 集成 / E2E | `victauri-test` + `VICTAURI_E2E=1` | IPC 契约、前后端一致性 | **是** |
 
-> **E2E 的入口是 `just test-e2e`** —— 自包含：已有 app（`just dev`）就复用，没有就自己起
-> Vite + app，跑完收掉。不要手写 `VICTAURI_E2E=1 cargo test …` 那一串：目标清单、串行、
+> **E2E 的入口是 `just test-e2e`** —— 自包含：已有 app（`just dev`）则复用，没有则自行启动
+> Vite + app，执行结束后自行结束。不要手写 `VICTAURI_E2E=1 cargo test …` 那一串：目标清单、串行、
 > 平台能力跳过与收尾都在配方里。**新增 E2E 目标必须加进配方里对应的清单**
 > （`E2E_TARGETS` / `E2E_TARGETS_EXIT` / `E2E_NO_APP` / `E2E_SELF_APP`）——
-> 漏了它会直接红（那正是"生在门禁外、于是没人跑"的教训）。
-> 平台跑不了的用例要**显式跳过并写明原因**（例如 Wayland 下拿不到原生窗口句柄），
+> 漏加会直接失败（即"位于门禁之外、因而无人执行"的教训）。
+> 平台无法运行的用例要**显式跳过并写明原因**（例如 Wayland 下拿不到原生窗口句柄），
 > 多平台覆盖面交给 CI 矩阵。
 
-> **性能基线不是门禁**：MB/s 随机器、编译器版本与是否插电而变，拿它当通过条件
-> 只会得到一条随机红、且很快没人信的红线。基线**数字**记进 plan 与 `docs/STATUS.md`，
+> **性能基线不是门禁**：MB/s 随机器、编译器版本与是否插电而变，将其作为通过条件
+> 只会得到一条随机失败、且很快失去可信度的门禁。基线**数字**记进 plan 与 `docs/STATUS.md`，
 > 用途是改动前后对比（入口 `just bench`）。
 
 ### DoD：一条命令 + 两件机器查不了的事
 
 ```bash
 just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
-             # + deny-offline + gen-types-check + docs-check
+             # + deny-offline + gen-types-check + docs-check（内含 docs-style，见 §8.2）
 ```
 
 `just ready` 就是**可执行的 DoD**。能在命令里表达的验收标准，不要写成散文 ——
@@ -398,9 +400,9 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 `detect_ghost_commands` 无新增 `confirmed_ghosts`；生成物必须已提交
 （`gen-types-check` 已纳入 `ready`，见 §5）。
 > ⚠️ **本仓库的 `get_registry` 目前是空的**（实测 `{"result":[]}`）：注册表只收录标了
-> `#[inspectable]` 的命令，而本仓库的命令一个都没标。所以这一条**暂时只能用替代证据**：
+> `#[inspectable]` 的命令，而本仓库的命令均未标注。所以这一条**暂时只能用替代证据**：
 > 真路径上 `invoke_command` 调用成功。要让注册表真的镜像命令集，得单独给命令加
-> `#[inspectable]`（别混在功能改动里）——现状与实测见 `docs/STATUS.md` 的坑 #82。
+> `#[inspectable]`（不得混在功能改动里）——现状与实测见 `docs/STATUS.md` 的问题 #82。
 涉及终端输出解析时，补一个 `insta` 快照。
 
 ### Victauri 使用纪律
@@ -430,7 +432,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 
 - **不要把状态、进度、待办写进本文件** —— 那会让本文件每天都要改，
   而后人无法分辨哪条还是现行规则。
-- **本文件已经偏长。** 再要往里加东西时，先问："这是规则，还是参考资料？"
+- **本文件已经偏长。** 再要往里加东西时，先判断："这是规则，还是参考资料？"
   参考资料（如命令的详细用法、排错步骤）应下沉到 `docs/` 并在本文件留一句指针。
 - 终端领域选型（PTY 库、VT 解析器、渲染器、序列化协议）**必须**有 ADR：
   这类决定日后被反复推翻的成本最高。
@@ -447,13 +449,13 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 **汇总类 = `ROADMAP.md` / `docs/STATUS.md` / `docs/scope.md`。**
 它们只回答"**有什么 / 到哪了 / 去哪**"，**不回答"怎么做"**。
 
-| 想写的 | 它其实是 | 该去哪 |
+| 想写的 | 实际归属 | 该去哪 |
 |---|---|---|
 | 步骤、编号子步骤、代码块 | 怎么做 | `docs/plans/TTxx-*` |
 | "因为…"、"否则会…"、"之所以" | 为什么 | ADR；或 `scope.md` 能力条目的理由列 |
 | "用 `cargo tree` 可证"、具体 flag、测试内部结构 | 验证手段 | plan 的「验收命令」 |
-| 踩过的坑、排错步骤 | 参考资料 | `STATUS.md` 的坑；或专门文档（如 `portable.md`） |
-| `scope.md` 里**某一节越写越长**（超过约一屏） | 参考资料 | 拆成专门文档（`portable.md` / `bitwarden.md` 就是这么来的），原处只留结论 + 指针 |
+| 已知问题、排错步骤 | 参考资料 | `STATUS.md` 的已知问题；或专门文档（如 `portable.md`） |
+| `scope.md` 里**某一节越写越长**（超过约一屏） | 参考资料 | 拆成专门文档（`portable.md` / `bitwarden.md` 即由此拆分而来），原处只留结论 + 指针 |
 
 **`ROADMAP.md` 的硬预算**（由 `just docs-check` 强制）：
 
@@ -462,13 +464,53 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 - 条目里只有两样：**一句"做完的样子"** + **一个可选的 plan 指针**
 
 > ⚠️ 「每个条目必须有可执行的验收标准」（`ROADMAP.md` 头部）**不等于**把命令抄进去。
-> ROADMAP 的验收是**行为判据**（"搬走文件夹后数据还在"）；plan 的才是
+> ROADMAP 的验收是**行为判据**（"把文件夹移动到其它位置后数据仍在"）；plan 的才是
 > **可粘贴的命令 + 预期输出**。两处都写同一件事，必然漂移。
 >
 > **诊断法**：条目数没变而文件在变长 ⇒ 细节正在泄漏。
 > 「每条 ≤ 3 行」的含义正是：**总量只应随能力条目数增长**，不随细节增长。
 
-搬运表与更多例子见 [`docs/README.md`](./docs/README.md)。
+归属对照表与更多例子见 [`docs/README.md`](./docs/README.md)。
+
+### 8.2 文档语体与术语（全部文档统一）
+
+**适用范围**：`AGENTS.md`、`CLAUDE.md`、`README.md`、`ROADMAP.md` 与 `docs/**/*.md`。
+
+**语体**：无人称陈述句与祈使句；结论先行；同一事实只写一处（§8.1）。下表左列一律禁止：
+
+| 禁止 | 改写方向 |
+|---|---|
+| 第二人称 `你` / `您` / `咱们` / `各位` | 无人称祈使句或陈述句 |
+| 句末与句中语气词 `吧` / `嘛` / `呀` / `哦` / `啦` / `嗯` / `哎` | 直接删除 |
+| 口语虚词 `其实` / `反正` / `干脆` / `顺便` / `搞定` / `弄` / `搞` | 删除，或改为 `必须` / `不得` / `见` |
+| 填充语 `众所周知` / `值得注意的是` / `需要强调的是` / `如前所述` | 删除（信息量为零） |
+| 比喻、拟人、夸张、戏谑、反问句、连用感叹号 | 改为领域术语或直陈事实 |
+| 纯口语动词 `跑`（测试 / 命令）/ `起`（app）/ `关掉` / `收掉` / `打出来` | `执行` / `运行` / `启动` / `关闭` / `回收` / `输出` |
+
+**术语对照**（左列在文档中出现即视为缺陷）：
+
+| 口语 | 标准用语 |
+|---|---|
+| `收尸` | `回收子进程`（`kill` + `wait`） |
+| `摘牌` | `注销注册` |
+| `挂住` / `卡死` | `阻塞` / `无响应` |
+| `够不着` | `不可达` |
+| `记账` | `登记` |
+| `空话` | `未生效` |
+| `坑` / `踩坑` | `问题` / `已知问题`（引用键统一为 `问题 #N`，见 `docs/STATUS.md`） |
+| `人眼筛` | `人工判读` |
+| `白送` | `放开` / `暴露` |
+| `半截文件` | `不完整的文件` |
+
+**不得为"书面化"而改动**（改动即错误）：
+
+- 稳定引用键：`ADR-NNNN`、`plan TTxx`、`问题 #N`、代码符号、文件路径、命令、测试函数名；
+- 一切数字、实测结论、命令输出与基线；
+- 强调标记（`**…**`、`⚠️`、`✅`/`❌`）与表格结构 —— `⚠️` 只标"静默失败"类约束。
+
+**执行**：`just docs-style` 在剥离代码块与行内代码后匹配上表的禁用语，并由 `just docs-check`
+调用，因此 `just ready` 覆盖它（§7）。禁用语表是回归护栏，不替代人工判断：改动文档时按本节判断，
+不得只求门禁转绿。
 
 ---
 
@@ -476,7 +518,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 
 - 约定式提交：`feat|fix|refactor|perf|test|docs|chore|build(scope): 摘要`。
 - 一个提交一件事；**规范文件、CI、格式化等大范围改动单独提交**。
-- 提交前跑 `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check）—— 见 §7。
+- 提交前执行 `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check）—— 见 §7。
 - 不要提交：`node_modules/`、`dist/`、`target/`、生成的 `gen/schemas`。
 - **要提交**：`Cargo.lock` / `pnpm-lock.yaml`（这是应用不是库，锁文件必须进仓库）。
 - 大文件（图标除外）不进 git。
@@ -493,7 +535,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 | 前端依赖 | `package.json` | `pnpm add` |
 | **全局 CLI 工具**（不进产物） | **`mise.toml`** | **`just tools`** |
 | Rust 工具链本身（rustc/cargo/clippy/rustfmt） | 暂无固定 —— 跟随 rustup `stable` | `rustup` |
-| 系统库（webkit2gtk 等） | 无（发行版包管理器） | `pacman -S`，**cargo/mise 都管不了** |
+| 系统库（webkit2gtk 等） | 无（发行版包管理器） | `pacman -S`，**cargo/mise 均无法管理** |
 
 `mise.toml` 是"不属于 Cargo.toml 的工具"的唯一来源。里面只有 `just`、`sccache`
 有 aqua 预编译配方，`bacon` / `cargo-nextest` / `cargo-deny` 必须显式写
@@ -501,7 +543,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 （前端运行时与 CLI 工具收敛到同一个机制，`just tools` 一次装齐）。
 
 > 注意：这些工具目前已通过 `cargo install` 装在 `~/.cargo/bin`。`just tools`
-> 会用 mise 再装一份并让 shim 优先。若不想装两份，删掉 `mise.toml` 即可 ——
+> 会用 mise 再装一份并让 shim 优先。若不需要两份，删除 `mise.toml` 即可 ——
 > 它退化为一份文档，不影响现有工具可用性。
 
 > **当前装了什么、哪些门禁是绿的、还剩哪些待办 —— 见 [`docs/STATUS.md`](./docs/STATUS.md)。**
@@ -515,23 +557,23 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 
 - **项目级**（dev / ready / lint / 环境检查）→ 根 `justfile`
 - **crate 级**（cargo / nextest / bacon / cargo-deny）→ `src-tauri/justfile`
-  —— just 用 **justfile 所在目录**作为配方工作目录，所以那里 `cargo check` 天然找得到
+  —— just 用 **justfile 所在目录**作为配方工作目录，所以那里 `cargo check` 可直接找到
   manifest，**不需要任何 `--manifest-path`**
 - 根 `justfile` 对 crate 级命令**只做转发**，不复制命令体
 - **非临时脚本一律做成 just 配方**，不要在仓库里散落 `.sh`：配方是唯一被 `docs-check`
   强制登记的入口（每个配方都必须出现在 `docs/just.md` §2，且 `just --list` 里可见），
-  散落的脚本没有任何门禁照看。例外只有在 CI 里跑一次的安装步骤（它们不服务于本地工作流）。
+  散落的脚本不在任何门禁的检查范围内。例外只有在 CI 中执行一次的安装步骤（它们不服务于本地工作流）。
 - ⚠️ crate 级配方**必须显式带 `--workspace`**：cargo 在成员目录里**只选当前包**，
-  漏了会让 `crates/*` 的 check / clippy / test **完全不被执行**，而 `just ready` 照样全绿
-  （坑 #20）。`cargo fmt --all` 是例外（`--all` 本来就指全 workspace）。
+  漏了会让 `crates/*` 的 check / clippy / test **完全不被执行**，而 `just ready` 照样全部通过
+  （问题 #20）。`cargo fmt --all` 是例外（`--all` 本身就指全 workspace）。
 
 **完整命令清单（全部配方 + 用途 + 典型工作流 + 排错）见
 [`docs/just.md`](./docs/just.md) §2。** 新增或改名配方时必须同步那里 ——
 `just docs-check` 强制要求：**每个配方都必须在 `docs/just.md` 里出现**，
 且两份文档提到的命令都必须真实存在。该校验已纳入 `just ready` 与 CI。
 
-> 设这个校验的原因很具体：agent 最容易犯的错就是照着一份**过期的规则**
-> 去用一个已经不存在的旧命令，而这类错误在类型检查里看不出来。
+> 设这个校验的原因很具体：agent 最容易犯的错就是依照一份**过期的规则**
+> 去用一个已经不存在的旧命令，而这类错误无法通过类型检查发现。
 
 ---
 
@@ -539,26 +581,26 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 
 `.github/workflows/ci.yml` 是**唯一**的工作流文件（三个 job：Linux 完整门禁 /
 Windows + macOS 类型检查 / **三平台 E2E 矩阵**）。**不要为别的 forge 加兼容层** ——
-曾做过"一份工作流同时喂 Gitea 与 GitHub"，代价是整份工作流被压在两边**共有的子集**里；
-2026-09-11 评估后放弃，那份约束清单与放弃理由见
+曾做过"一份工作流同时供 Gitea 与 GitHub 使用"的实现，代价是整份工作流被限制在两边
+**共有的子集**内；2026-09-11 评估后放弃，那份约束清单与放弃理由见
 [`docs/plans/0102`](./docs/plans/0102-ci-platform-matrix.md)。
 
-- **门禁只有一处定义**：CI 里跑的必须**就是**本地那一条 `just ready`，不要在 workflow 里
+- **门禁只有一处定义**：CI 中执行的必须**就是**本地那一条 `just ready`，不要在 workflow 里
   另写 cargo 命令 —— 两处必然分叉，而分叉的方向总是"CI 比本地松"。
-- **完整门禁只在 Linux 跑一次**（fmt / clippy / docs-check 的结论与平台无关）：
-  矩阵跑三遍只是把时间乘三。**类型检查**在 Windows / macOS 再跑一份，用来挡 cfg 分支错误；
-  **E2E 反过来要三平台都跑** —— 平台差异（原生窗口句柄、进程判活与收尾）正是它的对象。
+- **完整门禁只在 Linux 执行一次**（fmt / clippy / docs-check 的结论与平台无关）：
+  矩阵执行三遍只会使耗时变为三倍。**类型检查**在 Windows / macOS 再执行一份，用于拦截 cfg 分支错误；
+  **E2E 反过来要在三个平台都执行** —— 平台差异（原生窗口句柄、进程判活与收尾）正是它的对象。
   **出包不在 CI 的目标内**（需要真实主机：WiX / NSIS / WebView2 bootstrapper 都不行）。
 - **E2E 只 `needs` Linux 那条 job**：平台类型检查与 E2E 是**互相独立**的信号，
-  串成一条链只会让"Windows 红了"顺带吃掉 E2E 的结论。
+  串成一条链会使"Windows 失败"连带掩盖 E2E 的结论。
 - **系统依赖列表只有 `env.APT_DEPS` 一处**（Tauri 官方列表；注意是
   `libayatana-appindicator3-dev`，不是已消失的旧名 `libappindicator3-dev`）。
-- **放手用 GitHub 专属能力，并且优先选省钱的**：`concurrency` + `cancel-in-progress`
-  取消同一分支上被取代的运行（`main` 除外 —— 合并后的结论不该被掐断）、
+- **放开使用 GitHub 专属能力，并优先选择节省成本的方案**：`concurrency` + `cancel-in-progress`
+  取消同一分支上被取代的运行（`main` 除外 —— 合并后的结论不应被取消）、
   `permissions: contents: read`、`defaults.run.shell`、`${{ runner.* }}` 上下文与任意
   表达式函数。工具安装统一走 `taiki-e/install-action`（预编译产物 + SHA256/attestation 校验），
-  **不要再手写"按平台选资产 + curl + 追加 `GITHUB_PATH`"的脚本** —— 那是兼容层的遗产，
+  **不要再手写"按平台选资产 + curl + 追加 `GITHUB_PATH`"的脚本** —— 那是兼容层的遗留物，
   它的存在理由（"不能用 `${{ runner.arch }}`"）已经消失。
 
-> 改了 workflow 先在本机跑 `just ready` —— 但它只证明"命令链是通的"：
-> **CI 的真实行为以 runner 上的实跑为准**（状态见 `docs/STATUS.md`）。
+> 改了 workflow 先在本机执行 `just ready` —— 但它只证明"命令链可执行"：
+> **CI 的真实行为以 runner 上的实际执行结果为准**（状态见 `docs/STATUS.md`）。

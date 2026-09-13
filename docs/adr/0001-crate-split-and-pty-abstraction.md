@@ -23,12 +23,12 @@
 ### 0.1 §3 的 `PtySession` trait 必须做成通用的 `Transport`
 
 不是 PTY 专属。serial 没有窗口尺寸、没有信号、没有退出码；SSH 没有本地进程语义。
-能力差异用 **capability flag** 表达，而不是"每个后端都得实现一遍全部方法"。
-若不这样，第二个后端到来时就要重构 —— 见 `scope.md` §2。
+能力差异用 **capability flag** 表达，而不是要求"每个后端各实现一遍全部方法"。
+否则第二个后端到来时就需要重构 —— 见 `scope.md` §2。
 
 > **命名**（2026-09-11 定）：这个字节载体 trait 叫 **`Transport`**，不叫 `Session`。
-> `Session` 一词被**上层容器**占用了 —— 它指"用户打开的一个工作单元"
-> （终端 / SFTP / 端口转发 / 凭据库），其生命周期约束它拥有的连接。
+> `Session` 一词已由**上层容器**占用 —— 它指"用户打开的一个工作单元"
+> （终端 / SFTP / 端口转发 / 凭据库），其生命周期约束其拥有的连接。
 > 两个词都不编码 UI 呈现方式，详见 `scope.md` §1.2。
 
 ### 0.2 `crates/` 的成员会变多
@@ -46,16 +46,16 @@ ssh / serial / sftp / store / 托盘与隧道都会各自成 crate。
 | **原决策二** | v1 只建 `akasha-pty`，`akasha-vt` 延后（依据：`vte::ansi::Handler` 有 71 个方法） |
 | **裁定** | **维持延后**；若确有必要则创建，但位置**固定在 `crates/akasha-vt/`** —— 不在仓库根平铺 |
 
-即延后结论不变，同时预先定下将来创建时的位置。
+延后结论不变，同时预先确定将来创建时的位置。
 
 ---
 
 ## 1. 背景
 
-`akasha` 是一个 Tauri 2 终端应用。它的迭代成本几乎完全由一件事决定：
-**Rust 编译一次要多久**——因为 Tauri 没有 Rust 热重载，任何 Rust 改动都只能
+`akasha` 是一个 Tauri 2 终端应用。它的迭代成本几乎完全由一项指标决定：
+**Rust 单次编译的耗时**——因为 Tauri 没有 Rust 热重载，任何 Rust 改动都只能
 「增量重编译 + 重启 app」（见 `AGENTS.md` §1）。所以本 ADR 的首要目标不是
-"架构漂亮"，而是**让尽可能多的逻辑可以在不启动 app 的情况下被编译和测试**。
+"架构外观"，而是**让尽可能多的逻辑可以在不启动 app 的情况下被编译和测试**。
 
 ### 1.1 当前事实（已实测，非推测）
 
@@ -64,52 +64,15 @@ ssh / serial / sftp / store / 托盘与隧道都会各自成 crate。
 | 单 crate 布局：`src-tauri` 是包根，无 workspace | 根目录无 `Cargo.toml` |
 | 依赖已就位：`portable-pty 0.9.0`、`vte 0.15.0`、`tauri-specta 2.0.0-rc.25`、`insta`、`criterion` | `src-tauri/Cargo.toml` |
 | **项目当前无法编译** | `just check` 退出码 101；`javascriptcore-rs-sys` 构建脚本报 `Package 'javascriptcoregtk-4.1' was not found`（缺 `webkit2gtk-4.1` 系统库） |
-| **CI workflow 当前是坏的** | `.github/workflows/victauri.yml` 在仓库根执行 `cargo build` 与 `cargo metadata`，但根目录没有 `Cargo.toml` |
+| **CI workflow 当前已失效** | `.github/workflows/victauri.yml` 在仓库根执行 `cargo build` 与 `cargo metadata`，但根目录没有 `Cargo.toml` |
 | ~~`cargo deny init` 无法执行~~ **已更正** | 报缺少 `Cargo.toml`；但**实测在 `src-tauri/` 中执行退出码 0**，正常生成 `deny.toml`。它只要求"当前目录含 `Cargo.toml`"，见 §2.1 |
 | 项目已可编译，质量门禁全绿 | `just check` / `just lint` / `just deny-offline` 均退出码 0（装好 `webkit2gtk-4.1 2.52.6` 后复测） |
-
-### 2.1 更正：cargo-deny **不是**支持决策一的论据
-
-初稿把"`cargo deny init` 在仓库根失败"当作采纳根 workspace 的证据，**这是错的**。
-
-实测：`cd src-tauri && cargo deny init` 退出码 0，正常生成 `deny.toml`（之后已替换为
-一份显式白名单配置，因为模板里 `[licenses] allow = []` 的含义是**拒绝一切许可证**）。
-它要求的只是"当前目录含 `Cargo.toml`"——`src-tauri/` 正是如此。
-
-因此决策一的理由中，涉及工具可用性的部分**只有 CI 那一条是真实存在的**；
-而 CI 同样可以通过改 workflow（加 `--manifest-path`、写死 bin 名）解决。
-决策一必须靠下面的结构性理由支撑，不能靠"顺手修好某个工具"。
-
-### 2.2 但"根目录没有 manifest"确实是一整类麻烦
-
-上面的更正只说明它**不是唯一手段**，不代表它无害。"仓库根没有 `Cargo.toml`"
-会持续产生同一类擦伤：**任何未显式指定 manifest 的 cargo 命令在根目录都会失败**。
-
-实测（本次踩到两次）：
-
-| 命令（在仓库根） | 结果 |
-|---|---|
-| `cargo build` / `cargo metadata`（CI workflow 用的） | 失败 —— 这就是 CI 坏掉的原因 |
-| `cargo fmt --all` | `could not find Cargo.toml in /home/lycurgus/akasha`，退出码 141 |
-| `cargo deny init` | 失败（但**可**在 `src-tauri/` 中运行，见 §2.1） |
-
-本项目的 `justfile` 已经用 `--manifest-path {{MANIFEST}}` 逐条绕开，但那是
-**需要永久保持的纪律**：每新增一条 cargo 配方都得记得加参数，漏一次就得到一条
-"在仓库根跑不通"的命令。而且这类错误往往只在**别人**或 **CI** 那里才暴露。
-
-根 workspace 把这一整类问题一次性消掉。**这才是决策一最实在的收益**，
-也是它与选项 B 之间的真实差别 —— 不是"修好某个工具"，而是"少一类需要记住的纪律"。
-
-**补记（2026-09-11）**：CI 已经按"加 `--manifest-path` + 用 `cargo metadata` 解析
-target 目录"的方式**独立修好**（`.github/workflows/ci.yml`）。因此决策一目前
-**不再带来任何 CI 收益**，剩下的只有结构性理由：共享 target 目录、统一 lint 配置、
-单一命令入口、以及上面说的"少一类纪律"。若要接受决策一，应当是为这些理由接受它。
 
 ### 1.2 待解决的问题
 
 1. 纯逻辑（PTY 生命周期、写路径、批处理）放在哪里，才能脱离 app 编译与测试？
 2. 终端状态（屏幕模型）由谁持有——前端 xterm，还是 Rust？
-3. PTY 的抽象边界长什么样，才能被 mock、被单测、并且不把 `portable-pty` 的
+3. PTY 的抽象边界如何定义，才能被 mock、被单测、并且不把 `portable-pty` 的
    类型和 `anyhow` 泄漏到上层？
 
 ---
@@ -131,16 +94,53 @@ unsafe_code = "forbid"
 unwrap_used = "warn"
 ```
 
+### 2.1 更正：cargo-deny **不是**支持决策一的论据
+
+初稿把"`cargo deny init` 在仓库根失败"当作采纳根 workspace 的证据，**这是错的**。
+
+实测：`cd src-tauri && cargo deny init` 退出码 0，正常生成 `deny.toml`（之后已替换为
+一份显式白名单配置，因为模板里 `[licenses] allow = []` 的含义是**拒绝一切许可证**）。
+它要求的只是"当前目录含 `Cargo.toml`"——`src-tauri/` 正是如此。
+
+因此决策一的理由中，涉及工具可用性的部分**只有 CI 那一条是真实存在的**；
+而 CI 同样可以通过改 workflow（加 `--manifest-path`、写死 bin 名）解决。
+决策一必须以下面的结构性理由为支撑，不得以"修好某个工具"为论据。
+
+### 2.2 但"根目录没有 manifest"确实是一整类问题
+
+上面的更正只说明它**不是唯一手段**，不代表它无害。"仓库根没有 `Cargo.toml`"
+会持续产生同一类问题：**任何未显式指定 manifest 的 cargo 命令在根目录都会失败**。
+
+实测（本次遇到两次）：
+
+| 命令（在仓库根） | 结果 |
+|---|---|
+| `cargo build` / `cargo metadata`（CI workflow 用的） | 失败 —— 这就是 CI 失效的原因 |
+| `cargo fmt --all` | `could not find Cargo.toml in /home/lycurgus/akasha`，退出码 141 |
+| `cargo deny init` | 失败（但**可**在 `src-tauri/` 中运行，见 §2.1） |
+
+本项目的 `justfile` 已经用 `--manifest-path {{MANIFEST}}` 逐条规避，但那是
+**需要永久保持的纪律**：每新增一条 cargo 配方都必须加上该参数，一旦遗漏就得到一条
+"在仓库根执行失败"的命令。而且这类错误往往只在**他人**或 **CI** 环境中才暴露。
+
+根 workspace 把这一整类问题一次性消除。**这才是决策一最实质的收益**，
+也是它与选项 B 之间的真实差别 —— 不是"修好某个工具"，而是"少一类必须记住的纪律"。
+
+**补记（2026-09-11）**：CI 已经按"加 `--manifest-path` + 用 `cargo metadata` 解析
+target 目录"的方式**独立修好**（`.github/workflows/ci.yml`）。因此决策一目前
+**不再带来任何 CI 收益**，剩下的只有结构性理由：共享 target 目录、统一 lint 配置、
+单一命令入口、以及上面说的"少一类纪律"。若要接受决策一，应当是为这些理由接受它。
+
 ### 考虑过的选项
 
 | 选项 | 描述 | 评价 |
 |---|---|---|
 | **A. 根 workspace** | `members = ["src-tauri", "crates/*"]` | ✅ 采纳 |
-| B. `src-tauri/crates/` | 保持 `src-tauri` 为包根，crates 嵌在其下 | 不动 target 路径、不动 CI（这两点比初稿说的更有分量）；代价是共享增量缓存、跨 crate 统一 lint、`cargo test --workspace` 都拿不到，且 crates 名义上"与 Tauri 无关"却住在 `src-tauri/` 下 |
+| B. `src-tauri/crates/` | 保持 `src-tauri` 为包根，crates 嵌在其下 | 不动 target 路径、不动 CI（这两点比初稿说的更有分量）；代价是无法共享增量缓存、无法统一跨 crate lint、无法使用 `cargo test --workspace`，且 crates 名义上"与 Tauri 无关"却位于 `src-tauri/` 下 |
 
 ### 选择 A 的理由
 
-1. **CI 是真实存在的问题**（workflow 在根跑 `cargo build`，根目录没有 manifest）——
+1. **CI 是真实存在的问题**（workflow 在仓库根执行 `cargo build`，根目录没有 manifest）——
    但必须说明：**这一点两种方案都能修**（B 可以改 workflow 加 `--manifest-path`），
    所以它是"要么改这里、要么改那里"，不是 A 独有优势。见 §2.1 的更正。
 2. **单一 target 目录**：`crates/*` 与 `src-tauri` 共享增量缓存，避免两份编译产物。
@@ -156,7 +156,7 @@ unwrap_used = "warn"
 | target 目录移动 | 从 `src-tauri/target/` 变为 `<root>/target/`；`src-tauri/.gitignore` 的 `/target/` 要移到根 `.gitignore` |
 | `Cargo.lock` 移动 | 移到仓库根；应用必须提交它（已先提交在 `src-tauri/Cargo.lock`，切 workspace 时一并移动） |
 | `justfile` | `MANIFEST := "src-tauri/Cargo.toml"` 改为 `--workspace`，或保留 manifest 路径均可（两者都合法，但需统一） |
-| CI | `$(cargo metadata ... \| jq -r '.packages[0].name')` 会拿到多个包 → 必须写死 bin 名 `akasha`，或 `cargo build -p akasha` |
+| CI | `$(cargo metadata ... \| jq -r '.packages[0].name')` 会得到多个包 → 必须硬编码 bin 名 `akasha`，或 `cargo build -p akasha` |
 | `tauri.conf.json` | 不需要改（仍指向 `src-tauri`），但 Tauri CLI 在 workspace 下的 target 路径行为**必须实测**（见 §5 未决项 1） |
 
 ---
@@ -178,10 +178,10 @@ Rust 侧 v1 **不实现 VT 解析**，因此**不引入 `akasha-vt` 这个 crate
 - **选 A 的支撑点**：`addon-search`（回滚缓冲搜索）与 `addon-serialize`
   （会话序列化/恢复）已经覆盖了原本"必须有服务端状态"的两大诉求；
   `addon-webgl` 的渲染性能是成熟实现，自建网格渲染短期内不可能做得更好。
-  在还没有一个能跑起来的二进制之前投入屏幕模型，是把风险最高的部分排在最前面。
+  在还没有可运行的二进制之前投入屏幕模型，是把风险最高的部分排在最前面。
 - **选 B 的真实成本**：`vte::ansi::Handler` 有 **71 个方法**——实现它等于实现一个终端。
-  这部分是 VT 一致性的重灾区（宽字符、组合字符、滚动区域、备用屏幕、字符集），
-  正确性成本极高，且它**不是**本产品的差异化所在。
+  这部分是 VT 一致性问题最集中的部分（宽字符、组合字符、滚动区域、备用屏幕、字符集），
+  正确性成本高，且它**不是**本产品的差异化所在。
 
 ### 若未来触发（升级到 B 时怎么做）
 
@@ -199,7 +199,7 @@ Rust 侧 v1 **不实现 VT 解析**，因此**不引入 `akasha-vt` 这个 crate
 - ⚠️ `ansi` 是 **非默认 feature**，必须 `vte = { version = "0.15", features = ["ansi"] }`。
 - 它的 `advance` 接受**字节切片**并自行维护 UTF-8 与转义序列的中间状态——
   这与 `AGENTS.md` §3.2「绝不假设 UTF-8、只在边界传字节」完全一致。
-- **不要**从更底层的 `vte::Parser` + `Perform`（`print`/`execute`/`csi_dispatch`/
+- **不得**从更底层的 `vte::Parser` + `Perform`（`print`/`execute`/`csi_dispatch`/
   `esc_dispatch`/`osc_dispatch`）自己实现 VT 语义：那是把 71 个方法的成本
   换成更多方法的成本，且没有任何收益。
 
@@ -248,7 +248,7 @@ pub trait PtySession: Send + Sync {
     fn resize(&self, size: PtySize) -> Result<(), PtyError>;
 
     /// 幂等；对已自然退出的进程是 no-op。
-    /// Drop **不是**收尸路径（AGENTS.md §3.3），必须显式调用。
+    /// `Drop` **不是**回收子进程的路径（AGENTS.md §3.3），必须显式调用。
     fn shutdown(&self) -> Result<(), PtyError>;
 
     /// 退出状态；resolve 一次后可重复读取。
@@ -276,9 +276,9 @@ pub trait PtySession: Send + Sync {
 2. **写线程**——从有界 mpsc 取数据 → 写入 writer。通道满即背压到调用方。
 3. **等待线程**——`child.wait()` → 结果放进 `watch`，供 `exited()` 读取。
 
-**为什么不用 tokio 直接管 PTY**：跨平台 PTY（Linux `forkpty` / Windows ConPTY）
+**不用 tokio 直接管理 PTY 的原因**：跨平台 PTY（Linux `forkpty` / Windows ConPTY）
 需要 `portable-pty` 的能力，而它的 reader/writer 是阻塞的 `Box<dyn Read/Write>`。
-`spawn_blocking` 与专用线程等价，专用线程的生命周期更容易显式控制（§3.3 的收尸要求）。
+`spawn_blocking` 与专用线程等价，专用线程的生命周期更容易显式控制（§3.3 的回收子进程要求）。
 代价是每会话 3 线程——对个位数标签页完全可接受，规模上限见 §5 未决项 4。
 
 ### 4.4 必须遵守的约束

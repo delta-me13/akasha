@@ -44,7 +44,7 @@ ls docs/portable.md && sed -n '1,40p' docs/portable.md            # 数据目录
 
 ```bash
 # 1. 单测覆盖解析与默认值
-cargo nextest run -p akasha-core config        # 期望全绿（含非法值回退）
+cargo nextest run -p akasha-core config        # 期望全部通过（含非法值回退）
 
 # 2. 行为切换（人工：改配置 → 重启 → 点叉）
 just dev
@@ -70,7 +70,7 @@ grep -rn 'hide()' src-tauri/src | head         # 目视：hide 只在按配置�
 否则退回 OS 标准数据目录（Linux 上 = `~/.local/share/fans.cyrene.akasha-terminal/`）。
 目录**不自动创建** —— 开发构建的 bin 目录是可写的，自动创建会让"便携模式"在没人要求时生效。
 
-**只读，不写**：启动路径上每多一次写就多一条"写不了就起不来"（`AGENTS.md` §3.3），
+**只读，不写**：启动路径上每多一次写就多一条"无法写入就无法启动"（`AGENTS.md` §3.3），
 而"文件不存在 = 默认值"本来就是正常状态。
 
 **分层**：类型、默认值与判据在 `akasha-core`（`CloseBehavior` / `CloseAction` / `Config`；
@@ -83,12 +83,12 @@ grep -rn 'hide()' src-tauri/src | head         # 目视：hide 只在按配置�
 | 场景 | 实测 |
 |---|---|
 | 文件不存在 | probe → `close_behavior=tray`；日志 `config not found close_behavior="tray" path=~/.local/share/fans.cyrene.akasha-terminal/config.json` |
-| `{"close_behavior":"exit"}` | probe → `close_action=exit`；关窗 → app 退出，`sessions reclaimed reclaimed=1 trigger="exit"`，**忽略 SIGHUP 的探针被收掉**（零残留） |
+| `{"close_behavior":"exit"}` | probe → `close_action=exit`；关窗 → app 退出，`sessions reclaimed reclaimed=1 trigger="exit"`，**忽略 SIGHUP 的探针被回收**（零残留） |
 | `{"close_behavior":"nope"}` | 日志 `config invalid err=unknown close_behavior value "nope" (expected "tray" or "exit")` → 回默认 tray；app 照常启动 |
 | 便携分支 | 日志里的 `path=` 就是 `<target>/debug/akasha-data/config.json` —— 配置确实是从 bin 同目录读到的 |
 
-**E2E**：`just test-e2e` 的自起分支分两段（第一段无配置 = 收托盘；第二段写 `exit` 再起一次 app），
-配置文件跑完还原。于是 `exit_residue` 保留了原来的刺激（关窗）**并且**成了"配置真的被读到"的
-证据：配置没生效的话关窗只会隐藏，那条用例会红。
+**E2E**：`just test-e2e` 的自起分支分两段（第一段无配置 = 收托盘；第二段写 `exit` 再启动一次 app），
+配置文件在运行结束后还原。于是 `exit_residue` 保留了原来的刺激（关窗）**并且**成了"配置真的被读到"的
+证据：配置没生效的话关窗只会隐藏，那条用例会失败。
 
 **迁移债**：阶段 4 的存储落地后，这个文件应并入数据库 —— 在 plan 0403 的「前置检查」里回看一眼。

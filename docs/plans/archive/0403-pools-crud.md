@@ -1,13 +1,13 @@
-# Plan 0403: 四套池的 CRUD
+# Plan 0403: 四类池的 CRUD
 
-- **关联**：ROADMAP 阶段 4 ·「四套池的 CRUD：密钥 / ssh 配置 / serial 配置 / 端口转发规则」
+- **关联**：ROADMAP 阶段 4 ·「四类池的 CRUD：密钥 / ssh 配置 / serial 配置 / 端口转发规则」
 - **前置**：plan 0401（库能开）· plan 0402（密钥能派生）· plan 0406（机密的内存形态已定）
 - **状态**：已完成（2026-09-12）
 - **后续**：0407（解锁与锁定的生命周期：谁持有 `Connection`、口令从哪来、何时抹掉）
 
 ## 目标
 
-四套独立池的增删改查：**密钥池**（本地）/ **ssh 配置池** / **serial 配置池** / **端口转发规则池**
+四类独立池的增删改查：**密钥池**（本地）/ **ssh 配置池** / **serial 配置池** / **端口转发规则池**
 （字段集见 `scope.md` §3 的表）。库是**唯一真相源**，不是缓存。
 
 ## 非目标
@@ -30,19 +30,19 @@
    `Protected`（`memsafe` 的薄封装）由口令与私钥共用：抄第二份就等于让两份各自漂移。
 3. **`PRAGMA foreign_keys = ON` 必须在每个连接上开**：sqlite 的 FK **默认不生效**，
    声明了当没声明 —— 是"静默失效"里最典型的一种。删除被引用的行 → **明确报错**（RESTRICT），
-   不静默把引用清空（"规则悄悄换了所属主机"比"删不掉"难查得多）。
+   不静默把引用清空（"规则被静默更换了所属主机"比"删不掉"难查得多）。
 4. **P2 第 2 条要能被机器查**，落成两条：
-   ① 表里**没有任何名字带 `path` / `dir` / `file` 的列**（"别哪天引入一个密钥文件路径字段"）；
+   ① 表里**没有任何名字带 `path` / `dir` / `file` 的列**（即不得引入密钥文件路径字段）；
    ② 打开的库里枚举**所有**文本值，没有一个包含我们的数据目录。
    serial 的端口名（`/dev/ttyUSB0` / `COM3`）是**设备名**，不是我们的文件位置 —— 见 `scope.md` §3。
 5. **`New*` 与 `*` 分开**：未入库的行**没有 id**，这件事打成类型事实，不用 `Option<i64>`
-   （`Option` 会让每个调用点自己编一个"没有 id 时怎么办"）。
+   （`Option` 会让每个调用点各自定义"没有 id 时怎么办"）。
 6. **app 侧只接路径与状态**（`vault_status` + 一个 probe）：它让 `AGENTS.md` §7 那条
    "真实路径走通"第一次有对象，且**不需要**先定解锁生命周期。
 
 ## 步骤（每步都能独立验证）
 
-- [x] 1. 把 0406 的受保护页提成 `protected.rs`，口令改为用它；0406 的契约测试**判据不变、必须全绿**
+- [x] 1. 把 0406 的受保护页提成 `protected.rs`，口令改为用它；0406 的契约测试**判据不变、必须全部通过**
 - [x] 2. `schema.rs`：四张表 + `create()` 建表 + `open()` 校验；加一条 schema 快照测试
 - [x] 3. `unlock` 里开 `foreign_keys` + 读回断言；"被引用时删不掉"的用例
 - [x] 4. 密钥池：CRUD + 私钥的受保护页读路径 + 写入侧超页拒绝 + D13 判据重验
@@ -58,10 +58,10 @@
 # 池的 round-trip 与"库里没有绝对路径"。预期：akasha-store 全部通过
 cd src-tauri && cargo nextest run -p akasha-store
 
-# 可执行的 DoD。预期：6/6 绿（fmt-check / lint / test / deny-offline / gen-types-check / docs-check）
+# 可执行的 DoD。预期：6/6 全部通过（fmt-check / lint / test / deny-offline / gen-types-check / docs-check）
 just ready
 
-# 真实路径（AGENTS.md §7 第一条）：真 app 上 invoke vault_status，再读 probe 对账。
+# 真实路径（AGENTS.md §7 第一条）：真实 app 上 invoke vault_status，再读 probe 对账。
 # 预期：vault_status.path 落在便携数据目录里；state 为 missing（没建过）/ empty（0 字节）/ present
 just test-e2e
 
@@ -73,7 +73,7 @@ grep -nE '"?(.*_)?(path|dir|file)"?\s' src-tauri/crates/akasha-store/src/schema.
 
 表结构只出现在 `create()` 里，`open()` 从不改库 —— 把 `schema.rs` 与 `create()` 的那一句
 去掉就回到 0402 的状态（旧 fixture 是 `target/` 下的临时产物，删掉即可）。
-app 侧的改动是**新增**一个命令与依赖，回滚就是删掉它们 + 重跑 `just gen-types`。
+app 侧的改动是**新增**一个命令与依赖，回滚就是删掉它们 + 重新执行 `just gen-types`。
 
 ## 实施记录（2026-09-12）
 
@@ -96,7 +96,7 @@ vault_status = {"path":"/home/lycurgus/akasha/src-tauri/target/debug/akasha-data
 
 | 判据 | 实测 |
 |---|---|
-| round-trip | 四套池各一条（含私钥**逐字节**回来、三个方向的转发、每个枚举取值） |
+| round-trip | 四类池各一条（含私钥**逐字节**回来、三个方向的转发、每个枚举取值） |
 | 库里不存绝对路径 | 列名规则 +「全库文本值」两条；含**诱饵负例**（`/home/nobody/secret` 必须被看见，`direction` 必须不被误判） |
 | 建库后的库文件 | **36864 字节 = 9 页**（0402 时是 4096 一页）；SQLite **3.46** |
 | 外键 | `PRAGMA foreign_keys` 读回 **1**；删还被引用的密钥/主机 → `Conflict` 且行还在 |
@@ -106,8 +106,8 @@ vault_status = {"path":"/home/lycurgus/akasha/src-tauri/target/debug/akasha-data
 ### 与原计划的偏差（都在文档里）
 
 1. **多了一个计划外的决定：库里不许重名**（`name UNIQUE` 四张表都有）。原因：`~/.ssh/config`
-   允许重复 `Host` 块、先匹配者生效 —— 那是文本文件的历史包袱，而库里的重名是"两行看起来一样、
-   行为取决于没人能看见的顺序"。同时四套池都加了 `name`（用户给的标签），`scope.md` §3 的表已同步。
+   允许重复 `Host` 块、先匹配者生效 —— 那是文本文件的历史遗留，而库里的重名是"两行看起来一样、
+   行为取决于没人能看见的顺序"。同时四类池都加了 `name`（用户给的标签），`scope.md` §3 的表已同步。
 2. **跳板链的成环检查**不在原计划的步骤里：自环由 `CHECK` 挡，而 `A→B→C→A` **库表达不出来**
    （要递归），所以在 `update_host` 里逐跳走一遍（`MAX_JUMP_DEPTH` 只是防死循环的兜底）。
    `insert` 不需要：新行此刻没有入边（归纳：老数据无环 + 新行无入边 = 仍无环）。
