@@ -57,11 +57,12 @@ test:
 # 它**必须排在 `vault_unlock` 之后**（那两个用例都在动 data 目录里那同一个库文件）。
 # `ssh_jump`（plan 0505）是它的经跳板版本：起**两台**服务端，同样自己造库、跑完删掉 ——
 # 同样**必须排在 `vault_unlock` 之后**，且在 `ssh_session` 之后（它们用的是同一个库文件）。
-# `tunnel_state`（plan 0601）、`tunnel_local_forward`（plan 0602）与
-# `tunnel_dynamic_forward`（plan 0603）都起一台进程内的 SSH 服务端并写同一个库，
-# 所以同样排在 `vault_unlock` 之后；后两者还额外在**测试进程**里起一个"远端服务"
-# （回声 / HTTP）—— 动态转发那条用 `curl --socks5-hostname` 当第三方客户端，
-# 所以它要求本机有 `curl`。
+# `tunnel_state`（plan 0601）、`tunnel_local_forward`（plan 0602）、
+# `tunnel_dynamic_forward`（plan 0603）与 `tunnel_remote_forward`（plan 0604）
+# 都起一台进程内的 SSH 服务端并写同一个库，所以同样排在 `vault_unlock` 之后；
+# 后三条还额外在**测试进程**里起一个服务（回声 / HTTP）—— 动态转发那条用
+# `curl --socks5-hostname` 当第三方客户端，远程转发那条用 `curl` 直连服务端那个端口，
+# 所以两者都要求本机有 `curl`。
 # `exit_residue` 会把 app 关掉 —— 所以它排在**另一段**的最后。
 #
 # ⚠️ **两段，两套配置**（plan 0302 + 0303）：关窗语义由数据目录里的 `config.json` 决定，
@@ -69,7 +70,7 @@ test:
 #   * 第一段（本清单）：没有配置文件 = 默认"收托盘" → `window_close` 有判据；
 #   * 第二段（`E2E_TARGETS_EXIT`）：写 `close_behavior=exit` 再起一次 app → `exit_residue`
 #     拿到的就是"关窗即退出"这条**可移植**的刺激（不需要托盘宿主，CI 上照样成立）。
-E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status vault_unlock ssh_session ssh_jump ssh_config_import tunnel_state tunnel_local_forward tunnel_dynamic_forward"
+E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status vault_unlock ssh_session ssh_jump ssh_config_import tunnel_state tunnel_local_forward tunnel_dynamic_forward tunnel_remote_forward"
 
 # 需要 `close_behavior=exit` 的目标：**只能**在第二段跑（见上）。
 E2E_TARGETS_EXIT := "exit_residue"

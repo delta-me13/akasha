@@ -25,13 +25,13 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 
+use crate::tunnel::ActiveForward;
 use akasha_core::{SessionEvent, SessionId, SessionKind, SessionRegistry, TunnelState};
 use akasha_pty::watchdog::SessionWatchdog;
 use akasha_pty::{
     Batch, BatchPolicy, ExitStatus, PtyTransport, TerminalSize, Transport, TransportError,
     spawn_batcher,
 };
-use akasha_ssh::LocalForward;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody, JavaScriptChannelId};
 use tauri::{AppHandle, Emitter, State, Webview};
@@ -537,11 +537,11 @@ impl Sessions {
         Ok(applied)
     }
 
-    /// 挂上刚起来的转发（本地监听 + 那条连接，plan 0602）。
+    /// 挂上刚起来的转发（那一侧的监听 + 那条连接，plan 0602 / 0604）。
     pub fn attach_tunnel_forward(
         &self,
         handle: SessionHandle,
-        forward: LocalForward,
+        forward: ActiveForward,
     ) -> Result<(), IpcError> {
         let mut inner = self.lock()?;
         let tunnel = inner
@@ -553,7 +553,7 @@ impl Sessions {
     }
 
     /// 取走这条隧道的转发 —— 重试与停止都要在**锁外**收掉它（停止监听 + 断开连接）。
-    pub fn take_tunnel_forward(&self, handle: SessionHandle) -> Option<LocalForward> {
+    pub fn take_tunnel_forward(&self, handle: SessionHandle) -> Option<ActiveForward> {
         self.lock()
             .ok()?
             .tunnels

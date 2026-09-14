@@ -521,21 +521,22 @@ export type TunnelError =
 	handle: number,
 } } | 
 /**
- *  这条规则的方向本版本不做。
- * 
- *  与 [`Self::Failed`] 分开：这不是"这次没连上"，而是**本版本不做这个方向** ——
- *  重试一百次也不会变（`-R` 是 plan 0604）。
- */
-{ kind: "unsupported"; detail: {
-	direction: ForwardDirection,
-} } | 
-/**
  *  本地端口没拿到：被占用、无权限、绑定地址不可用。
  * 
  *  ⚠️ 它在一类失败里出现得最多（端口被占用），而且**发生在握手之前** ——
  *  用户不必先答完凭据才被告知端口没拿到。
  */
 { kind: "bind"; detail: {
+	address: string,
+	message: string,
+} } | 
+/**
+ *  远端监听没拿到：服务端那个端口被它自己占着，或它不允许远端转发。
+ * 
+ *  与 [`Self::Bind`] 分开：那一条说的是"**本机**的端口没拿到"，用户腾一个端口就好；
+ *  这一条要动的地方在**服务端** —— 在本机上做什么都没用。
+ */
+{ kind: "remoteBind"; detail: {
 	address: string,
 	message: string,
 } } | 

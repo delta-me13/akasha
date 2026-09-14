@@ -165,6 +165,22 @@ pub enum SshError {
         reason: String,
     },
 
+    /// 远端监听没拿到（plan 0604 的 `-R`）：服务端拒绝在 `address` 上监听。
+    ///
+    /// ⚠️ 与 [`SshError::Listen`] 分开是必要的：那一条说的是"**本机**的端口没拿到"，
+    /// 用户腾一个端口或换一个绑定地址即可；这一条要动的地方在**服务端**
+    /// （那个端口被它自己占着，或者它根本不允许远端转发）—— 在本机上做什么都没用。
+    ///
+    /// 服务端回的是 RFC 4254 里那句不带原因的"请求失败"，所以能说清的只有
+    /// "它拒绝了"以及可能的两种情形（见 `reason`）。
+    #[error("远端监听 {address} 没拿到：{reason}")]
+    RemoteListen {
+        /// 请求服务端监听的地址（`host:port`，`host` 按服务端那一侧解释）。
+        address: String,
+        /// 上游的原话，或我们对"请求被拒"的展开。
+        reason: String,
+    },
+
     /// 动态转发（SOCKS5）的监听地址不是回环地址（plan 0603 的安全项）。
     ///
     /// ⚠️ 与 [`SshError::Listen`] 分开：那一条是"这个地址没拿到"，用户换个端口就好；
@@ -221,6 +237,24 @@ pub(crate) fn listen_failed(address: &str, err: impl std::fmt::Display) -> SshEr
     SshError::Listen {
         address: address.to_owned(),
         reason: err.to_string(),
+    }
+}
+
+/// 远端监听那条路的统一说法（plan 0604 的 `-R`）。
+///
+/// `RequestDenied` 在上游只是一个光秃秃的名字，而它有两种成因（端口被服务端那一侧占着 /
+/// 服务端不允许远端转发），两者对用户的下一步动作不同 —— 所以在这一处展开成能据以行动的话；
+/// 其余错误照旧把上游原话带上。
+pub(crate) fn remote_listen_failed(address: &str, err: &russh::Error) -> SshError {
+    let reason = match err {
+        russh::Error::RequestDenied => {
+            "服务端拒绝了这条转发请求：那个端口在它那一侧被占着，或它不允许远端转发".to_owned()
+        }
+        other => other.to_string(),
+    };
+    SshError::RemoteListen {
+        address: address.to_owned(),
+        reason,
     }
 }
 

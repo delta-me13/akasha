@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use akasha_pty::TerminalSize;
-use russh::client::{self, Config, Handle};
+use russh::client::{self, Config, Handle, Msg};
 use russh::keys::{HashAlg, PublicKey, PublicKeyOrCertificate};
-use russh::{ChannelReadHalf, ChannelWriteHalf};
+use russh::{Channel, ChannelReadHalf, ChannelWriteHalf};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -19,6 +19,7 @@ use crate::credential::{CredentialCache, CredentialProvider};
 use crate::error::{SshError, channel_failed, connect_failed};
 use crate::forward::{SshConnection, SshStream};
 use crate::keys::SshAuth;
+use crate::remote::{Inbound, Incoming};
 use crate::target::SshTarget;
 
 /// 服务端的主机密钥 —— **判定材料是密钥本体，指纹只给人看**（ADR-0003 D11）。
@@ -170,8 +171,11 @@ pub struct SshConnect {
 
 /// 客户端回调：`russh` 唯一会回头看我们的地方。
 ///
-/// 现在只有主机密钥一件事；阶段 6 的 `-R` 会往这里加入站通道的入口（ADR-0003 D10）——
-/// 那时它必须能拿到"回到 Session"的一条通道，这也是它必须与连接一起被构造的原因。
+/// 两件事：主机密钥（D11）与服务端发起的通道（D10 的 `-R`）。
+/// 为什么入站通道的入口必须**与连接一起**被构造：那个回调在连接的消息循环里，
+/// 而"通道交给哪条转发"这件事要等到连接建好、`tcpip_forward` 请求发出之后才知道 ——
+/// 所以载体（[`Inbound`]）在握手时造好，一次交给 [`Handler`]，一次随 [`Authenticated`]
+/// 交出去（plan 0604）。
 pub(crate) struct Handler {
     target: SshTarget,
     verifier: Arc<dyn HostKeyVerifier>,
@@ -183,6 +187,8 @@ pub(crate) struct Handler {
     /// 所以这里存**整个错误**，而不是只存一个指纹字符串：三态在 `establish` 那边
     /// 原样浮现，不被压成一句话。
     rejection: Arc<Mutex<Option<SshError>>>,
+    /// 服务端发起的 `forwarded-tcpip` 通道要交到哪（D10 / plan 0604）。
+    inbound: Arc<Inbound>,
 }
 
 impl client::Handler for Handler {
@@ -237,6 +243,39 @@ impl client::Handler for Handler {
             }
         }
     }
+
+    /// 服务端发起了一条 `forwarded-tcpip` 通道（`-R`，RFC 4254 §7.2）。
+    ///
+    /// ⚠️ 这里**不做**任何 `await`：这个回调在连接的消息循环上被 `await`，
+    /// 在这里等一条本机连接会让整条连接无响应（连保活都停）。接线（连本机服务、
+    /// 接受或拒绝那条通道）全部在 [`crate::remote`] 的任务里做。
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        connected_address: &str,
+        connected_port: u32,
+        originator_address: &str,
+        originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.inbound.deliver(Incoming {
+            channel,
+            connected: (connected_address.to_owned(), connected_port),
+            originator: (originator_address.to_owned(), originator_port),
+            reply,
+        });
+        Ok(())
+    }
+}
+
+/// 一条**已经认证过的**连接与它的入站入口（还没接上队列与线程）。
+pub(crate) struct Authenticated {
+    /// 控制用的句柄。**它一 drop，连接就结束**（上游的会话任务随之收工），
+    /// 所以持有它的实体必须活到显式收尾为止。
+    pub(crate) session: Handle<Handler>,
+    /// 服务端发起的 `forwarded-tcpip` 通道的入口（D10）。[`Handler`] 里那一份是它的克隆。
+    pub(crate) inbound: Arc<Inbound>,
 }
 
 /// 一条**已经认证过的**连接与它的 shell 通道（还没接上队列与线程）。
@@ -288,7 +327,7 @@ pub(crate) async fn tcp_stream(options: &SshConnect) -> Result<TcpStream, SshErr
 pub(crate) async fn handshake<S>(
     options: &mut SshConnect,
     stream: S,
-) -> Result<Handle<Handler>, SshError>
+) -> Result<Authenticated, SshError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -307,10 +346,13 @@ where
     let config = Arc::new(config);
 
     let rejection = Arc::new(Mutex::new(None));
+    // 入站通道的入口在这里造：它必须与连接一起被构造（见 [`Handler`]）。
+    let inbound = Arc::new(Inbound::default());
     let handler = Handler {
         target: target.clone(),
         verifier: Arc::clone(&options.host_keys),
         rejection: Arc::clone(&rejection),
+        inbound: Arc::clone(&inbound),
     };
     let mut session = match client::connect_stream(config, stream, handler).await {
         Ok(session) => session,
@@ -326,7 +368,7 @@ where
     };
 
     auth::authenticate(&mut session, options).await?;
-    Ok(session)
+    Ok(Authenticated { session, inbound })
 }
 
 /// 连上（直连或经跳板）、认证、开一个带 pty 的 shell 通道。
@@ -340,13 +382,14 @@ pub(crate) async fn establish(
 ) -> Result<Established, SshError> {
     let target = options.target.clone();
 
-    let session = match under {
+    let authenticated = match under {
         Some(stream) => handshake(options, stream).await?,
         None => {
             let stream = tcp_stream(options).await?;
             handshake(options, stream).await?
         }
     };
+    let session = authenticated.session;
 
     let channel = session
         .channel_open_session()

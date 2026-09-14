@@ -52,6 +52,9 @@ mod known_hosts;
 /// **本地转发 `-L` 与动态转发 `-D`**：本地监听 + 每条入站连接一条 `direct-tcpip` 通道
 /// （plan 0602 / 0603）。
 mod relay;
+/// **远程转发 `-R`**：请服务端监听，把服务端发起的 `forwarded-tcpip` 通道接到本机服务
+/// （plan 0604）—— 与 `-L` / `-D` 方向相反，因此不复用 `direct-tcpip` 原语（D10）。
+mod remote;
 /// **动态转发 `-D` 的协议本体**：SOCKS5 的无认证 `CONNECT`（plan 0603）。
 mod socks5;
 mod target;
@@ -75,5 +78,6 @@ pub use known_hosts::{
     user_known_hosts_file, user_ssh_config_file,
 };
 pub use relay::{ForwardTarget, Ingress, LocalForward, LocalListener};
+pub use remote::RemoteForward;
 pub use target::SshTarget;
 pub use transport::SshTransport;

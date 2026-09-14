@@ -25,7 +25,7 @@
 #![allow(clippy::unwrap_used)] // 测试脚手架：这里的 unwrap 是断言手段（生产代码的基线见 root Cargo.toml）
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -41,6 +41,7 @@ use russh::server::{Auth, Msg, Response, Server, Session};
 use russh::{Channel, ChannelId, MethodSet, Pty};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::oneshot;
 
 use crate::handshake::HostKey;
 
@@ -76,6 +77,32 @@ pub struct Observed {
     pub direct_tcpip: Vec<ForwardRequest>,
     /// 有几次中继**已经结束**（`copy_bidirectional` 收工）。
     pub relays_finished: usize,
+    /// 收到的 `tcpip-forward` 请求，按发生顺序（plan 0604：`-R` 那一半的判据）。
+    pub forward_requests: Vec<RemoteForwardRequest>,
+    /// 收到的 `cancel-tcpip-forward`，按发生顺序（形态是 `地址:端口`）。
+    pub forward_cancellations: Vec<String>,
+    /// 有几条 `forwarded-tcpip` 通道**被对端接受**（plan 0604）。
+    pub forwarded_tcpip_accepted: usize,
+    /// 被对端拒掉的通道各是什么原因。
+    ///
+    /// 为什么记**原因**而不是只记次数：`ConnectFailed`（它连不上自己的本机服务）与
+    /// `AdministrativelyProhibited`（它不认这条通道）是两件完全不同的事；
+    /// 而"先接受、连不上再关"的实现会在这里**什么都不留下** ——
+    /// 那正是这条用例要分得开的。
+    pub forwarded_tcpip_rejected: Vec<String>,
+}
+
+/// 一次 `tcpip-forward` 请求（对端要求我们在**自己这一侧**监听）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteForwardRequest {
+    /// 对端要求监听的地址（原样记下；我们实际只绑回环，见 `Handler::tcpip_forward`）。
+    pub address: String,
+    /// 对端要求的端口。`0` = 由我们挑。
+    pub port: u32,
+    /// 我们实际监听的端口（`0` 的请求就看它）。被拒时是 0。
+    pub bound_port: u16,
+    /// 我们认下了没有。
+    pub accepted: bool,
 }
 
 /// 一次 `direct-tcpip` 请求（对端被告知"去连这里"）。
@@ -150,7 +177,18 @@ pub struct Shared {
     /// 而收尾那一下报错是常态（客户端撤了）。那样一来"搬过字节"这条判据会在最需要它的时候
     /// 永远是 0，而它本来是最直接的一条证据（见 [`Counted`]）。
     relayed_bytes: Arc<AtomicU64>,
+    /// 已经接下的远端监听：`(地址, 实际端口) → 停掉那个接受循环`（plan 0604）。
+    ///
+    /// `cancel-tcpip-forward` 要在这里找到对应那一条。**真的停掉**而不是只记账：
+    /// 判据里有一条是"停止之后远端端口不再接受连接"。
+    forwardings: Arc<Mutex<HashMap<RemoteListenKey, oneshot::Sender<()>>>>,
 }
+
+/// 一条远端监听的键：`(对端请求的地址, 我们实际绑的端口)`。
+///
+/// 单独一个别名是为了让 [`Shared`] 那个字段读得出来（`Arc<Mutex<HashMap<…>>>` 全写开
+/// 就是一串标点）。
+type RemoteListenKey = (String, u16);
 
 impl Shared {
     /// 认下一条 shell 通道。
@@ -179,6 +217,20 @@ impl Shared {
     /// 服务端现在认哪句口令（测试用它中途改行为）。
     pub fn set_password(&self, password: Option<&str>) {
         self.options.lock().unwrap().password = password.map(str::to_owned);
+    }
+
+    /// 记一次 `tcpip-forward` 请求（认下与被拒都要记：被拒本身就是一条判据）。
+    fn record_forward_request(&self, address: &str, port: u32, bound_port: u16, accepted: bool) {
+        self.observed
+            .lock()
+            .unwrap()
+            .forward_requests
+            .push(RemoteForwardRequest {
+                address: address.to_owned(),
+                port,
+                bound_port,
+                accepted,
+            });
     }
 
     /// 读一份观察结果的**拷贝**（不把锁带出去）。
@@ -237,6 +289,7 @@ pub async fn start(options: ServerOptions) -> Running {
         options: Arc::new(Mutex::new(options)),
         shell_channels: Arc::new(Mutex::new(HashSet::new())),
         relayed_bytes: Arc::new(AtomicU64::new(0)),
+        forwardings: Arc::new(Mutex::new(HashMap::new())),
     };
     let mut server = TestServer {
         shared: shared.clone(),
@@ -458,6 +511,123 @@ impl russh::server::Handler for TestServer {
             shared.observed.lock().unwrap().relays_finished += 1;
         });
         Ok(())
+    }
+
+    /// `-R` 的那一半：对端请我们**在它那一侧**监听（plan 0604）。
+    ///
+    /// 这里真的绑一个端口 —— 判据是"远端监听端口可回连到本机服务"，
+    /// 而"回连"这件事要有一个真的在听的 socket 才说得通。
+    ///
+    /// 绑的地址**永远**是回环，不看请求里的 `address`：真实服务端也是这样
+    /// （`sshd` 的 `GatewayPorts` 默认只允许回环），而"请求什么就绑什么"会让用例
+    /// 在开发机上开一个对外的端口。请求的地址原样记下来，供判据比对。
+    async fn tcpip_forward(
+        &mut self,
+        address: &str,
+        port: &mut u32,
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        let requested = u16::try_from(*port).unwrap_or(0);
+        let forward_address = address.to_owned();
+        let listener = match TcpListener::bind(("127.0.0.1", requested)).await {
+            Ok(listener) => listener,
+            Err(_) => {
+                // 绑不上 = 拒绝这条请求（对端因此收到 `RequestDenied`，
+                // 与真实服务端的"端口被占用"同形）。
+                self.shared.record_forward_request(address, *port, 0, false);
+                return Ok(false);
+            }
+        };
+        let bound = listener.local_addr().map(|addr| addr.port()).unwrap_or(0);
+        *port = u32::from(bound);
+        self.shared
+            .record_forward_request(address, u32::from(requested), bound, true);
+
+        let handle = session.handle();
+        let shared = self.shared.clone();
+        let (stop, mut stopped) = oneshot::channel::<()>();
+        self.shared
+            .forwardings
+            .lock()
+            .unwrap()
+            .insert((address.to_owned(), bound), stop);
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    accepted = listener.accept() => match accepted {
+                        Ok((socket, peer)) => {
+                            let handle = handle.clone();
+                            let shared = shared.clone();
+                            let address = forward_address.clone();
+                            tokio::spawn(async move {
+                                let opened = handle
+                                    .channel_open_forwarded_tcpip(
+                                        address,
+                                        u32::from(bound),
+                                        peer.ip().to_string(),
+                                        u32::from(peer.port()),
+                                    )
+                                    .await;
+                                match opened {
+                                    Ok(channel) => {
+                                        shared.observed.lock().unwrap().forwarded_tcpip_accepted += 1;
+                                        let counter = Arc::clone(&shared.relayed_bytes);
+                                        let mut client_side =
+                                            Counted::new(channel.into_stream(), Arc::clone(&counter));
+                                        let mut target_side = Counted::new(socket, counter);
+                                        let _ = copy_bidirectional(&mut client_side, &mut target_side)
+                                            .await;
+                                        shared.observed.lock().unwrap().relays_finished += 1;
+                                    }
+                                    Err(err) => {
+                                        // 对端拒了这条通道：把**原因**记下来
+                                        // （`ConnectFailed` = 它连不上自己的本机服务）。
+                                        // socket 随作用域结束而关闭。
+                                        shared
+                                            .observed
+                                            .lock()
+                                            .unwrap()
+                                            .forwarded_tcpip_rejected
+                                            .push(format!("{err:?}"));
+                                    }
+                                }
+                            });
+                        }
+                        Err(_) => break,
+                    },
+                }
+            }
+        });
+        Ok(true)
+    }
+
+    /// 撤销上面那一条：**真的停掉**那个监听（判据里有一条是"停止之后端口不再接受连接"）。
+    async fn cancel_tcpip_forward(
+        &mut self,
+        address: &str,
+        port: u32,
+        _session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        let bound = u16::try_from(port).unwrap_or(0);
+        let stop = self
+            .shared
+            .forwardings
+            .lock()
+            .unwrap()
+            .remove(&(address.to_owned(), bound));
+        let Some(stop) = stop else {
+            return Ok(false);
+        };
+        self.shared
+            .observed
+            .lock()
+            .unwrap()
+            .forward_cancellations
+            .push(format!("{address}:{bound}"));
+        let _ = stop.send(());
+        Ok(true)
     }
 
     async fn pty_request(

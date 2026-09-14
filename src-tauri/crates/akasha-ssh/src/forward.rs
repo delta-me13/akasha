@@ -21,6 +21,7 @@
 
 use std::io;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use russh::client::{self, Handle};
@@ -29,9 +30,10 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::runtime::Handle as RuntimeHandle;
 
-use crate::error::{SshError, forward_failed};
+use crate::error::{SshError, forward_failed, remote_listen_failed};
 use crate::handshake::{self, Handler, SshConnect};
-use crate::target::SshTarget;
+use crate::remote::Inbound;
+use crate::target::{SshTarget, host_and_port};
 
 /// `direct-tcpip` 通道的客户端一侧 —— **就是 D9 说的那条流**。
 ///
@@ -121,6 +123,12 @@ pub struct SshConnection {
     /// 这条连接的"网络"正是那条通道。挂进来之后，**谁活着这条链就活着**，
     /// 而收尾的顺序（最内层先断）也由 [`SshConnection::disconnect`] 一处定死。
     under: Vec<SshConnection>,
+    /// 服务端发起的 `forwarded-tcpip` 通道要交到哪（ADR-0003 D10，plan 0604）。
+    ///
+    /// 与 `session` **同源**：两者都是握手时造出来的（那个回调在连接的消息循环里，
+    /// 所以这个入口必须与连接一起构造）。挂在这里而不是由调用方另存，理由同 `under`：
+    /// 谁持有连接谁就能收到入站通道，不需要谁记得配对。
+    inbound: Arc<Inbound>,
 }
 
 /// 把 `hops` 逐跳搭起来（`[最外层, …, 紧挨目标的那个]`）。
@@ -147,9 +155,10 @@ impl SshConnection {
     pub async fn connect(options: &mut SshConnect) -> Result<Self, SshError> {
         let stream = handshake::tcp_stream(options).await?;
         let originator = Originator::of(&stream);
-        let session = handshake::handshake(options, stream).await?;
+        let authenticated = handshake::handshake(options, stream).await?;
         Ok(Self {
-            session,
+            session: authenticated.session,
+            inbound: authenticated.inbound,
             target: options.target.clone(),
             originator,
             under: Vec::new(),
@@ -162,9 +171,10 @@ impl SshConnection {
         let stream = self
             .direct_tcpip(options.target.host(), options.target.port())
             .await?;
-        let session = handshake::handshake(options, stream).await?;
+        let authenticated = handshake::handshake(options, stream).await?;
         Ok(Self {
-            session,
+            session: authenticated.session,
+            inbound: authenticated.inbound,
             target: options.target.clone(),
             originator: self.originator.clone(),
             under: Vec::new(),
@@ -224,6 +234,65 @@ impl SshConnection {
     /// 这条连接连的是谁。
     pub fn target(&self) -> &SshTarget {
         &self.target
+    }
+
+    /// 这条连接上的入站路由（服务端发起的 `forwarded-tcpip` 交给谁）。
+    ///
+    /// 只有 [`crate::RemoteForward::open`] 用它 —— 那里也是**唯一**会往里面登记的地方。
+    pub(crate) fn inbound(&self) -> &Arc<Inbound> {
+        &self.inbound
+    }
+
+    /// **D10 的请求那一半**：请服务端在 `address:port` 上监听，返回它实际监听的端口。
+    ///
+    /// `port = 0` 时由服务端挑一个（它的回复里带着那个端口，D10 要求使用返回值）。
+    /// `address` 按**服务端**那一侧解释 —— 要不要在非回环地址上开是它的策略，我们只请求。
+    ///
+    /// ⚠️ 与 [`Self::direct_tcpip`] 一样，这是**另一套机制**：那边是"请对端连出去"，
+    /// 这边是"请对端听起来"。两者的失败也分属不同的错误档
+    /// （[`SshError::Forward`] 与 [`SshError::RemoteListen`]）。
+    pub(crate) async fn remote_listen(&self, address: &str, port: u16) -> Result<u16, SshError> {
+        tracing::debug!(address, port, via = %self.target, "ssh tcpip-forward requested");
+        let reported = self
+            .session
+            .tcpip_forward(address, u32::from(port))
+            .await
+            .map_err(|err| remote_listen_failed(&host_and_port(address, port), &err))?;
+
+        // ⚠️ 服务端**只在请求的就是 0 端口时**才在回复里带端口（RFC 4254 §7.1），
+        // 而上游把"回复里没有端口字段"表示成 `0`（`client/encrypted.rs` 的原话：
+        // *If a specific port was requested, the reply has no data* → `Some(0)`；
+        // 服务端那一侧同样只在 `port == 0` 时才写这个字段）。所以这个返回值有两种含义，
+        // **必须按请求的是什么来解**：
+        //   * 请求了具体端口 → 那就是它（此时的 `0` 不是"绑到了 0 端口"）；
+        //   * 请求了 0 → 只能用回复里的那个；它也是 0 说明服务端没给（协议上不该发生）。
+        // 读错的后果不是显示错一个数字：撤销监听要用这个端口，用 0 去撤销等于**没撤销**。
+        if port != 0 {
+            return Ok(port);
+        }
+        u16::try_from(reported)
+            .ok()
+            .filter(|reported| *reported != 0)
+            .ok_or_else(|| SshError::RemoteListen {
+                address: host_and_port(address, port),
+                reason: format!("请求由服务端挑端口，但它没有回报端口（回报值 {reported}）"),
+            })
+    }
+
+    /// 撤销 [`Self::remote_listen`] 请来的那条监听。
+    ///
+    /// 收尾时调用；失败只记一条 warn（那条连接随后就被断开，服务端会一并撤掉
+    /// 它的监听 —— 这条请求只是让对端**先**知道，且日志里留下原因）。
+    pub(crate) async fn cancel_remote_listen(
+        &self,
+        address: &str,
+        port: u16,
+    ) -> Result<(), SshError> {
+        tracing::debug!(address, port, via = %self.target, "ssh cancel-tcpip-forward requested");
+        self.session
+            .cancel_tcpip_forward(address, u32::from(port))
+            .await
+            .map_err(|err| remote_listen_failed(&host_and_port(address, port), &err))
     }
 
     /// 收尾：**显式**断开（`Handle` 一 drop 也会结束连接，但那次是"悄悄走"，
