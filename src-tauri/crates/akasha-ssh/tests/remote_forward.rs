@@ -30,7 +30,9 @@ use std::net::{SocketAddr, TcpListener as StdListener};
 use std::sync::Arc;
 use std::time::Duration;
 
-use akasha_ssh::{CredentialCache, ForwardTarget, RemoteForward, SshAuth, SshConnection, SshError};
+use akasha_ssh::{
+    CredentialCache, ForwardEnd, ForwardTarget, RemoteForward, SshAuth, SshConnection, SshError,
+};
 use support::{CountingProvider, ServerOptions, connect_options, start, wait_until};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -108,7 +110,8 @@ async fn a_remote_port_reaches_a_service_on_this_side() {
     // ── 2. 请服务端监听（`port = 0` → 由它挑，D10 要求使用返回值）─────────────
     let connection = connected(&server).await;
     let target = ForwardTarget::new("127.0.0.1", echo.port());
-    let forward = RemoteForward::open(
+    // 结束通知那一半归重连循环（plan 0605）；这几条判据只看转发本体。
+    let (forward, _ending) = RemoteForward::open(
         &tokio::runtime::Handle::current(),
         connection,
         "127.0.0.1",
@@ -190,6 +193,55 @@ async fn a_remote_port_reaches_a_service_on_this_side() {
     );
 }
 
+/// **掉线**：那条连接没了之后，远端转发自己结束，**而且服务端那一侧的监听也还回去了**。
+///
+/// 两条都是 plan 0605 的前提：没有第一条，`-R` 的隧道会永远停在"已连接"（而远端端口其实
+/// 早就不在了）；没有第二条，重连时对同一个端口的 `tcpip_forward` 会被自己上一次留下的
+/// 监听顶掉 —— 真实的 `sshd` 里那条监听属于连接，连接一断它就消失。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_connection_ends_the_remote_forward_and_releases_the_port() {
+    let echo = start_echo().await;
+    let server = start(ServerOptions::password(PASSWORD)).await;
+
+    let connection = connected(&server).await;
+    let (forward, ending) = RemoteForward::open(
+        &tokio::runtime::Handle::current(),
+        connection,
+        "127.0.0.1",
+        0,
+        ForwardTarget::new("127.0.0.1", echo.port()),
+    )
+    .await
+    .expect("服务端应当认下这条转发请求");
+    let port = forward.port();
+    assert_eq!(round_trip(port).await, PAYLOAD, "切之前这条转发该是通的");
+
+    assert_eq!(server.cut_connections().await, 1, "应当恰好切掉那一条连接");
+
+    let end = tokio::time::timeout(Duration::from_secs(5), ending.ended())
+        .await
+        .expect("连接断了，远端转发却没结束");
+    assert_eq!(
+        end,
+        ForwardEnd::ConnectionLost,
+        "要报「连接没了」，不是「被停止」"
+    );
+
+    // 服务端那一侧：连接没了 → 它请来的监听随之消失（端口还回去了）。
+    wait_until(
+        Duration::from_secs(5),
+        "远端端口随连接一起消失",
+        || std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
+    );
+    // 断开那条连接的是服务端自己，所以它这边也记到"连接结束了"。
+    wait_until(
+        Duration::from_secs(5),
+        "服务端看到连接断开",
+        || server.shared.observed().connections_closed > 0,
+    );
+    forward.shutdown();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unreachable_local_service_is_refused_before_the_channel_is_accepted() {
     // 目标指向一个**没人听**的端口：先用阻塞式监听占住再放掉，拿到的端口在短时间内没人听。
@@ -200,7 +252,7 @@ async fn an_unreachable_local_service_is_refused_before_the_channel_is_accepted(
     let server = start(ServerOptions::password(PASSWORD)).await;
     let connection = connected(&server).await;
 
-    let forward = RemoteForward::open(
+    let (forward, _ending) = RemoteForward::open(
         &tokio::runtime::Handle::current(),
         connection,
         "127.0.0.1",
@@ -248,7 +300,7 @@ async fn a_specific_remote_port_is_the_one_we_requested() {
     };
 
     let connection = connected(&server).await;
-    let forward = RemoteForward::open(
+    let (forward, _ending) = RemoteForward::open(
         &tokio::runtime::Handle::current(),
         connection,
         "127.0.0.1",

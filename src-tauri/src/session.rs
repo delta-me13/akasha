@@ -37,7 +37,7 @@ use tauri::ipc::{Channel, InvokeResponseBody, JavaScriptChannelId};
 use tauri::{AppHandle, Emitter, State, Webview};
 use tauri_specta::Event;
 
-use crate::tunnel::{Tunnel, TunnelSummary};
+use crate::tunnel::{Tunnel, TunnelRun, TunnelSummary};
 
 /// 前端 raw 字节频道的句柄。
 ///
@@ -534,6 +534,12 @@ impl Sessions {
         inner
             .registry
             .emit(SessionEvent::TunnelStateChanged { id, state: applied });
+        drop(inner);
+        // ⚠️ **状态变化也是"表变了"**：托盘菜单是一份**快照**，不重推它就永远停在隧道
+        // 刚登记时的那一行 —— 而 `scope.md` §5.2 把"失败必须可见"的落点就放在托盘上
+        // （plan 0301 建好了那条管线，plan 0605 才第一次有人走到"状态会变"这一步）。
+        // 通知排在放锁**之后**：订阅者（托盘）会回头读这张表。
+        self.notify_changed();
         Ok(applied)
     }
 
@@ -559,6 +565,30 @@ impl Sessions {
             .tunnels
             .get_mut(&handle)
             .and_then(Tunnel::take_forward)
+    }
+
+    /// 挂上这条隧道的看护任务（掉线之后重连的那条循环，plan 0605）。
+    ///
+    /// 只在**首次连上之后**调用：一次都没连上的隧道没有"重连"可言，
+    /// 那一次失败是同步报给用户的。
+    pub fn attach_tunnel_run(&self, handle: SessionHandle, run: TunnelRun) -> Result<(), IpcError> {
+        let mut inner = self.lock()?;
+        let tunnel = inner
+            .tunnels
+            .get_mut(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        tunnel.attach_run(run);
+        Ok(())
+    }
+
+    /// 取走看护任务的停止入口 —— 重试 / 停止要在**锁外**让它退出
+    /// （它只发一个信号，收尾在 runtime 上做）。
+    pub fn take_tunnel_run(&self, handle: SessionHandle) -> Option<TunnelRun> {
+        self.lock()
+            .ok()?
+            .tunnels
+            .get_mut(&handle)
+            .and_then(Tunnel::take_run)
     }
 
     /// 一条隧道的 `(规则 id, 所属主机 id)`：重试时要照原样再连一次，材料只在这里。

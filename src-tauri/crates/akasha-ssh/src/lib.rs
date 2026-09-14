@@ -43,6 +43,8 @@
 
 mod auth;
 mod credential;
+/// **一次转发怎么结束的**：`ForwardEnd` 与它的通知端（plan 0605 的重连循环的输入）。
+mod ending;
 mod error;
 /// **D9 的原语**：`direct-tcpip` = 一条流（跳板 / `-L` / SFTP B 档复用）。
 mod forward;
@@ -69,6 +71,7 @@ pub use credential::{
     CacheKey, Credential, CredentialCache, CredentialKind, CredentialProvider, CredentialRequest,
     MAX_CREDENTIAL_LEN,
 };
+pub use ending::{ForwardEnd, ForwardEnding};
 pub use error::{ForwardFailure, SshError};
 pub use forward::{SshConnection, SshStream};
 pub use handshake::{HostKey, HostKeyVerifier, PinnedHostKey, SshConfig, SshConnect};

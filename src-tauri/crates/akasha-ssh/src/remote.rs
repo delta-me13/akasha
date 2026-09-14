@@ -44,9 +44,10 @@ use tokio::runtime::Handle as RuntimeHandle;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::ending::{ForwardEnd, ForwardEnding};
 use crate::error::SshError;
 use crate::forward::SshConnection;
-use crate::relay::ForwardTarget;
+use crate::relay::{ForwardTarget, LIVENESS_POLL_INTERVAL};
 use crate::target::host_and_port;
 
 /// 服务端发起的一条 `forwarded-tcpip` 通道 —— 连同它的接受句柄交给转发任务。
@@ -187,13 +188,16 @@ impl RemoteForward {
     ///
     /// 拿走 `connection` 的所有权（见模块文档）。失败时那条连接已经没有用途
     /// （它是为这条转发建的），所以在这里礼貌断开再返回 —— 不留一条没人管的连接。
+    ///
+    /// 返回值是**两半**：转发本体与它的[结束通知](ForwardEnding)（理由同
+    /// [`crate::LocalListener::serve`]）。
     pub async fn open(
         runtime: &RuntimeHandle,
         connection: SshConnection,
         address: &str,
         port: u16,
         target: ForwardTarget,
-    ) -> Result<Self, SshError> {
+    ) -> Result<(Self, ForwardEnding), SshError> {
         // 请求里的地址按**服务端**那一侧解释（它的 `localhost` 是它自己）——
         // 要不要在非回环地址上开是**它**的策略（`GatewayPorts` 一类），我们只请求。
         let bound = match connection.remote_listen(address, port).await {
@@ -207,6 +211,7 @@ impl RemoteForward {
         let (sender, mut incoming) = mpsc::unbounded_channel();
         let route = Inbound::register(connection.inbound(), bound, sender);
         let (shutdown, mut stopped) = oneshot::channel::<()>();
+        let (ended, ended_rx) = oneshot::channel::<ForwardEnd>();
         let worker = runtime.clone();
         let cancel_address = address.to_owned();
 
@@ -217,20 +222,30 @@ impl RemoteForward {
             // 在途的每条入站连接各一条任务：停止时要能**一起**收掉 ——
             // 只停监听会留下已经建立的通道，那条连接也就跟着活到最后一个客户端走为止。
             let mut live: Vec<JoinHandle<()>> = Vec::new();
-            loop {
+            let mut liveness = tokio::time::interval(LIVENESS_POLL_INTERVAL);
+            liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let end = loop {
                 tokio::select! {
                     // 先看停止信号：已经被要求停止时不该再接下一条连接。
-                    _ = &mut stopped => break,
+                    _ = &mut stopped => break ForwardEnd::Stopped,
+                    // 连接死了就结束自己。这一条在 `-R` 上尤其要紧：远端监听**属于那条连接**，
+                    // 连接一没它就被服务端撤销了，而这条转发若还活着，界面会一直说"已连接"。
+                    _ = liveness.tick() => {
+                        if connection.is_closed() {
+                            break ForwardEnd::ConnectionLost;
+                        }
+                    }
                     received = incoming.recv() => match received {
                         Some(incoming) => {
                             live.retain(|task| !task.is_finished());
                             live.push(worker.spawn(connect_local(incoming, target.clone())));
                         }
-                        // 发送端没了 = 登记被撤掉（只有收尾会撤）→ 结束。
-                        None => break,
+                        // 发送端没了 = 登记被撤掉（收尾时我们自己撤的，或者那条连接没了）
+                        // → 这条转发再也收不到任何通道，结束。
+                        None => break ForwardEnd::ConnectionLost,
                     },
                 }
-            }
+            };
             for task in &live {
                 task.abort();
             }
@@ -242,19 +257,33 @@ impl RemoteForward {
             drop(route);
             // 再请服务端把那个监听撤掉。顺序不能反过来：先撤监听的话，在它生效之前到达的
             // 通道仍会进到这条已经决定停止的转发里。
-            if let Err(err) = connection.cancel_remote_listen(&cancel_address, bound).await {
-                tracing::warn!(address = %cancel_address, port = bound, %err, "remote forward cancel failed");
+            // ⚠️ 两条结束原因要用**不同的级别**：连接已经死了时这条请求注定失败（没人可问），
+            // 每次都记 warn 只会把真正要看的那一条（停止时的撤销失败）淹掉。
+            match (end, connection.cancel_remote_listen(&cancel_address, bound).await) {
+                (_, Ok(())) => {}
+                (ForwardEnd::Stopped, Err(err)) => {
+                    tracing::warn!(address = %cancel_address, port = bound, %err, "remote forward cancel failed");
+                }
+                (ForwardEnd::ConnectionLost, Err(err)) => {
+                    tracing::debug!(address = %cancel_address, port = bound, %err, "remote forward cancel skipped");
+                }
             }
             if let Ok(connection) = Arc::try_unwrap(connection) {
                 connection.disconnect().await;
             }
+            tracing::debug!(port = bound, reason = end.as_str(), "remote forward ended");
+            // 结束信号**最后**发（与 `serve` 同一条纪律）。
+            let _ = ended.send(end);
         });
 
-        Ok(Self {
-            address: address.to_owned(),
-            port: bound,
-            shutdown,
-        })
+        Ok((
+            Self {
+                address: address.to_owned(),
+                port: bound,
+                shutdown,
+            },
+            ForwardEnding::new(ended_rx),
+        ))
     }
 
     /// 请求的绑定地址（原样）。

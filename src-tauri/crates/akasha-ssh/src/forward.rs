@@ -236,6 +236,17 @@ impl SshConnection {
         &self.target
     }
 
+    /// 这条连接**是不是已经没了**（对端断开、保活耗尽、网络中断）。
+    ///
+    /// 上游只给了这一个**同步**的问法（`Handle::is_closed`，背后是"消息循环的接收端还在不在"），
+    /// 没有可 `await` 的关闭信号 —— 所以用它的是转发任务的定时检查，不是"等在这里"（plan 0605）。
+    ///
+    /// ⚠️ 它对"半死"的连接**不敏感**：TCP 没断、对端也不回话时，要等保活耗尽
+    /// （[`crate::SshConfig::keepalive_interval`] × `keepalive_max`，默认约 90 秒）才会变真。
+    pub fn is_closed(&self) -> bool {
+        self.session.is_closed()
+    }
+
     /// 这条连接上的入站路由（服务端发起的 `forwarded-tcpip` 交给谁）。
     ///
     /// 只有 [`crate::RemoteForward::open`] 用它 —— 那里也是**唯一**会往里面登记的地方。

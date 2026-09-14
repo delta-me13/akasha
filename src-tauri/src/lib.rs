@@ -111,6 +111,12 @@ pub fn run() {
                     let sessions = sessions.clone();
                     move || tunnel::snapshot(&sessions)
                 })
+                // 托盘（plan 0605）：隧道那几行文字是"失败必须可见"（`scope.md` §5.2）
+                // 的落点，而这一份报的就是菜单上写的那些字。
+                .probe("tray", {
+                    let sessions = sessions.clone();
+                    move || tray::snapshot(&sessions)
+                })
                 .build()
                 .expect("default Victauri configuration is always valid"),
         )
@@ -155,6 +161,9 @@ pub fn run() {
             // 最后登记 —— 判据要同时看这两样，而"托盘建成没有"只有 `tray::setup` 的
             // 返回值知道，事后没人能再问出来。
             let config = config::load(app.handle());
+            // 生效的配置登记成状态：命令侧（隧道重连的预算）要读它。
+            // ⚠️ 登记的是**生效的那一份**（含默认值），不是文件里的原文。
+            app.manage(config);
             let tray_ready = tray::setup(app.handle());
             let lifecycle = lifecycle::record(config.close_behavior, tray_ready);
             // 配置要"收托盘"、但这台机器上**建不起托盘** → 实际动作降级为"直接退出"

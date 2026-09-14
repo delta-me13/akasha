@@ -42,6 +42,7 @@ use russh::{Channel, ChannelId, MethodSet, Pty};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 use crate::handshake::HostKey;
 
@@ -177,16 +178,16 @@ pub struct Shared {
     /// 而收尾那一下报错是常态（客户端撤了）。那样一来"搬过字节"这条判据会在最需要它的时候
     /// 永远是 0，而它本来是最直接的一条证据（见 [`Counted`]）。
     relayed_bytes: Arc<AtomicU64>,
-    /// 已经接下的远端监听：`(地址, 实际端口) → 停掉那个接受循环`（plan 0604）。
+    /// 已经建立、还没收工的那些连接（plan 0605）。
     ///
-    /// `cancel-tcpip-forward` 要在这里找到对应那一条。**真的停掉**而不是只记账：
-    /// 判据里有一条是"停止之后远端端口不再接受连接"。
-    forwardings: Arc<Mutex<HashMap<RemoteListenKey, oneshot::Sender<()>>>>,
+    /// 重连那几条判据需要一个"把线路切断"的动作，见 [`Connection::cut`]。
+    /// 已经收工的不必留着（accept 时顺手 retain 掉），否则这张表会随重连次数一直长。
+    connections: Arc<Mutex<Vec<Connection>>>,
 }
 
 /// 一条远端监听的键：`(对端请求的地址, 我们实际绑的端口)`。
 ///
-/// 单独一个别名是为了让 [`Shared`] 那个字段读得出来（`Arc<Mutex<HashMap<…>>>` 全写开
+/// 单独一个别名是为了让持有它的那个字段读得出来（`Arc<Mutex<HashMap<…>>>` 全写开
 /// 就是一串标点）。
 type RemoteListenKey = (String, u16);
 
@@ -252,6 +253,88 @@ pub struct Running {
     pub host_key_openssh: String,
     /// 共享状态。
     pub shared: Shared,
+    /// accept 循环的任务句柄（[`Running::shutdown`] 用它把监听一起停掉）。
+    accept: tokio::task::AbortHandle,
+}
+
+impl Running {
+    /// **切断已经建立的连接**，监听照常（plan 0605）。
+    ///
+    /// 这是"线路中断"那个刺激：连接断了，而客户端接下来再去连**同一个端口**仍然连得上。
+    /// 返回切断了几条：判据要能分清"切到了"与"当时一条都没有"（那两种情况下一次失败的
+    /// 信息完全不一样）。
+    ///
+    /// ⚠️ 断开是**异步**收尾的：对端会话与它请来的远端监听都要过一会儿才真的消失，
+    /// 所以断言 `connections_closed` 或者"那个端口已经还回去了"的时候要等。
+    pub async fn cut_connections(&self) -> usize {
+        let live: Vec<Connection> = {
+            let mut held = self.shared.connections.lock().unwrap();
+            held.drain(..).collect()
+        };
+        let cut = live.len();
+        for connection in &live {
+            connection.cut().await;
+        }
+        cut
+    }
+
+    /// **整个服务端消失**：先停监听（新连接一律被拒），再切断已建立的连接。
+    ///
+    /// 两种失败的次序与真实情形一致：对端进程没了，既没人听，原来那条连接也断了。
+    pub async fn shutdown(&self) -> usize {
+        self.accept.abort();
+        self.cut_connections().await
+    }
+}
+
+/// 一条活着的连接（plan 0605 的"切断"动作要它）。
+///
+/// ⚠️ **不能靠 abort 那个包装任务来切断连接**：`russh::server::run_stream` 把真正的会话
+/// **又 spawn 了一层**（`session.run(...)`），abort 外层只是把 `RunningSession` 丢掉，
+/// 里面那条任务照跑 —— socket 与 handler 都归它，连接毫发无损（实测：abort 之后
+/// `connections_closed` 一直是 0）。所以切断走会话自己的 `Handle::disconnect`，
+/// 那也正是"服务端把这条连接断开"的真实形态。
+struct Connection {
+    /// 会话句柄。`run_stream` 换完 SSH id 之后才填进来，之前是 `None`
+    /// （那种连接还没到能切断的地步）。
+    session: Arc<Mutex<Option<russh::server::Handle>>>,
+    task: JoinHandle<()>,
+}
+
+impl Connection {
+    fn start(config: Arc<russh::server::Config>, socket: TcpStream, handler: TestServer) -> Self {
+        let session = Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&session);
+        let task = tokio::spawn(async move {
+            let Ok(running) = russh::server::run_stream(config, socket, handler).await else {
+                return;
+            };
+            *slot.lock().unwrap() = Some(running.handle());
+            // 等这条会话自己收工：`running` 同时是"会话还活着"的凭据。
+            let _ = running.await;
+        });
+        Self { session, task }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.task.is_finished()
+    }
+
+    /// 让会话自己断开（对端因此收到一条 `SSH_MSG_DISCONNECT` 并看到连接关闭）。
+    async fn cut(&self) -> bool {
+        let handle = self.session.lock().unwrap().clone();
+        match handle {
+            Some(handle) => handle
+                .disconnect(
+                    russh::Disconnect::ByApplication,
+                    String::new(),
+                    String::new(),
+                )
+                .await
+                .is_ok(),
+            None => false,
+        }
+    }
 }
 
 /// 从 OpenSSH 文本（`ssh-ed25519 AAAA… comment`）造一把 [`HostKey`]。
@@ -289,27 +372,31 @@ pub async fn start(options: ServerOptions) -> Running {
         options: Arc::new(Mutex::new(options)),
         shell_channels: Arc::new(Mutex::new(HashSet::new())),
         relayed_bytes: Arc::new(AtomicU64::new(0)),
-        forwardings: Arc::new(Mutex::new(HashMap::new())),
+        connections: Arc::new(Mutex::new(Vec::new())),
     };
     let mut server = TestServer {
         shared: shared.clone(),
         // 这个副本只用来 `new_client`（accept 循环）—— 它自己不是任何连接的 handler，
-        // 所以它的 drop 不算"连接结束"。
+        // 所以它的 drop 不算"连接结束"，它也不持有任何远端监听。
         handler: false,
+        forwardings: HashMap::new(),
     };
     // 自己写 accept 循环而不是 `run_on_socket`：后者的返回 future 借了 `server` 与
     // `listener`（edition 2024 的 `impl Trait` 会捕获输入生命期），而这里要把它
     // 丢进 `tokio::spawn`。自己循环则两边都被 move 进任务，没有借出。
-    tokio::spawn(async move {
+    let connections = Arc::clone(&shared.connections);
+    let accept = tokio::spawn(async move {
         loop {
             let Ok((socket, peer)) = listener.accept().await else {
                 break;
             };
             let handler = server.new_client(Some(peer));
             let config = Arc::clone(&config);
-            tokio::spawn(async move {
-                let _ = russh::server::run_stream(config, socket, handler).await;
-            });
+            let connection = Connection::start(config, socket, handler);
+            let mut live = connections.lock().unwrap();
+            // 已经收工的那些不必留着：这张表是"当前活着的连接"，不是流水账。
+            live.retain(|connection| !connection.is_finished());
+            live.push(connection);
         }
     });
 
@@ -318,14 +405,34 @@ pub async fn start(options: ServerOptions) -> Running {
         fingerprint,
         host_key_openssh,
         shared,
+        accept: accept.abort_handle(),
     }
 }
 
-#[derive(Clone)]
 struct TestServer {
     shared: Shared,
     /// 这个副本是不是**一条连接的 handler**（见 [`Drop`] 的实现）。
     handler: bool,
+    /// 这条连接请我们开的远端监听（plan 0604 / 0605）。
+    ///
+    /// ⚠️ **按连接持有**（而不是放在 [`Shared`] 里全局一张表）：真实的 `sshd` 里
+    /// 一条转发属于**那条连接**——连接一断，那个监听就随之消失。全局一张表的话，
+    /// 客户端重连之后对同一个端口的 `tcpip_forward` 会被自己上一次留下的监听顶掉，
+    /// 而那条监听其实已经没有主人了（plan 0605 的重连用例正是踩这个形状的场景）。
+    forwardings: HashMap<RemoteListenKey, oneshot::Sender<()>>,
+}
+
+impl Clone for TestServer {
+    /// 副本**不带**任何远端监听：`Server::new_client` 要的是"新的一条连接"，
+    /// 而监听是那条连接自己请来的，不该从 accept 循环那份里继承
+    /// （`oneshot::Sender` 也不能克隆 —— 它只有一个接收端）。
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+            handler: self.handler,
+            forwardings: HashMap::new(),
+        }
+    }
 }
 
 impl Drop for TestServer {
@@ -334,9 +441,15 @@ impl Drop for TestServer {
     ///
     /// `#[derive(Clone)]` 的中间副本**不会**被算进来：只有 [`Server::new_client`]
     /// 返回的那个副本把 `handler` 置为真。
+    ///
+    /// 连接结束后顺带**放掉它请来的那些远端监听**：真实 `sshd` 的转发属于连接，
+    /// 连接一断端口就还回去（见 `forwardings` 字段的说明）。
     fn drop(&mut self) {
         if self.handler {
             self.shared.observed.lock().unwrap().connections_closed += 1;
+            for (_, stop) in self.forwardings.drain() {
+                let _ = stop.send(());
+            }
         }
     }
 }
@@ -546,11 +659,8 @@ impl russh::server::Handler for TestServer {
         let handle = session.handle();
         let shared = self.shared.clone();
         let (stop, mut stopped) = oneshot::channel::<()>();
-        self.shared
-            .forwardings
-            .lock()
-            .unwrap()
-            .insert((address.to_owned(), bound), stop);
+        // 记在**这条连接**名下：连接一结束，这个监听随之消失（真实 `sshd` 就是这么做的）。
+        self.forwardings.insert((address.to_owned(), bound), stop);
 
         tokio::spawn(async move {
             loop {
@@ -611,12 +721,7 @@ impl russh::server::Handler for TestServer {
         _session: &mut Session,
     ) -> Result<bool, Self::Error> {
         let bound = u16::try_from(port).unwrap_or(0);
-        let stop = self
-            .shared
-            .forwardings
-            .lock()
-            .unwrap()
-            .remove(&(address.to_owned(), bound));
+        let stop = self.forwardings.remove(&(address.to_owned(), bound));
         let Some(stop) = stop else {
             return Ok(false);
         };

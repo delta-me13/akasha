@@ -194,7 +194,8 @@ async fn a_socks5_port_reaches_whatever_the_client_names() {
         .await
         .expect("绑定 SOCKS5 端口失败");
     let port = listener.bound().port();
-    let forward = listener.serve(&tokio::runtime::Handle::current(), connection);
+    // 结束通知这一半归重连循环（plan 0605）；这几条判据只看转发本体。
+    let (forward, _ending) = listener.serve(&tokio::runtime::Handle::current(), connection);
 
     // ── 3. 判据：经 SOCKS5 能访问远端服务 ──────────────────────────────────────
     assert_eq!(

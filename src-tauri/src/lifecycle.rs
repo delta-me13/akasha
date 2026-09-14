@@ -41,6 +41,17 @@ pub fn record(close_behavior: CloseBehavior, tray_ready: bool) -> &'static Lifec
     })
 }
 
+/// 托盘到底建成了没有。**还没登记就是"没有"** —— 那个值描述的是启动那一刻的事实，
+/// 而"没跑过 `record`"只可能是启动还没走到那一步。
+///
+/// 谁在问：`tray` probe 要据它说清"这台机器上有没有托盘"（几行没有去处的文字
+/// 不该被当成"状态不可见"，见 `crate::tray::snapshot`）。
+pub fn tray_ready() -> bool {
+    LIFECYCLE
+        .get()
+        .is_some_and(|lifecycle| lifecycle.tray_ready())
+}
+
 /// 关窗判据（表见 [`CloseAction::decide`] 与 `AGENTS.md` §3.3）。
 ///
 /// 还没登记就按**退出**处理：那是"没有托盘"时的降级行为，也是唯一不会把用户关在

@@ -27,7 +27,8 @@ use std::time::Duration;
 
 use akasha_ssh::testing::Relay;
 use akasha_ssh::{
-    CredentialCache, ForwardTarget, Ingress, LocalListener, SshAuth, SshConnection, SshError,
+    CredentialCache, ForwardEnd, ForwardTarget, Ingress, LocalListener, SshAuth, SshConnection,
+    SshError,
 };
 use support::{CountingProvider, ServerOptions, connect_options, start, wait_until};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -121,7 +122,8 @@ async fn a_local_port_reaches_a_service_only_the_remote_side_can_name() {
         .await
         .expect("绑定本地端口失败");
     let port = listener.bound().port();
-    let forward = listener.serve(&tokio::runtime::Handle::current(), connection);
+    // 结束通知这一半归重连循环（plan 0605）；这几条判据只看转发本体。
+    let (forward, _ending) = listener.serve(&tokio::runtime::Handle::current(), connection);
 
     // ── 3. 判据：转发端口可访问远端服务 ────────────────────────────────────────
     assert_eq!(
@@ -172,6 +174,72 @@ async fn a_local_port_reaches_a_service_only_the_remote_side_can_name() {
         "服务端看到连接断开",
         || server.shared.observed().connections_closed > 0,
     );
+}
+
+/// **掉线**：那条连接没了之后，转发**自己结束**，并说清是**连接断了**而不是"被停止"。
+///
+/// 这一条是 plan 0605 的机制判据 —— 重连循环等的就是这个结束信号，而它必须分得出
+/// "我们让它停的"与"线路断的"：分不出来的话，一条被用户停掉的隧道会被它自己的重连循环
+/// 重新拉起来；反过来，转发永远不结束，那条隧道就会永远停在"已连接"（端口还在听，
+/// 而每一次入站连接都开不出通道）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_connection_ends_the_forward_and_says_so() {
+    let echo = start_echo().await;
+    let server = start(ServerOptions {
+        password: Some(PASSWORD.to_owned()),
+        relay: vec![Relay {
+            host: TARGET_NAME.to_owned(),
+            port: echo.port(),
+            to: echo,
+        }],
+        ..ServerOptions::default()
+    })
+    .await;
+
+    let mut options = connect_options(
+        &server,
+        USER,
+        SshAuth::agent_only(),
+        Arc::new(CredentialCache::new()),
+        Arc::new(CountingProvider::new(PASSWORD)),
+    );
+    let connection = SshConnection::connect(&mut options)
+        .await
+        .expect("应当连得上测试服务端");
+    let listener = LocalListener::bind(
+        "127.0.0.1",
+        0,
+        Ingress::Fixed(ForwardTarget::new(TARGET_NAME, echo.port())),
+    )
+    .await
+    .expect("绑定本地端口失败");
+    let port = listener.bound().port();
+    let (forward, ending) = listener.serve(&tokio::runtime::Handle::current(), connection);
+
+    // 构造前提：线路断之前这条转发是**通的**（否则下面的"结束"可能只是它从没起来过）。
+    assert_eq!(round_trip(port).await, PAYLOAD, "切之前这条转发该是通的");
+
+    // 切断线路：服务端把那条连接的任务 abort，socket 随之关闭（与拔网线同形）。
+    assert_eq!(server.cut_connections().await, 1, "应当恰好切掉那一条连接");
+
+    let end = tokio::time::timeout(Duration::from_secs(5), ending.ended())
+        .await
+        .expect("连接断了，转发却没结束（那正是「界面说已连接、实际转不了」的形态）");
+    assert_eq!(
+        end,
+        ForwardEnd::ConnectionLost,
+        "要报「连接没了」，不是「被停止」—— 重连循环按这一个字决定要不要再来一次"
+    );
+
+    // 结束信号之后端口**必须已经还回去**：重连的第一次绑定紧跟着这个信号，
+    // 两者撞上的表现是"重连的第一次必然失败、第二次才成"。
+    assert!(
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
+        "转发结束了，端口 {port} 却还占着"
+    );
+
+    // 转发本体还在调用方手上（它归隧道实体），收尾一次是幂等的：任务早就结束了。
+    forward.shutdown();
 }
 
 /// **负控**：没绑定就没有端口 —— 随机挑一个端口连过去必须是失败。

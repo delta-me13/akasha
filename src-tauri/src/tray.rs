@@ -19,6 +19,7 @@ use tauri::{AppHandle, Manager, Wry};
 
 use crate::Sessions;
 use crate::session::SessionHandle;
+use crate::tunnel::TunnelSummary;
 
 /// 托盘 id。刷新菜单时按它取回句柄（`AppHandle::tray_by_id`）。
 const TRAY_ID: &str = "akasha";
@@ -134,30 +135,52 @@ fn tunnel_submenu(app: &AppHandle<Wry>) -> tauri::Result<tauri::menu::Submenu<Wr
             .build();
     }
 
-    // 按 `SessionId` 逐条列，文案 = **名称 · 状态**（plan 0601）。状态来自状态机本身，
-    // 不是另写一套（`docs/logging.md`：值不撒谎）。
-    //
     // 仍然一律**禁用**：点击聚焦要等界面那一侧的工作 —— 一个点了没反应的菜单项
     // 比灰掉的更糟。`tunnel_item_id` 的命名法先留着，接上点击时不必改协议。
     let mut items = Vec::with_capacity(list.len());
-    for entry in list {
-        let state = match entry.state {
-            TunnelState::Reconnecting { attempt } => format!("重连中（第 {attempt} 次）"),
-            other => tunnel_state_label(other).to_owned(),
-        };
+    for (entry, label) in list.iter().zip(tunnel_labels(&list)) {
         items.push(
-            MenuItemBuilder::with_id(
-                tunnel_item_id(entry.handle),
-                format!("{} · {state}", entry.name),
-            )
-            .enabled(false)
-            .build(app)?,
+            MenuItemBuilder::with_id(tunnel_item_id(entry.handle), label)
+                .enabled(false)
+                .build(app)?,
         );
     }
     let refs: Vec<&dyn IsMenuItem<Wry>> = items.iter().map(|item| item as _).collect();
     SubmenuBuilder::with_id(app, ID_TUNNELS, "隧道")
         .items(&refs)
         .build()
+}
+
+/// 隧道子菜单里那几行文字，**菜单与 `tray` probe 共用这一份**。
+///
+/// 为什么抽出来：`scope.md` §5.2 把"失败必须可见"的落点定在托盘上，而"可见"这件事
+/// 只有真的有人去读那份文字才算验过。probe 报的就是这里返回的东西 —— 抄一份文案
+/// 会让那条判据退化成一句关于代码结构的话（"它们应该一样"，plan 0603 记过同类教训）。
+///
+/// 文案 = **名称 · 状态**（plan 0601）。状态来自状态机本身，不是另写一套
+/// （`docs/logging.md`：值不撒谎）；`重连中` 带上次数，那是用户判断"还要等多久"的线索。
+fn tunnel_labels(list: &[TunnelSummary]) -> Vec<String> {
+    list.iter()
+        .map(|entry| {
+            let state = match entry.state {
+                TunnelState::Reconnecting { attempt } => format!("重连中（第 {attempt} 次）"),
+                other => tunnel_state_label(other).to_owned(),
+            };
+            format!("{} · {state}", entry.name)
+        })
+        .collect()
+}
+
+/// `app_state { probe: "tray" }` 的返回（在 `lib.rs` 注册）—— **托盘上那几行现在是什么**。
+///
+/// `ready` = 这台机器上托盘建成没有（启动期事实，见 `crate::lifecycle::tray_ready`）：
+/// 没有托盘的机器上这几行文字没有任何去处，用例据此显式跳过，
+/// 而不是把"没有托盘"混进"状态不可见"。
+pub fn snapshot(sessions: &Sessions) -> serde_json::Value {
+    serde_json::json!({
+        "ready": crate::lifecycle::tray_ready(),
+        "tunnels": tunnel_labels(&sessions.tunnel_entries()),
+    })
 }
 
 /// 隧道状态的中文文案（托盘是给用户看的，不是日志）。

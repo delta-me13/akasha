@@ -1,12 +1,15 @@
-//! 配置模型（plan 0303）：**类型、默认值、判据表**；文件读写不在这里（那是 app 的事）。
+//! 配置模型（plan 0303 / 0605）：**类型、默认值、判据表**；文件读写不在这里（那是 app 的事）。
 //!
 //! 为什么放 core：`AGENTS.md` §3.1 —— 纯逻辑下沉到不依赖 Tauri 的 crate，脱离 app 可单测。
 //! 本模块真正的价值是 [`CloseAction::decide`] 那张表：它把
 //! "配置想要什么" 与 "这台机器上实际能做到什么" 分开，于是两条容易写错的规则
-//! （`AGENTS.md` §3.3）可以用普通单测钉住。
+//! （`AGENTS.md` §3.3）可以用普通单测钉住。隧道那条路上同类的东西是 [`Reconnect::delay`]：
+//! 它把"还有没有下一次"与"下次等多久"合成一处判据（ADR-0003 D13）。
 //!
 //! ⚠️ 本 crate 的 `[dependencies]` 为空**是有意为之**（见 `Cargo.toml`），所以这里
 //! **不引入任何解析器**：**值**的解析（`"tray"` / `"exit"`）在这里，**文件**的解析在 app 侧。
+
+use std::time::Duration;
 
 /// 关闭窗口时用户**想要**什么。
 ///
@@ -84,14 +87,77 @@ impl CloseAction {
     }
 }
 
+/// 掉线重连的参数（ADR-0003 **D13**）：**有限次** + 指数退避，然后放弃。
+///
+/// 为什么不是"无限重连"：`docs/scope.md` §2.2 已否决 —— 后台无谓的重试会持续扰动
+/// 防火墙，也让对端日志堆满同一条失败。D13 另给了一条更具体的理由：以错误的口令
+/// 连续尝试三次正是账号锁定的经典成因，所以"不重试"的类别必须与"重试"的分开
+/// （判据在 `crate::TunnelState` 的使用方 `akasha` 侧，因为那一档要读错误）。
+///
+/// 取值放在这里而不是散在调用处：D13 的原话是"默认值写在配置模型里"。
+/// 它同时也是"重连预算是多少"这一条判据的**唯一**来源 —— 序列算在 [`Self::delay`]，
+/// 调用方只按次数问，不自己乘。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reconnect {
+    /// 最多重试几次。`0` = 不自动重连（掉线直接进 `失败`）。
+    pub max_attempts: u32,
+    /// **第 1 次**重试之前等多久。
+    pub initial: Duration,
+    /// 每往后一次，等待乘几。
+    pub factor: u32,
+}
+
+impl Default for Reconnect {
+    /// D13 定死的三个数：**3 次**，`1s → 2s → 4s`。
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            initial: Duration::from_secs(1),
+            factor: 2,
+        }
+    }
+}
+
+impl Reconnect {
+    /// **第 `attempt` 次**重试之前要等多久（`attempt` 从 1 起，与
+    /// [`crate::TunnelState::Reconnecting`] 带的那个数是同一个数）。
+    ///
+    /// `None` = 这次重试**没有预算**（`attempt = 0`，或者次数已经用完）——
+    /// "还有没有下一次"因此只有一个判据，不必让调用方自己比大小。
+    ///
+    /// 乘法用 `saturating_mul`：配置里的 `factor` 是用户给的数，一个荒唐的取值
+    /// 不该让重连循环 panic（`AGENTS.md` §0 的禁止 #4 管的是长驻任务）。
+    pub fn delay(&self, attempt: u32) -> Option<Duration> {
+        if attempt == 0 || attempt > self.max_attempts {
+            return None;
+        }
+        let mut delay = self.initial;
+        for _ in 1..attempt {
+            delay = delay.saturating_mul(self.factor);
+        }
+        Some(delay)
+    }
+
+    /// 用完全部次数一共要等多久（1s + 2s + 4s = 7s）。
+    ///
+    /// 它是**判据**的一部分（"耗尽次数"这件事在时间上意味着多久），
+    /// 所以由这里算出来给测试与文档用，而不是让每处各加一遍。
+    pub fn budget(&self) -> Duration {
+        (1..=self.max_attempts)
+            .filter_map(|attempt| self.delay(attempt))
+            .fold(Duration::ZERO, |total, delay| total.saturating_add(delay))
+    }
+}
+
 /// 生效的配置。
 ///
-/// 字段目前只有一个，但仍然是结构体而不是裸的 [`CloseBehavior`]：配置项会变多，
-/// 而"调用方拿的是整份配置"这件事不该跟着变。
+/// 每个字段都不是裸值：配置项会变多，而"调用方拿的是整份配置"这件事不该跟着变。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Config {
     /// 关窗行为（见 [`CloseBehavior`]）。
     pub close_behavior: CloseBehavior,
+    /// 掉线重连（见 [`Reconnect`]）。
+    pub reconnect: Reconnect,
 }
 
 #[cfg(test)]
@@ -159,5 +225,56 @@ mod tests {
     fn action_names_are_ascii_and_distinct() {
         assert_eq!(CloseAction::Hide.as_str(), "hide");
         assert_eq!(CloseAction::Exit.as_str(), "exit");
+    }
+
+    /// D13 的三个数：**3 次**，退避 `1s → 2s → 4s`。
+    #[test]
+    fn the_default_retry_budget_is_three_tries_with_doubling_waits() {
+        let policy = Reconnect::default();
+        assert_eq!(policy.max_attempts, 3);
+        assert_eq!(policy.initial, Duration::from_secs(1));
+        assert_eq!(policy.factor, 2);
+        assert_eq!(Config::default().reconnect, policy);
+
+        // 序列写全，不引用实现里的循环 —— 把算式抄进用例等于没测。
+        let waits: Vec<Option<Duration>> = (1..=4).map(|n| policy.delay(n)).collect();
+        assert_eq!(
+            waits,
+            vec![
+                Some(Duration::from_secs(1)),
+                Some(Duration::from_secs(2)),
+                Some(Duration::from_secs(4)),
+                None,
+            ],
+            "第 4 次没有预算 —— 那正是「次数耗尽」的判据"
+        );
+        assert_eq!(policy.budget(), Duration::from_secs(7));
+    }
+
+    /// `0` 次是合法的配置（= 不自动重连），而"第 0 次重试"不是合法的一步
+    /// （与 `TunnelState::Reconnecting` 的"次数必须 ≥ 1"同一条口径）。
+    #[test]
+    fn the_zeroth_attempt_never_has_a_budget() {
+        let policy = Reconnect::default();
+        assert_eq!(policy.delay(0), None);
+        let off = Reconnect {
+            max_attempts: 0,
+            ..Reconnect::default()
+        };
+        assert_eq!(off.delay(1), None, "关掉重连时第一次也不该等");
+        assert_eq!(off.budget(), Duration::ZERO);
+    }
+
+    /// 次数与倍率都是配置里的数（用户能给任意值），所以极端取值不能 panic ——
+    /// 乘法要饱和。
+    #[test]
+    fn an_absurd_factor_saturates_instead_of_overflowing() {
+        let policy = Reconnect {
+            max_attempts: 64,
+            initial: Duration::from_secs(u64::MAX / 2),
+            factor: 3,
+        };
+        assert!(policy.delay(64).is_some(), "次数内一律给得出等待时长");
+        assert!(policy.budget() <= Duration::MAX, "总预算也要饱和");
     }
 }

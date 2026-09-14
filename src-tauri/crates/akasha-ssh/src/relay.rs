@@ -46,6 +46,7 @@ use tokio::runtime::Handle as RuntimeHandle;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+use crate::ending::{ForwardEnd, ForwardEnding};
 use crate::error::{SshError, listen_failed};
 use crate::forward::SshConnection;
 use crate::socks5;
@@ -57,6 +58,16 @@ use crate::target::host_and_port;
 /// 都会走到这条路上），而一个持续失败的 `accept` 会立刻返回 —— 不歇一下就是一个
 /// 占满一个 worker 的空转循环。100 ms 足够让暂时性错误过去，也让停止信号最多晚 100 ms 被看到。
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+/// 那条连接的死活**怎么看**：按固定间隔看一眼。
+///
+/// 上游 0.x 只给了同步的 `Handle::is_closed()`（没有可 `await` 的关闭信号），所以这里是
+/// **一次布尔读**，不是等待 —— 转发任务本来就在 `select!` 里等入站连接，多这一条分支
+/// 不引入任何队列或线程。
+///
+/// 500 ms 决定"掉线之后多久开始重连"的延迟上界（退避本身是秒级），而每条隧道每秒两次
+/// 唤醒的代价可以忽略。
+pub(crate) const LIVENESS_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// 转发去往的目标：**对端**（那台 SSH 服务器）要连的地址。
 ///
@@ -160,23 +171,41 @@ impl LocalListener {
     /// 起转发任务：在 `runtime` 上接受连接，每条入站连接开一条 `direct_tcpip` 通道。
     ///
     /// 拿走 `connection` 的所有权（见模块文档的"谁持有那条连接"）。
-    pub fn serve(self, runtime: &RuntimeHandle, connection: SshConnection) -> LocalForward {
+    ///
+    /// 返回值是**两半**：转发本体（停止与读监听地址用它）与它的[结束通知](ForwardEnding)
+    /// （重连循环等它，见 plan 0605）。两半分开交出去，是因为它们由两个不同的东西持有
+    /// —— 本体归隧道实体，通知归那条隧道的看护任务。
+    pub fn serve(
+        self,
+        runtime: &RuntimeHandle,
+        connection: SshConnection,
+    ) -> (LocalForward, ForwardEnding) {
         let Self {
             listener,
             bound,
             ingress,
         } = self;
         let (shutdown, mut stopped) = oneshot::channel::<()>();
+        let (ended, ended_rx) = oneshot::channel::<ForwardEnd>();
         let worker = runtime.clone();
         runtime.spawn(async move {
             let connection = Arc::new(connection);
             // 在途的每条入站连接各一条任务：停止时要能**一起**收掉 ——
             // 只停监听会留下已建立的通道，那条 SSH 连接也就跟着活到最后一个客户端走为止。
             let mut live: Vec<JoinHandle<()>> = Vec::new();
-            loop {
+            let mut liveness = tokio::time::interval(LIVENESS_POLL_INTERVAL);
+            liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let end = loop {
                 tokio::select! {
                     // 先看停止信号：已经被要求停止时不该再接下一条连接。
-                    _ = &mut stopped => break,
+                    _ = &mut stopped => break ForwardEnd::Stopped,
+                    // 连接死了就结束自己（理由见 `LIVENESS_POLL_INTERVAL`）——
+                    // 不结束的话这条转发会永远停在"已连接"，而每条入站连接都开不出通道。
+                    _ = liveness.tick() => {
+                        if connection.is_closed() {
+                            break ForwardEnd::ConnectionLost;
+                        }
+                    }
                     accepted = listener.accept() => match accepted {
                         Ok((socket, peer)) => {
                             live.retain(|task| !task.is_finished());
@@ -193,7 +222,11 @@ impl LocalListener {
                         }
                     },
                 }
-            }
+            };
+            // ⚠️ 监听要**先**显式放掉（不能等到任务结束）：重连的第一次绑定紧跟着这个
+            // 结束信号，而这个端口在信号之后、任务收尾之前还归我们 —— 两者撞上的表现是
+            // "重连的第一次必然绑定失败、第二次才成"。
+            drop(listener);
             for task in &live {
                 task.abort();
             }
@@ -201,13 +234,23 @@ impl LocalListener {
                 // 等它们真的结束：abort 只是请求，而下面要拿回连接的所有权。
                 let _ = task.await;
             }
+            tracing::debug!(
+                port = bound.port(),
+                reason = end.as_str(),
+                "local forward ended"
+            );
             // 到这一步 Arc 应当只剩我们这一份（在途任务都已结束）。
             // 万一还有别人拿着，就让它随最后一个持有者一起走 —— 不 panic。
             if let Ok(connection) = Arc::try_unwrap(connection) {
                 connection.disconnect().await;
             }
+            // 结束信号**最后**发：收到它的那一刻，"端口已经还回去了"必须成立。
+            let _ = ended.send(end);
         });
-        LocalForward { bound, shutdown }
+        (
+            LocalForward { bound, shutdown },
+            ForwardEnding::new(ended_rx),
+        )
     }
 }
 
@@ -222,10 +265,14 @@ fn empty_bind_reason(ingress: &Ingress) -> &'static str {
     }
 }
 
-/// 一条**跑起来的**本地转发。
+/// 一条**已经起来的**本地转发。
 ///
 /// 它活着就等于"端口在监听、连接在手上"。停止有两条等价的入口：调用 [`Self::shutdown`]，
 /// 或者直接把它 drop（信号端一 drop，转发任务就走同一条收尾路径）。
+///
+/// ⚠️ 它**不带**"这次转发什么时候结束"的信号 —— 那一半在 [`LocalListener::serve`] 的
+/// 第二个返回值里（归重连循环）。两条路都写进同一个类型，就得决定"谁负责等"，
+/// 而那件事在调用点比在类型里清楚。
 pub struct LocalForward {
     bound: SocketAddr,
     shutdown: oneshot::Sender<()>,

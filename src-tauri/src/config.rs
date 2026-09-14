@@ -101,7 +101,21 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
     };
     Ok(Config {
         close_behavior: behavior,
+        // 重连参数还没有文件形态（plan 0605 的非目标）—— 用模型里的默认值，
+        // 而不是在这里另写一套数：默认值只有 `Reconnect::default()` 一处。
+        reconnect: Config::default().reconnect,
     })
+}
+
+/// 生效的重连策略（ADR-0003 D13 的参数）。
+///
+/// 还没登记过（`.setup()` 没跑到 / 单独用命令测）就取模型里的默认值 —— 与
+/// `lifecycle` 那条降级同一条口径：配置读不到不该挡住任何东西，而这里的默认值
+/// 本来就是"3 次 + 1s/2s/4s"。
+pub fn reconnect(app: &tauri::AppHandle) -> akasha_core::Reconnect {
+    use tauri::Manager;
+    app.try_state::<Config>()
+        .map_or_else(akasha_core::Reconnect::default, |config| config.reconnect)
 }
 
 /// bin 同目录里那个便携数据目录（`portable.md` §4 第 1 条）——

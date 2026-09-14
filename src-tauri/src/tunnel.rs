@@ -37,9 +37,21 @@
 //! ⚠️ **`-R` 的绑定地址不做这种检查**：那个端口开在服务端，能不能开在非回环地址上是
 //! **它的**策略（`sshd` 的 `GatewayPorts` 默认只允许回环）。规则里写什么就请求什么。
 //!
-//! ⚠️ **`重连中` 在本步仍不由真实路径产生**：驱动它的重连循环是 plan 0605。状态与那条边
-//! 已经存在（`akasha_core::TunnelState` 的用例覆盖了它），但没有代码会走到它 ——
-//! 文档与判据都不得假装它已被验证。
+//! ## 掉线之后怎么办（plan 0605）
+//!
+//! 一条**已经连上过**的隧道掉线之后，由它自己的**看护任务**按 ADR-0003 D13 的预算重连：
+//! 3 次、退避 `1s → 2s → 4s`，耗尽就落到 `失败`（**发出事件**，托盘与界面因此看得见）。
+//! 这个任务在首次连上之后才起 —— 一次连接都没成功过的隧道没有"重连"可言，
+//! 那一次失败是同步报给用户的（命令返回里带原因，界面上就是那条失败文案）。
+//!
+//! ⚠️ **重连是"重新走一遍准备 + 连接 + 起转发"**，不是接着用：连接是那条转发的命根子
+//! （转发任务持有 `SshConnection`），连接没了转发也就没了。三个方向的差别因此在这里
+//! 又出现一次：`-L` / `-D` 重新绑本机端口，`-R` **重新发一次 `tcpip_forward`**
+//! —— 远端监听是服务端那条连接的资源，连接一断它就被撤销了。
+//!
+//! ⚠️ **看护任务只有一个停止入口**：一条 `oneshot` 信号。停止 / 重试 / 退出都从这里进去
+//! （D5 的"关闭 Session 立刻关闭连接"要能到这），而任务在每一次 `await` 上回应它 ——
+//! 所以停止不必等一次握手的 10 秒。
 //!
 //! ## 停止 = 停止 + 注销
 //!
@@ -52,13 +64,17 @@
 //! 停止监听、收掉在途连接与断开那条 SSH 连接都在 runtime 上做（同 D5 的"立刻"，
 //! 只是"立刻"发生在另一个线程上；要观察结果的地方看对端的连接计数，见 E2E）。
 
-use akasha_core::{SessionId, TunnelState, TunnelTransitionError};
-use akasha_ssh::{ForwardTarget, Ingress, LocalForward, LocalListener, RemoteForward, SshError};
+use akasha_core::{Reconnect, SessionId, TunnelState, TunnelTransitionError};
+use akasha_ssh::{
+    ForwardEnd, ForwardEnding, ForwardTarget, Ingress, LocalForward, LocalListener, RemoteForward,
+    SshError,
+};
 use akasha_store::StoreError;
 use akasha_store::pools::forwards::Direction;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_specta::Event;
+use tokio::sync::oneshot;
 
 use crate::pools::{ForwardDirection, ForwardId, HostId};
 use crate::session::{IpcError, SessionHandle, Sessions};
@@ -83,6 +99,11 @@ pub struct Tunnel {
     attempts: u32,
     /// 那一侧的监听 + 那条连接（类型见 [`ActiveForward`]）。`None` = 还没连上 / 已经断开。
     forward: Option<ActiveForward>,
+    /// 看护任务（掉线之后重连的那条循环）的停止入口。
+    ///
+    /// `None` = 还没连上过 / 看护任务已经退出。它与 `forward` **分开**：转发本体归实体表
+    /// （停止与 probe 要它），而"结束了"这件事归看护任务（它等的是那份结束信号）。
+    run: Option<TunnelRun>,
 }
 
 /// 一条**已经起来的**转发：本机监听（`-L` / `-D`）或远端监听（`-R`）。
@@ -127,6 +148,7 @@ impl Tunnel {
             state: TunnelState::Connecting,
             attempts: 0,
             forward: None,
+            run: None,
         }
     }
 
@@ -159,9 +181,22 @@ impl Tunnel {
         self.forward.take()
     }
 
-    /// 实体被注销时交出转发（调用方在锁外 `shutdown`）。
-    pub(crate) fn into_forward(self) -> Option<ActiveForward> {
-        self.forward
+    /// 挂上看护任务（首次连上之后 —— 在那之前没有东西可看护）。
+    pub(crate) fn attach_run(&mut self, run: TunnelRun) {
+        self.run = Some(run);
+    }
+
+    /// 取走看护任务的停止入口（重试 / 停止要在**锁外**让它退出）。
+    pub(crate) fn take_run(&mut self) -> Option<TunnelRun> {
+        self.run.take()
+    }
+
+    /// 实体被注销时交出两样：转发本体（锁外 `shutdown`）与看护任务（发停止信号）。
+    ///
+    /// 一起交出去而不是分两次取，是因为它们的收尾顺序有意义：**先让看护任务停下**，
+    /// 再收掉转发 —— 反过来的话，那条循环可能在我们拆它的同时把这条隧道重新连起来。
+    pub(crate) fn into_parts(self) -> (Option<ActiveForward>, Option<TunnelRun>) {
+        (self.forward, self.run)
     }
 
     pub(crate) const fn id(&self) -> SessionId {
@@ -204,6 +239,27 @@ pub struct TunnelSummary {
     ///
     /// `-R` 的规则报的是**服务端**那一侧的监听地址（地址按服务端解释）。
     pub bind: Option<String>,
+}
+
+/// **一条隧道的看护任务**的停止入口（plan 0605）：掉线之后负责重连的那条循环。
+///
+/// 一个 `oneshot` 的发送端就够：循环在 `select!` 里等它，所以"停止"不必等一次握手的
+/// 10 秒 —— 而它**只有一条路**（发信号），drop 掉它同样会让循环看到通道关闭，
+/// 于是"忘了发信号"这件事不会静默地留下一条还在重连的隧道。
+#[derive(Debug)]
+pub struct TunnelRun {
+    stop: oneshot::Sender<()>,
+}
+
+impl TunnelRun {
+    fn new(stop: oneshot::Sender<()>) -> Self {
+        Self { stop }
+    }
+
+    /// 让它退出（发完即返回）。`Send` 失败 = 它已经退出了 —— 那不是错误。
+    pub(crate) fn stop(self) {
+        let _ = self.stop.send(());
+    }
 }
 
 /// 状态过 IPC 的形状。
@@ -383,6 +439,25 @@ impl TunnelError {
             },
         }
     }
+
+    /// 这次失败之后**还要不要自动再来一次**（ADR-0003 D13 的判据表）。
+    ///
+    /// 按"哪一层坏了"分：
+    ///
+    /// * **传输层**（连不上 / 超时 / 跳板那条线断了）→ 重试，那正是网络抖动；
+    /// * **端口没拿到**（本机或服务端那一侧）→ 重试：端口是会被别人临时占住的资源；
+    /// * **认证 / 主机密钥 / 配置 / 内部状态** → **不重试**。D13 给的后果很具体：
+    ///   以错误的口令连续尝试三次正是账号锁定的经典成因；而主机密钥变了要的是
+    ///   用户显式确认，不是我们再试三遍。
+    fn retryable(&self) -> bool {
+        match self {
+            Self::Bind { .. } | Self::RemoteBind { .. } => true,
+            Self::Failed { kind, .. } => {
+                matches!(kind, SshFailureKind::Connect | SshFailureKind::Jump)
+            }
+            _ => false,
+        }
+    }
 }
 
 /// 一次"打开 / 重试"的结果。
@@ -430,17 +505,22 @@ pub async fn tunnel_open(
     // 通告给前端：连接要花几秒，界面与托盘都该立刻看到"它在连"。
     // ⚠️ 不再走一次状态机：`连接中 → 连接中` 是非法边（同态转移），会被正确拒绝。
     announce(&app, handle, TunnelState::Connecting);
-    drive(&app, handle, &rule, prepared).await
+    attempt_open(&app, handle, &rule, prepared).await
 }
 
 /// 手动重试（D12：`失败 / 已停止 → 连接中`，尝试次数清零）。
 ///
 /// 规则**重新读一遍**：端口与目标可能在上一次失败之后被改过，而重试的用户意图正是
-/// "按现在的配置再来一次"。旧的那条转发（如果还在）先收掉 —— 重试是"重来一次"，
+/// "按现在的配置再来一次"。旧的那条转发与看护任务先收掉 —— 重试是"重来一次"，
 /// 不是"再来一条"。
 ///
-/// `Err` 只在"这个句柄不是一条隧道 / 方向不对 / 端口没拿到 / 状态推不动"时返回；
-/// **又没连上**属于 [`TunnelAttempt::failure`]。
+/// ⚠️ **只有终态能重试，而这条检查排在绑定之前**：`重连中` 也在等下一次尝试，
+/// 但那是看护任务的事（它有自己的次数与退避），用户能做的重试只在 `失败 / 已停止` 上
+/// 有意义（D12）。放在绑定之前是因为"先占一个端口再报状态不对"会在屏幕上留下一个
+/// 一闪而过的失败信息，而用户真正要看的是"现在还轮不到你重试"。
+///
+/// `Err` 只在"这个句柄不是一条隧道 / 状态不是终态 / 方向不对 / 端口没拿到 / 状态推不动"
+/// 时返回；**又没连上**属于 [`TunnelAttempt::failure`]。
 #[tauri::command]
 #[specta::specta]
 pub async fn tunnel_retry(
@@ -451,7 +531,20 @@ pub async fn tunnel_retry(
     let (rule_id, _) = sessions
         .tunnel_origin(handle)
         .ok_or(TunnelError::NotATunnel { handle })?;
+    let state = sessions
+        .tunnel_state(handle)
+        .ok_or(TunnelError::NotATunnel { handle })?;
+    if let Err(err) = state.retry() {
+        return Err(TunnelError::Transition {
+            message: err.to_string(),
+        });
+    }
 
+    // 先让看护任务停下，再收转发：反过来的话，那条循环可能在我们拆它的同时
+    // 把这条隧道重新连起来（重试是"按现在的配置再来一次"，不是"再多一条"）。
+    if let Some(run) = sessions.take_tunnel_run(handle) {
+        run.stop();
+    }
     if let Some(forward) = sessions.take_tunnel_forward(handle) {
         forward.shutdown();
     }
@@ -466,7 +559,7 @@ pub async fn tunnel_retry(
     let prepared = rule.prepare(&app).await?;
 
     apply(&app, &sessions, handle, TunnelState::Connecting)?;
-    drive(&app, handle, &rule, prepared).await
+    attempt_open(&app, handle, &rule, prepared).await
 }
 
 /// 停止一条隧道：`已停止`（发事件）→ 收掉转发（停止监听 + 断开连接）→ 从注册表摘掉。
@@ -486,8 +579,13 @@ pub fn tunnel_stop(app: AppHandle, handle: SessionHandle) -> Result<(), TunnelEr
     let Some(tunnel) = sessions.remove_tunnel(handle).map_err(TunnelError::from)? else {
         return Ok(());
     };
-    if let Some(forward) = tunnel.into_forward() {
-        // 发完信号即返回：收尾（停监听、收在途连接、断开连接）在 runtime 上做。
+    let (forward, run) = tunnel.into_parts();
+    // 看护任务**先**停：它是唯一会在这条隧道已经决定停止之后再把它连起来的东西。
+    if let Some(run) = run {
+        run.stop();
+    }
+    if let Some(forward) = forward {
+        // 发完信号即返回：收尾（停监听、收回收在途连接、断开连接）在 runtime 上做。
         forward.shutdown();
     }
     Ok(())
@@ -660,26 +758,42 @@ async fn bind_local(
         .map_err(TunnelError::from_bind)
 }
 
-/// 把一条隧道从 `连接中` 推到 `已连接`（或 `失败`）。
-///
-/// 三个方向在这里分岔，而分岔只有一处：[`Prepared`] 决定连接起来之后是
-/// "把连接交给本机监听"还是"请服务端监听"。
-async fn drive(
+/// **首次尝试**：连上就起看护任务；连不上就落到 `失败`（那条隧道仍在册，可手动重试）。
+async fn attempt_open(
     app: &AppHandle,
     handle: SessionHandle,
     rule: &Rule,
     prepared: Prepared,
 ) -> Result<TunnelAttempt, TunnelError> {
+    match connect_once(app, handle, rule, prepared).await {
+        Ok(ending) => {
+            start_watch(app, handle, rule.id, ending);
+            Ok(TunnelAttempt {
+                handle,
+                failure: None,
+            })
+        }
+        Err(err) => failed(app, handle, err),
+    }
+}
+
+/// 连一次：建连接 → 起转发 → 挂上 → `已连接`。返回值是那次转发的**结束信号**。
+///
+/// 三个方向在这里分岔，而分岔只有一处：[`Prepared`] 决定连接起来之后是
+/// "把连接交给本机监听"还是"请服务端监听"。
+///
+/// 首次尝试与每一次重连走的都是这一条 —— 重连不是"接着用那条连接"，而是**重新来一遍**。
+async fn connect_once(
+    app: &AppHandle,
+    handle: SessionHandle,
+    rule: &Rule,
+    prepared: Prepared,
+) -> Result<ForwardEnding, TunnelError> {
     let Some(runtime) = app.state::<Ssh>().runtime_handle() else {
-        // 没有 runtime 就连不上（`connect_connection` 也是这个前提）。隧道已经登记着，
-        // 因此要和"连不上"一样落到 `失败` 并把原因交出去 —— 而不是停在永远不动的 `连接中`。
-        return failed(
-            app,
-            handle,
-            TunnelError::Internal {
-                message: "SSH runtime 不可用：连接建立不起来".to_owned(),
-            },
-        );
+        // 没有 runtime 就连不上（`connect_connection` 也是这个前提）。
+        return Err(TunnelError::Internal {
+            message: "SSH runtime 不可用：连接建立不起来".to_owned(),
+        });
     };
 
     let outcome = {
@@ -687,24 +801,25 @@ async fn drive(
         let vault = app.state::<Vault>();
         crate::ssh::connect_connection(&ssh, &vault, rule.host_id).await
     };
-    let connection = match outcome {
-        Ok(connection) => connection,
-        Err(err) => return failed(app, handle, TunnelError::from(err)),
-    };
+    let connection = outcome.map_err(TunnelError::from)?;
 
     // 连接与监听合成一件事：转发任务持有两者，"已连接"因此意味着
     // **那一侧端口在听**且**连接活着**。
-    let forward = match prepared {
-        Prepared::Local(listener) => ActiveForward::Local(listener.serve(&runtime, connection)),
+    let (forward, ending) = match prepared {
+        Prepared::Local(listener) => {
+            let (forward, ending) = listener.serve(&runtime, connection);
+            (ActiveForward::Local(forward), ending)
+        }
         Prepared::Remote { bind, target } => {
             // `-R` 的"绑定"发生在这里而不是更早 —— 它是对那条连接的一次请求，
             // 没有连接就没有可请求的对象（plan 0604 / D10）。
-            let opened =
-                RemoteForward::open(&runtime, connection, bind.host(), bind.port(), target).await;
-            match opened {
-                Ok(forward) => ActiveForward::Remote(forward),
-                Err(err) => return failed(app, handle, TunnelError::from_remote(err)),
-            }
+            // ⚠️ 重连时这一步**必须再做一次**：远端监听是那条连接的资源，连接一断它
+            // 就没了（见模块文档）。不重新请求的话，重连会"成功"，而端口不在听。
+            let (forward, ending) =
+                RemoteForward::open(&runtime, connection, bind.host(), bind.port(), target)
+                    .await
+                    .map_err(TunnelError::from_remote)?;
+            (ActiveForward::Remote(forward), ending)
         }
     };
 
@@ -713,10 +828,186 @@ async fn drive(
         .attach_tunnel_forward(handle, forward)
         .map_err(TunnelError::from)?;
     apply(app, &sessions, handle, TunnelState::Connected)?;
-    Ok(TunnelAttempt {
+    Ok(ending)
+}
+
+/// 起**看护任务**：这条隧道的连接断掉之后，由它按 D13 的预算重连。
+///
+/// 它在首次连上之后才起（那时才有连接可以断），停在 SSH 的 runtime 上（与转发任务同一个
+/// runtime：这条隧道的一切都在那里）。
+fn start_watch(app: &AppHandle, handle: SessionHandle, rule_id: i64, ending: ForwardEnding) {
+    let Some(runtime) = app.state::<Ssh>().runtime_handle() else {
+        // 走到这里说明连接刚刚建立过，而它一定用过这个 runtime —— 拿不到就只记一条。
+        tracing::warn!(handle, reason = "no-runtime", "tunnel watch not started");
+        return;
+    };
+    let (stop, stop_rx) = oneshot::channel::<()>();
+    let sessions = app.state::<Sessions>().inner().clone();
+    if let Err(err) = sessions.attach_tunnel_run(handle, TunnelRun::new(stop)) {
+        // 实体已经不在册：用户在我们连上它的同时把它停了。没有要看护的东西。
+        tracing::debug!(handle, %err, "tunnel watch skipped");
+        return;
+    }
+    let app = app.clone();
+    let policy = crate::config::reconnect(&app);
+    runtime.spawn(watch(app, handle, rule_id, policy, ending, stop_rx));
+}
+
+/// 看护一条隧道：等这次转发结束，然后按预算重连（ADR-0003 D13）。
+///
+/// ⚠️ **只有"实体仍然已连接"才谈得上重连。** 停止、重试、退出都会把它推走 ——
+/// 那些情形下"转发结束"是我们让它结束的，再连一遍就是把用户刚停掉的东西拉起来。
+/// 这一条判据同时兜住了与停止命令的竞争（先推状态、后收转发）。
+async fn watch(
+    app: AppHandle,
+    handle: SessionHandle,
+    rule_id: i64,
+    policy: Reconnect,
+    mut ending: ForwardEnding,
+    mut stop: oneshot::Receiver<()>,
+) {
+    loop {
+        // 这一次转发结束了（或者我们被要求停止）。
+        let end = tokio::select! {
+            end = ending.ended() => end,
+            _ = &mut stop => return,
+        };
+        if end == ForwardEnd::Stopped {
+            return;
+        }
+
+        let sessions = app.state::<Sessions>().inner().clone();
+        if sessions.tunnel_state(handle) != Some(TunnelState::Connected) {
+            return;
+        }
+        // 那次转发已经没有用途了：收掉它，probe 因此不会再报一个并不存在的监听地址。
+        if let Some(forward) = sessions.take_tunnel_forward(handle) {
+            forward.shutdown();
+        }
+
+        let Some(next) = reconnect(&app, handle, rule_id, &policy, &mut stop).await else {
+            return;
+        };
+        ending = next;
+    }
+}
+
+/// 按 D13 的预算重连，返回**新那次转发**的结束信号。
+///
+/// `None` = 不再继续：次数耗尽（已经落到 `失败`）、出现不该重试的失败（认证 / 主机密钥 /
+/// 配置）、或者被要求停止。
+async fn reconnect(
+    app: &AppHandle,
+    handle: SessionHandle,
+    rule_id: i64,
+    policy: &Reconnect,
+    stop: &mut oneshot::Receiver<()>,
+) -> Option<ForwardEnding> {
+    let sessions = app.state::<Sessions>().inner().clone();
+    let mut last: Option<TunnelError> = None;
+
+    for attempt in 1..=policy.max_attempts {
+        // `重连中(n)` 的含义就是"正在等第 n 次"（`akasha_core::TunnelState`），
+        // 所以状态先走、退避在后。
+        let Some(delay) = policy.delay(attempt) else {
+            break;
+        };
+        if apply(
+            app,
+            &sessions,
+            handle,
+            TunnelState::Reconnecting { attempt },
+        )
+        .is_err()
+        {
+            return None;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            _ = &mut *stop => return None,
+        }
+        if apply(app, &sessions, handle, TunnelState::Connecting).is_err() {
+            return None;
+        }
+
+        let outcome = tokio::select! {
+            outcome = attempt_again(app, handle, rule_id) => outcome,
+            _ = &mut *stop => return None,
+        };
+        let failure = match outcome {
+            Ok(ending) => {
+                tracing::info!(handle, attempt, "tunnel reconnected");
+                return Some(ending);
+            }
+            Err(err) => err,
+        };
+        // 实体没了 = 用户在重连期间把这条隧道停掉了：不再往它身上写状态，静默退出
+        // （用 `?` 是因为"它不在册"与下面那条"不再继续"本来就是同一个返回值）。
+        sessions.tunnel_state(handle)?;
+
+        if !failure.retryable() {
+            // D13：认证失败、主机密钥不匹配、配置 / 协议错误**不重试** ——
+            // 以错误的口令连续尝试三次正是账号锁定的经典成因。
+            give_up(app, &sessions, handle, attempt, &failure);
+            return None;
+        }
+        last = Some(failure);
+    }
+
+    // 次数耗尽（或者预算本来就是 0）：`失败` **可见**，原因进日志。
+    give_up_last(app, &sessions, handle, policy.max_attempts, last.as_ref());
+    None
+}
+
+/// 重连时的一次尝试：规则**重新读一遍**（端口与目标可能在这期间被改过）。
+async fn attempt_again(
+    app: &AppHandle,
+    handle: SessionHandle,
+    rule_id: i64,
+) -> Result<ForwardEnding, TunnelError> {
+    let rule_id = ForwardId::try_from(rule_id).map_err(|_| TunnelError::Internal {
+        message: format!("转发规则 id 超出可表示范围（{rule_id}）"),
+    })?;
+    let rule = load_rule(app, rule_id)?;
+    let prepared = rule.prepare(app).await?;
+    connect_once(app, handle, &rule, prepared).await
+}
+
+/// 落到 `失败` 并记下**为什么**（可见的那一半由状态承担，原因只有日志里说得清）。
+fn give_up(
+    app: &AppHandle,
+    sessions: &Sessions,
+    handle: SessionHandle,
+    attempt: u32,
+    failure: &TunnelError,
+) {
+    let _ = apply(app, sessions, handle, TunnelState::Failed);
+    tracing::warn!(
         handle,
-        failure: None,
-    })
+        attempt,
+        reason = %failure,
+        "tunnel reconnect abandoned"
+    );
+}
+
+/// 次数耗尽：同样是 `失败`，但说法不同（"还剩次数"与"次数用完"是两件事）。
+fn give_up_last(
+    app: &AppHandle,
+    sessions: &Sessions,
+    handle: SessionHandle,
+    attempts: u32,
+    last: Option<&TunnelError>,
+) {
+    let _ = apply(app, sessions, handle, TunnelState::Failed);
+    match last {
+        Some(failure) => tracing::warn!(
+            handle,
+            attempts,
+            reason = %failure,
+            "tunnel reconnect exhausted"
+        ),
+        None => tracing::warn!(handle, attempts, "tunnel reconnect exhausted"),
+    }
 }
 
 /// 落到 `失败`（**发出事件**）并把原因交出去。
@@ -773,5 +1064,73 @@ fn announce(app: &AppHandle, handle: SessionHandle, state: TunnelState) {
     };
     if let Err(err) = app.emit(TunnelStateChanged::NAME, event) {
         tracing::warn!(event = TunnelStateChanged::NAME, %err, "event emit failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! **D13 那张判据表的机器可读那一半**：哪些失败会自动重试，哪些不。
+    //!
+    //! 它值得单测，是因为分错档的后果不对称：该重试的没重试只是少一次自动恢复，
+    //! 而**不该重试的却重试了**会以错误的口令连试三次 —— 那正是账号锁定的经典成因。
+
+    use super::*;
+
+    #[test]
+    fn transport_and_port_failures_are_retried() {
+        for kind in [SshFailureKind::Connect, SshFailureKind::Jump] {
+            let err = TunnelError::Failed {
+                kind,
+                message: "x".to_owned(),
+            };
+            assert!(err.retryable(), "{kind:?} 是网络那一层的失败，应当重试");
+        }
+        for err in [
+            TunnelError::Bind {
+                address: "127.0.0.1:1".to_owned(),
+                message: "被占着".to_owned(),
+            },
+            TunnelError::RemoteBind {
+                address: "127.0.0.1:1".to_owned(),
+                message: "被占着".to_owned(),
+            },
+        ] {
+            assert!(err.retryable(), "端口是会被别人临时占住的资源：{err}");
+        }
+    }
+
+    #[test]
+    fn auth_and_configuration_failures_are_not_retried() {
+        for kind in [
+            SshFailureKind::Auth,
+            SshFailureKind::HostKeyChanged,
+            SshFailureKind::HostKeyRejected,
+            SshFailureKind::HostKeyUnknown,
+            SshFailureKind::HostKeyCache,
+            SshFailureKind::Other,
+        ] {
+            let err = TunnelError::Failed {
+                kind,
+                message: "x".to_owned(),
+            };
+            assert!(!err.retryable(), "{kind:?} 不该自动重试");
+        }
+        for err in [
+            TunnelError::Locked,
+            TunnelError::NoSuchForward { id: 1 },
+            TunnelError::NoSuchHost { id: 1 },
+            TunnelError::NotATunnel { handle: 1 },
+            TunnelError::NotLoopback {
+                address: "0.0.0.0:1".to_owned(),
+            },
+            TunnelError::Transition {
+                message: "x".to_owned(),
+            },
+            TunnelError::Internal {
+                message: "x".to_owned(),
+            },
+        ] {
+            assert!(!err.retryable(), "这一类没有自动重试的余地：{err}");
+        }
     }
 }
