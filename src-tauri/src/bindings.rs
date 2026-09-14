@@ -51,6 +51,17 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::tunnel::tunnel_open,
             crate::tunnel::tunnel_retry,
             crate::tunnel::tunnel_stop,
+            // SFTP（plan 0701）。⚠️ `sftp_connect` 与 `sftp_list` 必须是 async：
+            // 命令体里各有一次会等几秒的往返（握手 + 开子系统 / 列目录），而同步命令跑在
+            // 处理 IPC 请求的那条线程上 —— 挡住它就等于挡住全部 IPC。
+            // 其余三条只动会话表，同步即可。
+            crate::sftp::sftp_open,
+            crate::sftp::sftp_connect,
+            crate::sftp::sftp_list,
+            crate::sftp::sftp_sides,
+            // 面板重新打开时接回已有的会话（关面板不停会话，见 `sftp_sessions` 的文档）。
+            crate::sftp::sftp_sessions,
+            crate::sftp::sftp_close,
         ])
         .events(collect_events![
             crate::session::SessionEnded,

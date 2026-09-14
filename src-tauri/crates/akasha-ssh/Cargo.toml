@@ -25,6 +25,12 @@ akasha-store = { version = "0.1.0", path = "../akasha-store" }
 # 所以这条选择不新增第二个 crypto 后端；`aws-lc-rs` 要 cmake + bindgen（Windows 还要 NASM），
 # 与四平台目标冲突。`flate2` / `dsa` / `des` 明确不开。
 russh = { version = "=0.63.3", default-features = false, features = ["ring", "rsa"] }
+# SFTP（plan 0701，ADR-0006 D1）：它把会话定义在**一条 `AsyncRead + AsyncWrite` 流**上，
+# 与本 crate 的 `SshStream`（D9 的原语）对齐 —— 于是直连、经跳板、host↔host 的 B 档
+# 都是同一个类型的同一种用法。⚠️ 它**不依赖 `russh`**（`russh` 只在它的 dev-dependencies 里），
+# 所以引入它不会形成第二条版本约束 —— 这是"升级 `russh` 只改本 crate"能继续成立的前提。
+# `=` 与 `russh` 同一口径。
+russh-sftp = "=3.0.0"
 # AGENTS.md §3.4：错误用 thiserror 分域定义。
 thiserror = "2"
 # 只用到 traits 与 runtime handle：`rt` 给 `Handle`，`sync` 给两条队列，`net` 给 TcpStream，

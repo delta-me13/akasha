@@ -57,6 +57,8 @@ mod relay;
 /// **远程转发 `-R`**：请服务端监听，把服务端发起的 `forwarded-tcpip` 通道接到本机服务
 /// （plan 0604）—— 与 `-L` / `-D` 方向相反，因此不复用 `direct-tcpip` 原语（D10）。
 mod remote;
+/// **SFTP 会话**（plan 0701）：跑在一条流上的远端文件操作（ADR-0006 D2）。
+mod sftp;
 /// **动态转发 `-D` 的协议本体**：SOCKS5 的无认证 `CONNECT`（plan 0603）。
 mod socks5;
 mod target;
@@ -82,5 +84,6 @@ pub use known_hosts::{
 };
 pub use relay::{ForwardTarget, Ingress, LocalForward, LocalListener};
 pub use remote::RemoteForward;
+pub use sftp::{SftpClient, SftpEntry, SftpKind, SftpListing};
 pub use target::SshTarget;
 pub use transport::SshTransport;

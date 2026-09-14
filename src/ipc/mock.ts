@@ -225,6 +225,19 @@ export function installDevBackend(): void {
           kind: "failed",
           detail: { kind: "other", message: "dev-web 的模拟后端没有 SSH 客户端（用 just dev）" },
         };
+      // SFTP 那一路（plan 0701）同样**没有模拟后端**：没有 SFTP 客户端、也没有库。
+      // 每一条都明确报错，而不是返回一个空列表 ——"目录是空的"与"这个模拟后端不支持 SFTP"
+      // 是两件事，混在一起会让人以为连接成功了（同上一段的理由）。
+      case "sftp_open":
+      case "sftp_connect":
+      case "sftp_list":
+      case "sftp_sides":
+      case "sftp_sessions":
+      case "sftp_close":
+        throw {
+          kind: "failed",
+          detail: { kind: "other", message: "dev-web 的模拟后端没有 SFTP 客户端（用 just dev）" },
+        };
       case "close_session": {
         const handle = Number(field(payload, "handle"));
         shells.get(handle)?.stop();

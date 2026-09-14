@@ -39,6 +39,7 @@ use russh::keys::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use russh::server::ChannelOpenHandle;
 use russh::server::{Auth, Msg, Response, Server, Session};
 use russh::{Channel, ChannelId, MethodSet, Pty};
+use russh_sftp::protocol::{File, FileAttributes, Handle as SftpHandle, Name, Status, StatusCode};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
@@ -91,6 +92,11 @@ pub struct Observed {
     /// 而"先接受、连不上再关"的实现会在这里**什么都不留下** ——
     /// 那正是这条用例要分得开的。
     pub forwarded_tcpip_rejected: Vec<String>,
+    /// 收到过几次 `sftp` 子系统请求、并且**认下了**（plan 0701）。
+    ///
+    /// 数的是"认下"而不是"收到"：被拒的那一次在客户端那一侧应当表现为
+    /// `SftpClient` 建不起来 —— 两件事合起来才说明拒绝那条路通了。
+    pub sftp_subsystems: usize,
 }
 
 /// 一次 `tcpip-forward` 请求（对端要求我们在**自己这一侧**监听）。
@@ -133,6 +139,9 @@ pub struct ServerOptions {
     /// 没有匹配项的 `direct-tcpip` 一律**拒绝**（drop `reply`），与真实服务端的
     /// "转发不允许 / 连不上"同形。
     pub relay: Vec<Relay>,
+    /// 提供 `sftp` 子系统，根目录里列出这几项（plan 0701）。`None` = 不提供 ——
+    /// 那时 `subsystem_request` **明确拒绝**，客户端要在 `request_subsystem` 那里看到 false。
+    pub sftp: Option<Vec<SftpItem>>,
 }
 
 /// 一条中继映射：**对端要求连**的地址 → **我们真的连**哪。
@@ -154,6 +163,33 @@ impl ServerOptions {
         Self {
             password: Some(password.to_owned()),
             ..Self::default()
+        }
+    }
+}
+
+/// 测试服务端那个 SFTP 根目录里的一项（plan 0701）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SftpItem {
+    /// 条目名。
+    pub name: String,
+    /// 是不是目录 —— 客户端据此决定"这一项能不能进去"。
+    pub directory: bool,
+}
+
+impl SftpItem {
+    /// 一个普通文件。
+    pub fn file(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            directory: false,
+        }
+    }
+
+    /// 一个目录。
+    pub fn dir(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            directory: true,
         }
     }
 }
@@ -183,6 +219,13 @@ pub struct Shared {
     /// 重连那几条判据需要一个"把线路切断"的动作，见 [`Connection::cut`]。
     /// 已经收工的不必留着（accept 时顺手 retain 掉），否则这张表会随重连次数一直长。
     connections: Arc<Mutex<Vec<Connection>>>,
+    /// **会话通道**（plan 0701）：`sftp` 子系统在 `subsystem_request` 里拿到的是一个
+    /// `ChannelId`，而那个子系统要的是**通道本体**。
+    ///
+    /// 因此 `channel_open_session` 把通道存下来（此前它是被丢掉的）。
+    /// ⚠️ 丢弃不再安全：上游把通道数据同时交给通道自己的接收端**与** `Handler::data()`
+    /// （见 `shell_channels` 的说明），而"存下来"只是多一个持有者，不改变数据路径。
+    session_channels: Arc<Mutex<HashMap<ChannelId, Channel<Msg>>>>,
 }
 
 /// 一条远端监听的键：`(对端请求的地址, 我们实际绑的端口)`。
@@ -384,6 +427,7 @@ pub async fn start(options: ServerOptions) -> Running {
         shell_channels: Arc::new(Mutex::new(HashSet::new())),
         relayed_bytes: Arc::new(AtomicU64::new(0)),
         connections: Arc::new(Mutex::new(Vec::new())),
+        session_channels: Arc::new(Mutex::new(HashMap::new())),
     };
     let mut server = TestServer {
         shared: shared.clone(),
@@ -568,11 +612,53 @@ impl russh::server::Handler for TestServer {
 
     async fn channel_open_session(
         &mut self,
-        _channel: Channel<Msg>,
+        channel: Channel<Msg>,
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        // 存下来：`sftp` 子系统的请求随后要用**同一个通道**（那个回调只给 `ChannelId`，
+        // 见 `session_channels` 的说明）。其余通道（shell / 转发）不受影响 ——
+        // 数据仍然同时走 `Handler::data()`。
+        self.shared
+            .session_channels
+            .lock()
+            .unwrap()
+            .insert(channel.id(), channel);
         reply.accept().await;
+        Ok(())
+    }
+
+    /// `sftp` 子系统（plan 0701）。两档见 [`ServerOptions::sftp`]：开了这一档就认下并把
+    /// 通道交给一个最小的 SFTP 服务端；没开（或不是 `sftp`）**明确回绝** ——
+    /// 客户端要在 `request_subsystem` 那里拿到 `false`，而不是等到第一条请求超时。
+    async fn subsystem_request(
+        &mut self,
+        channel_id: ChannelId,
+        name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let items = if name == "sftp" {
+            self.shared.options.lock().unwrap().sftp.clone()
+        } else {
+            None
+        };
+        let Some(items) = items else {
+            let _ = session.channel_failure(channel_id);
+            return Ok(());
+        };
+        let Some(channel) = self
+            .shared
+            .session_channels
+            .lock()
+            .unwrap()
+            .remove(&channel_id)
+        else {
+            let _ = session.channel_failure(channel_id);
+            return Ok(());
+        };
+        self.shared.observed.lock().unwrap().sftp_subsystems += 1;
+        let _ = session.channel_success(channel_id);
+        russh_sftp::server::run(channel.into_stream(), SftpRoot::new(items)).await;
         Ok(())
     }
 
@@ -822,6 +908,79 @@ impl russh::server::Handler for TestServer {
         let _ = session.exit_status_request(channel, status);
         let _ = session.close(channel);
         Ok(())
+    }
+}
+
+/// **最小的 SFTP 服务端**（plan 0701）：只回答本阶段客户端会问的那几个动作。
+///
+/// ⚠️ 它**不是**一个 SFTP 实现：没有读写文件、没有 `stat`、没有扩展。它只需要让"列目录"
+/// 走通 —— 多做的每一件都会变成一处**无人验证**的行为，而判据要看的正是客户端的这一条路。
+struct SftpRoot {
+    items: Vec<SftpItem>,
+    /// 已经发过内容的目录句柄。
+    ///
+    /// 为什么需要它：`readdir` 的结束条件是**回 `EOF`**（协议如此），而不是"发一批空的"。
+    /// 第二次问同一个句柄必须回 `EOF`，否则客户端会一直读下去。
+    sent: HashSet<String>,
+}
+
+impl SftpRoot {
+    fn new(items: Vec<SftpItem>) -> Self {
+        Self {
+            items,
+            sent: HashSet::new(),
+        }
+    }
+}
+
+impl russh_sftp::server::Handler for SftpRoot {
+    type Error = StatusCode;
+
+    fn unimplemented(&self) -> Self::Error {
+        StatusCode::OpUnsupported
+    }
+
+    async fn close(&mut self, id: u32, _handle: String) -> Result<Status, Self::Error> {
+        Ok(Status {
+            id,
+            status_code: StatusCode::Ok,
+            error_message: "Ok".to_owned(),
+            language_tag: "en-US".to_owned(),
+        })
+    }
+
+    async fn opendir(&mut self, id: u32, path: String) -> Result<SftpHandle, Self::Error> {
+        Ok(SftpHandle { id, handle: path })
+    }
+
+    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
+        if !self.sent.insert(handle) {
+            return Err(StatusCode::Eof);
+        }
+        Ok(Name {
+            id,
+            files: self
+                .items
+                .iter()
+                .map(|item| {
+                    // ⚠️ 顺序要紧：`dummy()` 给的权限位里**带着目录位**，
+                    // 所以"文件"那一支必须先摘掉它再补上普通文件位（反过来会得到两个类型位）。
+                    let mut attrs = FileAttributes::dummy();
+                    attrs.set_dir(item.directory);
+                    attrs.set_regular(!item.directory);
+                    File::new(item.name.clone(), attrs)
+                })
+                .collect(),
+        })
+    }
+
+    async fn realpath(&mut self, id: u32, _path: String) -> Result<Name, Self::Error> {
+        // 根目录固定是 `/`：客户端那条 `canonicalize` 要的就是"一个绝对路径"，
+        // 而这一版不需要模拟真实服务端的家目录展开。
+        Ok(Name {
+            id,
+            files: vec![File::dummy("/")],
+        })
     }
 }
 

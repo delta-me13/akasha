@@ -138,6 +138,21 @@ pub enum SshError {
     #[error("打开会话通道失败：{0}")]
     Channel(String),
 
+    /// **SFTP 会话建不起来 / 用不了**（plan 0701，ADR-0006 §5）。
+    ///
+    /// ⚠️ 与 [`SshError::Channel`] 分开是刻意的：那一条说的是"这条 shell 通道开不出来"，
+    /// 这一条说的是"对端没有认下 `sftp` 子系统，或者会话建起来之后它坏了" ——
+    /// 用户要看的地方是**对端有没有开 SFTP**（`sshd_config` 的 `Subsystem`），
+    /// 而不是我们这边的通道代码。与 [`SshError::Forward`] / [`SshError::Listen`] 同一条分法：
+    /// 按用户的下一步动作分。
+    #[error("SFTP 会话不可用（{target}）：{reason}")]
+    Sftp {
+        /// 会话开在哪台机器上（`user@host:port`）。
+        target: SshTarget,
+        /// 上游的原话，或我们对"子系统被拒"的展开。
+        reason: String,
+    },
+
     /// `direct-tcpip`（跳板 / 转发）失败：**对端**拒绝或够不着 `host:port`（plan 0505）。
     ///
     /// ⚠️ 与 [`SshError::Connect`] **分开**是刻意的：那条说的是"我连不上这台机器"，
@@ -246,6 +261,14 @@ pub(crate) fn forward_failed(host: &str, port: u16, err: &russh::Error) -> SshEr
 pub(crate) fn listen_failed(address: &str, err: impl std::fmt::Display) -> SshError {
     SshError::Listen {
         address: address.to_owned(),
+        reason: err.to_string(),
+    }
+}
+
+/// SFTP 那条路的统一说法（plan 0701）。
+pub(crate) fn sftp_failed(target: &SshTarget, err: impl std::fmt::Display) -> SshError {
+    SshError::Sftp {
+        target: target.clone(),
         reason: err.to_string(),
     }
 }

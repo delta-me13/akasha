@@ -43,6 +43,13 @@ interface TabStripProps {
    * 所以这个入口开的是一个面板，不是一个带 × 的标签页 —— 关它不会停掉任何隧道。
    */
   onNewTunnel(): void;
+  /**
+   * 打开 SFTP 面板（双栏文件传输）。
+   *
+   * 与隧道同一条理由：一个 SFTP 会话是一个独立的 `Session`（`docs/scope.md` §5.1），
+   * 它不需要先开一个终端，也不随面板关闭而死。
+   */
+  onNewSftp(): void;
 }
 
 export function TabStrip({
@@ -53,6 +60,7 @@ export function TabStrip({
   onNew,
   onNewSsh,
   onNewTunnel,
+  onNewSftp,
 }: TabStripProps) {
   return (
     <div className="tab-strip" role="tablist" aria-label="终端标签页">
@@ -112,6 +120,15 @@ export function TabStrip({
         onClick={onNewTunnel}
       >
         转发
+      </button>
+      <button
+        type="button"
+        className="tab-new tab-new-sftp"
+        title="SFTP（打开双栏文件传输面板）"
+        aria-label="打开 SFTP 面板"
+        onClick={onNewSftp}
+      >
+        SFTP
       </button>
     </div>
   );

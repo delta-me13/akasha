@@ -138,6 +138,40 @@ export const commands = {
 	 *  用户没有下一步动作可做的错。
 	 */
 	tunnelStop: (handle: number) => typedError<null, TunnelError>(__TAURI_INVOKE("tunnel_stop", { handle })),
+	/**
+	 *  登记一个两栏 SFTP 会话。
+	 * 
+	 *  **同步命令**：它只往注册表里放一个空实体（没有任何 I/O），连接是 [`sftp_connect`] 的事。
+	 */
+	sftpOpen: () => typedError<number, SftpError>(__TAURI_INVOKE("sftp_open")),
+	/**
+	 *  让某一侧连上池里的那一台主机。
+	 * 
+	 *  ⚠️ **async**：命令体里有两次会阻塞几秒的等待（握手 + 开子系统），而同步命令跑在
+	 *  处理 IPC 请求的那条线程上 —— 挡住它就等于挡住全部 IPC，包括用户回答问题要用的那三条
+	 *  （同 `open_ssh_session` 的理由）。
+	 */
+	sftpConnect: (handle: number, side: SftpSide, hostId: number) => typedError<SftpSideInfo, SftpError>(__TAURI_INVOKE("sftp_connect", { handle, side, hostId })),
+	/**  列某一侧某个目录。 */
+	sftpList: (handle: number, side: SftpSide, path: string) => typedError<SftpListing, SftpError>(__TAURI_INVOKE("sftp_list", { handle, side, path })),
+	/**  两侧的状态（只读命令用）。 */
+	sftpSides: (handle: number) => typedError<SftpSideInfo[], SftpError>(__TAURI_INVOKE("sftp_sides", { handle })),
+	/**
+	 *  列出后端已经登记的全部 SFTP 会话。
+	 * 
+	 *  ⚠️ 它存在的理由是一条产品纪律：**关面板不等于结束会话**（`scope.md` §5.6 ——
+	 *  文件传输是仅渲染的视图）。面板必须能找回那个会话，否则"关前端不影响后端执行"
+	 *  就变成了"关前端等于失控"：会话还在，而没有任何地方能再操作它。
+	 */
+	sftpSessions: () => typedError<SftpSummary[], SftpError>(__TAURI_INVOKE("sftp_sessions")),
+	/**
+	 *  关掉一个 SFTP 会话：两侧连接断开，会话从注册表摘掉。
+	 * 
+	 *  ⚠️ **它是这个会话唯一的关闭入口**：面板是仅渲染的视图（`scope.md` §5.6），
+	 *  关面板不停后端会话 —— 停止是这里这个显式动作（与隧道那边 `tunnel_stop` 同一条纪律）。
+	 *  幂等：已经关过的句柄返回 `Ok`（不是失败）。
+	 */
+	sftpClose: (handle: number) => typedError<null, SftpError>(__TAURI_INVOKE("sftp_close", { handle })),
 };
 
 /** Events */
@@ -414,6 +448,95 @@ export type SessionEnded = {
 	handle: number,
 	/**  结局的可读描述（`None` = 这个载体不报结局，或收尾时出了岔子 —— 见 `retire`）。 */
 	status: string | null,
+};
+
+/**  一条目录条目。 */
+export type SftpEntry = {
+	name: string,
+	kind: SftpEntryKind,
+};
+
+/**  一条目录条目的类型（过 IPC 的稳定短名）。 */
+export type SftpEntryKind = "file" | "directory" | "symlink" | "other";
+
+/**  IPC 边界的 SFTP 错误。变体按**用户的下一步动作**分（同 `VaultError` / `SshIpcError`）。 */
+export type SftpError = 
+/**  库没解锁。主机在库里，**没有别的来路**。 */
+{ kind: "locked" } | 
+/**  池里没有这台主机。 */
+{ kind: "noSuchHost"; detail: {
+	id: number,
+} } | 
+/**  这个句柄不是一个 SFTP 会话（已经关闭 / 从来不存在）。 */
+{ kind: "notAnSftp"; detail: {
+	handle: number,
+} } | 
+/**  这一侧还没有连接。**与失败分开**：那是"连过但没连上"，这是"还没连"。 */
+{ kind: "notConnected"; detail: {
+	side: string,
+} } | 
+/**  连接这条路失败。`kind` 是给界面分辨**警报**用的（同 `SshIpcError`）。 */
+{ kind: "failed"; detail: {
+	kind: SshFailureKind,
+	message: string,
+} } | 
+/**  内部状态不可用。 */
+{ kind: "internal"; detail: {
+	message: string,
+} };
+
+/**
+ *  一次列目录的结果。
+ * 
+ *  `path` 是**服务端规范化之后**的路径（`realpath`）：前端拿它当"当前目录"，
+ *  于是"返回上一级"不必在前端拼字符串。
+ */
+export type SftpListing = {
+	path: string,
+	entries: SftpEntry[],
+};
+
+/**  两栏里的哪一栏。**唯一进入契约的呈现概念**（ADR-0006 D7）。 */
+export type SftpSide = "left" | "right";
+
+/**  一侧的**过 IPC 表示**。 */
+export type SftpSideInfo = {
+	side: SftpSide,
+	/**  池里那一台的行 id（还没选就是 `None`）。 */
+	hostId: number | null,
+	/**  那一台的名字（界面上那一栏的标题；还没选就是空串）。 */
+	name: string,
+	state: SftpSideState,
+	/**
+	 *  上一次失败的原因（`state = failed` 时才有）。**字段值不虚构**：
+	 *  没有失败就不写它（`None`），不填一句 "unknown"（`docs/logging.md` 的口径）。
+	 */
+	failure: string | null,
+	/**  当前目录（连上之后才有）。 */
+	path: string | null,
+};
+
+/**
+ *  一侧的连接状态。
+ * 
+ *  只有四个取值，而且**没有**"重连中"：SFTP 没有重连循环（那是隧道的事，ADR-0003 D13）。
+ *  一次连接失败就停在 `失败`，重试是用户的动作（再点一次「连接」）。
+ */
+export type SftpSideState = 
+/**  还没连（初始状态），或者连过之后被断开。 */
+"disconnected" | 
+/**  正在建连接 / 认证 / 开 sftp 子系统。 */
+"connecting" | 
+/**  会话可用。 */
+"connected" | 
+/**  上一次尝试失败（原因在 [`SftpSideInfo::failure`]）。 */
+"failed";
+
+/**  一个 SFTP 会话的**过 IPC 表示**（只读命令与探针共用）。 */
+export type SftpSummary = {
+	handle: number,
+	/**  两侧，**永远两项**且顺序固定（`left` 在前）—— 前端因此不必处理"缺了一侧"。 */
+	sides: SftpSideInfo[],
 };
 
 /**  没动这一行的原因。**两个取值对应两个不同的下一步动作**（对用户说的是两句话）。 */

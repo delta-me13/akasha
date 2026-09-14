@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import "./App.css";
 import type { HostEntry } from "./ipc/hosts";
 import type { SessionTarget } from "./ipc/session";
+import { SftpPanel } from "./sftp/SftpPanel";
 import { HostPicker } from "./ssh/HostPicker";
 import { PromptPanel } from "./ssh/PromptPanel";
 import { TabStrip, type TabKind, type TabView } from "./tabs/TabStrip";
@@ -42,6 +43,8 @@ function App() {
   const [picking, setPicking] = useState(false);
   /** 隧道面板开着没有。**它不是一个标签页**：关掉面板不停任何隧道（见 `TabStrip`）。 */
   const [tunnelsOpen, setTunnelsOpen] = useState(false);
+  /** SFTP 面板开着没有。同上：关掉面板不停那个会话（`docs/scope.md` §5.6）。 */
+  const [sftpOpen, setSftpOpen] = useState(false);
   const nextKey = useRef(1);
 
   const openLocalTab = useCallback(() => {
@@ -118,11 +121,14 @@ function App() {
         onNew={openLocalTab}
         onNewSsh={() => setPicking(true)}
         onNewTunnel={() => setTunnelsOpen((open) => !open)}
+        onNewSftp={() => setSftpOpen((open) => !open)}
       />
       {picking && <HostPicker onConnect={openSshTab} onClose={() => setPicking(false)} />}
       {/* 隧道面板与主机选择器同类：**应用级浮层**，不是标签页 —— 隧道是独立的 `Session`，
           关掉面板不停它（`docs/scope.md` §2.2 / §5.6）。 */}
       {tunnelsOpen && <TunnelPanel onClose={() => setTunnelsOpen(false)} />}
+      {/* SFTP 面板同一条理由：它也不是标签页，关掉面板不停那个会话（仅渲染的视图）。 */}
+      {sftpOpen && <SftpPanel onClose={() => setSftpOpen(false)} />}
       {/* 提示面板是**应用级**的：提问发生在"会话开起来之前"，不属于任何一个标签页。 */}
       <PromptPanel />
       <div className="tab-panes">

@@ -35,6 +35,7 @@ use tokio::runtime::Handle as RuntimeHandle;
 use crate::error::{SshError, forward_failed, remote_listen_failed};
 use crate::handshake::{self, Handler, SshConnect};
 use crate::remote::Inbound;
+use crate::sftp::SftpClient;
 use crate::target::{SshTarget, host_and_port};
 
 /// `direct-tcpip` 通道的客户端一侧 —— **就是 D9 说的那条流**。
@@ -302,6 +303,25 @@ impl SshConnection {
         &self.target
     }
 
+    /// 在这条连接上打开一个 **SFTP 会话**（plan 0701，ADR-0006 **D2**）。
+    ///
+    /// 它是"连接"与"通道"分开（D9）之后自然长出来的第四种用法：会话跑在一条新通道上，
+    /// 而这条连接就是它的底层。host↔host 的 B 档（plan 0703）用的是同一句话 ——
+    /// 区别只在**那时这条连接本身**来自 [`Self::direct_tcpip`]。
+    pub async fn sftp(&self) -> Result<SftpClient, SshError> {
+        self.sftp_with_timeout(crate::sftp::SFTP_REQUEST_TIMEOUT_SECS)
+            .await
+    }
+
+    /// 同上，但把"等对端第一条回复"的期限交出来（秒）。
+    ///
+    /// 为什么把它做成公开的：对端**没有开 SFTP** 时，客户端能看到的唯一现象就是
+    /// "等不到第一条回复"—— 那个期限因此直接决定用户要等多久才知道自己配错了。
+    /// 默认值（[`crate::sftp::SFTP_REQUEST_TIMEOUT_SECS`] = 10 s）对真人够用，
+    /// 而把它写死会让"这条路上会失败"的用例只能靠等满 10 秒来证明。
+    pub async fn sftp_with_timeout(&self, timeout_secs: u64) -> Result<SftpClient, SshError> {
+        SftpClient::open_with_timeout(&self.session, &self.target, timeout_secs).await
+    }
     /// 这条连接**是不是已经没了**（对端断开、保活耗尽、网络中断）。
     ///
     /// 上游只给了这一个**同步**的问法（`Handle::is_closed`，背后是"消息循环的接收端还在不在"），

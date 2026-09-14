@@ -32,11 +32,13 @@ use akasha_pty::{
     Batch, BatchPolicy, ExitStatus, PtyTransport, TerminalSize, Transport, TransportError,
     spawn_batcher,
 };
+use akasha_ssh::{SftpClient, SshConnection};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody, JavaScriptChannelId};
 use tauri::{AppHandle, Emitter, State, Webview};
 use tauri_specta::Event;
 
+use crate::sftp::{Sftp, SftpLink, SftpSide, SftpSideInfo, SftpSummary};
 use crate::tunnel::{Tunnel, TunnelStopSignal, TunnelSummary};
 
 /// 前端 raw 字节频道的句柄。
@@ -143,6 +145,9 @@ struct Inner {
     /// 一条转发规则一个 `Session`，共用同一个 `SessionId` 空间与注册表）——
     /// 两张表分叉正是 `registered` 的文档里防的那件事，而两把锁必然带来锁序问题。
     tunnels: HashMap<SessionHandle, Tunnel>,
+    /// SFTP 会话（plan 0701）。同样共用这张注册表与这把锁（ADR-0006 D7 引用的
+    /// 正是 D6 那条纪律）：一个 SFTP 会话一个 `Session`，它拥有**两侧**各自的连接。
+    sftps: HashMap<SessionHandle, Sftp>,
 }
 
 /// 全部终端会话。由 tauri 作为 `State` 持有（`Send + Sync`）。
@@ -440,7 +445,7 @@ impl Sessions {
     /// "查得到、却没人管"），而注册表里既有终端也有隧道。
     pub fn len(&self) -> usize {
         self.lock()
-            .map(|inner| inner.live.len() + inner.tunnels.len())
+            .map(|inner| inner.live.len() + inner.tunnels.len() + inner.sftps.len())
             .unwrap_or(0)
     }
 
@@ -617,6 +622,170 @@ impl Sessions {
         Ok(Some(tunnel))
     }
 
+    // ── SFTP（plan 0701） ───────────────────────────────────────────────────
+
+    /// 登记一个两栏 SFTP 会话。
+    ///
+    /// 与 [`Self::open_tunnel`] 同一条纪律：**先放进注册表**，连接是调用方随后的事
+    /// （那是 async 的，绝不能在这把锁里做）—— 于是 `live` / `registered` 的对等关系
+    /// 从第一刻起就成立。
+    pub fn open_sftp(&self) -> Result<SessionHandle, IpcError> {
+        let mut inner = self.lock()?;
+        let id = inner
+            .registry
+            .open(SessionKind::Sftp)
+            .map_err(|err| IpcError::Internal {
+                message: err.to_string(),
+            })?;
+        let handle = Self::handle(id)?;
+        inner.sftps.insert(handle, Sftp::new(id));
+        drop(inner);
+        self.notify_changed();
+        Ok(handle)
+    }
+
+    /// 这一侧要开始连了。
+    ///
+    /// 返回**上一次那条连接**（换主机时留下的那条）：调用方在**锁外**收掉它 ——
+    /// 收尾要等 runtime，在锁里做会把整张会话表冻住。两条连接同时挂着而不收，
+    /// 后果是漏掉一条没有主人的连接（没人会去回收它）。
+    pub(crate) fn sftp_prepare_connect(
+        &self,
+        handle: SessionHandle,
+        side: SftpSide,
+        host_id: crate::pools::HostId,
+    ) -> Result<Option<SftpLink>, IpcError> {
+        let mut inner = self.lock()?;
+        let sftp = inner
+            .sftps
+            .get_mut(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        Ok(sftp.prepare_connect(side, host_id))
+    }
+
+    /// 这一侧连上了：把名字、连接与会话句柄挂上去。
+    pub fn sftp_attach(
+        &self,
+        handle: SessionHandle,
+        side: SftpSide,
+        name: String,
+        connection: SshConnection,
+        client: SftpClient,
+    ) -> Result<(), IpcError> {
+        let mut inner = self.lock()?;
+        let sftp = inner
+            .sftps
+            .get_mut(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        sftp.attach(side, name, connection, client);
+        Ok(())
+    }
+
+    /// 这一侧失败了。原因留在**那一侧**（另一侧照样可用，ADR-0006 D3）。
+    pub fn sftp_fail(
+        &self,
+        handle: SessionHandle,
+        side: SftpSide,
+        reason: String,
+    ) -> Result<(), IpcError> {
+        let mut inner = self.lock()?;
+        let sftp = inner
+            .sftps
+            .get_mut(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        sftp.fail(side, reason);
+        Ok(())
+    }
+
+    /// 这一侧的会话句柄（列目录用）。
+    ///
+    /// `Ok(None)` = 这一侧还没有连接（还没连 / 连失败了）；`Err(NotFound)` = 这个句柄
+    /// **不是**一个 SFTP 会话 —— 两者对用户的下一步动作不同，所以分开。
+    pub fn sftp_client(
+        &self,
+        handle: SessionHandle,
+        side: SftpSide,
+    ) -> Result<Option<SftpClient>, IpcError> {
+        let inner = self.lock()?;
+        let sftp = inner
+            .sftps
+            .get(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        Ok(sftp.client(side))
+    }
+
+    /// 记下这一侧当前在哪个目录（列目录成功后调用）。
+    pub fn sftp_set_path(
+        &self,
+        handle: SessionHandle,
+        side: SftpSide,
+        path: String,
+    ) -> Result<(), IpcError> {
+        let mut inner = self.lock()?;
+        let sftp = inner
+            .sftps
+            .get_mut(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        sftp.set_path(side, path);
+        Ok(())
+    }
+
+    /// 某一侧现在的状态（`sftp_connect` 成功后回给前端的就是它）。
+    pub fn sftp_side(&self, handle: SessionHandle, side: SftpSide) -> Option<SftpSideInfo> {
+        let inner = self.lock().ok()?;
+        let sftp = inner.sftps.get(&handle)?;
+        sftp.sides().into_iter().find(|info| info.side == side)
+    }
+
+    /// 两侧的状态（只读命令用）。
+    pub fn sftp_sides(&self, handle: SessionHandle) -> Result<Vec<SftpSideInfo>, IpcError> {
+        let inner = self.lock()?;
+        let sftp = inner
+            .sftps
+            .get(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        Ok(sftp.sides())
+    }
+
+    /// 全部 SFTP 会话，按句柄升序 —— `sftp` 探针的**唯一数据源**。
+    pub fn sftp_entries(&self) -> Vec<SftpSummary> {
+        let inner = match self.lock() {
+            Ok(inner) => inner,
+            Err(err) => {
+                tracing::warn!(%err, "session table unavailable");
+                return Vec::new();
+            }
+        };
+        let mut entries: Vec<SftpSummary> = inner
+            .sftps
+            .iter()
+            .map(|(handle, sftp)| SftpSummary {
+                handle: *handle,
+                sides: sftp.sides(),
+            })
+            .collect();
+        entries.sort_by_key(|entry| entry.handle);
+        entries
+    }
+
+    /// 把一个 SFTP 会话从注册表里摘掉（关闭、或退出路径）。
+    ///
+    /// 与 [`Self::remove_tunnel`] 同样：断开两侧连接是 async 的，所以实体交给调用方在
+    /// **锁外**收（[`Sftp::reclaim`]）。已经摘过的句柄返回 `Ok(None)`（幂等 ——
+    /// "已经关了"不是失败）。
+    pub fn remove_sftp(&self, handle: SessionHandle) -> Result<Option<Sftp>, IpcError> {
+        let mut inner = self.lock()?;
+        let Some(sftp) = inner.sftps.remove(&handle) else {
+            return Ok(None);
+        };
+        if let Err(err) = inner.registry.close(sftp.id()) {
+            tracing::warn!(handle, session = sftp.id().get(), %err, "session unregister failed");
+        }
+        drop(inner);
+        self.notify_changed();
+        Ok(Some(sftp))
+    }
+
     /// **真正退出时**把全部会话收掉：逐个显式 `shutdown()`（kill + wait 收尸），再摘牌。
     ///
     /// 为什么不能靠 `Drop`（`AGENTS.md` §3.3）：进程退出时析构**不保证执行**，
@@ -695,6 +864,33 @@ impl Sessions {
             tunnel.reclaim();
         }
         ids.append(&mut tunnel_ids);
+
+        // SFTP（plan 0701）同样是**单独 drain**：两侧各一条连接，没有本地进程要收，
+        // 与隧道那一支同一个理由。
+        let mut sftp_ids = Vec::new();
+        let sftps: Vec<Sftp> = match self.inner.lock() {
+            Ok(mut inner) => inner
+                .sftps
+                .drain()
+                .map(|(_, sftp)| {
+                    sftp_ids.push(sftp.id());
+                    sftp
+                })
+                .collect(),
+            Err(err) => {
+                tracing::error!(%err, "session table unavailable");
+                Vec::new()
+            }
+        };
+        if !sftps.is_empty() {
+            tracing::info!(sessions = sftps.len(), "sftp sessions reclaimed");
+        }
+        // ⚠️ 这里与 `sftp_close` 的差别只有一处：退出路径上**不排队**等 runtime 断开
+        // （来不及，也没人看结果）—— `None` 表示"丢掉连接"，服务端随后看到 TCP 断开。
+        for sftp in sftps {
+            sftp.reclaim(None);
+        }
+        ids.append(&mut sftp_ids);
 
         if let Ok(mut inner) = self.inner.lock() {
             for id in ids {

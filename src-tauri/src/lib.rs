@@ -5,6 +5,7 @@ pub mod lifecycle;
 pub mod pools;
 pub mod prompt;
 pub mod session;
+pub mod sftp;
 pub mod single_instance;
 pub mod ssh;
 pub mod tray;
@@ -110,6 +111,12 @@ pub fn run() {
                 .probe("tunnels", {
                     let sessions = sessions.clone();
                     move || tunnel::snapshot(&sessions)
+                })
+                // SFTP（plan 0701）：判据"两侧各自列目录成功"的读数口 ——
+                // 两侧各自的状态与当前目录都在这里（一个 SFTP 会话 = 一条记录）。
+                .probe("sftp", {
+                    let sessions = sessions.clone();
+                    move || sftp::snapshot(&sessions)
                 })
                 // 托盘（plan 0605）：隧道那几行文字是"失败必须可见"（`scope.md` §5.2）
                 // 的落点，而这一份报的就是菜单上写的那些字。

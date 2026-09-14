@@ -192,7 +192,7 @@ impl SshIpcError {
     /// ⚠️ 这里**带兜底分支**（`Other`）是有意的：`SshError` 是分域定义的一大族，
     /// 而 IPC 只需要把"用户下一步做什么"分出来；多出来的变体不该让**这里**编译不过
     /// （那会把库的一次内部改名变成 app 的编译错误）。细节一个字不少地进 `message`。
-    fn from_ssh(err: SshError) -> Self {
+    pub(crate) fn from_ssh(err: SshError) -> Self {
         let kind = match &err {
             SshError::HostKeyChanged { .. } => SshFailureKind::HostKeyChanged,
             SshError::HostKeyRejected { .. } => SshFailureKind::HostKeyRejected,
@@ -512,5 +512,16 @@ impl From<IpcError> for SshIpcError {
         Self::Internal {
             message: err.to_string(),
         }
+    }
+}
+
+/// 库的错误 → IPC 的那一套分类。
+///
+/// 单独写在 `from_ssh` 之外，是为了让**别的命令族**（SFTP）能复用同一份分类 ——
+/// 它们对"哪一类失败、用户下一步做什么"的判据与终端、隧道完全一致，
+/// 各自抄一份 `match` 只会慢慢漂移。
+impl From<SshError> for SshIpcError {
+    fn from(err: SshError) -> Self {
+        Self::from_ssh(err)
     }
 }

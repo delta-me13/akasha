@@ -550,3 +550,173 @@ body {
   color: #5b6673;
   cursor: default;
 }
+
+/* ── SFTP 双栏面板（plan 0701）────────────────────────────────────────────── */
+/*
+ * 与隧道面板同一条要求：**能被 E2E 驱动**（`AGENTS.md` §4.0）。
+ * 类名与 data 属性稳定（`.sftp-pane[data-side]`、`.sftp-pane[data-sftp-state]`、
+ * `.sftp-entry[data-entry-name]`），两栏并排、没有动画、不依赖布局时序。
+ */
+
+.sftp-panel {
+  position: absolute;
+  top: 44px;
+  left: 12px;
+  z-index: 20;
+  width: 720px;
+  max-width: calc(100vw - 24px);
+  padding: 12px;
+  background: #171b22;
+  border: 1px solid #2b3444;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+}
+
+.sftp-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #c3ccd8;
+}
+
+.sftp-title > span {
+  flex: 1;
+}
+
+.sftp-close,
+.sftp-start,
+.sftp-stop {
+  padding: 2px 8px;
+  background: #222a35;
+  border: 1px solid #2b3444;
+  border-radius: 4px;
+  color: #d8dee9;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sftp-close {
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  color: #7b8794;
+  font-size: 14px;
+}
+
+.sftp-problem,
+.sftp-failure {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #ffb4b4;
+}
+
+.sftp-empty {
+  margin: 0;
+  font-size: 12px;
+  color: #8d99a8;
+}
+
+.sftp-panes {
+  display: flex;
+  gap: 12px;
+}
+
+.sftp-pane {
+  flex: 1;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #232a36;
+  border-radius: 6px;
+}
+
+.sftp-pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: #c3ccd8;
+}
+
+/* 状态的颜色按**后端的取值**取（`data-sftp-state`）—— 界面不推断状态。 */
+.sftp-pane[data-sftp-state="connected"] .sftp-pane-state {
+  color: #a3be8c;
+}
+
+.sftp-pane[data-sftp-state="failed"] .sftp-pane-state {
+  color: #ffb4b4;
+}
+
+.sftp-pane[data-sftp-state="connecting"] .sftp-pane-state {
+  color: #ebcb8b;
+}
+
+.sftp-pane-controls {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 6px;
+}
+
+.sftp-host {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 4px;
+  background: #10141a;
+  border: 1px solid #2b3444;
+  border-radius: 4px;
+  color: #d8dee9;
+  font: inherit;
+  font-size: 12px;
+}
+
+.sftp-connect,
+.sftp-up {
+  padding: 2px 8px;
+  background: #222a35;
+  border: 1px solid #2b3444;
+  border-radius: 4px;
+  color: #d8dee9;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sftp-connect:disabled,
+.sftp-up:disabled {
+  color: #5b6673;
+  cursor: default;
+}
+
+.sftp-path {
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  color: #8d99a8;
+}
+
+.sftp-entries {
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.sftp-entry {
+  padding: 2px 0;
+  font-size: 12px;
+  color: #d8dee9;
+}
+
+.sftp-entry-dir {
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: #88c0d0;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
