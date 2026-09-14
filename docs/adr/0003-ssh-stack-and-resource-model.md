@@ -302,6 +302,16 @@
 - **理由**：`scope.md` §2.2 明确规定"服务端发起"（`forwarded-tcpip`）与 `direct-tcpip` 不是
   同一条路径。Handler 是 russh 唯一能把入站 channel 交给我们的位置 —— 因此它必须持有回到
   Session 的通道，这也是它必须与 Session 一起构造的原因。
+- **实现状态**：已落地（plan 0604）。落在 `akasha-ssh::remote`：`SshConnection::remote_listen`
+  发请求，入站通道经 `Handler` 的回调进 `Inbound`（**按端口**查表，查不到就 drop `reply`），
+  每条连接**先连本机目标再接受**那条通道，停止时 `cancel_tcpip_forward`。上面没写、由 0604
+  补上的有三条：一是**目标不可达时的顺序** —— 我们这一侧唯一能对外说的话是那次通道拒绝
+  （`ConnectFailed`），"先接受、连不上再关"会让对端的客户端看到一条连上就断的连接，
+  而 OpenSSH 是前一种；二是那个连接**必须在任务里做**：Handler 的回调在连接的消息循环上被
+  `await`，在回调里等一个不可达地址会让整条连接无响应（连保活都停）；三是**路由按端口认**，
+  服务端回报的 `connected_address` 是"它认为在听的地址"（与服务端自己的 `GatewayPorts`
+  一类配置有关），按地址字符串认会在真实服务端上静默失配。远端绑定地址**不做**回环限制 ——
+  那个端口开在服务端，合规与否是它的策略（与 `-D` 相反，理由见 D9 的 0603 那一条）。
 
 ### D11 —— known_hosts：读取 `~/.ssh/known_hosts` + 库内缓存；不写用户文件；不匹配即拒绝
 
@@ -437,3 +447,4 @@
 | 2026-09-13 | **D12 落地**（plan 0601）：补上**转移表**与事件名（`tunnel_state`）、`重连中(n)` 的次数下界（≥ 1）与两条非法边（同态、重连直达 `已连接`）；`SshConnection` 增加同步门面 `connect_via` 并持有它自己的跳板链，建链只留 `hops_chain` 一份实现 | 五态集合与"状态变化发事件"由 D12 定死，实现未推翻它；它留给 plan 0601 的正是"每条边的触发条件"。补写时定死那两条非法边，是因为它们决定**事件流可不可读**（"状态没变"与"变了一次"必须分得开）。`SshConnection` 的两处形状补充同 D9 当年补"句柄归属"与"流的具体类型"：D9 只说"只实现一次"，没说隧道那条路怎么持有一条没有通道的连接 |
 | 2026-09-13 | **D9 的原语多一处消费者**（plan 0603）：`-D` 的 SOCKS5 服务端在 `akasha-ssh::socks5`（无认证的 `CONNECT`），与 `-L` 共用 `akasha-ssh::relay`（两条路的差别是 `Ingress::Fixed` / `Ingress::Socks5`）；`SshError::Forward` 多带一档 `class`（`ForwardFailure`，取自上游结构化的 `ChannelOpenFailure`），新增 `SshError::NotLoopback`；原语与 `SshConnection` 的形状**未变** | D9 把原语定成一条流，`-D` 只是"目标由客户端说"的那一个消费者，未推翻它。补的两条是它没写的：一是**哪个字节承担错误消息** —— SOCKS5 客户端只收到一个 `REP`，因此通道开不出来时失败必须分类（"服务端不允许转发"与"目标服务没起来"要分得开），而分类只能取自结构化的 `ChannelOpenFailure`，不能从错误字符串里猜；二是**无认证的监听不许绑非回环地址** —— 本版本没有取得明确同意的那一轮询问（D16 的往返只覆盖凭据），因此 `127.0.0.1` / `[::1]` / `localhost` 之外的绑定地址一律拒绝，且拒绝发生在**绑定之前** |
 | 2026-09-13 | **D9 的第三个消费者落地**（plan 0602）：`-L` 在 `akasha-ssh::relay` 里 —— `LocalListener`（**先绑**）+ `LocalForward`（接受循环 + 每条入站连接一条 `direct_tcpip` 通道 + `copy_bidirectional`）；新增 `SshError::Listen` 把"本机端口没拿到"与 `Connect`（对端连不上）分开；原语与 `SshConnection` 的形状**未变** | D9 说这条流有三处消费者、`-L` 是其中之一，实现未推翻它。补的一条是它没写的：**绑定先于握手** —— 端口被占用是本类功能最常见的一类失败，而它必须在"用户答凭据"之前就失败（否则那两轮提问全是白费的）。`SshError::Listen` 单独一档同 `Forward` 当年的理由：用户的下一步动作不同（腾端口 vs 查网络） |
+| 2026-09-14 | **D10 落地**（plan 0604）：`-R` 在 `akasha-ssh::remote` —— `SshConnection::remote_listen` / `cancel_remote_listen` + `RemoteForward`，入站路由挂在连接上（`Inbound`，`Handler::server_channel_open_forwarded_tcpip` 按**端口**查表）；`handshake` 的返回值由 `Handle<Handler>` 变成 `Authenticated`（多带回一份入站入口）；新增 `SshError::RemoteListen` 与 `TunnelError::RemoteBind`，**删除 `TunnelError::Unsupported`**（三个方向都支持之后它再也出不来）；`Rule::ingress` → `Rule::prepare`（多一档 `Prepared`） | D10 把 `-R` 定成与 D9 无关的另一套机制，实现未推翻它：请求、Handler 回调、拒绝、撤销四件事与它写的一字不差。补的三条是它没写的：**先连本机目标再接受通道**（拒绝才是对端能收到的唯一解释）、那个连接**必须在任务里**（Handler 回调在连接的消息循环上被 `await`）、**按端口而不是按地址字符串**认入站通道。删除 `Unsupported` 是三个方向都支持的必然结果 —— 留着一个永远出不来的错误档就是在文档里留一句假话 |

@@ -179,9 +179,9 @@
 - [x] 动态转发 `-D`（本地 SOCKS5 服务端）
       验收：配置 SOCKS5 代理后能访问远端网络
       → [plan 0603](./docs/plans/archive/0603-dynamic-forward-socks5.md)
-- [ ] 远程转发 `-R`（`tcpip-forward` + `forwarded-tcpip`，**另一套机制**）
+- [x] 远程转发 `-R`（`tcpip-forward` + `forwarded-tcpip`，**另一套机制**）
       验收：远端监听端口可回连到本机服务
-      → [plan 0604](./docs/plans/0604-remote-forward.md)
+      → [plan 0604](./docs/plans/archive/0604-remote-forward.md)
 - [ ] 断线重连：**3 次 + 指数退避**，然后标记失败
       验收：拔网线后进入"重连中"，耗尽次数后变"失败"**且托盘可见**；可手动重试
       → [plan 0605](./docs/plans/0605-reconnect-backoff.md)
