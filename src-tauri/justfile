@@ -58,13 +58,14 @@ test:
 # `ssh_jump`（plan 0505）是它的经跳板版本：起**两台**服务端，同样自己造库、跑完删掉 ——
 # 同样**必须排在 `vault_unlock` 之后**，且在 `ssh_session` 之后（它们用的是同一个库文件）。
 # `tunnel_state`（plan 0601）、`tunnel_local_forward`（plan 0602）、
-# `tunnel_dynamic_forward`（plan 0603）、`tunnel_remote_forward`（plan 0604）与
-# `tunnel_reconnect`（plan 0605）都起一台进程内的 SSH 服务端并写同一个库，
-# 所以同样排在 `vault_unlock` 之后；后四条还额外在**测试进程**里起一个服务（回声 / HTTP）
-# —— 动态转发那条用 `curl --socks5-hostname` 当第三方客户端，远程转发那条与重连那条
-# 用 `curl` 直连转发端口，所以三者都要求本机有 `curl`。
-# `tunnel_reconnect` 排在最后：它会让服务端整个消失（`shutdown`），而它盯的是
-# **同一个 app 里**隧道自己的重连循环，与别的目标不共用服务端，但排最后最省心。
+# `tunnel_dynamic_forward`（plan 0603）、`tunnel_remote_forward`（plan 0604）、
+# `tunnel_reconnect`（plan 0605）与 `tunnel_teardown`（plan 0606）都起一台进程内的 SSH 服务端
+# 并写同一个库，所以同样排在 `vault_unlock` 之后；后五条还额外在**测试进程**里起一个服务
+# （回声 / HTTP）—— 动态转发那条用 `curl --socks5-hostname` 当第三方客户端，远程转发那条
+# 与重连 / 关闭两条用 `curl` 直连转发端口，所以这几条都要求本机有 `curl`。
+# 隧道这几条排在**清单末尾**：`tunnel_reconnect` 会让服务端整个消失（`shutdown`），而
+# `tunnel_teardown` 盯的是"关闭之后没有任何东西偷偷把它连回来"（关完再等 1.5 秒读计数）——
+# 两者都只与自己那条隧道有关，排最后最省心。
 # `exit_residue` 会把 app 关掉 —— 所以它排在**另一段**的最后。
 #
 # ⚠️ **两段，两套配置**（plan 0302 + 0303）：关窗语义由数据目录里的 `config.json` 决定，
