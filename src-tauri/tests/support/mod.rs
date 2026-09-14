@@ -511,9 +511,6 @@ pub async fn wait_tunnel_gone(client: &mut VictauriClient, handle: u64) {
 
 /// 边答提示边等某条**隧道**连上，返回 `(handle, 收到过哪些提示)`。
 ///
-/// 为什么不写死"先密钥后口令"两步：链上每一跳各来一轮（plan 0505 的教训），
-/// 写死步数会在拓扑一变时**静默少答一轮**，表现是"连不上"而不是"用例写错了"。
-///
 /// 与 [`answer_prompts`] 的区别只有"等到什么算完"：那一条等的是**终端标签页**说已连接，
 /// 这一条等的是 probe 里那条隧道说 `connected`（隧道不是标签页，没有标签页可等）。
 pub async fn connect_tunnel_through_prompts(
@@ -522,6 +519,24 @@ pub async fn connect_tunnel_through_prompts(
     fingerprint: &str,
     password: &str,
 ) -> (u64, Vec<String>) {
+    connect_tunnel_until(client, rule_id, fingerprint, password, "connected").await
+}
+
+/// 同上，但由调用方说**等到哪个状态算完**。
+///
+/// 为什么需要这一条：远端监听那条路有一类失败**在连接之后**才发生（plan 0604 ——
+/// 那个端口在服务端，请求失败时连接已经建起来了），于是"打开它然后等它失败"是一条
+/// 正经的用例路径，而不是异常。把"等到什么"参数化，比在用例里再抄一份问答循环好。
+///
+/// 为什么不写死"先密钥后口令"两步：链上每一跳各来一轮（plan 0505 的教训），
+/// 写死步数会在拓扑一变时**静默少答一轮**，表现是"连不上"而不是"用例写错了"。
+pub async fn connect_tunnel_until(
+    client: &mut VictauriClient,
+    rule_id: i64,
+    fingerprint: &str,
+    password: &str,
+    want: &str,
+) -> (u64, Vec<String>) {
     let mut asked = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(90);
     let any_prompt = "!!document.querySelector('.ssh-prompt[data-prompt-kind=\"hostKey\"]') \
@@ -529,7 +544,7 @@ pub async fn connect_tunnel_through_prompts(
     loop {
         for entry in tunnel_entries(client).await {
             if entry.pointer("/ruleId").and_then(Value::as_i64) == Some(rule_id)
-                && entry.pointer("/state").and_then(Value::as_str) == Some("connected")
+                && entry.pointer("/state").and_then(Value::as_str) == Some(want)
             {
                 let handle = entry
                     .pointer("/handle")
@@ -540,7 +555,9 @@ pub async fn connect_tunnel_through_prompts(
         }
         if Instant::now() >= deadline {
             let problem = text_of(client, ".tunnel-failure").await;
-            panic!("提示问答没走完就连不上（问到过的：{asked:?}；面板上的失败={problem:?}）");
+            panic!(
+                "提示问答没走完就等不到 {want}（问到过的：{asked:?}；面板上的失败={problem:?}）"
+            );
         }
         let _ = client
             .wait_for_expression(any_prompt, None, Some(3_000), None)

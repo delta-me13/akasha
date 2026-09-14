@@ -46,8 +46,9 @@ use akasha_ssh::testing::{ServerOptions, start};
 use akasha_store::pools::{forwards, hosts};
 use serde_json::{Value, json};
 use support::{
-    CLOSE_TIMEOUT, USER, click, connect_and_prepare, connect_tunnel_through_prompts, forget,
-    free_port, open_tunnel_panel, open_vault, tunnel_entries, unlock, wait_js, wait_tunnel_gone,
+    CLOSE_TIMEOUT, USER, click, connect_and_prepare, connect_tunnel_through_prompts,
+    connect_tunnel_until, forget, free_port, open_tunnel_panel, open_vault, text_of,
+    tunnel_entries, unlock, wait_js, wait_text_contains, wait_tunnel_gone,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -61,6 +62,8 @@ const HOST_NAME: &str = "e2e-remote-host";
 const FORWARD_NAME: &str = "e2e-remote-open";
 /// 池里那条**本机目标没人听**的规则名（反例，见文件头）。
 const DEAD_NAME: &str = "e2e-remote-dead";
+/// 池里那条**远端端口拿不到**的规则名（服务端那一侧被占着）。
+const TAKEN_NAME: &str = "e2e-remote-taken";
 /// 本机服务会写进响应体的那串字节（`curl` 取回来的就是它）。
 const BODY: &str = "akasha-remote-forward-e2e\n";
 /// `curl` 的等待上限。
@@ -139,19 +142,20 @@ fn dead_port() -> u16 {
 
 /// 在库里把这次要用的东西摆好：一台主机 + 两条 `remote` 规则。
 ///
-/// `local_port` 是**本机服务**的端口。返回
-/// `(能转发通的那条规则, 目标没人听的那条规则, 服务端那一侧的绑定端口)`。
+/// `local_port` 是**本机服务**的端口，`taken_port` 是一个**已经被占着的**端口
+/// （用例自己握着它，所以服务端一定绑不上）。返回
+/// `(能转发通的那条, 目标没人听的, 远端端口拿不到的, 服务端那一侧的绑定端口)`。
 ///
 /// ⚠️ `remote` 的 `bind_host` / `bind_port` 是**服务端**那一侧的监听地址，
 /// `target_host` / `target_port` 才是**本机**服务 —— 库里从 plan 0601 起的那条 `CHECK`
 /// 保证非 `dynamic` 的方向一定有目标。
-fn seed(path: &Path, ssh_port: u16, local_port: u16) -> (i64, i64, u16) {
+fn seed(path: &Path, ssh_port: u16, local_port: u16, taken_port: u16) -> (i64, i64, i64, u16) {
     let conn = open_vault(path);
 
     // 先清干净（重跑）：主机行与规则行都按名字清。
     forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
     for row in forwards::forwards(&conn).unwrap() {
-        if row.name == FORWARD_NAME || row.name == DEAD_NAME {
+        if row.name == FORWARD_NAME || row.name == DEAD_NAME || row.name == TAKEN_NAME {
             forwards::delete_forward(&conn, row.id).unwrap();
         }
     }
@@ -187,8 +191,11 @@ fn seed(path: &Path, ssh_port: u16, local_port: u16) -> (i64, i64, u16) {
         forwards::insert_forward(&conn, &rule(FORWARD_NAME, bind_port, local_port)).unwrap();
     let dead_rule =
         forwards::insert_forward(&conn, &rule(DEAD_NAME, free_port(), dead_port())).unwrap();
+    // 远端端口拿不到的那条：服务端会去绑 `taken_port`，而它被用例自己占着。
+    let taken_rule =
+        forwards::insert_forward(&conn, &rule(TAKEN_NAME, taken_port, local_port)).unwrap();
 
-    (open_rule, dead_rule, bind_port)
+    (open_rule, dead_rule, taken_rule, bind_port)
 }
 
 /// probe 里某条规则那一行现在报的监听地址。
@@ -278,8 +285,12 @@ async fn a_remote_port_forwards_back_to_a_service_on_this_side() {
     let Some((mut client, _fixture, path)) = connect_and_prepare().await else {
         return;
     };
-    // 两条规则的本机目标：一条指向 HTTP 服务，一条指向没人听的端口（`seed` 里定）。
-    let (open_id, dead_id, bind_port) = seed(&path, server.addr.port(), http.port());
+    // 第三条规则要的"服务端绑不上的端口"：用例自己握着它，服务端因此一定绑不上。
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("占住一个端口失败");
+    let taken_port = taken.local_addr().expect("取地址失败").port();
+    // 三条规则的本机目标：一条指向 HTTP 服务，另两条的目标与绑定端口按各自的反例来定。
+    let (open_id, dead_id, taken_id, bind_port) =
+        seed(&path, server.addr.port(), http.port(), taken_port);
     unlock(&mut client).await;
 
     // ── 3. 界面：打开隧道面板 → 打开那条规则 → 答完提示 ──────────────────────
@@ -385,7 +396,63 @@ async fn a_remote_port_forwards_back_to_a_service_on_this_side() {
         "被拒的那条不许先接受再关 —— 对端的客户端会看到一条连上了就断的连接"
     );
 
-    // ── 7. 停止：远端端口释放 + 撤销请求到达 + 连接断开 ─────────────────────
+    // ── 7. 反例：远端端口在服务端那一侧被占着 → 落到 `失败`，而不是"连不上" ─────
+    //
+    // ⚠️ 这一条与上面两条不同：请求失败发生在**连接建起来之后**（那个端口在服务端），
+    // 所以那条隧道**仍然登记着**（可重试），而且界面上要看得到是哪一步没成。
+    click(
+        &mut client,
+        &format!(".tunnel-item[data-rule-id=\"{taken_id}\"] .tunnel-open"),
+        "打开那条远端端口被占着的规则",
+    )
+    .await;
+    let taken_handle = connect_tunnel_until(
+        &mut client,
+        taken_id,
+        &server.fingerprint,
+        PASSWORD,
+        "failed",
+    )
+    .await
+    .0;
+    assert!(
+        taken_handle > 0,
+        "远端监听失败也要登记成一条隧道（它可重试）"
+    );
+    wait_text_contains(&mut client, ".tunnel-failure", "远端监听").await;
+    let shown = text_of(&mut client, ".tunnel-failure").await;
+    assert!(
+        shown.contains("没拿到"),
+        "失败里要说清是「没拿到」（而不是「连不上」）：{shown:?}"
+    );
+    assert!(
+        shown.contains(&taken_port.to_string()),
+        "失败里要能看出是**哪个端口**没拿到：{shown:?}"
+    );
+    eprintln!("远端端口拿不到那条：{shown}");
+    assert!(
+        support::tunnel_events(&mut client)
+            .await
+            .iter()
+            .any(
+                |event| event.pointer("/handle").and_then(Value::as_u64) == Some(taken_handle)
+                    && event.pointer("/state").and_then(Value::as_str) == Some("failed")
+            ),
+        "失败必须发事件（托盘与界面据此可见）：{:?}",
+        support::tunnel_events(&mut client).await
+    );
+    let seen = support::observed(&server);
+    let refused = seen
+        .forward_requests
+        .iter()
+        .find(|request| request.port == u32::from(taken_port))
+        .expect("服务端该收到那条请求");
+    assert!(
+        !refused.accepted,
+        "那个端口被占着，服务端必须拒绝：{refused:?}"
+    );
+
+    // ── 8. 停止：远端端口释放 + 撤销请求到达 + 连接断开 ─────────────────────
     click(
         &mut client,
         &format!(".tunnel-item[data-rule-id=\"{open_id}\"] .tunnel-stop"),
@@ -415,14 +482,16 @@ async fn a_remote_port_forwards_back_to_a_service_on_this_side() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    // ── 8. 收尾：停掉反例那条，确认两张表都归零 ───────────────────────────────
-    click(
-        &mut client,
-        &format!(".tunnel-item[data-rule-id=\"{dead_id}\"] .tunnel-stop"),
-        "停止反例那条隧道",
-    )
-    .await;
-    wait_tunnel_gone(&mut client, dead_handle).await;
+    // ── 9. 收尾：停掉那两条反例，确认两张表都归零 ─────────────────────────────
+    for (rule, handle) in [(dead_id, dead_handle), (taken_id, taken_handle)] {
+        click(
+            &mut client,
+            &format!(".tunnel-item[data-rule-id=\"{rule}\"] .tunnel-stop"),
+            "停止反例那条隧道",
+        )
+        .await;
+        wait_tunnel_gone(&mut client, handle).await;
+    }
 
     let sessions = client
         .call_tool("app_state", json!({ "probe": "sessions" }))
@@ -451,6 +520,6 @@ async fn a_remote_port_forwards_back_to_a_service_on_this_side() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    // ── 9. 收尾：锁库 ────────────────────────────────────────────────────────
+    // ── 10. 收尾：锁库 ───────────────────────────────────────────────────────
     let _ = client.invoke_command("vault_lock", None).await;
 }
