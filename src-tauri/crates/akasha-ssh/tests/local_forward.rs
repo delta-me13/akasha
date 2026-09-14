@@ -26,7 +26,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use akasha_ssh::testing::Relay;
-use akasha_ssh::{CredentialCache, ForwardTarget, LocalListener, SshAuth, SshConnection, SshError};
+use akasha_ssh::{
+    CredentialCache, ForwardTarget, Ingress, LocalListener, SshAuth, SshConnection, SshError,
+};
 use support::{CountingProvider, ServerOptions, connect_options, start, wait_until};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -114,15 +116,12 @@ async fn a_local_port_reaches_a_service_only_the_remote_side_can_name() {
         .expect("应当连得上测试服务端");
 
     // `port = 0`：由内核挑一个空闲端口，用例因此不需要猜端口号（也不必担心端口冲突）。
-    let listener = LocalListener::bind("127.0.0.1", 0)
+    let target = ForwardTarget::new(TARGET_NAME, echo.port());
+    let listener = LocalListener::bind("127.0.0.1", 0, Ingress::Fixed(target))
         .await
         .expect("绑定本地端口失败");
     let port = listener.bound().port();
-    let forward = listener.serve(
-        &tokio::runtime::Handle::current(),
-        connection,
-        ForwardTarget::new(TARGET_NAME, echo.port()),
-    );
+    let forward = listener.serve(&tokio::runtime::Handle::current(), connection);
 
     // ── 3. 判据：转发端口可访问远端服务 ────────────────────────────────────────
     assert_eq!(
@@ -202,7 +201,7 @@ async fn a_port_nobody_bound_is_not_reachable() {
 async fn a_taken_port_is_a_listen_error_not_a_connect_error() {
     let held = std::net::TcpListener::bind("127.0.0.1:0").expect("占用一个端口失败");
     let port = held.local_addr().expect("取地址失败").port();
-    let err = LocalListener::bind("127.0.0.1", port)
+    let err = LocalListener::bind("127.0.0.1", port, Ingress::Socks5)
         .await
         .expect_err("端口被占用时不该绑定成功");
     assert!(

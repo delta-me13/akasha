@@ -364,6 +364,24 @@ impl From<Direction> for ForwardDirection {
     }
 }
 
+impl ForwardDirection {
+    /// 稳定短名。**与上面 `rename_all = "camelCase"` 生成的取值逐字相同** ——
+    /// 错误消息里说的词与前端 `detail` 里拿到的词因此是同一个（同一件事不该有两种说法）。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Remote => "remote",
+            Self::Dynamic => "dynamic",
+        }
+    }
+}
+
+impl std::fmt::Display for ForwardDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// 界面看得见的一条转发规则。
 ///
 /// `target_host` / `target_port` 是 `Option`：`dynamic`（SOCKS5）**没有目标** ——

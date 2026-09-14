@@ -74,9 +74,11 @@ export class TunnelFailed extends Error {
       case "notATunnel":
         return `会话 ${detail.detail.handle} 不是一条隧道（已停止或未打开）`;
       case "unsupported":
-        return `这条规则的方向是 ${detail.detail.direction}：本版本只支持本地转发（local）`;
+        return `这条规则的方向（${detail.detail.direction}）本版本不做：只支持 local 与 dynamic`;
       case "bind":
         return `本地监听 ${detail.detail.address} 绑定失败：${detail.detail.message}`;
+      case "notLoopback":
+        return `SOCKS5 监听不能绑到 ${detail.detail.address}：这一侧无认证，只允许绑回环地址（127.0.0.1 / [::1] / localhost）`;
       case "failed":
         return `隧道连接失败：${detail.detail.message}`;
       case "transition":

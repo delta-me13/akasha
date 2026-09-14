@@ -10,6 +10,7 @@
 //! | 实体表与注册表 | [`crate::session::Sessions`] —— **同一张注册表**（D6），不另立一份 |
 //! | 连接怎么建 | [`crate::ssh::connect_connection`]（已认证、没有通道的 `SshConnection`） |
 //! | 转发怎么做 | `akasha_ssh::relay`（本地监听 + 每条入站连接一条 `direct_tcpip` 通道） |
+//! | `-D` 的目标从哪来 | `akasha_ssh::socks5`（无认证的 SOCKS5 服务端，plan 0603） |
 //! | 事件与 probe | 本模块（`tunnel_state` / `tunnels`） |
 //!
 //! ## 一条"已连接"的隧道现在意味着什么
@@ -18,8 +19,18 @@
 //! 且**那条 SSH 连接活着**。两者合成一件事 —— 转发任务持有连接，端口与被转发的字节
 //! 都只属于它（`akasha_ssh::relay` 的模块文档写了收尾的两条路径）。
 //!
-//! ⚠️ **只做 `-L`**：`-D`（SOCKS5）与 `-R`（远端监听）分别是 plan 0603 / 0604，
-//! 遇到这两个方向的规则**明确拒绝**，不静默按本地转发处理。
+//! ## 两个方向差在哪
+//!
+//! `local`（plan 0602）与 `dynamic`（plan 0603，SOCKS5）**只差目标从哪来**：前者写在规则里
+//! （`Ingress::Fixed`），后者由客户端在握手里逐条说（`Ingress::Socks5`）。这一处差别用
+//! `Rule::ingress` 表达，绑定、连接、停止、probe 这些路径**两者共用**。
+//!
+//! ⚠️ **`-D` 只允许绑回环地址**：SOCKS5 这一侧无认证，绑到 `0.0.0.0` 等于把"经这台跳板机
+//! 访问远端网络"的能力交给同网段的所有人。拒绝发生在**绑定之前**（`SshError::NotLoopback`），
+//! 所以那样一条监听根本建不出来。
+//!
+//! ⚠️ **不做 `-R`**：远端监听是另一套机制（plan 0604），遇到那个方向的规则**明确拒绝**，
+//! 不静默按本地转发处理。
 //!
 //! ⚠️ **`重连中` 在本步仍不由真实路径产生**：驱动它的重连循环是 plan 0605。状态与那条边
 //! 已经存在（`akasha_core::TunnelState` 的用例覆盖了它），但没有代码会走到它 ——
@@ -37,7 +48,7 @@
 //! 只是"立刻"发生在另一个线程上；要观察结果的地方看对端的连接计数，见 E2E）。
 
 use akasha_core::{SessionId, TunnelState, TunnelTransitionError};
-use akasha_ssh::{ForwardTarget, LocalForward, LocalListener, SshError};
+use akasha_ssh::{ForwardTarget, Ingress, LocalForward, LocalListener, SshError};
 use akasha_store::StoreError;
 use akasha_store::pools::forwards::Direction;
 use serde::{Deserialize, Serialize};
@@ -242,11 +253,11 @@ pub enum TunnelError {
     #[error("会话 {handle} 不是一条隧道（已停止或未打开）")]
     NotATunnel { handle: SessionHandle },
 
-    /// 这条规则的方向不是本地转发。
+    /// 这条规则的方向本版本不做。
     ///
     /// 与 [`Self::Failed`] 分开：这不是"这次没连上"，而是**本版本不做这个方向** ——
-    /// 重试一百次也不会变（`-D` / `-R` 分别是 plan 0603 / 0604）。
-    #[error("这条规则的方向不是本地转发（-L）：本版本只支持 local")]
+    /// 重试一百次也不会变（`-R` 是 plan 0604）。
+    #[error("这条规则的方向（{direction}）本版本不做：只支持 local 与 dynamic")]
     Unsupported { direction: ForwardDirection },
 
     /// 本地端口没拿到：被占用、无权限、绑定地址不可用。
@@ -255,6 +266,14 @@ pub enum TunnelError {
     /// 用户不必先答完凭据才被告知端口没拿到。
     #[error("本地监听 {address} 绑定失败：{message}")]
     Bind { address: String, message: String },
+
+    /// 动态转发（SOCKS5）的绑定地址不是回环地址。
+    ///
+    /// 与 [`Self::Bind`] 分开：那一条是"这个端口没拿到"，换个端口就好；这一条是
+    /// "这个地址**不许**绑" —— 换端口没有用，要改的是绑定的网卡范围。
+    /// 判据与理由见 `akasha_ssh::socks5`（这一侧无认证）。
+    #[error("SOCKS5 监听不能绑到 {address}：这一侧无认证，只允许绑回环地址")]
+    NotLoopback { address: String },
 
     /// 连接这条路失败。`kind` 是给界面分辨**警报**用的（同 `SshIpcError`）。
     #[error("{message}")]
@@ -296,16 +315,19 @@ impl From<IpcError> for TunnelError {
 }
 
 impl TunnelError {
-    /// 本地监听那条路的说法（`akasha-ssh` 的 [`SshError::Listen`]）。
+    /// 绑定那一步的两档说法（`akasha-ssh` 的 [`SshError::Listen`] 与
+    /// [`SshError::NotLoopback`]）。
     ///
     /// 绑定失败要单独一档：用户对它的下一步动作是"腾出端口 / 换端口 / 换绑定地址"，
     /// 与"连接失败"（查网络与远端）完全不同 —— 压进 `Failed` 会让界面把两件事说成一件。
-    fn from_listen(err: SshError) -> Self {
+    /// 「地址不许绑」再单列一档：那一条换端口没有用。
+    fn from_bind(err: SshError) -> Self {
         match err {
             SshError::Listen { address, reason } => Self::Bind {
                 address,
                 message: reason,
             },
+            SshError::NotLoopback { address } => Self::NotLoopback { address },
             other => Self::Internal {
                 message: other.to_string(),
             },
@@ -347,8 +369,8 @@ pub async fn tunnel_open(
 ) -> Result<TunnelAttempt, TunnelError> {
     let rule = load_rule(&app, forward_id)?;
     // 方向与目标先校验：`-R` 的规则不该在**本地**占一个端口（它的绑定端在远端）。
-    let target = rule.local_forward()?;
-    let listener = bind_local(&app, &rule).await?;
+    let ingress = rule.ingress()?;
+    let listener = bind_local(&app, &rule, ingress).await?;
 
     let sessions = app.state::<Sessions>().inner().clone();
     let handle = sessions
@@ -358,7 +380,7 @@ pub async fn tunnel_open(
     // 通告给前端：连接要花几秒，界面与托盘都该立刻看到"它在连"。
     // ⚠️ 不再走一次状态机：`连接中 → 连接中` 是非法边（同态转移），会被正确拒绝。
     announce(&app, handle, TunnelState::Connecting);
-    connect_and_attach(&app, handle, &rule, target, listener).await
+    connect_and_attach(&app, handle, &rule, listener).await
 }
 
 /// 手动重试（D12：`失败 / 已停止 → 连接中`，尝试次数清零）。
@@ -388,11 +410,11 @@ pub async fn tunnel_retry(
         message: format!("转发规则 id 超出可表示范围（{rule_id}）"),
     })?;
     let rule = load_rule(&app, rule_id)?;
-    let target = rule.local_forward()?;
-    let listener = bind_local(&app, &rule).await?;
+    let ingress = rule.ingress()?;
+    let listener = bind_local(&app, &rule, ingress).await?;
 
     apply(&app, &sessions, handle, TunnelState::Connecting)?;
-    connect_and_attach(&app, handle, &rule, target, listener).await
+    connect_and_attach(&app, handle, &rule, listener).await
 }
 
 /// 停止一条隧道：`已停止`（发事件）→ 收掉转发（停止监听 + 断开连接）→ 从注册表摘掉。
@@ -458,22 +480,28 @@ struct Rule {
 }
 
 impl Rule {
-    /// 这条规则对应的本地转发目标，方向不对就明确拒绝。
+    /// 这条规则的入站连接要怎么处理；本版本不做的方向在这里明确拒绝。
     ///
-    /// `target_host` / `target_port` 从 plan 0602 起**第一次参与**：它们被原样送进
-    /// `direct_tcpip`，由**对端**解析（在本地解析就等于绕开跳板机）。
-    fn local_forward(&self) -> Result<ForwardTarget, TunnelError> {
-        if self.direction != Direction::Local {
-            return Err(TunnelError::Unsupported {
+    /// `local` 与 `dynamic` 的差别**只有目标从哪来**：前者从规则里取（`target_host` /
+    /// `target_port` 被原样送进 `direct_tcpip`，由**对端**解析 —— 在本地解析就等于绕开
+    /// 跳板机），后者由客户端在 SOCKS5 握手里说。
+    fn ingress(&self) -> Result<Ingress, TunnelError> {
+        match self.direction {
+            Direction::Local => match (&self.target_host, self.target_port) {
+                (Some(host), Some(port)) => {
+                    Ok(Ingress::Fixed(ForwardTarget::new(host.clone(), port)))
+                }
+                // 库的 `CHECK` 保证 `local` 一定有目标，所以走到这里说明那行数据不合不变量。
+                // 报出来而不是 panic：这一行坏了不该带走整个 app。
+                _ => Err(TunnelError::Internal {
+                    message: format!("规则 {}（local）没有目标地址", self.id),
+                }),
+            },
+            // `dynamic` 的目标由客户端逐条说 —— 库的 `CHECK` 也保证它没有目标，
+            // 所以这里不需要（也不该）读 `target_*`。
+            Direction::Dynamic => Ok(Ingress::Socks5),
+            Direction::Remote => Err(TunnelError::Unsupported {
                 direction: ForwardDirection::from(self.direction),
-            });
-        }
-        match (&self.target_host, self.target_port) {
-            (Some(host), Some(port)) => Ok(ForwardTarget::new(host.clone(), port)),
-            // 库的 `CHECK` 保证 `local` 一定有目标，所以走到这里说明那行数据不合不变量。
-            // 报出来而不是 panic：这一行坏了不该带走整个 app。
-            _ => Err(TunnelError::Internal {
-                message: format!("规则 {}（local）没有目标地址", self.id),
             }),
         }
     }
@@ -516,10 +544,17 @@ fn load_rule(app: &AppHandle, forward_id: ForwardId) -> Result<Rule, TunnelError
 
 /// 绑定这条规则的本地监听。**在握手之前**（顺序的理由见 [`tunnel_open`]）。
 ///
+/// `ingress` 一路传到绑定这一层：绑定地址的**合规范围**由它决定（`Socks5` 只允许回环），
+/// 于是那样一条监听根本建不出来 —— 放在"绑上之后再检查"就等于端口已经在听了。
+///
 /// 绑定在 SSH 的 runtime 上做：那个端口随后要在那条 runtime 上被接受循环轮询，
 /// 而 tokio 的 I/O 资源归创建它的 driver（在别处绑、在这儿接受，是把两个 runtime 的
 /// 生命周期绑在一起 —— 不必要且难查）。
-async fn bind_local(app: &AppHandle, rule: &Rule) -> Result<LocalListener, TunnelError> {
+async fn bind_local(
+    app: &AppHandle,
+    rule: &Rule,
+    ingress: Ingress,
+) -> Result<LocalListener, TunnelError> {
     let runtime = app
         .state::<Ssh>()
         .runtime_handle()
@@ -529,12 +564,12 @@ async fn bind_local(app: &AppHandle, rule: &Rule) -> Result<LocalListener, Tunne
     let host = rule.bind_host.clone();
     let port = rule.bind_port;
     runtime
-        .spawn(async move { LocalListener::bind(&host, port).await })
+        .spawn(async move { LocalListener::bind(&host, port, ingress).await })
         .await
         .map_err(|err| TunnelError::Internal {
             message: format!("绑定本地端口的那条任务没有回话：{err}"),
         })?
-        .map_err(TunnelError::from_listen)
+        .map_err(TunnelError::from_bind)
 }
 
 /// 建立连接，把它与监听一起交给转发任务，然后挂到实体上；失败则把状态推到 `失败`
@@ -545,7 +580,6 @@ async fn connect_and_attach(
     app: &AppHandle,
     handle: SessionHandle,
     rule: &Rule,
-    target: ForwardTarget,
     listener: LocalListener,
 ) -> Result<TunnelAttempt, TunnelError> {
     let Some(runtime) = app.state::<Ssh>().runtime_handle() else {
@@ -572,8 +606,9 @@ async fn connect_and_attach(
     match outcome {
         Ok(connection) => {
             // 连接与监听合成一件事：转发任务持有两者，"已连接"因此意味着
-            // **端口在监听**且**连接活着**（plan 0602）。
-            let forward = listener.serve(&runtime, connection, target);
+            // **端口在监听**且**连接活着**（plan 0602）。目标属于监听（`Ingress`），
+            // 所以这里只把连接交出去。
+            let forward = listener.serve(&runtime, connection);
             sessions
                 .attach_tunnel_forward(handle, forward)
                 .map_err(TunnelError::from)?;

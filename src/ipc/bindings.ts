@@ -521,10 +521,10 @@ export type TunnelError =
 	handle: number,
 } } | 
 /**
- *  这条规则的方向不是本地转发。
+ *  这条规则的方向本版本不做。
  * 
  *  与 [`Self::Failed`] 分开：这不是"这次没连上"，而是**本版本不做这个方向** ——
- *  重试一百次也不会变（`-D` / `-R` 分别是 plan 0603 / 0604）。
+ *  重试一百次也不会变（`-R` 是 plan 0604）。
  */
 { kind: "unsupported"; detail: {
 	direction: ForwardDirection,
@@ -538,6 +538,16 @@ export type TunnelError =
 { kind: "bind"; detail: {
 	address: string,
 	message: string,
+} } | 
+/**
+ *  动态转发（SOCKS5）的绑定地址不是回环地址。
+ * 
+ *  与 [`Self::Bind`] 分开：那一条是"这个端口没拿到"，换个端口就好；这一条是
+ *  "这个地址**不许**绑" —— 换端口没有用，要改的是绑定的网卡范围。
+ *  判据与理由见 `akasha_ssh::socks5`（这一侧无认证）。
+ */
+{ kind: "notLoopback"; detail: {
+	address: string,
 } } | 
 /**  连接这条路失败。`kind` 是给界面分辨**警报**用的（同 `SshIpcError`）。 */
 { kind: "failed"; detail: {

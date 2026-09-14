@@ -1,15 +1,24 @@
-//! **本地转发 `-L`**（plan 0602）：本地监听 → 每条入站连接一条 `direct-tcpip` 通道。
+//! **本地转发 `-L` 与动态转发 `-D`**：本地监听 → 每条入站连接一条 `direct-tcpip` 通道。
 //!
 //! 这是 [`crate::SshConnection::direct_tcpip`]（D9 的原语）的第三个消费者 —— 前两处是
 //! 跳板（原语当下一跳的底层流）与 SFTP 的 B 档（在它上面跑数据面），三处都不重写原语。
 //! 这里的一段搬运就是 `copy_bidirectional`：一条 `AsyncRead + AsyncWrite` 的流与一个
 //! `TcpStream` 之间来回拷字节，不自己写缓冲区、不解析协议。
 //!
+//! ## 两个方向差在哪：目标从哪来
+//!
+//! 整个差别就是 [`Ingress`] 这一个类型：`-L` 的目标写在规则里（[`Ingress::Fixed`]），
+//! `-D` 的目标由客户端在 SOCKS5 握手里逐条说（[`Ingress::Socks5`]，协议本体在
+//! [`crate::socks5`]）。监听、每条入站连接一条通道、停止即回收这一整套形状两者共用。
+//!
 //! ## 先绑定，后连接
 //!
 //! [`LocalListener::bind`] 与 [`LocalListener::serve`] 刻意分成两步：绑定失败是本类功能
 //! 最常见的一类失败（端口被占用），而它**必须发生在握手之前** —— 否则用户要先答完主机密钥
 //! 与口令，才被告知端口没拿到；那两轮提问因此全是白费的，而且用户还会以为"连上了"。
+//!
+//! 绑定地址的**合规范围**也由 [`Ingress`] 决定，而且同样发生在这一步：`Socks5` 不允许
+//! 非回环地址，于是那样一条监听**根本建不出来**，后来的调用方也无从绕过。
 //!
 //! ## 谁持有那条连接
 //!
@@ -39,6 +48,7 @@ use tokio::task::JoinHandle;
 
 use crate::error::{SshError, listen_failed};
 use crate::forward::SshConnection;
+use crate::socks5;
 use crate::target::host_and_port;
 
 /// 接受失败之后歇多久再试。
@@ -84,6 +94,20 @@ impl std::fmt::Display for ForwardTarget {
     }
 }
 
+/// 一条本地监听要提供什么 —— **绑定之前**就要定下来。
+///
+/// 两件事都由它决定，而且都要在绑定那一刻就知道：
+///
+/// 1. 每条入站连接的目标从哪来（`-L` 写死，`-D` 逐条问客户端）；
+/// 2. 绑定地址的合规范围（`-D` 只允许回环，见 [`LocalListener::bind`]）。
+#[derive(Debug, Clone)]
+pub enum Ingress {
+    /// 本地转发 `-L`：每条入站连接都去这一个目标。
+    Fixed(ForwardTarget),
+    /// 动态转发 `-D`：目标由客户端在 SOCKS5 握手里说（[`crate::socks5`]）。
+    Socks5,
+}
+
 /// 已绑定、**还没开始转发**的本地监听。
 ///
 /// 中间状态是刻意的：调用方拿到它就可以先去连接（几秒），而端口从这一刻起已经归这条规则
@@ -92,21 +116,28 @@ impl std::fmt::Display for ForwardTarget {
 pub struct LocalListener {
     listener: TcpListener,
     bound: SocketAddr,
+    ingress: Ingress,
 }
 
 impl LocalListener {
     /// 绑定 `host:port`（`port = 0` 表示由内核挑一个，实际地址见 [`Self::bound`]）。
-    pub async fn bind(host: &str, port: u16) -> Result<Self, SshError> {
+    ///
+    /// `ingress` 决定这条监听的合规范围：[`Ingress::Socks5`] 只允许回环地址
+    /// （理由见 [`SshError::NotLoopback`]）。
+    pub async fn bind(host: &str, port: u16, ingress: Ingress) -> Result<Self, SshError> {
         // 先修空格：带尾随空格的绑定地址是一个坏地址，而它的报错会指向"解析失败"。
         let host = host.trim();
         let address = host_and_port(host, port);
         if host.is_empty() {
             // `:46010` 交给 `TcpListener::bind` 只会得到一句"无效的 socket 地址"，
             // 而真正的问题是**规则里没填绑定地址**（`forwards.bind_host` 允许空串）。
-            return Err(listen_failed(
-                &address,
-                "绑定地址是空的：填 127.0.0.1（只本机）或 0.0.0.0（同网段可达）",
-            ));
+            //
+            // ⚠️ 它必须排在回环检查**之前**：空地址同样是"非回环"，先走回环检查的话，
+            // 用户看到的会是一句带着空地址的「不能绑到 ：…」—— 正确的话是"这里没填"。
+            return Err(listen_failed(&address, empty_bind_reason(&ingress)));
+        }
+        if matches!(ingress, Ingress::Socks5) {
+            socks5::ensure_loopback(host)?;
         }
         let listener = TcpListener::bind(address.as_str())
             .await
@@ -114,7 +145,11 @@ impl LocalListener {
         let bound = listener
             .local_addr()
             .map_err(|err| listen_failed(&address, err))?;
-        Ok(Self { listener, bound })
+        Ok(Self {
+            listener,
+            bound,
+            ingress,
+        })
     }
 
     /// 实际绑定到的地址（`port = 0` 时这是内核分配的那个端口）。
@@ -125,13 +160,12 @@ impl LocalListener {
     /// 起转发任务：在 `runtime` 上接受连接，每条入站连接开一条 `direct_tcpip` 通道。
     ///
     /// 拿走 `connection` 的所有权（见模块文档的"谁持有那条连接"）。
-    pub fn serve(
-        self,
-        runtime: &RuntimeHandle,
-        connection: SshConnection,
-        target: ForwardTarget,
-    ) -> LocalForward {
-        let Self { listener, bound } = self;
+    pub fn serve(self, runtime: &RuntimeHandle, connection: SshConnection) -> LocalForward {
+        let Self {
+            listener,
+            bound,
+            ingress,
+        } = self;
         let (shutdown, mut stopped) = oneshot::channel::<()>();
         let worker = runtime.clone();
         runtime.spawn(async move {
@@ -147,8 +181,8 @@ impl LocalListener {
                         Ok((socket, peer)) => {
                             live.retain(|task| !task.is_finished());
                             let connection = Arc::clone(&connection);
-                            let target = target.clone();
-                            live.push(worker.spawn(relay(connection, socket, target, peer)));
+                            let ingress = ingress.clone();
+                            live.push(worker.spawn(relay(connection, socket, ingress, peer)));
                         }
                         Err(err) => {
                             // **不结束监听**：`accept` 的失败多半是暂时的（用尽 fd、
@@ -177,6 +211,17 @@ impl LocalListener {
     }
 }
 
+/// 空绑定地址该说什么 —— **两种入站的允许范围不同**，所以这句话不能只有一份。
+///
+/// `-L` 可以绑 `0.0.0.0`（同网段可达是它的正当用法）；SOCKS5 不行（见
+/// [`SshError::NotLoopback`]）—— 对后者说"填 0.0.0.0"等于把我们下一句拒绝的地址推荐出去。
+fn empty_bind_reason(ingress: &Ingress) -> &'static str {
+    match ingress {
+        Ingress::Fixed(_) => "绑定地址是空的：填 127.0.0.1（只本机）或 0.0.0.0（同网段可达）",
+        Ingress::Socks5 => "绑定地址是空的：填 127.0.0.1（SOCKS5 这一侧只允许回环地址）",
+    }
+}
+
 /// 一条**跑起来的**本地转发。
 ///
 /// 它活着就等于"端口在监听、连接在手上"。停止有两条等价的入口：调用 [`Self::shutdown`]，
@@ -202,20 +247,45 @@ impl LocalForward {
     }
 }
 
-/// 一条入站连接的搬运：开通道 → 双向拷字节。
+/// 一条入站连接的搬运：定目标 → 开通道 → 双向拷字节。
 ///
 /// 任何一步失败都只是**这一条**连接的事：通道开不出来（对端拒绝转发 / 目标不可达）
 /// 会经 [`SshConnection::direct_tcpip`] 报 `SshError::Forward`，到这里记一条 warn 并让
 /// socket 随函数结束而关闭 —— 客户端因此看到连接被关掉，而不是挂在那儿不动。
+///
+/// `-D` 多出来的那一步是握手（目标由客户端说），而它失败时还多一件必须做的事：
+/// **回一个 `REP`** —— 那是客户端唯一能收到的解释。
 async fn relay(
     connection: Arc<SshConnection>,
     mut socket: TcpStream,
-    target: ForwardTarget,
+    ingress: Ingress,
     peer: SocketAddr,
 ) {
+    let target = match &ingress {
+        Ingress::Fixed(target) => target.clone(),
+        Ingress::Socks5 => match socks5::negotiate(&mut socket).await {
+            Ok(target) => target,
+            Err(err) => {
+                // 问候阶段该回的东西 `negotiate` 已经回了（`05 FF`）；请求阶段被拒的
+                // `REP` 由它带在错误里，这里补上 —— 走到这一步的连接一条通道都没开。
+                if let Some(reply) = err.reply() {
+                    let _ = socks5::refuse(&mut socket, reply).await;
+                }
+                tracing::warn!(%peer, %err, "socks5 handshake failed");
+                return;
+            }
+        },
+    };
+
     let mut stream = match connection.direct_tcpip(target.host(), target.port()).await {
         Ok(stream) => stream,
         Err(err) => {
+            // 告诉客户端是**哪一类**失败：它只能收到那一个字节（`reply_for` 的表）。
+            if matches!(ingress, Ingress::Socks5)
+                && let SshError::Forward { class, .. } = &err
+            {
+                let _ = socks5::refuse(&mut socket, socks5::reply_for(*class)).await;
+            }
             tracing::warn!(
                 host = target.host(),
                 port = target.port(),
@@ -226,6 +296,14 @@ async fn relay(
             return;
         }
     };
+    if matches!(ingress, Ingress::Socks5) {
+        // 成功 `REP` 必须在**通道开出来之后**（RFC 1928 §6）—— 提前回一个 0x00，
+        // 客户端就会以为目标已经连上，把后面的失败当成"服务不响应"。
+        if let Err(err) = socks5::confirm(&mut socket).await {
+            tracing::debug!(%err, %peer, "socks5 confirm failed");
+            return;
+        }
+    }
     match copy_bidirectional(&mut socket, &mut stream).await {
         Ok((to_remote, to_client)) => {
             tracing::debug!(to_remote, to_client, %peer, "local forward closed");
@@ -241,11 +319,18 @@ mod tests {
 
     use super::*;
 
+    /// `-L` 的那一种入站：目标写死。
+    fn fixed(host: &str, port: u16) -> Ingress {
+        Ingress::Fixed(ForwardTarget::new(host, port))
+    }
+
     #[tokio::test]
     async fn the_kernel_assigned_port_is_reported() {
         // `port = 0` 时"绑到了哪"只有内核知道 —— 必须能从 `bound()` 读出来，
         // 否则界面与 probe 只能说"绑在 0 端口"（那是错的：0 不是监听端口）。
-        let listener = LocalListener::bind("127.0.0.1", 0).await.unwrap();
+        let listener = LocalListener::bind("127.0.0.1", 0, fixed("t.invalid", 80))
+            .await
+            .unwrap();
         assert_eq!(listener.bound().ip().to_string(), "127.0.0.1");
         assert_ne!(listener.bound().port(), 0);
     }
@@ -256,7 +341,9 @@ mod tests {
         let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = held.local_addr().unwrap().port();
 
-        let err = LocalListener::bind("127.0.0.1", port).await.unwrap_err();
+        let err = LocalListener::bind("127.0.0.1", port, fixed("t.invalid", 80))
+            .await
+            .unwrap_err();
         match err {
             SshError::Listen { address, reason } => {
                 assert_eq!(
@@ -277,7 +364,9 @@ mod tests {
     async fn an_empty_bind_address_is_refused_with_an_explanation() {
         // 空绑定地址是**规则里的问题**（`forwards.bind_host` 允许空串），
         // 报出来的话必须指向"填什么"，而不是底层那句"无效的 socket 地址"。
-        let err = LocalListener::bind("  ", 46_030).await.unwrap_err();
+        let err = LocalListener::bind("  ", 46_030, fixed("t.invalid", 80))
+            .await
+            .unwrap_err();
         match err {
             SshError::Listen { address, reason } => {
                 assert_eq!(address, ":46030");
@@ -285,6 +374,49 @@ mod tests {
             }
             other => panic!("空地址必须报 Listen，而不是 {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn an_empty_bind_address_says_what_to_fill_in_per_kind() {
+        // 空地址是"没填"，不是"绑到了别处" —— 两种入站的允许范围不同，
+        // 所以这句话也不同：给 `-L` 可以提 `0.0.0.0`，给 SOCKS5 提它等于推荐一个下一句
+        // 就会被拒的地址。
+        let err = LocalListener::bind("   ", 46_030, Ingress::Socks5)
+            .await
+            .unwrap_err();
+        match err {
+            // ⚠️ 回环检查排在"空地址"之后：否则这条路径报的是带空地址的 NotLoopback。
+            SshError::Listen { address, reason } => {
+                assert_eq!(address, ":46030");
+                assert!(reason.contains("127.0.0.1"), "要说清填什么：{reason}");
+                assert!(
+                    !reason.contains("0.0.0.0"),
+                    "SOCKS5 这一侧的提示不得推荐一个会被拒的地址：{reason}"
+                );
+            }
+            other => panic!("SOCKS5 的空地址必须报 Listen，而不是 {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_socks5_listener_refuses_a_non_loopback_address_before_binding() {
+        // 拦截点必须在**绑定**这一步，而不是"绑上之后再检查"：那样端口已经在听了，
+        // 而这个拒绝的全部意义就是让它根本听不起来（见 `SshError::NotLoopback`）。
+        // 用一个空闲端口，好让这条用例的失败原因只可能是"地址不合规"。
+        let port = free_port();
+        let err = LocalListener::bind("0.0.0.0", port, Ingress::Socks5)
+            .await
+            .unwrap_err();
+        match err {
+            SshError::NotLoopback { address } => assert_eq!(address, "0.0.0.0"),
+            other => panic!("SOCKS5 绑非回环地址必须报 NotLoopback，而不是 {other:?}"),
+        }
+    }
+
+    /// 挑一个当前空闲的本地端口（内核分配）。
+    fn free_port() -> u16 {
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        held.local_addr().unwrap().port()
     }
 
     #[test]

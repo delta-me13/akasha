@@ -217,7 +217,7 @@ impl SshConnection {
                 self.originator.port,
             )
             .await
-            .map_err(|err| forward_failed(host, port, err))?;
+            .map_err(|err| forward_failed(host, port, &err))?;
         Ok(SshStream::new(channel.into_stream()))
     }
 

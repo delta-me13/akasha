@@ -49,8 +49,11 @@ mod forward;
 mod handshake;
 mod keys;
 mod known_hosts;
-/// **本地转发 `-L`**：本地监听 + 每条入站连接一条 `direct-tcpip` 通道（plan 0602）。
+/// **本地转发 `-L` 与动态转发 `-D`**：本地监听 + 每条入站连接一条 `direct-tcpip` 通道
+/// （plan 0602 / 0603）。
 mod relay;
+/// **动态转发 `-D` 的协议本体**：SOCKS5 的无认证 `CONNECT`（plan 0603）。
+mod socks5;
 mod target;
 /// **测试脚手架**：进程内的 SSH 服务端（判据的另一半观察点）。
 ///
@@ -63,7 +66,7 @@ pub use credential::{
     CacheKey, Credential, CredentialCache, CredentialKind, CredentialProvider, CredentialRequest,
     MAX_CREDENTIAL_LEN,
 };
-pub use error::SshError;
+pub use error::{ForwardFailure, SshError};
 pub use forward::{SshConnection, SshStream};
 pub use handshake::{HostKey, HostKeyVerifier, PinnedHostKey, SshConfig, SshConnect};
 pub use keys::{KeyCandidate, SshAuth};
@@ -71,6 +74,6 @@ pub use known_hosts::{
     HostKeyCache, HostKeyPrompt, KnownHostsVerifier, RecordedHostKey, RecordedIn,
     user_known_hosts_file, user_ssh_config_file,
 };
-pub use relay::{ForwardTarget, LocalForward, LocalListener};
+pub use relay::{ForwardTarget, Ingress, LocalForward, LocalListener};
 pub use target::SshTarget;
 pub use transport::SshTransport;

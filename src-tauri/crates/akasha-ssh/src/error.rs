@@ -142,6 +142,13 @@ pub enum SshError {
         port: u16,
         /// 上游的原话（`ConnectFailed` / `AdministrativelyProhibited` 一类）。
         reason: String,
+        /// 这一条失败属于哪一类。
+        ///
+        /// ⚠️ 它不是"reason 的结构化版本"这种锦上添花：动态转发（plan 0603）**只能**把
+        /// 这一个字节回给 SOCKS5 客户端，而客户端看到的就是这条功能的错误消息。从
+        /// `reason` 那串字符串里认类别是那种"改一次上游文案就静默失效"的判据 ——
+        /// 上游给的本来就是结构化的 `ChannelOpenFailure`，只是此前被 `to_string` 抹平了。
+        class: ForwardFailure,
     },
 
     /// 本地监听绑定失败（plan 0602 的 `-L`）：端口被占用、没有权限、地址不可用。
@@ -156,6 +163,20 @@ pub enum SshError {
         address: String,
         /// 操作系统的原话（`Address already in use (os error 98)` 那一种）。
         reason: String,
+    },
+
+    /// 动态转发（SOCKS5）的监听地址不是回环地址（plan 0603 的安全项）。
+    ///
+    /// ⚠️ 与 [`SshError::Listen`] 分开：那一条是"这个地址没拿到"，用户换个端口就好；
+    /// 这一条是"这个地址**不许**绑"，换端口没用 —— 要改的是绑定的**网卡范围**。
+    ///
+    /// SOCKS5 这一侧无认证（RFC 1928 的 `0x00` 是唯一接受的方法），绑到 `0.0.0.0`
+    /// 等于把"经这台跳板机访问远端网络"的能力交给同网段的所有人。**故意做成拒绝而不是
+    /// 警告**：警告在没有人看的日志里，而端口是真的在听。
+    #[error("SOCKS5 监听不能绑到 {address}：这一侧无认证，只允许绑回环地址")]
+    NotLoopback {
+        /// 规则里想绑的地址。
+        address: String,
     },
 
     /// 在 tokio 上下文里调同步门面。**返回错误而不是 panic**：
@@ -183,11 +204,15 @@ pub(crate) fn channel_failed(err: impl std::fmt::Display) -> SshError {
 }
 
 /// `direct-tcpip` 那条路的统一说法（原语在 [`crate::SshConnection::direct_tcpip`]）。
-pub(crate) fn forward_failed(host: &str, port: u16, err: impl std::fmt::Display) -> SshError {
+///
+/// 收 `russh::Error` 而不是 `impl Display`：类别要从**结构化**的错误里取
+/// （`ChannelOpenFailure`），折成字符串之后就只剩猜了（见 [`ForwardFailure`]）。
+pub(crate) fn forward_failed(host: &str, port: u16, err: &russh::Error) -> SshError {
     SshError::Forward {
         host: host.to_owned(),
         port,
         reason: err.to_string(),
+        class: ForwardFailure::classify(err),
     }
 }
 
@@ -196,5 +221,47 @@ pub(crate) fn listen_failed(address: &str, err: impl std::fmt::Display) -> SshEr
     SshError::Listen {
         address: address.to_owned(),
         reason: err.to_string(),
+    }
+}
+
+/// `direct-tcpip` 开不出来的**类别**。
+///
+/// 分出来只有一个理由：动态转发（plan 0603）的 SOCKS5 客户端**只能收到一个 `REP` 字节**
+/// —— 那个字节就是这条功能的错误消息。把"服务端不允许转发"与"目标服务没起来"压成同一个
+/// `0x01`，用户就无从下手了。
+///
+/// 认不出来的一律 [`Self::Other`]：**不猜**。宁可少说，不要把一个协议层的错误说成
+/// "目标拒绝连接"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForwardFailure {
+    /// 对端不允许这条转发（`AdministrativelyProhibited`）。
+    ///
+    /// 与其余几档分开的价值最大：它不是"这次运气不好"，而是**对端的配置**不允许，
+    /// 重试一百次也一样 —— 用户该去改的是服务端的 `AllowTcpForwarding` 一类。
+    Prohibited,
+    /// 对端连不上目标（`ConnectFailed`）：目标服务没起来、端口写错了。
+    ConnectFailed,
+    /// 对端不认 `direct-tcpip` 这种通道（`UnknownChannelType`）。
+    UnknownChannelType,
+    /// 对端资源不够（`ResourceShortage`）。
+    ResourceShortage,
+    /// 其余（协议层错误、连接已断、超时、上游新增的变体）。**不猜**。
+    Other,
+}
+
+impl ForwardFailure {
+    /// 从上游的错误里认出类别。
+    pub(crate) fn classify(err: &russh::Error) -> Self {
+        let russh::Error::ChannelOpenFailure(failure) = err else {
+            return Self::Other;
+        };
+        match failure {
+            russh::ChannelOpenFailure::AdministrativelyProhibited => Self::Prohibited,
+            russh::ChannelOpenFailure::ConnectFailed => Self::ConnectFailed,
+            russh::ChannelOpenFailure::UnknownChannelType => Self::UnknownChannelType,
+            russh::ChannelOpenFailure::ResourceShortage => Self::ResourceShortage,
+            // 上游以后加变体时走这里（而不是编译不过）：那一档对我们就是"别的"。
+            russh::ChannelOpenFailure::Other { .. } => Self::Other,
+        }
     }
 }
