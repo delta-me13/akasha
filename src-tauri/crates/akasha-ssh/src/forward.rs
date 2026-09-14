@@ -19,9 +19,11 @@
 //! 转发任务与 SFTP 是长驻 task。同步门面（`SshTransport::connect`）留给 app 的命令边界 ——
 //! 那里没有 runtime 上下文，而 `Handle::block_on` 在 tokio 上下文里会 panic（D3）。
 
+use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 
 use russh::client::{self, Handle};
@@ -107,12 +109,50 @@ impl Originator {
     }
 }
 
+/// 进程里活着的 [`SshConnection`] 个数（plan 0606）。
+///
+/// 为什么要数：判据"关闭 `Session` 之后**连接数**归零"要能被断言，而实体表**不能**充当证据
+/// —— 关闭命令自己就会把实体摘掉，"表里没了"只是那条命令的效果。连接对象归**转发任务**持有
+/// （与实体表无关），所以它还活着就说明连接还活着。
+///
+/// 用 RAII 计数而不是"登记 + 注销两张表"：增减只发生在构造与析构上，**不可能与事实分叉**，
+/// 也就不需要谁记得去注销。
+static LIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+
+/// **还活着的凭据**：一条 `SshConnection` 持有它，对象析构即减一。
+struct LiveConnection;
+
+impl LiveConnection {
+    fn new() -> Self {
+        LIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for LiveConnection {
+    fn drop(&mut self) {
+        LIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// 进程里活着的 SSH 连接数（[`SshConnection`] 的个数）。
+///
+/// 数的是**已认证的连接**（D9 那个类型的定义）。一次还在握手中的尝试不算 —— 它还没有一个
+/// `SshConnection` 可言，而它的 socket 归那次尝试的 future 持有，由发起方的停止入口收掉
+/// （app 侧见 `tunnel_open` / `tunnel_retry` 的 `select!`）。
+pub fn live_connections() -> usize {
+    LIVE_CONNECTIONS.load(Ordering::Relaxed)
+}
+
 /// 一条**已认证、没有通道**的 SSH 连接。**持有它就是让这条连接活着**（`Handle` 一 drop，
 /// 上游的会话任务随之收工）。
 ///
 /// 为什么单独一个类型：跳板链上的每一跳、以及阶段 6/7 的转发会话，要的都是"一条连接"
 /// 本身，而不是"一个带 pty 的 shell 终端"（那是 [`crate::SshTransport`]）。
 pub struct SshConnection {
+    /// 存活凭据（[`live_connections`] 的计数来源）。**没有别的地方读它** —— 它的作用就是
+    /// 与这条连接共生共死：名字前的下划线说的正是这件事，不是"暂时没用"。
+    _live: LiveConnection,
     session: Handle<Handler>,
     target: SshTarget,
     originator: Originator,
@@ -157,6 +197,7 @@ impl SshConnection {
         let originator = Originator::of(&stream);
         let authenticated = handshake::handshake(options, stream).await?;
         Ok(Self {
+            _live: LiveConnection::new(),
             session: authenticated.session,
             inbound: authenticated.inbound,
             target: options.target.clone(),
@@ -173,6 +214,7 @@ impl SshConnection {
             .await?;
         let authenticated = handshake::handshake(options, stream).await?;
         Ok(Self {
+            _live: LiveConnection::new(),
             session: authenticated.session,
             inbound: authenticated.inbound,
             target: options.target.clone(),
@@ -190,21 +232,45 @@ impl SshConnection {
     pub fn connect_via(
         runtime: &RuntimeHandle,
         hops: Vec<SshConnect>,
-        mut options: SshConnect,
+        options: SshConnect,
+    ) -> Result<Self, SshError> {
+        Self::connect_via_until(runtime, hops, options, std::future::pending())
+    }
+
+    /// 同上，但这次尝试**可以被中途叫停**（`cancel` 就绪即返回 [`SshError::Cancelled`]）。
+    ///
+    /// ⚠️ **为什么需要第二个入口**：隧道那条路把这次调用放在**阻塞线程**上（app 侧的
+    /// `spawn_sync`），而"扔掉正在 await 它的那个 future"**取消不了**它 —— 阻塞任务照跑
+    /// 到底，它建起来的那个 socket 也就一直开着（最长一个 `connect_timeout`，D15 的 10 s）。
+    /// 所以"关闭 `Session` 立刻断连"（plan 0606）必须把信号送进**这次调用本身**：
+    /// 下面 `block_on` 的 future 里 `select!` 一下，整条建链（连同它的 socket）
+    /// 就随那个 future 一起结束了。
+    pub fn connect_via_until(
+        runtime: &RuntimeHandle,
+        hops: Vec<SshConnect>,
+        options: SshConnect,
+        cancel: impl Future<Output = ()>,
     ) -> Result<Self, SshError> {
         if RuntimeHandle::try_current().is_ok() {
             return Err(SshError::BlockingInsideRuntime);
         }
         runtime.block_on(async {
-            let mut under = hops_chain(hops).await?;
-            let mut target = match under.last() {
-                None => Self::connect(&mut options).await?,
-                Some(previous) => previous.over(&mut options).await?,
-            };
-            // 整条链交给目标那条连接持有 —— 见 `under` 字段的文档。
-            std::mem::swap(&mut target.under, &mut under);
-            Ok(target)
+            tokio::select! {
+                result = Self::chain(hops, options) => result,
+                () = cancel => Err(SshError::Cancelled),
+            }
         })
+    }
+
+    /// 逐跳搭链，终点是"这条连接自己"（整条链交给它持有 —— 见 `under` 字段的文档）。
+    async fn chain(hops: Vec<SshConnect>, mut options: SshConnect) -> Result<Self, SshError> {
+        let mut under = hops_chain(hops).await?;
+        let mut target = match under.last() {
+            None => Self::connect(&mut options).await?,
+            Some(previous) => previous.over(&mut options).await?,
+        };
+        std::mem::swap(&mut target.under, &mut under);
+        Ok(target)
     }
 
     /// **D9 的原语本体**：在一条已认证的连接上开一条 `direct-tcpip` 通道，交出一条流。

@@ -117,6 +117,18 @@ pub fn run() {
                     let sessions = sessions.clone();
                     move || tray::snapshot(&sessions)
                 })
+                // **关闭之后还剩什么**（plan 0606）：判据"关闭转发 Session 后连接数与重连任务数
+                // 都归零"（D5）的机器可读那一半。
+                //
+                // 为什么不能拿 `tunnels` 那份当证据：它数的是注册表里的实体，而关闭命令自己
+                // 就会把实体摘掉 —— "表里没了"只是那条命令的效果。这两个数说的是**资源本身**
+                // 还在不在（连接对象归转发任务持有、看护任务归 runtime 持有，都与实体表无关）。
+                .probe("residue", || {
+                    serde_json::json!({
+                        "sshConnections": akasha_ssh::live_connections(),
+                        "watchTasks": tunnel::watch_tasks(),
+                    })
+                })
                 .build()
                 .expect("default Victauri configuration is always valid"),
         )

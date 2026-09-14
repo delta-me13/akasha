@@ -49,20 +49,27 @@
 //! 又出现一次：`-L` / `-D` 重新绑本机端口，`-R` **重新发一次 `tcpip_forward`**
 //! —— 远端监听是服务端那条连接的资源，连接一断它就被撤销了。
 //!
-//! ⚠️ **看护任务只有一个停止入口**：一条 `oneshot` 信号。停止 / 重试 / 退出都从这里进去
-//! （D5 的"关闭 Session 立刻关闭连接"要能到这），而任务在每一次 `await` 上回应它 ——
-//! 所以停止不必等一次握手的 10 秒。
+//! ⚠️ **一条隧道只有一个停止信号**（[`TunnelStop`]，`watch` 的一对）。停止 / 重试 /
+//! 退出都从这里进去（D5 的"关闭 Session 立刻关闭连接"要能到这），而等在它上面的那一方
+//! （在途的一次尝试、或者看护循环）在**每一次 `await`** 上回应它 —— 所以停止不必等一次
+//! 握手的 10 秒。
 //!
-//! ## 停止 = 停止 + 注销
+//! ## 关闭一条转发 `Session`（plan 0606）
 //!
-//! `tunnel_stop` 把状态推到 `已停止`（**发出事件**），随后把这一个 `Session` 从注册表
-//! 摘掉 —— D5 的"关闭 Session 立刻关闭连接，无宽限期"与"已停止"这一态因此不冲突：
-//! 用户看到的是它消失了，而事件序列里留着那一步。残留的半开状态（"已停止但仍占着注册表"）
-//! 是 stage 6 的 plan 0606 要处理的那种东西，本步不引入。
+//! 转发 `Session` 的"关闭"就是 [`tunnel_stop`]（面板上那个「停止」；终端那条 `close_session`
+//! 是另一回事，见 `scope.md` §5.2 / §5.6）。它要同时做到三件事，而三件事各自都**可以被读出来**：
 //!
-//! ⚠️ **停止是异步收尾**：摘掉实体之后调 [`LocalForward::shutdown`] —— 它发完信号即返回，
-//! 停止监听、收掉在途连接与断开那条 SSH 连接都在 runtime 上做（同 D5 的"立刻"，
-//! 只是"立刻"发生在另一个线程上；要观察结果的地方看对端的连接计数，见 E2E）。
+//! 1. 状态推到 `已停止` 并发事件 —— 界面上因此看得到这一步；
+//! 2. 手上的动作停下（在途的尝试 / 看护循环），**转发**回收（停止监听 → 收在途连接 →
+//!    礼貌断开连接）—— 收尾在 runtime 上做，命令发完信号即返回；
+//! 3. 从注册表摘掉（幂等：已经不在册就是"已经关了"）。
+//!
+//! 判据是"连接数与重连任务数都归零"（ROADMAP），所以**这两个数必须有人报**：
+//! `akasha_ssh::live_connections()`（连接对象还活着几条）与 [`watch_tasks`]（看护循环还跑着
+//! 几条），由 `residue` 探针读出来。⚠️ 不能拿实体表当证据 —— 命令自己就会把实体摘掉。
+//!
+//! ⚠️ **在途的尝试也要能被停止**（同上）：一条**正在握手**的隧道手上只有一个 socket，
+//! 停止它唯一的办法是让那次尝试从中间停下（见 [`attempt_with_stop`]）。
 
 use akasha_core::{Reconnect, SessionId, TunnelState, TunnelTransitionError};
 use akasha_ssh::{
@@ -72,9 +79,10 @@ use akasha_ssh::{
 use akasha_store::StoreError;
 use akasha_store::pools::forwards::Direction;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_specta::Event;
-use tokio::sync::oneshot;
+use tokio::sync::watch;
 
 use crate::pools::{ForwardDirection, ForwardId, HostId};
 use crate::session::{IpcError, SessionHandle, Sessions};
@@ -99,11 +107,11 @@ pub struct Tunnel {
     attempts: u32,
     /// 那一侧的监听 + 那条连接（类型见 [`ActiveForward`]）。`None` = 还没连上 / 已经断开。
     forward: Option<ActiveForward>,
-    /// 看护任务（掉线之后重连的那条循环）的停止入口。
+    /// 这条隧道的停止信号（[`TunnelStop`]）：**实体一登记就有**，手上的动作各订一份接收端。
     ///
-    /// `None` = 还没连上过 / 看护任务已经退出。它与 `forward` **分开**：转发本体归实体表
-    /// （停止与 probe 要它），而"结束了"这件事归看护任务（它等的是那份结束信号）。
-    run: Option<TunnelRun>,
+    /// 它与 `forward` **分开**：转发本体归实体表（停止与 probe 要它），而"停下手上的动作"
+    /// 由这个信号负责（在途的尝试与看护循环各自在 `select!` 里等它）。
+    stop: TunnelStop,
 }
 
 /// 一条**已经起来的**转发：本机监听（`-L` / `-D`）或远端监听（`-R`）。
@@ -148,7 +156,7 @@ impl Tunnel {
             state: TunnelState::Connecting,
             attempts: 0,
             forward: None,
-            run: None,
+            stop: TunnelStop::new(),
         }
     }
 
@@ -181,22 +189,30 @@ impl Tunnel {
         self.forward.take()
     }
 
-    /// 挂上看护任务（首次连上之后 —— 在那之前没有东西可看护）。
-    pub(crate) fn attach_run(&mut self, run: TunnelRun) {
-        self.run = Some(run);
+    /// 这条隧道的停止信号（一次尝试 / 看护循环各订一份接收端）。
+    pub(crate) fn signal(&self) -> TunnelStopSignal {
+        self.stop.signal()
     }
 
-    /// 取走看护任务的停止入口（重试 / 停止要在**锁外**让它退出）。
-    pub(crate) fn take_run(&mut self) -> Option<TunnelRun> {
-        self.run.take()
+    /// 让手上那个动作停下（重试要用：先停掉旧的，再按现在的配置来一次）。
+    pub(crate) fn stop_action(&self) {
+        self.stop.stop();
     }
 
-    /// 实体被注销时交出两样：转发本体（锁外 `shutdown`）与看护任务（发停止信号）。
+    /// **收掉这条隧道**（plan 0606）：先让它的动作停下，再收掉转发。
     ///
-    /// 一起交出去而不是分两次取，是因为它们的收尾顺序有意义：**先让看护任务停下**，
-    /// 再收掉转发 —— 反过来的话，那条循环可能在我们拆它的同时把这条隧道重新连起来。
-    pub(crate) fn into_parts(self) -> (Option<ActiveForward>, Option<TunnelRun>) {
-        (self.forward, self.run)
+    /// 只有这一份实现，`tunnel_stop` 与 `Sessions::shutdown_all` 都走它 —— 收尾的顺序
+    /// （停止信号先、转发后）是这条隧道能不能干净收场的一部分，抄第二份的下场是其中一条
+    /// 慢慢长歪（同 `hops_chain` 的理由）。
+    ///
+    /// ⚠️ 收尾本身是**异步**的（停止转发 = 发信号，收尾在 runtime 上做）；要看结果的地方
+    /// 读 `akasha_ssh::live_connections()` / 对端的连接计数，不看这个调用的返回。
+    pub(crate) fn reclaim(self) {
+        // 动作**先**停：它是唯一会在这条隧道已经决定关闭之后再把它连起来的东西。
+        self.stop.stop();
+        if let Some(forward) = self.forward {
+            forward.shutdown();
+        }
     }
 
     pub(crate) const fn id(&self) -> SessionId {
@@ -241,25 +257,94 @@ pub struct TunnelSummary {
     pub bind: Option<String>,
 }
 
-/// **一条隧道的看护任务**的停止入口（plan 0605）：掉线之后负责重连的那条循环。
+/// **这条隧道的停止信号**（plan 0606）：发送端归**实体自己**，接收端发出去给每一个动作。
 ///
-/// 一个 `oneshot` 的发送端就够：循环在 `select!` 里等它，所以"停止"不必等一次握手的
-/// 10 秒 —— 而它**只有一条路**（发信号），drop 掉它同样会让循环看到通道关闭，
-/// 于是"忘了发信号"这件事不会静默地留下一条还在重连的隧道。
+/// 一条隧道在任何时刻最多只有一个在跑的动作 —— 一次连接尝试，或者连上之后的看护循环
+/// （等它掉线、按预算重连）。两者**用同一个信号**，因为"停止这条隧道"对它们而言是同一件事：
+/// 停下手上的动作，别再碰这条隧道的任何资源。
+///
+/// ⚠️ **为什么是 `watch` 而不是 0605 那个 `oneshot`**：`oneshot` 的发送端被移动/替换时，
+/// 接收端会立刻收到"通道关闭"，于是 `select!` 的两个分支同时就绪，`tokio::select!` 会
+/// **随机挑一个** —— 一次**成功**的连接会因此有大约一半的机会被报成"已停止"。
+/// 发送端归实体之后，接受端只在两件事上被唤醒：**真的被要求停止**，或者**实体没了**。
+///
+/// ⚠️ 尝试也要订它：不订的话，一条**正在握手**的隧道被停止后，那次尝试仍握着一个 socket，
+/// 要等握手超时（D15 的 10 s）才结束 —— 与"关闭 `Session` 立刻断连"（`scope.md` §2.2）不符。
 #[derive(Debug)]
-pub struct TunnelRun {
-    stop: oneshot::Sender<()>,
+pub struct TunnelStop {
+    stop: watch::Sender<bool>,
 }
 
-impl TunnelRun {
-    fn new(stop: oneshot::Sender<()>) -> Self {
-        Self { stop }
+impl TunnelStop {
+    /// 建一对：实体持有返回的发送端，动作各订一个接收端。
+    fn new() -> Self {
+        Self {
+            stop: watch::channel(false).0,
+        }
     }
 
-    /// 让它退出（发完即返回）。`Send` 失败 = 它已经退出了 —— 那不是错误。
-    pub(crate) fn stop(self) {
-        let _ = self.stop.send(());
+    /// 给一个动作（一次尝试 / 看护循环）一份接收端。
+    ///
+    /// ⚠️ **订的时候把"当前值"记为已见**：重试要先停掉上一个动作再起新的，那一次停止
+    /// 不该把新动作也一起停掉（D12 的"重试 = 再来一次"）。
+    pub(crate) fn signal(&self) -> TunnelStopSignal {
+        TunnelStopSignal(self.stop.subscribe())
     }
+
+    /// 让它停下（发完即返回）。`Send` 失败 = 接收端都已经走了 —— 那不是错误。
+    ///
+    /// 值始终是 `true`，但**每次都通知**（`watch::Sender::send` 不比对新旧值）——
+    /// 所以"停了之后又起一个动作、再停它"照样有效。
+    pub(crate) fn stop(&self) {
+        let _ = self.stop.send(true);
+    }
+}
+
+/// 停止信号的接收端：等到"这条隧道被要求停下"。
+///
+/// **可以克隆**：一次在途的尝试要用两份 —— 一份在命令的 `select!` 里（停止它），
+/// 一份送进那次握手的阻塞线程（见 [`connect_once`] —— 扔掉 await 取消不了阻塞任务）。
+#[derive(Clone)]
+pub struct TunnelStopSignal(watch::Receiver<bool>);
+
+impl TunnelStopSignal {
+    /// 等到要求停止（或者实体没了）。
+    ///
+    /// **可在 `select!` 里随便丢**：上游 `changed()` 是取消安全的，别的分支先就绪时
+    /// 不会把一次真实的通知吞掉。
+    pub(crate) async fn stopped(&mut self) {
+        // 返回 `Err` = 发送端没了（实体已经不在）= 没有东西还需要接着跑了。
+        let _ = self.0.changed().await;
+    }
+}
+
+/// 进程里正在跑的**隧道动作**个数（看护循环与在途尝试，plan 0606）。
+///
+/// 为什么要数：判据"关闭 `Session` 之后**重连任务数**归零"要能被断言。实体表不能充当证据
+/// —— 关闭命令自己就会把实体摘掉；而这个数说的是"还有几条循环/尝试在跑"，与实体表无关。
+///
+/// 用 RAII 计数而不是"登记 + 注销两张表"：增减只发生在任务的起止上，**不可能与事实分叉**。
+static WATCH_TASKS: AtomicUsize = AtomicUsize::new(0);
+
+/// **还在跑的凭据**：看护任务持有它，任务返回即减一。
+struct WatchTask;
+
+impl WatchTask {
+    fn new() -> Self {
+        WATCH_TASKS.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for WatchTask {
+    fn drop(&mut self) {
+        WATCH_TASKS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// 进程里正在跑的隧道看护任务数（掉线之后负责重连的那条循环）。
+pub fn watch_tasks() -> usize {
+    WATCH_TASKS.load(Ordering::Relaxed)
 }
 
 /// 状态过 IPC 的形状。
@@ -505,7 +590,7 @@ pub async fn tunnel_open(
     // 通告给前端：连接要花几秒，界面与托盘都该立刻看到"它在连"。
     // ⚠️ 不再走一次状态机：`连接中 → 连接中` 是非法边（同态转移），会被正确拒绝。
     announce(&app, handle, TunnelState::Connecting);
-    attempt_open(&app, handle, &rule, prepared).await
+    attempt_with_stop(&app, handle, &rule, prepared).await
 }
 
 /// 手动重试（D12：`失败 / 已停止 → 连接中`，尝试次数清零）。
@@ -540,11 +625,9 @@ pub async fn tunnel_retry(
         });
     }
 
-    // 先让看护任务停下，再收转发：反过来的话，那条循环可能在我们拆它的同时
+    // 先让还在跑的那个动作停下，再收转发：反过来的话，那条循环可能在我们拆它的同时
     // 把这条隧道重新连起来（重试是"按现在的配置再来一次"，不是"再多一条"）。
-    if let Some(run) = sessions.take_tunnel_run(handle) {
-        run.stop();
-    }
+    sessions.stop_tunnel_action(handle)?;
     if let Some(forward) = sessions.take_tunnel_forward(handle) {
         forward.shutdown();
     }
@@ -559,10 +642,11 @@ pub async fn tunnel_retry(
     let prepared = rule.prepare(&app).await?;
 
     apply(&app, &sessions, handle, TunnelState::Connecting)?;
-    attempt_open(&app, handle, &rule, prepared).await
+    attempt_with_stop(&app, handle, &rule, prepared).await
 }
 
-/// 停止一条隧道：`已停止`（发事件）→ 收掉转发（停止监听 + 断开连接）→ 从注册表摘掉。
+/// 停止一条隧道（**转发 `Session` 的"关闭"就是这里**，plan 0606）：`已停止`（发事件）→
+/// 停下手上的动作（在途的一次尝试 / 看护循环）→ 回收转发（停止监听 + 断开连接）→ 从注册表摘掉。
 ///
 /// 摘牌是**幂等**的：重复点击、或这条已经被别的路径收掉时返回 `Ok`，而不是报一个
 /// 用户没有下一步动作可做的错。
@@ -570,8 +654,11 @@ pub async fn tunnel_retry(
 #[specta::specta]
 pub fn tunnel_stop(app: AppHandle, handle: SessionHandle) -> Result<(), TunnelError> {
     let sessions = app.state::<Sessions>().inner().clone();
+    // 状态**先**推到 `已停止`（发事件），再摘牌：摘牌之后那个句柄已经不在表里，状态机无从
+    // 走这一步，事件也就永远不会发出去 —— 而界面上"已停止"这一态正是它。
     match apply(&app, &sessions, handle, TunnelState::Stopped) {
         Ok(_) => {}
+        // 已经不在册（重复点击 / 被别的路径收掉了）：这就是"已经关了"，不是错误。
         Err(TunnelError::NotATunnel { .. }) => return Ok(()),
         Err(err) => return Err(err),
     }
@@ -579,15 +666,7 @@ pub fn tunnel_stop(app: AppHandle, handle: SessionHandle) -> Result<(), TunnelEr
     let Some(tunnel) = sessions.remove_tunnel(handle).map_err(TunnelError::from)? else {
         return Ok(());
     };
-    let (forward, run) = tunnel.into_parts();
-    // 看护任务**先**停：它是唯一会在这条隧道已经决定停止之后再把它连起来的东西。
-    if let Some(run) = run {
-        run.stop();
-    }
-    if let Some(forward) = forward {
-        // 发完信号即返回：收尾（停监听、收回收在途连接、断开连接）在 runtime 上做。
-        forward.shutdown();
-    }
+    tunnel.reclaim();
     Ok(())
 }
 
@@ -759,13 +838,41 @@ async fn bind_local(
 }
 
 /// **首次尝试**：连上就起看护任务；连不上就落到 `失败`（那条隧道仍在册，可手动重试）。
-async fn attempt_open(
+///
+/// 尝试外面包一层"能被停止"（plan 0606）：见 [`attempt_with_stop`]。
+async fn attempt_with_stop(
     app: &AppHandle,
     handle: SessionHandle,
     rule: &Rule,
     prepared: Prepared,
 ) -> Result<TunnelAttempt, TunnelError> {
-    match connect_once(app, handle, rule, prepared).await {
+    let sessions = app.state::<Sessions>().inner().clone();
+    // 订停止信号**在开始之前**：反过来的话，一个正在握手的句柄有一小段谁也叫不停的时间，
+    // 而"关闭 `Session` 立刻断连"没有宽限期（`scope.md` §2.2）。
+    let Some(mut stop) = sessions.tunnel_signal(handle) else {
+        return Err(TunnelError::NotATunnel { handle });
+    };
+
+    let attempt_signal = stop.clone();
+    tokio::select! {
+        outcome = attempt_open(app, handle, rule, prepared, attempt_signal) => outcome,
+        // 被停止：把这次尝试连它的 future 一起丢掉 —— 那个 socket 是这条 future 造的，
+        // 随它一起关闭（不丢的话要等握手超时，D15 的 10 s）。返回"不是一条隧道"是因为
+        // 那时句柄**确实**已经不在册（`tunnel_stop` 先摘牌、后发这个信号），而这条错误的
+        // 文案本来就写着"已停止或未打开"。
+        () = stop.stopped() => Err(TunnelError::NotATunnel { handle }),
+    }
+}
+
+/// 连上就起看护任务；连不上就落到 `失败`（那条隧道仍在册，可手动重试）。
+async fn attempt_open(
+    app: &AppHandle,
+    handle: SessionHandle,
+    rule: &Rule,
+    prepared: Prepared,
+    signal: TunnelStopSignal,
+) -> Result<TunnelAttempt, TunnelError> {
+    match connect_once(app, handle, rule, prepared, signal).await {
         Ok(ending) => {
             start_watch(app, handle, rule.id, ending);
             Ok(TunnelAttempt {
@@ -788,6 +895,7 @@ async fn connect_once(
     handle: SessionHandle,
     rule: &Rule,
     prepared: Prepared,
+    signal: TunnelStopSignal,
 ) -> Result<ForwardEnding, TunnelError> {
     let Some(runtime) = app.state::<Ssh>().runtime_handle() else {
         // 没有 runtime 就连不上（`connect_connection` 也是这个前提）。
@@ -799,7 +907,11 @@ async fn connect_once(
     let outcome = {
         let ssh = app.state::<Ssh>();
         let vault = app.state::<Vault>();
-        crate::ssh::connect_connection(&ssh, &vault, rule.host_id).await
+        // ⚠️ 信号**跟着这次握手一起**进那条阻塞线程：这次尝试若在握手中被停止，
+        // 叫停它必须靠这个信号（扔掉 await 取消不了阻塞任务，见 `connect_via_until`）。
+        let mut until_stopped = signal;
+        let cancel = async move { until_stopped.stopped().await };
+        crate::ssh::connect_connection(&ssh, &vault, rule.host_id, cancel).await
     };
     let connection = outcome.map_err(TunnelError::from)?;
 
@@ -841,16 +953,15 @@ fn start_watch(app: &AppHandle, handle: SessionHandle, rule_id: i64, ending: For
         tracing::warn!(handle, reason = "no-runtime", "tunnel watch not started");
         return;
     };
-    let (stop, stop_rx) = oneshot::channel::<()>();
+    // 订一份停止信号。实体已经不在册（用户在我们连上它的同时把它停了）就没有要看护的东西。
     let sessions = app.state::<Sessions>().inner().clone();
-    if let Err(err) = sessions.attach_tunnel_run(handle, TunnelRun::new(stop)) {
-        // 实体已经不在册：用户在我们连上它的同时把它停了。没有要看护的东西。
-        tracing::debug!(handle, %err, "tunnel watch skipped");
+    let Some(signal) = sessions.tunnel_signal(handle) else {
+        tracing::debug!(handle, "tunnel watch skipped");
         return;
-    }
+    };
     let app = app.clone();
     let policy = crate::config::reconnect(&app);
-    runtime.spawn(watch(app, handle, rule_id, policy, ending, stop_rx));
+    runtime.spawn(watch(app, handle, rule_id, policy, ending, signal));
 }
 
 /// 看护一条隧道：等这次转发结束，然后按预算重连（ADR-0003 D13）。
@@ -864,13 +975,15 @@ async fn watch(
     rule_id: i64,
     policy: Reconnect,
     mut ending: ForwardEnding,
-    mut stop: oneshot::Receiver<()>,
+    mut stop: TunnelStopSignal,
 ) {
+    // 上账排在**第一行**：任务的起止就是这笔账的全部依据（`watch_tasks`，plan 0606）。
+    let _running = WatchTask::new();
     loop {
         // 这一次转发结束了（或者我们被要求停止）。
         let end = tokio::select! {
             end = ending.ended() => end,
-            _ = &mut stop => return,
+            () = stop.stopped() => return,
         };
         if end == ForwardEnd::Stopped {
             return;
@@ -901,7 +1014,7 @@ async fn reconnect(
     handle: SessionHandle,
     rule_id: i64,
     policy: &Reconnect,
-    stop: &mut oneshot::Receiver<()>,
+    stop: &mut TunnelStopSignal,
 ) -> Option<ForwardEnding> {
     let sessions = app.state::<Sessions>().inner().clone();
     let mut last: Option<TunnelError> = None;
@@ -924,15 +1037,15 @@ async fn reconnect(
         }
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
-            _ = &mut *stop => return None,
+            () = stop.stopped() => return None,
         }
         if apply(app, &sessions, handle, TunnelState::Connecting).is_err() {
             return None;
         }
 
         let outcome = tokio::select! {
-            outcome = attempt_again(app, handle, rule_id) => outcome,
-            _ = &mut *stop => return None,
+            outcome = attempt_again(app, handle, rule_id, stop.clone()) => outcome,
+            () = stop.stopped() => return None,
         };
         let failure = match outcome {
             Ok(ending) => {
@@ -964,13 +1077,14 @@ async fn attempt_again(
     app: &AppHandle,
     handle: SessionHandle,
     rule_id: i64,
+    signal: TunnelStopSignal,
 ) -> Result<ForwardEnding, TunnelError> {
     let rule_id = ForwardId::try_from(rule_id).map_err(|_| TunnelError::Internal {
         message: format!("转发规则 id 超出可表示范围（{rule_id}）"),
     })?;
     let rule = load_rule(app, rule_id)?;
     let prepared = rule.prepare(app).await?;
-    connect_once(app, handle, &rule, prepared).await
+    connect_once(app, handle, &rule, prepared, signal).await
 }
 
 /// 落到 `失败` 并记下**为什么**（可见的那一半由状态承担，原因只有日志里说得清）。
@@ -1132,5 +1246,35 @@ mod tests {
         ] {
             assert!(!err.retryable(), "这一类没有自动重试的余地：{err}");
         }
+    }
+
+    /// 停止信号的两条性命攸关的性质（plan 0606），都是"客户端看到的行为"：
+    ///
+    /// 1. **订在停止之后的接收端不响**：重试要"先停旧的、再起新的"，那一次停止绝不能
+    ///    把新起的动作也一起停掉（D12 的重试 = 按现在的配置再来一次）。
+    /// 2. **第二次停止照样响**：`watch` 的值始终是 `true`，但每一次 `send` 都通知 ——
+    ///    靠"值变了才通知"的话，第二条隧道动作就永远停不下来。
+    #[tokio::test]
+    async fn a_stop_signal_only_wakes_the_actions_that_were_running() {
+        let stop = TunnelStop::new();
+
+        let mut first = stop.signal();
+        stop.stop();
+        first.stopped().await; // 第一条：被叫停，立刻返回
+
+        // 第二条是在停止**之后**起来的（重试那条路）：上一次的停止与它无关。
+        let mut second = stop.signal();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), second.stopped())
+                .await
+                .is_err(),
+            "重试新起的动作不该被上一次的停止叫停"
+        );
+
+        // 但它自己那一次停止必须有效（值没变，通知还是要有）。
+        stop.stop();
+        tokio::time::timeout(std::time::Duration::from_millis(200), second.stopped())
+            .await
+            .expect("第二次停止没有叫停第二个动作");
     }
 }

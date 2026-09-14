@@ -73,7 +73,7 @@ pub use credential::{
 };
 pub use ending::{ForwardEnd, ForwardEnding};
 pub use error::{ForwardFailure, SshError};
-pub use forward::{SshConnection, SshStream};
+pub use forward::{SshConnection, SshStream, live_connections};
 pub use handshake::{HostKey, HostKeyVerifier, PinnedHostKey, SshConfig, SshConnect};
 pub use keys::{KeyCandidate, SshAuth};
 pub use known_hosts::{

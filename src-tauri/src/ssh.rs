@@ -28,6 +28,7 @@
 //! 去核对凭据（`Auth`）、去查网络 / 服务端（`Connect`）、去看**跳板机能不能看见目标**
 //! （`Jump`）。
 
+use std::future::Future;
 use std::sync::Arc;
 
 use akasha_pty::TerminalSize;
@@ -428,10 +429,15 @@ fn connect_plan(
 /// 建立一条**已认证、没有通道**的连接（plan 0601 的隧道要的就是它）。
 ///
 /// 与 [`open_ssh_session`] 同一个理由走同一条 `std::thread`（见 [`spawn_sync`]）。
+///
+/// ⚠️ `cancel` 是**必须的**参数，不是可选的锦上添花：这次握手跑在一条阻塞线程上，
+/// 而"扔掉 await 那一侧"取消不了它（线程照跑，socket 照开）—— 隧道被关闭时要把这次尝试
+/// 当场停下，只能把信号送进来（plan 0606，见 `SshConnection::connect_via_until`）。
 pub(crate) async fn connect_connection(
     ssh: &Ssh,
     vault: &Vault,
     host_id: HostId,
+    cancel: impl Future<Output = ()> + Send + 'static,
 ) -> Result<SshConnection, SshIpcError> {
     let handle = ssh.handle()?;
     let (hops, options) = connect_plan(ssh, vault, host_id)?;
@@ -444,7 +450,7 @@ pub(crate) async fn connect_connection(
         "ssh connection opening"
     );
     spawn_sync("akasha-ssh-connection", move || {
-        SshConnection::connect_via(&handle, hops, options)
+        SshConnection::connect_via_until(&handle, hops, options, cancel)
     })
     .await?
     .map_err(SshIpcError::from_ssh)

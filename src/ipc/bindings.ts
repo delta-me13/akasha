@@ -131,7 +131,8 @@ export const commands = {
 	 */
 	tunnelRetry: (handle: number) => typedError<TunnelAttempt, TunnelError>(__TAURI_INVOKE("tunnel_retry", { handle })),
 	/**
-	 *  停止一条隧道：`已停止`（发事件）→ 收掉转发（停止监听 + 断开连接）→ 从注册表摘掉。
+	 *  停止一条隧道（**转发 `Session` 的"关闭"就是这里**，plan 0606）：`已停止`（发事件）→
+	 *  停下手上的动作（在途的一次尝试 / 看护循环）→ 回收转发（停止监听 + 断开连接）→ 从注册表摘掉。
 	 * 
 	 *  摘牌是**幂等**的：重复点击、或这条已经被别的路径收掉时返回 `Ok`，而不是报一个
 	 *  用户没有下一步动作可做的错。

@@ -25,6 +25,11 @@ use akasha_ssh::{
 
 // 只 `pub use` 各测试目标真的会用到的那几个（`Observed` / `Shared` 用不到就别转出来：
 // 一个没人用的转发会以 `unused_imports` 的形式红在门禁里）。
+//
+// ⚠️ 但**每一个测试目标各编译一份这个模块**，所以"某一个目标恰好一个都不用"是正常的
+// （例如 plan 0606 的 `cancellable_connect` 只要那个"接了就不说话"的监听）——
+// 那一份上的 `unused_imports` 不是缺陷，允许掉。
+#[allow(unused_imports)]
 pub use akasha_ssh::testing::{Running, ServerOptions, start};
 
 /// 数调用次数的凭据提供者（**判据"只问一次"就是数它**）。

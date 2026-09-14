@@ -37,7 +37,7 @@ use tauri::ipc::{Channel, InvokeResponseBody, JavaScriptChannelId};
 use tauri::{AppHandle, Emitter, State, Webview};
 use tauri_specta::Event;
 
-use crate::tunnel::{Tunnel, TunnelRun, TunnelSummary};
+use crate::tunnel::{Tunnel, TunnelStopSignal, TunnelSummary};
 
 /// 前端 raw 字节频道的句柄。
 ///
@@ -567,28 +567,26 @@ impl Sessions {
             .and_then(Tunnel::take_forward)
     }
 
-    /// 挂上这条隧道的看护任务（掉线之后重连的那条循环，plan 0605）。
+    /// 订一份这条隧道的停止信号（plan 0606）：手上的动作（在途的尝试 / 看护循环）在
+    /// `select!` 里等它。
     ///
-    /// 只在**首次连上之后**调用：一次都没连上的隧道没有"重连"可言，
-    /// 那一次失败是同步报给用户的。
-    pub fn attach_tunnel_run(&self, handle: SessionHandle, run: TunnelRun) -> Result<(), IpcError> {
-        let mut inner = self.lock()?;
-        let tunnel = inner
-            .tunnels
-            .get_mut(&handle)
-            .ok_or(IpcError::NotFound { handle })?;
-        tunnel.attach_run(run);
-        Ok(())
+    /// `None` = 这条隧道不在册（已经被停掉 / 从未打开）—— 那种情况下没有动作该开始。
+    pub fn tunnel_signal(&self, handle: SessionHandle) -> Option<TunnelStopSignal> {
+        self.lock().ok()?.tunnels.get(&handle).map(Tunnel::signal)
     }
 
-    /// 取走看护任务的停止入口 —— 重试 / 停止要在**锁外**让它退出
-    /// （它只发一个信号，收尾在 runtime 上做）。
-    pub fn take_tunnel_run(&self, handle: SessionHandle) -> Option<TunnelRun> {
-        self.lock()
-            .ok()?
+    /// 让这条隧道**手上那个动作**停下（重试要先停掉旧的，再按现在的配置来一次）。
+    ///
+    /// 与 [`Self::remove_tunnel`] 分开：那一个是"这条隧道不存在了"，这一个只是"停下手上的动作"
+    /// —— 实体留着，等着被重新连一次（D12 的手动重试）。
+    pub fn stop_tunnel_action(&self, handle: SessionHandle) -> Result<(), IpcError> {
+        let inner = self.lock()?;
+        let tunnel = inner
             .tunnels
-            .get_mut(&handle)
-            .and_then(Tunnel::take_run)
+            .get(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        tunnel.stop_action();
+        Ok(())
     }
 
     /// 一条隧道的 `(规则 id, 所属主机 id)`：重试时要照原样再连一次，材料只在这里。
@@ -689,7 +687,13 @@ impl Sessions {
         }
         // 转发在这里停下（停止监听、收掉在途连接），连接随后断开：显式 `disconnect` 要在
         // runtime 上排队，而退出路径上不值得等它 —— 与 plan 0601 的处理一致。
-        drop(tunnels);
+        //
+        // ⚠️ **显式回收，不靠 drop**（plan 0606，`AGENTS.md` §3.3）：`Tunnel` 的字段确实在
+        // drop 时会各自收尾，但"谁负责停"一旦交给析构，就分不清"收干净了"与"忘了收" ——
+        // 而这条路径要与 `tunnel_stop` 走的是**同一份**收尾（[`Tunnel::reclaim`]）。
+        for tunnel in tunnels {
+            tunnel.reclaim();
+        }
         ids.append(&mut tunnel_ids);
 
         if let Ok(mut inner) = self.inner.lock() {

@@ -285,6 +285,17 @@ impl Running {
         self.accept.abort();
         self.cut_connections().await
     }
+
+    /// 服务端此刻**还开着几条连接**（plan 0606）。
+    ///
+    /// 这是"连接真的断了"的**另一半证据**：客户端那边说自己账上归零了，有可能只是它丢掉了
+    /// 自己的句柄；对端看不见那条会话才是这条连接确实结束。已经收工的任务顺手清掉
+    /// （会话结束与"任务结束"之间有一小段，所以断言要等，同 [`Self::cut_connections`] 的说明）。
+    pub fn live_connections(&self) -> usize {
+        let mut held = self.shared.connections.lock().unwrap();
+        held.retain(|connection| !connection.is_finished());
+        held.len()
+    }
 }
 
 /// 一条活着的连接（plan 0605 的"切断"动作要它）。
