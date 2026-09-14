@@ -103,6 +103,7 @@ pnpm build         # 预期：退出码 0
 | 服务端真的在听 | 服务端记下的 `tcpip_forward` 请求 + 那个端口的状态 | 请求里的地址/端口与规则一致；端口可连 |
 | 通道是服务端发起的 | 服务端的 `forwarded_tcpip` 计数与 `connected_port` | `≥ 1`，且端口就是它报给我们的那个 |
 | 本机目标不可达被**拒** | 规则的目标指向一个没人听的端口 | 服务端看到 `ConnectFailed`（不是"接受了又断"） |
+| 远端端口拿不到 → `失败` 且看得见 | 规则要求的端口**在服务端那一侧被占着** | probe 里 `state = failed`、事件里有 `failed`、面板上说明是哪个端口没拿到；那条**仍登记着**（可重试） |
 | 停止即撤销 | 点"停止" → 再连那个远端端口 | 端口不再接受连接；服务端收到 `cancel_tcpip_forward` |
 | 监听地址可见 | `app_state { probe: "tunnels" }` | 该条带 `bind = "<规则里的绑定地址>:<端口>"` |
 | 连接真的断了 | 服务端的 `connections_closed` | `≥ 1` |
@@ -139,7 +140,7 @@ pnpm build         # 预期：退出码 0
   crate 用例补一条"请求具体端口"的断言（原先那条只用 0 端口）。
 - **门禁实测**：`just ready` **6/6**；`just test` **322 passed**（akasha **71** + akasha-core 27 +
   akasha-pty 39 + **akasha-ssh 58** + akasha-store 127）；`just test-e2e` **退出码 0**
-  （**25 个用例 / 18 个目标**，新增 `tunnel_remote_forward` **4.03 s**）；`pnpm build` 退出码 0
+  （**25 个用例 / 18 个目标**，新增 `tunnel_remote_forward` **7.01 s**）；`pnpm build` 退出码 0
   （859.44 kB / gzip 236.54 kB）；`Cargo.lock` **零增量**（本 plan 未新增依赖）。
 - **真实 app 上的判据**（`tunnel_remote_forward` E2E，测试进程内一台 SSH 服务端 + 一个 HTTP
   服务端）：界面打开那条 `remote` 规则 → 答完主机密钥与口令 → probe 报
@@ -149,7 +150,8 @@ pnpm build         # 预期：退出码 0
   本机服务的请求计数 `≥ 1` → 目标指向没人听的端口那一条：服务端看到 `ConnectFailed` 而
   `accepted` **没有增加** → 点停止 → 端口不再接受连接、服务端收到 `cancel-tcpip-forward`
   （用的是它回报的那个端口）、`sessions` 的 `live`/`registered` 相等（1/1）、服务端看到
-  2 条连接断开。
+  3 条连接断开；第三条规则（绑定端口在服务端那一侧被占着）落到 `failed`：事件里有它、面板上
+  写着「远端监听 … 没拿到：…」，而它**仍在册**（可重试）。
 - **两处刻意未做**：远端绑定地址**不做**任何合规检查（那个端口开在服务端，合规与否是它的策略
   —— 与 `-D` 的回环限制不是同一条口径）；`port = 0` 只有 crate 层覆盖（库里 `bind_port` 的
   `CHECK` 不接受 0，app 这条路径产生不出这个请求）。
