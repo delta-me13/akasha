@@ -188,6 +188,8 @@
 - [x] 关闭 `Session` 立刻断连，并中止该 `Session` 的重连循环
       验收：关闭转发 Session 后连接数与重连任务数都归零
       → [plan 0606](./docs/plans/archive/0606-close-session-teardown.md)
+- [x] **ADR-0003 转「已定案」**（阶段 6 落地完成之后）
+      验收：状态为「已定案」，且 §14 修订记录里每次改动都有理由
 
 ---
 

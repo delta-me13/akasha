@@ -1,6 +1,6 @@
 # ADR-0003：SSH 栈与资源模型
 
-- **状态**：**实现中**（Implementing，2026-09-12）
+- **状态**：**已定案**（Frozen，2026-09-15）
 - **日期**：2026-09-12
 - **决策者**：cyrene
 - **影响范围**：新增 crate `src-tauri/crates/akasha-ssh`；`Transport` 在 SSH 上的映射与其
@@ -9,7 +9,8 @@
 - **关联**：[plan 0501](../plans/archive/0501-adr-0003-ssh-stack.md)（本文的落地）、
   [0502](../plans/archive/0502-ssh-connect-auth.md) / [0503](../plans/archive/0503-known-hosts.md) /
   [0504](../plans/archive/0504-ssh-into-ipc-frontend.md) / [0505](../plans/archive/0505-direct-tcpip-primitive.md) /
-  [0506](../plans/archive/0506-ssh-config-subset-import.md)、阶段 6 全部
+  [0506](../plans/archive/0506-ssh-config-subset-import.md)、阶段 6 的
+  [0601](../plans/archive/0601-tunnel-entity-state-machine.md)–[0606](../plans/archive/0606-close-session-teardown.md)（全部已归档）
 - **取代**：无
 
 ---
@@ -20,8 +21,9 @@
 成可实现、可核对的架构决策，并钉死那些**改动代价为一整层**的点：连接模型、`Transport`
 映射、`direct-tcpip` 原语的形状。
 
-本文只定义形状与约束，不含实现步骤 —— 实现记录在 plan 0502–0506（均已完成并归档）。
-按 [`docs/adr/README.md`](./README.md) 的三态规则，本文在实现期间可就地修订，每次改动记入 §14。
+本文只定义形状与约束，不含实现步骤 —— 实现记录在 plan 0502–0506 与 0601–0606（均已完成并归档）。
+按 [`docs/adr/README.md`](./README.md) 的三态规则，落地本文的 plan 已全部完成，状态因此转为
+**已定案**：§1–§13 不再就地修订，改动只能由**新的 ADR** 取代；§14 保留实现期间的修订记录。
 
 | `scope.md` 已定案的条目 | 本文对应的决策 |
 |---|---|
@@ -379,8 +381,11 @@
   即 `keepalive_interval × keepalive_max`，默认约 90 秒）；**重连 = 重新走一遍
   「准备 + 连接 + 起转发」**（所以 `-R` 会重新发一次 `tcpip_forward` —— 远端监听是服务端
   那条连接的资源，连接一断它就被撤销了；规则里写 `port = 0` 时重连后可能换一个端口）；
-  **看护任务只有一个停止入口**（一条 `oneshot`，停止 / 重试 / 退出都从它进去，且它在每个
-  `await` 上回应 —— 这是 D5 的「关闭 Session 立刻关闭连接」在重连这条路上的落点）。
+  **看护任务只有一个停止入口**（停止 / 重试 / 退出都从它进去，且它在每个 `await` 上回应 ——
+  这是 D5 的「关闭 Session 立刻关闭连接」在重连这条路上的落点）。入口的形状在 plan 0606 改过一次：
+  0605 的 `oneshot` 在发送端被替换时会连同接收端一起唤醒，于是 `select!` 可能把一次**成功**的
+  连接报成「已停止」；现在由**实体自己持有**一对 `watch`（`TunnelStop` / `TunnelStopSignal`），
+  手上的动作各订一份接收端（见 §14）。
   本 plan 另定了一条**不在 D13 表里**的口径：**首次连接失败不自动重试** —— 表说的是
   「传输层**断开**」，而断开的前提是曾经连上过；一次都没成功的那次失败是同步报给用户的
   （命令返回里带原因，界面上就是那条失败文案），下一步动作在用户手上。
@@ -443,9 +448,12 @@
 | 上游把 `ssh-key` 钉在预发布版 | 升级 `russh` 时一并评估；`=0.63.3` 使"升级"成为一个有意的动作 |
 | 0.x 的 API 会变动 | 用法集中在 `akasha-ssh` 一处（app 只认 `Transport`），升级面被限制在一个 crate 内 |
 
-## 12. 未决问题（留给后续 plan）
+## 12. 遗留（下游接法，不改本文的决定）
 
-- SFTP 的 B 档消费 D9 原语的具体接法 —— plan 0703。
+本文已定案，下面剩的是**消费方**的接法，不重开本文的任何一条决策：
+
+- SFTP 的 B 档消费 D9 原语的具体接法 —— plan 0703。若接的时候发现那条流的形状不够用，
+  按三态规则**新开一份 ADR** 取代 D9，不改本文。
 
 （`~/.ssh/config` 子集的解析细节已由 plan 0506 落地，见 §9；指令清单本身在 D14 定死。）
 
@@ -476,3 +484,4 @@
 | 2026-09-14 | **D10 落地**（plan 0604）：`-R` 在 `akasha-ssh::remote` —— `SshConnection::remote_listen` / `cancel_remote_listen` + `RemoteForward`，入站路由挂在连接上（`Inbound`，`Handler::server_channel_open_forwarded_tcpip` 按**端口**查表）；`handshake` 的返回值由 `Handle<Handler>` 变成 `Authenticated`（多带回一份入站入口）；新增 `SshError::RemoteListen` 与 `TunnelError::RemoteBind`，**删除 `TunnelError::Unsupported`**（三个方向都支持之后它再也出不来）；`Rule::ingress` → `Rule::prepare`（多一档 `Prepared`） | D10 把 `-R` 定成与 D9 无关的另一套机制，实现未推翻它：请求、Handler 回调、拒绝、撤销四件事与它写的一字不差。补的三条是它没写的：**先连本机目标再接受通道**（拒绝才是对端能收到的唯一解释）、那个连接**必须在任务里**（Handler 回调在连接的消息循环上被 `await`）、**按端口而不是按地址字符串**认入站通道。删除 `Unsupported` 是三个方向都支持的必然结果 —— 留着一个永远出不来的错误档就是在文档里留一句假话 |
 | 2026-09-15 | **D12 / D13 落地**（plan 0605）：补上「断开」怎么认（转发任务按固定间隔看 `Handle::is_closed()`，`ForwardEnd` 区分「被停止」与「连接没了」）、重连 = 重新走一遍准备 + 连接 + 起转发（`-R` 因此要重新发一次 `tcpip_forward`）、按层分档的 `TunnelError::retryable`、看护任务的单一停止入口（`TunnelRun`）、`set_tunnel_state` 重推托盘菜单（「失败可见」的最后一环）；新增 `Config::reconnect` | D13 原文只说「传输层断开 → 重连」，没写**断开由谁在什么时候认出来** —— 上游 0.x 只给了同步的 `is_closed()`，这是一个必须写下来的实现约束（它同时决定了半死连接的发现延迟是保活量级）。「重连 = 重来一遍」是同一条决定的另一半：连接是那条转发的命根子，所以三个方向里 `-R` 的准备那一步（`tcpip_forward`）也必须重做，否则会出现「重连成功、端口却不在听」。托盘的刷新是 D12 那句「`失败` 有落点」在实现上的最后一环：管线从 plan 0301 起就在，但状态变化从没通知过它 |
 | 2026-09-15 | **D5 落地**（plan 0606）：转发 `Session` 的关闭入口是 `tunnel_stop`（`close_session` 是终端那条）；`Tunnel::reclaim()` 一处收尾，`shutdown_all` 不再靠 drop；停止信号由**实体自己持有**（`TunnelStop` / `TunnelStopSignal`，一对 `watch`），在途的尝试与看护循环各订一份；新增 `SshConnection::connect_via_until(…, cancel)` 与 `SshError::Cancelled`；连接与看护任务各有 RAII 存活计数，由 `residue` 探针读出 | D5 定死了"关闭 Session 立即关闭连接"，而它留给落地的是**"立即"要落到哪一层**：转发的收尾本身是异步的（停监听 → 收在途连接 → 礼貌断开），命令发完信号即返回；真正卡住"立即"的是最下面那颗螺丝 —— 握手发生在**阻塞线程**上（app 侧 `spawn_sync`），而扔掉 await 那一侧取消不了它，于是那条 socket 会一直开到 `connect_timeout`。因此新增一个带取消信号的建链入口：取消一就绪，整条建链连同它的 socket 一起结束。另一件必须写下来的是**判据怎么读**：实体表不能充当"连接没了"的证据（关闭命令自己就会把实体摘掉），所以数的是 `SshConnection` 与看护任务本身，并由对端（测试服务端）的活连接数复核 |
+| 2026-09-15 | 状态 **实现中 → 已定案**；§1 的「实现期间可就地修订」改为定案后的口径；§12 由「未决问题」改为「遗留（下游接法）」；D13 的停止入口改述为 plan 0606 之后的形状（实体自持的一对 `watch`）；关联指针把「阶段 6 全部」展开为 0601–0606 | 落地本文的 plan 0501–0506 与 0601–0606 全部完成并归档，`docs/adr/README.md` 的推进判据满足；回头路只剩 §13 的复审条件，届时按新 ADR 取代本文。D13 的原句停在 0605 的 `oneshot` 上，与本文 §14 的 0606 行说的是两回事 —— 定案前先改述为最终形状 |
