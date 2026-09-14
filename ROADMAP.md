@@ -197,9 +197,9 @@
 
 目标：双栏传输可用，且**任何时刻都不留下看似完整、实为不完整的文件**。
 
-- [ ] 双栏界面骨架 + 两侧独立选主机（**不需要先开终端 Session**）
+- [x] 双栏界面骨架 + 两侧独立选主机（**不需要先开终端 Session**）
       验收：直接打开 SFTP 即可用，无终端依赖
-      → [plan 0701](./docs/plans/0701-sftp-dual-pane.md)
+      → [plan 0701](./docs/plans/archive/0701-sftp-dual-pane.md)
 - [ ] local ↔ host 双向；**临时名 + 原子重命名**落盘
       验收：中断传输后目标目录里**没有**看似完整的文件
       → [plan 0702](./docs/plans/0702-transfer-atomic-rename.md)
