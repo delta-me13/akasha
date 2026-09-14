@@ -192,6 +192,14 @@
   正是转发场景需要的。
 - **否决的替代路**：连接池 / multiplexing —— 它把"这条连接何时该关闭"变成需要引用计数的问题，
   而引用计数的缺陷表现为"随机关闭其他隧道"。
+- **实现状态**：已落地。终端的关闭走 `close_session`（kill + wait，plan 0204）；**转发 `Session`
+  的关闭是 `tunnel_stop`**（plan 0606 —— 面板上那个「停止」；转发是仅渲染视图，它的停止必须是
+  自己的显式动作，`scope.md` §5.6）：停止信号 → 回收转发 → 从注册表摘掉，三步都可读出来
+  （`residue` 探针报连接数与看护任务数，两者都归零；对端也看不到那条连接）。
+  ⚠️ **"立刻"在最底下那颗螺丝上要靠取消信号**：握手发生在阻塞线程上（app 侧的 `spawn_sync`），
+  扔掉 `await` 那一侧取消不了它 —— 那条 socket 会一直开到 `connect_timeout`。所以
+  `SshConnection::connect_via_until` 接受一个取消信号，让**那次调用自己**结束（plan 0606 实测：
+  停止到对端读到 EOF **7.5 ms**）。
 
 ### D6 —— 隧道是**独立**的 `Session`，一条规则对应一个 `Session`，共用同一 `SessionId` 空间与注册表
 
@@ -467,3 +475,4 @@
 | 2026-09-13 | **D9 的第三个消费者落地**（plan 0602）：`-L` 在 `akasha-ssh::relay` 里 —— `LocalListener`（**先绑**）+ `LocalForward`（接受循环 + 每条入站连接一条 `direct_tcpip` 通道 + `copy_bidirectional`）；新增 `SshError::Listen` 把"本机端口没拿到"与 `Connect`（对端连不上）分开；原语与 `SshConnection` 的形状**未变** | D9 说这条流有三处消费者、`-L` 是其中之一，实现未推翻它。补的一条是它没写的：**绑定先于握手** —— 端口被占用是本类功能最常见的一类失败，而它必须在"用户答凭据"之前就失败（否则那两轮提问全是白费的）。`SshError::Listen` 单独一档同 `Forward` 当年的理由：用户的下一步动作不同（腾端口 vs 查网络） |
 | 2026-09-14 | **D10 落地**（plan 0604）：`-R` 在 `akasha-ssh::remote` —— `SshConnection::remote_listen` / `cancel_remote_listen` + `RemoteForward`，入站路由挂在连接上（`Inbound`，`Handler::server_channel_open_forwarded_tcpip` 按**端口**查表）；`handshake` 的返回值由 `Handle<Handler>` 变成 `Authenticated`（多带回一份入站入口）；新增 `SshError::RemoteListen` 与 `TunnelError::RemoteBind`，**删除 `TunnelError::Unsupported`**（三个方向都支持之后它再也出不来）；`Rule::ingress` → `Rule::prepare`（多一档 `Prepared`） | D10 把 `-R` 定成与 D9 无关的另一套机制，实现未推翻它：请求、Handler 回调、拒绝、撤销四件事与它写的一字不差。补的三条是它没写的：**先连本机目标再接受通道**（拒绝才是对端能收到的唯一解释）、那个连接**必须在任务里**（Handler 回调在连接的消息循环上被 `await`）、**按端口而不是按地址字符串**认入站通道。删除 `Unsupported` 是三个方向都支持的必然结果 —— 留着一个永远出不来的错误档就是在文档里留一句假话 |
 | 2026-09-15 | **D12 / D13 落地**（plan 0605）：补上「断开」怎么认（转发任务按固定间隔看 `Handle::is_closed()`，`ForwardEnd` 区分「被停止」与「连接没了」）、重连 = 重新走一遍准备 + 连接 + 起转发（`-R` 因此要重新发一次 `tcpip_forward`）、按层分档的 `TunnelError::retryable`、看护任务的单一停止入口（`TunnelRun`）、`set_tunnel_state` 重推托盘菜单（「失败可见」的最后一环）；新增 `Config::reconnect` | D13 原文只说「传输层断开 → 重连」，没写**断开由谁在什么时候认出来** —— 上游 0.x 只给了同步的 `is_closed()`，这是一个必须写下来的实现约束（它同时决定了半死连接的发现延迟是保活量级）。「重连 = 重来一遍」是同一条决定的另一半：连接是那条转发的命根子，所以三个方向里 `-R` 的准备那一步（`tcpip_forward`）也必须重做，否则会出现「重连成功、端口却不在听」。托盘的刷新是 D12 那句「`失败` 有落点」在实现上的最后一环：管线从 plan 0301 起就在，但状态变化从没通知过它 |
+| 2026-09-15 | **D5 落地**（plan 0606）：转发 `Session` 的关闭入口是 `tunnel_stop`（`close_session` 是终端那条）；`Tunnel::reclaim()` 一处收尾，`shutdown_all` 不再靠 drop；停止信号由**实体自己持有**（`TunnelStop` / `TunnelStopSignal`，一对 `watch`），在途的尝试与看护循环各订一份；新增 `SshConnection::connect_via_until(…, cancel)` 与 `SshError::Cancelled`；连接与看护任务各有 RAII 存活计数，由 `residue` 探针读出 | D5 定死了"关闭 Session 立即关闭连接"，而它留给落地的是**"立即"要落到哪一层**：转发的收尾本身是异步的（停监听 → 收在途连接 → 礼貌断开），命令发完信号即返回；真正卡住"立即"的是最下面那颗螺丝 —— 握手发生在**阻塞线程**上（app 侧 `spawn_sync`），而扔掉 await 那一侧取消不了它，于是那条 socket 会一直开到 `connect_timeout`。因此新增一个带取消信号的建链入口：取消一就绪，整条建链连同它的 socket 一起结束。另一件必须写下来的是**判据怎么读**：实体表不能充当"连接没了"的证据（关闭命令自己就会把实体摘掉），所以数的是 `SshConnection` 与看护任务本身，并由对端（测试服务端）的活连接数复核 |

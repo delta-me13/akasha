@@ -10,14 +10,17 @@
 
 **阶段 2「端到端最小终端」5/5 完成**；**阶段 3「托盘与应用生命周期」6/6 完成**；
 **阶段 4「存储与凭据池」9/9 完成**；**阶段 5「SSH 栈」6/6 完成**；
-**阶段 6「SSH 端口转发」5/6**（**0601 = 隧道实体 + 状态机**：五态、事件、手动重试；
+**阶段 6「SSH 端口转发」6/6 完成**（**0601 = 隧道实体 + 状态机**：五态、事件、手动重试；
 **0602 = 本地转发 `-L`** 与 **0603 = 动态转发 `-D`**：两条路共用"本地监听 + 每条入站连接
 一条 `direct_tcpip` 通道"，差别只在目标从哪来 —— `-L` 写在规则里，`-D` 由客户端在 SOCKS5
 握手里说；**0604 = 远程转发 `-R`**：**另一套机制** —— 端口开在服务端，通道由服务端发起，
 每条连接接到**本机**服务；**0605 = 断线重连**：掉线之后由每条隧道自己的**看护任务**按
 `3 次 + 1s/2s/4s` 重连，耗尽落到 `失败`（probe / 面板 / 托盘三处可见），`-R` 的重连**重新请求**
-远端监听）；
-下一步是 **阶段 6 plan 0606（关闭 `Session` 立刻断连 + 中止重连循环）**。
+远端监听）；**0606 = 关闭转发 `Session`**：面板「停止」把状态推到 `已停止` → 停下手上的动作
+（在途的一次尝试 / 看护循环）→ 回收转发 → 从注册表摘掉，而**连接数与重连任务数都归零**
+由新增的 `residue` 探针读出来（对端也看不到那条连接了）；在途的握手要能被当场中止，
+所以建链入口多了一个取消信号）。
+下一步是 **阶段 7 plan 0701（SFTP：双栏界面骨架 + 两侧独立选主机）**。
 
 阶段 4 的八项（每项一句）：**SQLCipher 加密库可打开**（0401）、**口令只从一条路径进入且可真正验证**
 （0402 —— 拆分"打开"与"新建"；此前在文件不存在的路径上**任何口令都能打开**）、
@@ -49,7 +52,7 @@
 导入的 `ProxyJump` 已可用：E2E 使用**导入得到的条目**连通了仅对跳板机可见的主机。
 ⚠️ 私钥**不导入**：`IdentityFile` 只令条目落成"公钥认证 + 密钥在 ssh-agent 中"。
 
-### 阶段 6 的形状（0601 的实体 + 0602 的 `-L` + 0603 的 `-D` + 0604 的 `-R` + 0605 的重连）
+### 阶段 6 的形状（0601 的实体 + 0602 的 `-L` + 0603 的 `-D` + 0604 的 `-R` + 0605 的重连 + 0606 的关闭）
 
 **隧道是一个独立的 `Session`**（ADR-0003 D5 / D6，`scope.md` §2.2）：一条转发规则一个
 `Session`，它自持有一条连接。三种转发机制**全部落地** —— `-L` / `-D`（plan 0602 / 0603，
@@ -67,7 +70,8 @@
 | **`-D` 的协议** | `akasha-ssh::socks5`（RFC 1928）：**只做无认证的 `CONNECT`** —— `BIND` 回 `0x07`、不认的 `ATYP` 回 `0x08`、没有 `0x00` 方法回 `05 FF`、版本不对什么都不回；成功 `REP` 在通道开出来**之后**才回，`BND.ADDR` 是占位 `0.0.0.0:0`（SSH 的通道确认里没有对端的绑定地址） |
 | 命令 | `tunnel_open(forwardId)` · `tunnel_retry(handle)` · `tunnel_stop(handle)` · 只读 `vault_forwards()` |
 | 事件 | `tunnel_state`（载荷 `{handle, state, attempt}`）—— 按 `SessionId` 路由 |
-| probe | `tunnels` → `[{handle, ruleId, name, state, attempt, bind}]`（与托盘菜单同源；`bind` = 实际监听地址） |
+| **关闭（0606）** | `tunnel_stop`：`已停止`（发事件）→ 停下手上的动作（`TunnelStop` 那对 `watch`：在途的尝试与看护循环各订一份）→ `Tunnel::reclaim()`（停转发 + 断连接）→ 注销注册。`shutdown_all` 走**同一份**回收 |
+| probe | `tunnels` → `[{handle, ruleId, name, state, attempt, bind}]`（与托盘菜单同源；`bind` = 实际监听地址）· `residue` → `{sshConnections, watchTasks}`（判据"两个计数都归零"的读数口） |
 | 失败分档 | `TunnelError`：`locked` / `noSuchForward` / `noSuchHost` / `notATunnel` / **`bind`（本机端口没拿到）** / **`remoteBind`（服务端那个端口没拿到：被它占着 / 它不允许远端转发）** / **`notLoopback`（SOCKS5 绑了非回环地址）** / `failed {kind,message}` / `transition` / `internal`。⚠️ 从 plan 0604 起**没有 `unsupported` 这一档**：三个方向都支持了，留着一个永远出不来的错误档就是在文档里留一句假话 |
 
 ⚠️ **`重连中(n)` 的前提是"曾经连上过"**：`3 次 + 1s/2s/4s` 的预算只花在**已连接之后掉线**
@@ -91,6 +95,19 @@
 看护任务的事。先问状态机（纯判断）再动资源，与问题 #131 同一条纪律。
 ⚠️ **停止 = 停止 + 注销**：`tunnel_stop` 先把状态推到 `已停止`（发事件），再摘掉那个 `Session`
 并让转发收尾 —— 收尾（停监听 → 收在途连接 → 礼貌断开连接）**在 runtime 上做**，命令发完信号即返回。
+⚠️ **"关闭转发 `Session`"就是 `tunnel_stop`**（plan 0606）：`close_session` 是终端那条
+（kill + wait），对隧道句柄答 `NotFound` —— 转发是**仅渲染**的视图，它的停止必须是它自己的显式动作
+（`scope.md` §5.6）。这条边界看起来像缺口（隧道在 `Sessions` 里同样是 `Session`），所以写下来。
+⚠️ **判据里的两个计数**（plan 0606）：`residue` 报的是 `SshConnection` 对象与看护任务本身，
+**不是**注册表里的实体 —— 关闭命令自己就会把实体摘掉，"表里没了"只是那条命令的效果。
+⚠️ **"立刻断连"要靠取消信号送到握手那一层**（plan 0606）：建立连接发生在**阻塞线程**上
+（app 侧的 `spawn_sync`），而扔掉 `await` 那一侧取消不了它 —— 那条 socket 会一直开到
+`connect_timeout`（D15 的 10 s）。所以 `SshConnection::connect_via_until(…, cancel)` 让
+**那次调用自己**结束；实测停止到对端读到 EOF **7.5 ms**。
+⚠️ **停止信号是"实体自己持有的一对 `watch`"**（plan 0606，替掉 plan 0605 的 `oneshot`）：
+`oneshot` 的发送端被替换（看护任务挂上自己那一份）时接收端会立刻醒，于是 `select!` 的两个分支
+同时就绪，而 `tokio::select!` 这时**随机挑一个** —— 一次**成功**的连接因此有约一半的机会被报成
+"已停止"。实体持有发送端之后，只有"真的被要求停止"或"实体没了"才会唤醒等待方。
 ⚠️ **先绑定、后连接**：端口被占用是本类功能最常见的一类失败，它必须在"用户答凭据"**之前**失败 ——
 绑定失败 = **没登记成**（`Err`），与"登记了但连不上"（`Ok(TunnelAttempt{failure})`，仍在册可重试）分开。
 ⚠️ **`target_host` / `target_port` 从 plan 0602 起参与**：`-L` 里它们被原样送进
@@ -171,7 +188,7 @@
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
-| `just test` | **333 tests run: 333 passed**（`akasha` **74** + `akasha-core` **30** + `akasha-pty` 39 + `akasha-ssh` **63** + `akasha-store` **127**）。⚠️ `akasha` 的 74 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回 —— 其中 `portable` 3 条、`ssh_session` / `ssh_jump` / `ssh_config_import` / `tunnel_state` / `tunnel_local_forward` / **`tunnel_dynamic_forward` / `tunnel_remote_forward` / `tunnel_reconnect` 各 1 条**） |
+| `just test` | **337 tests run: 337 passed**（`akasha` **76** + `akasha-core` 30 + `akasha-pty` 39 + `akasha-ssh` **65** + `akasha-store` 127）。⚠️ `akasha` 的 76 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回 —— 其中 `portable` 3 条、`ssh_session` / `ssh_jump` / `ssh_config_import` / `tunnel_state` / `tunnel_local_forward` / **`tunnel_dynamic_forward` / `tunnel_remote_forward` / `tunnel_reconnect` / `tunnel_teardown` 各 1 条**） |
 | ↑ **判据：转发端口可访问远端服务**（plan 0602） | ✅ `tunnel_local_forward` E2E（真实 app + **测试进程内**一台 SSH 服务端与一个回声服务端，**1.05 s**）：界面打开池里那条规则 → 主机密钥与口令各答一轮 → probe 报 `bind = 127.0.0.1:<规则端口>` → 从测试进程连该端口**写一行、读回同一行**（回声服务答的） |
 | ↑ **走的是 `direct-tcpip`，且每条入站连接各开一条通道**（plan 0602） | ✅ **对端记到恰好 1 条 `direct-tcpip` 请求**（`host` = `akasha-local-forward.invalid`、`port` = 回声服务端口，**本机解析不出这个名字** —— 用例自行解析一次并断言失败）、中继字节数 `> 0`；同一端口再连一次 → 请求数变 **2** |
 | ↑ **端口被占用的报错可读**（plan 0602） | ✅ 规则指向一个被本进程占着的端口：界面显示「本地监听 127.0.0.1:38725 绑定失败：地址已在使用 (os error 98)」，且 probe 里**没有**它（**没登记成** —— 重试也不会好，用户要动的是端口） |
@@ -188,6 +205,10 @@
 | ↑ **重连机制是库内可测的**（plan 0605，crate 层） | ✅ `akasha-ssh` 新增 **5 条**（`ending` 3 单测 + `local_forward` / `remote_forward` 各 1 条）：两个结束原因的短名互不相同 / 原因经通道送达 / **发送端直接消失按"停止"处理**（不许自作主张重连）/ 连接被切断 → 转发以 `ConnectionLost` 结束**且端口随之释放** / 同一条在 `-R` 上成立**且服务端那一侧的监听随连接消失** |
 | ↑ **退避与预算是一处纯逻辑**（plan 0605，crate 层） | ✅ `akasha-core` 新增 **3 条**：默认 3 次 + `1s → 2s → 4s`、第 4 次没有预算、`budget() = 7s` / 把重连预算设成 0（`max_attempts = 0`）时第 0 次也没有预算 / 荒唐的 `factor` **饱和**而不溢出（配置里的数字是用户给的） |
 | ↑ **哪些失败不重试是纯逻辑**（plan 0605，app 层 2 条） | ✅ `TunnelError::retryable`：传输层（`connect` / `jump`）与端口没拿到 → 重试；认证 / 主机密钥 / 配置 / 内部状态 → **不重试** |
+| ↑ **判据：关闭转发 `Session` 后两个计数都归零**（plan 0606） | ✅ `tunnel_teardown` E2E（真实 app + **测试进程内**一台 SSH 服务端与一个 HTTP 服务端，**5.48 s**）：`-L` 与 `-R` 两条隧道都连上、两个端口都能 `curl` 通、`residue = (2, 2)`、服务端也看到 2 条连接 → 面板「停止」关闭 `-R` → `residue = (1, 1)`、服务端 1 条、**服务端那个远端端口连不上**（撤销了监听）、本机那条仍 `curl` 得通 → 关闭 `-L` → `residue = (0, 0)`、服务端 **0 条**、两个端口都还回去了 |
+| ↑ **关闭是幂等的，且不会被重新拉起**（plan 0606） | ✅ 同一个 E2E：对同一个句柄再 `tunnel_stop` 一次返回 `Ok`（不是错误）、它没有回到册里；**1.5 秒后再读** `residue` 仍是 `(0, 0)` —— 看护循环若还活着会在退避之后把它重新连起来 |
+| ↑ **在途的尝试也能被中止**（plan 0606） | ✅ 同一个 E2E（第三条规则指向一台"接了 TCP 就不再说话"的进程）：先让它落到 `失败` → 对端开始接听但不回话 → 点「重试」（卡在握手中）→ 点「停止」→ **对端 7.5 ms 内读到 EOF**。⚠️ 修之前这条断言是**红的**：那次握手发生在阻塞线程上，丢掉 `await` 取消不了它，socket 要等 `connect_timeout`（10 s）才关 |
+| ↑ **取消是库内可测的**（plan 0606，crate 层 2 条） | ✅ `akasha-ssh` 新增 `connection_count` 1 条（一条连接一被持有就上账、丢掉就下账，两条各算一条）+ `cancellable_connect` 1 条（`cancel` 就绪即返回 `SshError::Cancelled`，且**对端读到 EOF** —— 不是"函数返回了"就算完）；app 层 1 条钉住停止信号的两条性质（订在停止之后的接收端不响、第二次停止照样响） |
 | ↑ **判据：配置 SOCKS5 代理后能访问远端网络**（plan 0603） | ✅ `tunnel_dynamic_forward` E2E（真实 app + **测试进程内**一台 SSH 服务端与一个 HTTP 服务端，**0.85 s**）：界面打开池里那条 `dynamic` 规则 → 主机密钥与口令各答一轮 → probe 报 `bind = 127.0.0.1:<规则端口>` → **`curl --socks5-hostname 127.0.0.1:<端口> http://akasha-dynamic-forward.invalid:<端口>/probe`**（**第三方**客户端）**退出码 0**，且取回的响应体就是远端服务写的那一串 |
 | ↑ **目标由客户端说，且每条入站连接各开一条通道**（plan 0603） | ✅ **对端记到恰好 1 条 `direct-tcpip`**（`host` = curl 在握手里给的那个名字、`port` = HTTP 服务端口，**本机解析不出这个名字** —— 用例自行解析一次并断言失败）、中继字节数 `> 0`；再 curl 一次 → 请求数变 **2**；中继表里**没有**的名字 → 客户端收到 `REP 0x02`（**分类真的到了客户端**，而不是通用的 `0x01`） |
 | ↑ **非回环绑定被拒**（plan 0603 的安全项） | ✅ 库里那条 `bind_host = 0.0.0.0` 的 `dynamic` 规则：界面显示「SOCKS5 监听不能绑到 0.0.0.0：这一侧无认证，只允许绑回环地址（127.0.0.1 / [::1] / localhost）」，且 probe 里**没有**它（**没登记成** —— 端口一次都没绑过） |
@@ -215,14 +236,14 @@
 | ↑ **判据：真实 app 上建立 SSH 会话**（plan 0504） | ✅ `ssh_session` E2E（真实 app + **测试进程内**服务端，**2.32 s**）：界面点击 SSH → 选中池中该行 → **主机密钥提示中的指纹等于服务端的指纹** → 接受 → 口令提示 → 作答 → 连通（标签页标题 = 池中的名称） |
 | ↑ **字节双向流动 / 已确认密钥写入库 / 凭据仅询问一次 / 关闭标签页零残留**（plan 0504） | ✅ 四项各有断言：回显出现在屏幕上**且服务端收到同一串**；直连库文件读到 `known_hosts` **1 行**；第二个会话**未发起任何询问**即连通（服务端第 2 次收到**同一口令**）；关闭两个标签页 → `sessions` probe 返回 **`{"live":1,"registered":1}`** + 服务端观察到 **2 条**连接断开 |
 | ↑ **提问往返本身**（plan 0504，crate 级 6 条） | ✅ 答案送达发起提问的一方 / 超时会**撤回**该提问、其后作答报 `Gone` / **取消与超时可区分** / **无人作答 = `HostKeyUnknown`（拒绝），而非 `Ok`** / 用户接受后**确实写入缓存** |
-| ↑ **`just test-e2e` 全部通过** | 退出码 **0**：**26 个用例 / 19 个目标**（`E2E_TARGETS` 17 个目标共 23 个用例 + `E2E_TARGETS_EXIT` 的 `exit_residue` + `E2E_SELF_APP` 的 `portable` 1 个目标含 3 个用例；新增 `tunnel_reconnect`，**19.19 s**）。`ssh_session` / `ssh_jump` / `ssh_config_import` / `tunnel_state` / `tunnel_local_forward` / `tunnel_dynamic_forward` / `tunnel_remote_forward` / `tunnel_reconnect` 均排在 `vault_unlock` **之后**（它们操作同一个库文件）。⚠️ `tunnel_dynamic_forward` / `tunnel_remote_forward` / `tunnel_reconnect` 的前置是**本机有 `curl`**（判据的客户端必须是现成的客户端，见「待验证」） |
+| ↑ **`just test-e2e` 全部通过** | 退出码 **0**：**27 个用例 / 20 个目标**（`E2E_TARGETS` 18 个目标共 24 个用例 + `E2E_TARGETS_EXIT` 的 `exit_residue` + `E2E_SELF_APP` 的 `portable` 1 个目标含 3 个用例；新增 `tunnel_teardown`，**5.48 s**）。`ssh_session` / `ssh_jump` / `ssh_config_import` / `tunnel_state` / `tunnel_local_forward` / `tunnel_dynamic_forward` / `tunnel_remote_forward` / `tunnel_reconnect` / `tunnel_teardown` 均排在 `vault_unlock` **之后**（它们操作同一个库文件）。⚠️ 那五条隧道用例的前置是**本机有 `curl`**（判据的客户端必须是现成的客户端，见「待验证」） |
 | ↑ **判据：主机密钥变化即拒绝，未见过的询问一次**（plan 0503） | ✅ `akasha-ssh` 的 7 条：未知且无人可问 → `HostKeyUnknown`（携带用于核对的指纹，且**认证尚未开始**）；确认 → 写入缓存，**第二个连接 0 次询问**；记录不匹配 → `HostKeyChanged`（**两个指纹都在**）且**不发起询问**；用户拒绝 → 拒绝连接且**不记录**；用户文件中已认可 → 连通且文件**逐字节未变** |
 | ↑ **本仓库首次格式迁移**（plan 0503） | ✅ `akasha-store` 的 6 条：`DDL_V1` 构造出**真实 v1 库** → `open` 之后 `user_version = 2`、五张表存在、**该 host 行仍在**；再次打开当前格式的库**不写入任何字节**；缺表的 v1 **不迁移**；加密导出与明文导出两条还原路径均**升级副本、来源逐字节不变** |
 | ↑ **判据：同主机三个连接仅询问一次凭据**（plan 0502） | ✅ `three_sessions_ask_for_one_credential`：`provider.calls() == 1`、缓存 `len() == 1`、服务端三次均收到**同一口令** |
 | ↑ **认证顺序由协议交互验证**（plan 0502） | ✅ 服务端记录的序列：`publickey → password`、`publickey → keyboard-interactive`；agent 不可用时序列中**没有** `publickey` |
 | ↑ **`nodelay` 实际生效**（plan 0505 修正） | ✅ `tcp_stream` 自建 TCP 时显式 `set_nodelay(true)`（问题 #120：上游仅在 `client::connect` 中读取 `Config::nodelay`，而两条路都使用 `connect_stream`） |
 | ↑ **`Cargo.lock` 增量仅一行**（plan 0504 / 0505） | ✅ 新增 `akasha → akasha-ssh` 这条边**只增加一行**；0505 **未增加任何行**（无新依赖，`rand` 早已是 `akasha-ssh` 的真依赖） |
-| `pnpm build`（tsc + vite build） | 退出码 0；产物 **859.44 kB / gzip 236.54 kB**（±0：plan 0605 **没有前端改动** —— `重连中（第 n 次）` 从 plan 0601 起就在画，`attempt` 一直在事件里） |
+| `pnpm build`（tsc + vite build） | 退出码 0；产物 **859.44 kB / gzip 236.54 kB**（±0：plan 0606 **没有前端改动** —— 它加的是后端探针、回收路径与停止信号，界面一个字没动） |
 | `just docs-check` | 全部通过（ROADMAP 58 个条目 ≤3 行且无代码块 / 50 份 plan ≤200 行且索引一致） |
 | `ast-grep scan` + `ast-grep test` | 均退出 **0**（本轮未新增 / 修改规则） |
 | **三条 unsafe 注释 lint**（clippy，位于 `just lint`） | 退出码 **0**；三条各以一个探针验证其**确实会失败**（探针用后即撤） |
@@ -274,6 +295,13 @@
   发一条 `SSH_MSG_DISCONNECT` 并关闭连接（客户端**立刻**发现），`Running::shutdown()` 再连监听
   一起停。真实的拔网线 / 网络分区下 TCP 不会立刻断，"半死"要靠保活耗尽才被发现
   （30 s × 3 ≈ 90 s）—— 那条路径**未实测**，`just test` 里也构造不出来。
+- **关闭一条"半死"的隧道未实测**（plan 0606）：收尾里那一步是**礼貌断开**（发
+  `SSH_MSG_DISCONNECT` 再关 socket），而"半死"（TCP 没断、对端不回话）时它写得出去、对面却收不到
+  —— 那条路径要靠 TCP 自己的超时收场。本地造不出真实的分区（同下一条的口径），
+  `tunnel_teardown` 的刺激是服务端**主动**断开。
+- **`residue` 的连接数只数"已认证的连接"**（plan 0606 的口径）：一次**还在握手**的尝试没有
+  `SshConnection` 可言，所以它不在这个数里 —— 判据"归零"说的是"没有连接留下"，而"那次尝试的
+  socket 关没关"由 E2E 单独盯（对端读到 EOF 的时刻）。⚠️ 不得把"计数为 0"读成"没有任何 socket"。
 - **真实 `sshd` 上"连接断 → 远端监听释放"的时机未实测**：重连要重新发 `tcpip_forward`，而那个
   端口必须已经**在服务端那一侧被释放**。测试服务端按连接持有转发（连接一断监听随之消失，与真实
   `sshd` 同形）。⚠️ 若真实服务端释放得更慢（例如要等保活超时），重连的第一次请求会拿到
@@ -372,11 +400,10 @@
 
 ## 进行中 / 下一步
 
-- [ ] **下一步 = 阶段 6 的 plan 0606（关闭 `Session` 立刻断连 + 中止重连循环）**：骨架已存在
-  （[`0606`](./plans/0606-close-session-teardown.md)），判据（ROADMAP 原文）= 关闭转发 `Session`
-  后**连接数与重连任务数都归零**。⚠️ 中止入口已经接好（`TunnelRun` 的那条 `oneshot`，
-  `tunnel_stop` / `tunnel_retry` / `shutdown_all` 都从它进去），本 plan 要补的是**把"任务数"
-  变成可断言的数字**（注册 probe，不靠 grep 日志反推）。
+- [ ] **下一步 = 阶段 7 的第一条（SFTP）**：骨架已存在
+  （[`0701`](./plans/0701-sftp-dual-pane.md)，判据 = 直接打开 SFTP 即可用、无终端依赖）。
+  ⚠️ 阶段 7 的三条里 **0703（host ↔ host）依赖 plan 0505 的 `direct-tcpip` 原语**，
+  而那条原语的 B 档**尚未接入 SFTP**（转发这一处已接上，见下一条）。
 - [ ] **重连的三个参数仍不进配置文件**：它们落在配置模型里（`Config::reconnect`，默认 3 次 /
   1s / 2 倍），而 `config.json` 仍只认 `close_behavior` —— 给一个嵌套对象定文件格式要连界面一起
   设计（plan 0605 的非目标）。⚠️ 现状下"把退避改小"只能改代码。
@@ -406,7 +433,31 @@
 > 理由：信任策略属于**接口形状**（先行），而原语的消费者都需要先有一条**从 app 建立起来的**
 > SSH 会话才能验证。编号与执行顺序现已一致，索引中有一段重排说明。
 
-### 本轮完成（plan 0605：断线重连）
+### 本轮完成（plan 0606：关闭转发 `Session`）
+**判据（ROADMAP 原文）**：关闭转发 `Session` 后**连接数与重连任务数都归零**。
+
+- [x] **两个计数第一次有了读数口**：`akasha_ssh::live_connections()`（`SshConnection` 的 RAII 计数）
+  与 `tunnel::watch_tasks()`（看护任务的同一套计数），由新的只读探针 `residue` 报出
+  `{sshConnections, watchTasks}`。⚠️ **为什么不能拿实体表当证据**：`tunnels` probe 数的是注册表里的
+  实体，而关闭命令自己就会把实体摘掉 —— "表里没了"只是那条命令的效果。这两个数说的是**资源本身**
+  （连接对象归转发任务持有、看护任务归 runtime 持有，两者与实体表无关）
+- [x] **一条回收路径**：`Tunnel::reclaim()`（停止信号 → 回收转发），`tunnel_stop` 与
+  `Sessions::shutdown_all` 都走它 —— 退出路径不再靠"丢掉实体、让字段各自在 drop 时收尾"
+- [x] **一处真问题：在途的握手取消不掉**（问题 #142）—— E2E **先红了一次**：握手发生在阻塞线程上
+  （`spawn_sync`），扔掉 `await` 那一侧取消不了它，那条 socket 要等 `connect_timeout`（10 s）才关。
+  修法：`SshConnection::connect_via_until(…, cancel)` —— 取消一就绪，整条建链连同 socket 一起结束
+- [x] **一处返工：停止信号从 `oneshot` 改成实体自己持有的 `watch`**（问题 #143）—— 原先"每个动作
+  登记一份 `oneshot` 发送端"有竞态：看护任务挂上自己那份时会把尝试那份替换掉，尝试的 `select!`
+  两个分支同时就绪，`tokio::select!` **随机挑一个** —— 一次**成功**的连接因此有约一半的机会被报成
+  "已停止"
+- [x] **判据实测**（真实 app + 测试进程内一台 SSH 服务端与一个 HTTP 服务端）：见上表三行
+- [x] **门禁**：`just ready` **6/6**；`just test` **337 passed**（+4）；`just test-e2e` **退出码 0**
+  （27 个用例 / 20 个目标，新增 `tunnel_teardown` **5.48 s**）；`pnpm build` 退出码 0
+  （859.44 kB / gzip 236.54 kB，±0 —— 本轮**没有前端改动**）；`Cargo.lock` **零增量**
+- [x] **文档同步**：plan 0606 置「已完成」并移入 `archive/`（索引与 ROADMAP 指针同步）；
+  ADR-0003 D5 补「实现状态」+ §14 记一行；本文件覆盖写
+
+### 上一轮完成（plan 0605：断线重连）
 **判据（ROADMAP 原文）**：拔网线后进入"重连中"，耗尽次数后变"失败"**且托盘可见**；可手动重试。
 
 - [x] **`akasha-core` 新增退避策略**（ADR-0003 **D13**）：`Reconnect { max_attempts, initial, factor }`
@@ -436,7 +487,7 @@
 - [x] **文档同步**：plan 0605 置「已完成」并移入 `archive/`（索引与 ROADMAP 指针同步）；
   ADR-0003 D12 / D13 补「实现状态」+ §14 记一行；本文件覆盖写
 
-### 上一轮完成（plan 0604：远程转发 `-R`）
+### 更早一轮（plan 0604：远程转发 `-R`）
 **判据（ROADMAP 原文）**：远端监听端口**可回连到本机服务**。
 
 - [x] **`akasha-ssh` 新增 `remote`**（ADR-0003 **D10**，与 D9 的原语无关）：
@@ -461,7 +512,7 @@
 - [x] **文档同步**：plan 0604 置「已完成」并 `git mv` 进 `archive/`（索引与 ROADMAP 指针同步）；
   ADR-0003 D10 补「实现状态」+ §14 记一行；本文件覆盖写
 
-### 更早一轮（plan 0603：动态转发 `-D`）
+### 再早一轮（plan 0603：动态转发 `-D`）
 **判据（ROADMAP 原文）**：配置 SOCKS5 代理后**能访问远端网络**。
 
 - [x] **`akasha-ssh` 新增 `socks5`**（RFC 1928，**自行实现**：P1 不允许依赖系统组件）：
@@ -818,3 +869,18 @@
      转发任务按固定间隔看一眼（plan 0605 取 500 ms）。⚠️ 它对"半死"（TCP 没断、对端不回话）不敏感
      —— 那种情况要等保活耗尽（`keepalive_interval × keepalive_max`，默认约 90 秒），
      所以"拔网线"在真实网络上的发现延迟是**保活量级**，不是秒级。
+
+142. **在阻塞线程上执行的那件事，丢掉 `await` 那一侧取消不了它**（plan 0606）：`spawn_sync`
+     （= `spawn_blocking`）里的握手会一直执行到底 —— 扔掉 `JoinHandle` 只是不再等它，
+     它建起来的那个 socket 也一直开着（最长一个 `connect_timeout`，D15 的 10 s）。
+     表现是"关闭一条正在握手的隧道之后，对端几秒内仍看得到那条连接"。
+     **判据**：凡是要能"当场停"的阻塞活儿，都得把取消信号送进**那次调用自己**（这里做成了
+     `SshConnection::connect_via_until(…, cancel)`），而不是指望取消 `await`。
+143. **`oneshot` 的发送端换一个，接收端会立刻醒** —— 于是 `select!` 会**随机**挑分支
+     （plan 0606 的返工）：一个任务在开始前"登记自己的停止入口"，成功的连接由**看护任务**
+     再登记一份、把尝试那一份替换掉；那一刻尝试的 `select!` 两个分支同时就绪，
+     `tokio::select!` 随机挑一个 —— 一次**成功**的连接因此有约一半的机会被报成"已停止"。
+     改为"**实体自己持有一对 `watch`**、每个动作订一份接收端"之后，接收端只会在真的被要求停止
+     （或实体没了）时醒。教训：**信号的所有权要跟着被停止的东西，而不是跟着停止它的那一次动作**。
+     ⚠️ 附带一条 `watch` 语义：`Sender::send` 在**没有接收端**时返回 `Err` 且**什么都不做**，
+     有接收端时即使值没变也会通知 —— 后者正是"第二次停止照样有效"依赖的性质。

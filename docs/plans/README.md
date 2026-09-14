@@ -129,7 +129,7 @@
 | 0603 | 动态转发 `-D`（SOCKS5） | 已完成（2026-09-13：SOCKS5 服务端落地且只绑回环；真实 app 上 `curl --socks5-hostname` 取回远端服务；`just ready` 6/6） | plan 0602（已完成） | [0603](./archive/0603-dynamic-forward-socks5.md) |
 | 0604 | 远程转发 `-R` | 已完成（2026-09-14：服务端监听 + `forwarded-tcpip` 回连本机服务；本机服务不可达时**拒绝**通道；停止即撤销；`just ready` 6/6） | plan 0603（已完成）· 机制见 ADR-0003 D10 | [0604](./archive/0604-remote-forward.md) |
 | 0605 | 断线重连（3 次 + 指数退避） | 已完成（2026-09-15） | 前置：plan 0602 / 0603 / 0604（三个方向的转发） | [0605](./archive/0605-reconnect-backoff.md) |
-| 0606 | 关闭 Session 断连 + 中止重连 | 未规划（骨架） | 展开时机：plan 0605（已完成）之后 | [0606](./0606-close-session-teardown.md) |
+| 0606 | 关闭 Session 断连 + 中止重连 | 已完成（2026-09-15：关闭之后连接数与看护任务数都归零，对端也看不到那条连接；在途的尝试 7.5 ms 内被中止；`just ready` 6/6） | 前置：plan 0605（已完成） | [0606](./archive/0606-close-session-teardown.md) |
 
 ### 阶段 7 — SFTP
 

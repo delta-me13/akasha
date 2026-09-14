@@ -185,9 +185,9 @@
 - [x] 断线重连：**3 次 + 指数退避**，然后标记失败
       验收：拔网线后进入"重连中"，耗尽次数后变"失败"**且托盘可见**；可手动重试
       → [plan 0605](./docs/plans/archive/0605-reconnect-backoff.md)
-- [ ] 关闭 `Session` 立刻断连，并中止该 `Session` 的重连循环
+- [x] 关闭 `Session` 立刻断连，并中止该 `Session` 的重连循环
       验收：关闭转发 Session 后连接数与重连任务数都归零
-      → [plan 0606](./docs/plans/0606-close-session-teardown.md)
+      → [plan 0606](./docs/plans/archive/0606-close-session-teardown.md)
 
 ---
 
