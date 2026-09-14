@@ -2,7 +2,7 @@
 
 - **关联**：ROADMAP 阶段 6 ·「动态转发 `-D`（本地 SOCKS5 服务端）」
 - **前置**：plan 0601（隧道实体与状态机）· plan 0602（本地监听 + 每条入站连接一条通道）· plan 0505（原语）
-- **状态**：进行中
+- **状态**：已完成（2026-09-13）
 
 ## 目标
 
@@ -120,3 +120,28 @@ pnpm build         # 预期：退出码 0
 ## 实施记录（边做边追加）
 
 - **2026-09-13 展开**：骨架 → 进行中（补齐两件先定死的事、步骤与可粘贴的验收命令）。
+- **2026-09-13 落地**：`akasha-ssh` 新增 `socks5` 模块（无认证的 `CONNECT`：问候 → 请求 →
+  目标的三种 `ATYP`；`BIND` 回 `0x07`、不认的 `ATYP` 回 `0x08`、没有 `0x00` 方法回 `05 FF`、
+  版本不对什么都不回；成功 `REP` 在通道开出来之后才回，`BND.ADDR` 是占位 `0.0.0.0:0`）。
+  `relay` 的"一个固定目标"变成 `Ingress`（`Fixed` / `Socks5`），`LocalListener::bind` 因此
+  多收一个 `Ingress` —— 绑定地址的合规范围由它决定，`Socks5` 的非回环地址**在绑定之前**就被拒。
+  `SshError::Forward` 多带一档 `class`（`ForwardFailure`，取自上游结构化的
+  `ChannelOpenFailure`），新增 `SshError::NotLoopback`；`TunnelError` 新增 `NotLoopback`，
+  `Unsupported` 的文案改成"只支持 local 与 dynamic"；前端补一档文案。
+- **门禁实测**：`just ready` **6/6**；`just test` **315 passed**（akasha **70** + akasha-core 27 +
+  akasha-pty 39 + **akasha-ssh 52** + akasha-store 127）；`just test-e2e` **退出码 0**
+  （**24 个用例 / 21 个目标**，新增 `tunnel_dynamic_forward` **0.85 s**）；`pnpm build` 退出码 0
+  （859.47 kB / gzip 236.60 kB）；`Cargo.lock` **零增量**（本 plan 未新增依赖）。
+- **真实 app 上的判据**（`tunnel_dynamic_forward` E2E，测试进程内一台 SSH 服务端 +
+  一个 HTTP 服务端）：界面打开那条 `dynamic` 规则 → 答完主机密钥与口令 → probe 报
+  `bind = 127.0.0.1:<端口>` → **`curl --socks5-hostname 127.0.0.1:<端口> http://<只有对端认识的
+  名字>:<端口>/probe`**（**第三方** SOCKS5 客户端）退出码 0 且响应体就是远端服务写的那一串 →
+  对端记到恰好 1 条 `direct-tcpip`（`host` = curl 在握手里说的 `.invalid` 名字，本机解析失败由
+  用例自己断言）、中继字节数 `> 0` → 再 curl 一次变 2 条 → 中继表里没有的名字回 `REP 0x02`
+  （分类真的到了客户端，而不是通用的 `0x01`）→ 绑 `0.0.0.0` 的那条：界面显示
+  「SOCKS5 监听不能绑到 0.0.0.0：这一侧无认证，只允许绑回环地址（127.0.0.1 / [::1] / localhost）」
+  且 **probe 里没有它** → 点停止 → 端口不再接受连接、`sessions` 的 `live`/`registered` 相等（1/1）、
+  服务端看到 1 条连接断开。
+- **两处刻意未做**：`REP 0x05`（对端连不上目标）在真实 sshd 上才会出现 —— 测试服务端是
+  "接受通道之后才去连"，因此库里那一档只有单元测试覆盖（见 `docs/STATUS.md` 的「待验证」）；
+  SOCKS5 的认证协商 / `BIND` / UDP associate 一律明确拒绝，不做实现。
