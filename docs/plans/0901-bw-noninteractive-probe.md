@@ -23,6 +23,15 @@
 
 四项实测各有**结论 + 可复现的命令与输出**，落进 [`../bitwarden.md`](../bitwarden.md)。
 
+**第 4 项（变体判定）已实测完成**（2026-09-15，无需 vault）：判据是 `bw --help` 的命令表里
+有没有 `device-approval` 那一行；两份 `cli-v2026.8.0` 资产的对比、以及"版本号分辨不出"
+这两件事记在 `bitwarden.md` §2.2，判据本身由 `akasha-bw` 的 `variant` 模块与它的诱饵用例钉住。
+
+剩下三项的门槛是**一个真实 vault**：登录之后 `bw status` 的形状、未解锁时的报错原文、
+以及 `sshKey` 条目的 JSON 形状都只能在那里看到 —— 桩服务器要造出这些就得自己实现
+Bitwarden 的密钥派生与加密，而那正是 `scope.md` §10 的非目标。因此本 plan 保持骨架，
+展开时机是"拿到一个真实 vault"。
+
 ## 展开时要补
 
 - [ ] 「## 步骤」：每条实测的具体命令（`bw status` / `bw list items --raw` / `bw --version`）

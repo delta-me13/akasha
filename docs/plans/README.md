@@ -157,9 +157,10 @@
 
 | 编号 | 标题 | 状态 | 前置 / 展开时机 | 文件 |
 |---|---|---|---|---|
-| 0901 | 实测 `bw` 对 `sshKey` 条目的非交互行为 | 未规划（骨架） | 展开时机：需要真实 vault（可提前） | [0901](./0901-bw-noninteractive-probe.md) |
-| 0902 | 前置检查：探测 `bw` 及其变体 | 未规划（骨架） | 展开时机：plan 0901 之后 | [0902](./0902-bw-preflight-check.md) |
-| 0903 | 只读导入 SSH key 条目 | 未规划（骨架） | 展开时机：plan 0902 之后 | [0903](./0903-bw-readonly-import.md) |
+| 0901 | 实测 `bw` 对 `sshKey` 条目的非交互行为 | 未规划（骨架；四项里变体判定已实测，其余三项需要真实 vault） | 展开时机：需要真实 vault（可提前） | [0901](./0901-bw-noninteractive-probe.md) |
+| 0902 | `bw` 的获取与前置检查（两个轴 + 运行时下载 + 变体判定） | 进行中（2026-09-15：`akasha-bw` crate 落地，46 条用例；app 接线进行中） | ADR-0007（实现中） | [0902](./0902-bw-acquire-and-preflight.md) |
+| 0905 | 登录 / 解锁 / 锁定接进前端（含自托管） | 未开始 | plan 0902（进行中） | [0905](./0905-bw-login-session-ui.md) |
+| 0903 | 只读导入 SSH key 条目 | 未规划（骨架） | 展开时机：plan 0902 / 0905 之后 | [0903](./0903-bw-readonly-import.md) |
 | 0904 | 离线缓存（fingerprint / revisionDate） | 未规划（骨架） | 展开时机：plan 0903 之后 | [0904](./0904-bw-offline-cache.md) |
 
 ### 阶段 10 — Android（延迟）

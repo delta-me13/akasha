@@ -229,14 +229,17 @@
 
 ## 阶段 9 — Bitwarden 导入
 
-目标：`bw` 前置条件已明确，只读导入可用，离线缓存强度与本地池同级。
+目标：CLI 的获取与前置条件明确，登录（含自托管）在前端可用，只读导入可用，离线缓存强度与本地池同级。
 
-- [ ] **实测 `bw` 对 `sshKey` 条目的非交互行为**（实现前；需要真实 vault，可提前做）
-      验收：四项实测各有结论与可复现命令，写回 [`docs/bitwarden.md`](./docs/bitwarden.md)
+- [ ] **`bw` 的获取与前置检查**：二进制（宿主机的 `bw` / 运行时下载的 OSS 变体）与 CLI 状态目录两轴独立可切，默认都取宿主机那一档
+      验收：宿主机没有 `bw` 时报出这件事并给出下载动作；下载之后能读到它的版本与变体
+      → [plan 0902](./docs/plans/0902-bw-acquire-and-preflight.md)
+- [ ] **登录 / 解锁 / 锁定接进前端（含自托管）**：服务器地址可设，会话状态取自 CLI 自己的状态，session token 只在内存
+      验收：设自托管地址后登录到未解锁态、解锁到已解锁态、锁定后内存里不再有 token；三态与 CLI 自报一致
+      → [plan 0905](./docs/plans/0905-bw-login-session-ui.md)
+- [ ] **实测 `bw` 对 `sshKey` 条目的非交互行为**（需要真实 vault，可提前做）
+      验收：登录之后的 `bw status` 形状、未解锁时的报错、条目的 JSON 形状与离线可见性各有结论，写回 [`docs/bitwarden.md`](./docs/bitwarden.md)
       → [plan 0901](./docs/plans/0901-bw-noninteractive-probe.md)
-- [ ] 前置检查：探测 `bw` **及其变体**
-      验收：未安装 → 明确报"需安装 Bitwarden CLI **及该装哪个变体**"；专有变体 → 给出提示
-      → [plan 0902](./docs/plans/0902-bw-preflight-check.md)
 - [ ] 只读导入 SSH key 条目（`sshKey.privateKey`）
       验收：导入后可用该密钥建立 SSH 连接
       → [plan 0903](./docs/plans/0903-bw-readonly-import.md)

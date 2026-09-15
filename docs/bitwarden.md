@@ -1,21 +1,36 @@
 # Bitwarden 集成（参考资料）
 
 > 本文是 [`scope.md`](./scope.md) §7 的**展开**。
-> **结论在 `scope.md`，条款原文、条目结构与推导过程在这里** —— 分开是因为两者时效不同：
-> 结论偶尔变，上游条款与字段会随版本变。
+> **结论在 `scope.md` 与 [`adr/0007`](./adr/0007-bitwarden-cli-acquisition.md)，条款原文、
+> 命令面与实测过程在这里** —— 分开是因为两者时效不同：结论偶尔变，上游条款、命令与
+> 字段会随版本变。
 >
 > 之所以单独成文：这些内容一度放在 `scope.md` 里，使它增长到 600 行以上，
 > 而"能力清单"不该装条款原文。规则见 `AGENTS.md` §8.1。
 
+**本集成使用 `bw` 的主依据是官方文档**：<https://bitwarden.com/help/cli/>。
+CLI 自称"self-documented"（`bw --help` 与 `bw <command> --help` 覆盖同一份内容），
+因此文档与 `--help` 可以互相核对；本文记录的是**我们用到的那些**命令与实测输出。
+
 ---
 
-## 1. 前提：「装了 Bitwarden 桌面端就有 `bw` 吗？」
+## 1. 前提：CLI 从哪来
 
-**没有。** 桌面端**不含** CLI。`bw` 是**独立下载**：
-npm `@bitwarden/cli`、snap，或 GitHub Release 的二进制。
+**装了 Bitwarden 桌面端不等于有 `bw`。** 桌面端**不含** CLI，`bw` 是独立下载：
+npm `@bitwarden/cli`、snap、Flatpak（随桌面端一起）、或 GitHub Release 的本地可执行文件。
 
-所以"用户自备前置"的实际含义是：**用户要额外去找并安装**一个约 100 MB 的 CLI。
-这比"系统里已经有"重得多，也是为什么 §2 的许可证结论值得写下来。
+**本项目的口径（ADR-0007 D4）：两个轴各自可切，默认都取 `host`。**
+
+| 轴 | `host`（默认） | `managed` |
+|---|---|---|
+| 二进制 | `PATH` 里的 `bw` | 运行时下载到数据目录 `bitwarden/bw-<版本>/` |
+| 状态目录（`BITWARDENCLI_APPDATA_DIR`） | 不设 —— 用 CLI 自己的默认目录 | 数据目录 `bitwarden/appdata/` |
+
+- **运行时下载只取 OSS 变体**（ADR-0007 D1）：理由见 §2。
+- **`host` 轴上找不到 `bw` 时不静默切换**：界面说清"这台机器上没有 `bw`"并给出一个显式的
+  下载动作（ADR-0007 D5）。
+- **默认取 `host` 是用户当次指令**：CLI 的状态里有 access token，让它在系统默认位置不动，
+  比随本项目的便携目录迁移的风险低。
 
 ---
 
@@ -39,21 +54,42 @@ npm `@bitwarden/cli`、snap，或 GitHub Release 的二进制。
 transfer the Commercial Modules to any third party"*，以及
 *"use the Commercial Modules to create a competing product or service"*。
 
-**结论：专有变体既不能打包，也不能作为生产依赖** —— "不打包"是法律要求，不是取舍。
+**官方文档对两个变体的说法**（下载章节原文）：
 
-### 2.1 剩下的路
+> For each bundle of the Password Manager CLI available on GitHub, there is an OSS
+> (e.g. `bw-oss-windows-2024.12.0.zip`) and non-OSS build (e.g. `bw-windows-2024.12.0.zip`).
+> The non-OSS version is the default package distributed on distribution platforms and
+> includes features under a non-OSS license, such as device approval commands, that the
+> OSS version lacks.
+
+### 2.1 三条路与当前定案
 
 | 方案 | 评价 |
 |---|---|
-| **用户自备**（**当前定案**） | ✅ 我们不分发，GPL 义务不落到我们头上。代价：用户须自行安装 ~100 MB CLI，且我们**必须告知装哪个变体** |
-| 打包 `bw-oss-*` | 合法，但把 GPL-3.0-**only** 义务带进我们的分发（许可证文本 + 源码获取途径），并要自己承担下载/校验/更新 |
-| 运行时下载官方二进制 | ⚠️ 有先例（Raycast 扩展[这样做过](https://github.com/raycast/extensions/pull/8315)），但那个 PR 合并于 **2023-09**，**早于** 2024.6.1 的许可证分叉 —— **不能作为分叉后的先例** |
+| **运行时下载 `bw-oss-*`**（**当前定案**，ADR-0007 D1） | ✅ 本项目**不分发**二进制（下载发生在用户机器上、来源是上游自己的 release），因此 GPL 义务不落到本项目；GPL-3.0-only 对使用者没有用途限制。代价：缺 device approval 一类企业管理命令（本项目范围不需要） |
+| 打包 `bw-oss-*` | 合法，但把 GPL-3.0-only 义务带进我们的分发（许可证文本 + 源码获取途径），并要自己承担下载 / 校验 / 更新 |
+| 打包或下载**专有**变体 | ❌ 2.3(i) 禁分发；2.1 禁生产使用。**"不打包"是法律要求，不是取舍** |
 
-**因此"前置检查"要做的不止是"有没有 `bw`"**：还要**分辨变体**，
-探测到专有变体时给出提示。不得让用户在生产环境中使用专有变体而无任何提示。
+### 2.2 变体的**可执行**判据（实测）
 
-> **体积是次要原因**：约 100 MB 的 Node SEA 自包含二进制（好处是不需另装 Node）。
-> 两个原因结论一致，但**法律那条才是决定性的**。
+上游不随二进制附带许可证文本（两份 `cli-v2026.8.0` 产物里都搜不到 `LICENSE_*` 字样），
+版本号也分辨不出（两版都输出 `2026.8.0`）。可用的判据是**命令表**：
+
+```
+# 非 OSS（bw-linux-2026.8.0.zip）：
+  device-approval    Manage device approval requests sent to organizations that use SSO with trusted devices.
+
+# OSS（bw-oss-linux-2026.8.0.zip）：命令表里没有这一行
+```
+
+因此判定 = **读 `bw --help` 的命令表里有没有 `device-approval`**。
+⚠️ 它依赖上游保留这个命令名；读不出来时**报"判不出变体"**，不默认成 OSS
+（ADR-0007 §5）。
+
+### 2.3 因此 `host` 轴上仍要做前置检查
+
+探测到**专有**变体时必须给出提示 —— 这是 `scope.md` §7 "不得让用户在生产环境中使用
+专有变体而无任何提示"的落点。`managed` 那一轴只下 OSS，不涉及这条。
 
 ---
 
@@ -127,8 +163,14 @@ pub struct SshKey {
 
 ## 6. 会话与写入范围
 
-- **会话**：由本程序驱动 `bw unlock`（向用户索取主密码），拿到 `BW_SESSION` 后
-  **仅在内存中持有**；不落盘、不写进任何环境文件。
+- **会话**：由本程序驱动 `bw unlock` / `bw login`（向用户索取主密码），拿到 session key 后
+  **仅在内存中持有**，且住在受保护页里（ADR-0007 D7，`akasha_store::protected::Protected`）；
+  **不落盘、不写进任何环境文件、不进日志与事件载荷**。
+- **主密码**经 `--passwordenv` 交给子进程（ADR-0007 D8）—— 不用位置参数（argv 对同机进程
+  可见），不用 `--passwordfile`（会把主密码落盘）。
+- **`bw` 自己的状态**（access token、`data.json`）由 CLI 管理，落点取决于状态目录那一轴：
+  `host` = CLI 默认目录，`managed` = 数据目录下的 `bitwarden/appdata/`。
+  ⚠️ 它是**上游的状态**，不是本项目的机密：状态目录取 `host` 时它不随便携目录迁移。
 - **v1 没有任何 `bw create` / `bw edit` 调用**。这避开了上游写入的并发/冲突/回滚问题，
   也避开了"Bitwarden 不接受某密钥格式"的分支。
 - 双向移动/复制明确推迟（`scope.md` §10）。
@@ -139,13 +181,80 @@ pub struct SshKey {
 
 ---
 
-## 7. 实现前必须实测（目前仍未验证）
+## 7. 本集成用到的命令面（含实测输出）
 
-需要**一个真实 vault** 才能测，本地无法推断：
+全局选项（`bw --help`）：`--raw`（只输出裸值）、`--nointeraction`（禁止交互提问）、
+`--session <key>`、`--pretty`、`--quiet`。
 
-- [ ] 未解锁时 `bw` 的报错形态（决定前置检查怎么写）
-- [ ] `bw list items --raw` 的 JSON 形状（决定解析与字段映射）
-- [ ] SSH key 条目是否**稳定可见**于列表
-- [ ] **如何分辨专有变体与 OSS 变体**（许可证结论依赖这一点）
+| 用途 | 命令 | 实测要点 |
+|---|---|---|
+| 版本 | `bw --version` | 输出 `2026.8.0`（**两版变体同值**，分辨变体要用 §2.2） |
+| 变体判定 | `bw --help` | 命令表里 `device-approval` 一行是否存在 |
+| 状态 | `bw status --raw` | 恒定退出码 0；形状见 §7.1 |
+| 服务器 | `bw config server` / `bw config server <url>` | 无参数 = 读回当前服务器，输出**不带换行**；带值 = 写入。官方文档注明后续任何一次 `config` 调用会覆盖此前全部取值 |
+| 登录 | `bw login <email> --passwordenv <VAR> --raw --nointeraction` | 成功时 stdout 就是 session key 本身 |
+| 登录（2FA） | `bw login <email> --method <m> --code <c> ...` | `method`：`0` 认证器 / `1` 邮件 / `3` YubiKey；FIDO2 与 Duo **CLI 不支持** |
+| 解锁 | `bw unlock --passwordenv <VAR> --raw --nointeraction` | 同上；`--check` 只查锁定状态 |
+| 锁定 | `bw lock` | 使 session key 失效 |
+| 登出 | `bw logout` | 同上，并清掉登录态 |
+| 同步 | `bw sync` | 只做 pull；`--last` 只回上次同步的时间戳（ISO 8601） |
+| 列条目 | `bw list items --raw --session <key>` | 只读导入的入口（plan 0903） |
 
-放到 `docs/plans/` 里作为一个可执行的前置检查项。
+### 7.1 `bw status --raw` 的形状
+
+未登录（**实测**）：
+
+```json
+{"serverUrl":null,"lastSync":null,"status":"unauthenticated"}
+```
+
+官方文档给出的完整形状（登录之后，含两个额外键）：
+
+```json
+{
+  "serverUrl": "https://bitwarden.example.com",
+  "lastSync": "2020-06-16T06:33:51.419Z",
+  "userEmail": "user@example.com",
+  "userId": "00000000-0000-0000-0000-000000000000",
+  "status": "unlocked"
+}
+```
+
+`status` 三个取值：`unlocked`（已登录且解锁）/ `locked`（已登录未解锁）/
+`unauthenticated`（未登录，此时 `userEmail` 与 `userId` 不存在）。
+
+### 7.2 失败长什么样（实测）
+
+| 场景 | 输出 | 退出码 |
+|---|---|---|
+| 未登录就查数据（`bw list items` / `bw unlock`） | `You are not logged in.` | **1** |
+| `bw status` | 正常 JSON（未登录也是一种状态） | **0** |
+| 服务器用明文 HTTP | `InsecureUrlNotAllowedError: Insecure URL not allowed. All URLs must use HTTPS.` | 1 |
+| 服务器连不上 | `Unable to fetch ServerConfig from <url>/api FetchError: ... errno: 'ETIMEDOUT'` | 1 |
+| 自签证书未被信任 | `... reason: self-signed certificate` | 1 |
+
+**因此"命令成功"不能只看退出码为 0 这一件事**：`bw status` 在未登录时也返回 0，
+而查询类命令在未登录时返回 1 并把那句话写在 **stdout**（不是 stderr）。
+
+### 7.3 自签证书（自托管常见）
+
+官方文档的做法：设 `NODE_EXTRA_CA_CERTS` 指向证书 PEM。
+**实测有效**：指向自签证书之后，`bw login` 真的向本地桩发出了
+`GET /api/config` 与 `POST /identity/accounts/prelogin/password`。
+
+---
+
+## 8. 实现前必须实测的四项：结论
+
+| # | 问题 | 结论 | 状态 |
+|---|---|---|---|
+| 1 | 未解锁 / 未登录时的报错形态 | 未登录 = `You are not logged in.` + **退出码 1**；`bw status` 恒 0；**未解锁**（已登录但无 session key）下 `bw list items` 的原文**仍未实测** —— 需要一个真实 vault | ⚠️ 部分 |
+| 2 | `bw list items --raw` 的 JSON 形状（`sshKey` 的嵌套） | **未实测**（需要一个真实 vault） | ❌ |
+| 3 | 条目是否**稳定可见**（离线 / 未同步时） | **未实测** | ❌ |
+| 4 | 如何分辨专有变体与 OSS 变体 | **已定判据**：读 `bw --help` 的命令表里有没有 `device-approval`（§2.2）。⚠️ 它是启发式（上游改命令表即失效），且读不出来时要报"判不出" | ✅ |
+
+> #1 / #2 / #3 的共同门槛是**一个真实 vault**：登录之后 `bw status` 的形状、错误措辞与
+> `sshKey` 条目的嵌套都只能在那里看到。本机无法用桩服务器造出来 ——
+> `bw login` 的 session key 来自对上游返回的**加密用户密钥**解密，桩服务器要造出这个
+> 就得自己实现 Bitwarden 的密钥派生与加密，而那正是 `scope.md` §10 的非目标。
+> 这三项因此排在 plan 0903（只读导入）的展开时机上，见 [`STATUS.md`](./STATUS.md)。
