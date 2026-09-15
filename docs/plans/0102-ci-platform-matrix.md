@@ -169,26 +169,20 @@ macOS 需要用 `github.server_url == 'https://github.com'` 在 **job 级**排�
 `npm --prefix` 绕权限。它们的共同点是**看起来更"稳"，实际上只是在承担兼容层的成本** ——
 遇到这类写法，先确认它是为哪个 forge 写的。
 
-### 两次运行（2026-09-15）
+### 三次运行（2026-09-15）
 
-**第一次**（run `34972060468` @ `24d4f72`；清理后的 workflow 再次运行 `34986599520` @ `31a4d7c`
-同因）：**三个 job 全红于同一个原因 —— 镜像上没有 `sccache`** —— `.cargo/config.toml` 把它写成
-rustc-wrapper，cargo 连探测 rustc 都失败（`could not execute process` + `never executed`）；
-其余步骤全部成功，`e2e` 因 `needs: checks-linux` 为 `skipped`。处置：清空 `RUSTC_WRAPPER`，
-**不装 sccache**（两条理由见问题 #154；推送前在本机核对过六个 `uses:` 的固定点、
-`install-action` 那个提交的 `TOOLS.md`，以及 `just` / node / pnpm 的版本与 `mise.toml` 一致）。
+| 次 | run / commit | 结论 |
+|---|---|---|
+| 1 | `34972060468` @ `24d4f72` | 三个 job 全红于同一个原因 —— 镜像上没有 `sccache`（问题 #154）；`e2e` 未启动 |
+| 2 | `34987984477` @ `9081ac9` | macOS 通过；Linux 红于缺 `libudev-dev`（#155）、Windows 红于 msys perl 缺模块（#156）；`e2e` 仍未启动 |
+| 3 | `34989700283` @ `b7f6a62` | **Linux 的完整门禁与 E2E 都通过**，macOS 的类型检查通过；Windows 红于测试脚手架里的 `tty_name`（#160），macOS 的 E2E 红于三条串口目标与它的连带效应（#158 / #159） |
 
-**第二次**（run `34987984477` @ `9081ac9`）：编译真的开始了（日志 `env:` 段落显示
-`RUSTC_WRAPPER` 为空），**macOS 那一格通过** —— 平台类型检查第一次有结论；Linux 与 Windows
-各自暴露一个此前被它掩盖的**镜像缺件**：前者红在 `just ready` → `lint` → `clippy`
-（`libudev-sys` 找不到 `libudev.pc`，问题 #155），后者红在 `just check`（`openssl-sys` 的
-vendored OpenSSL 配置失败，问题 #156）。`e2e` 仍为 `skipped`，三平台 E2E 至今没有读数。
+处置（各自主张的出处都在对应的问题号里）：清空 `RUSTC_WRAPPER`（#154）；`APT_DEPS` 补
+`libudev-dev`（#155）；新增 `.github/actions/windows-perl`，把 `OPENSSL_SRC_PERL` 指向镜像自带的
+Strawberry Perl（`checks-other` 与 `e2e` 共用，写进 `GITHUB_ENV` 之前先探一次模块，#156）；
+三处 `rust-cache` 补 `workspaces: src-tauri`（#157）。第三次之后又修了三处：`slave_device_name`
+按 `cfg(unix)` 分两条实现（#160）、三条串口 E2E 在非 Linux 平台上按 `fake_serial_skip_reason`
+**显式跳过**（#158）、justfile 里 `$变量` 紧邻全角标点的 7 处改成花括号形式（#159）。
 
-处置（三处，理由都在对应的问题号里）：`APT_DEPS` 补 `libudev-dev`；新增
-`.github/actions/windows-perl`，把 `OPENSSL_SRC_PERL` 指向镜像自带的 Strawberry Perl
-（`checks-other` 与 `e2e` 共用；写进 `GITHUB_ENV` 之前先用 `-MLocale::Maketext::Simple` 探一次，
-失败因此停在那一处，而不是推迟到 cargo 的构建脚本里）；三处 `rust-cache` 都补
-`workspaces: src-tauri`（问题 #157）。
-
-仍只能在 runner 上读的：第三次运行的三格结论；缓存是否真的命中；E2E 能否在三平台启动 app。
+仍只能在 runner 上读的：第四次运行的三格结论；缓存是否真的命中；E2E 在三平台各自能否走完。
 阶段 0 的「CI 通过」条目（`ROADMAP.md` 里标 `[~]`）依赖的是同一条结论。

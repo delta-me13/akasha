@@ -27,7 +27,7 @@
       `AGENTS.md` §8；命名约定已写入 §3.1）
 - [x] **ADR 队列收敛为 3 份**（见 [`docs/adr/README.md`](./docs/adr/README.md)）
 - [~] **CI 通过** —— 工作流已重写（`checks-linux` / `checks-other` / `e2e` 三个 job）
-      验收：CI 上三个 job 通过 —— 第二次运行 macOS 那一格已通过，Linux / Windows 的镜像缺件已修，第三次运行的结论待读
+      验收：CI 上三个 job 通过 —— 第三次运行 Linux（含 E2E）与 macOS 的类型检查已通过，Windows 一处的编译面已修，第四次运行的结论待读
 - [x] **ADR-0001 定案** —— 已定案（2026-09-11），决策二裁定见其 §0.3
       验收：`docs/adr/0001` 状态已改为"已定案" ✓
 
@@ -47,9 +47,9 @@
       验收：三平台都能通过类型检查；Linux 另执行完整门禁与 E2E
       → [plan 0102](./docs/plans/0102-ci-platform-matrix.md)
 - [~] **E2E 入口可实际运行**：`just test-e2e` 自包含（启动 app → 运行全部 E2E 目标 → 收尾）
-      验收：没有 app 在运行时它也退出码 0；新增的 E2E 目标不接入即失败；CI 三平台待实际运行
+      验收：没有 app 在运行时它也退出码 0；新增的 E2E 目标不接入即失败；CI 上三平台已实际执行（Linux 通过，另两格见 plan 0102）
       → [plan 0107](./docs/plans/0107-e2e-entry.md)
-- [ ] **Windows 目标的类型检查真的通过**（修问题 #149：`akasha-pty` 用了 Windows 上没有的 `rustix::process`）
+- [~] **Windows 目标的类型检查真的通过**（问题 #149 的编译面已修；#160 是同类的第二处）
       验收：Windows 目标上的类型检查退出码 0（本地只能核对不依赖 C 工具链的三个成员，其余交给 CI）
       → [plan 0108](./docs/plans/0108-windows-type-check.md)
 - [x] `src-tauri/crates/akasha-core` 骨架：**`Session` 模型**（**必须先于任何后端**）

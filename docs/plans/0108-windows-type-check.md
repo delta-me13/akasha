@@ -112,5 +112,12 @@ POSIX 那一套（会话 / 进程组 / `setsid`）在 Windows 上不存在，等
 **顺带的一处**：`sigkill`（只被 Linux 的会话扫描调用）补上 `#[cfg(target_os = "linux")]` ——
 在那之前它在 macOS 上是一个没人调用的私有函数（dead_code 警告）。
 
+**2026-09-15，CI 的 Windows 格子给出这一层的第一份读数**（run `34989700283`）：`just check` 红在
+`src-tauri/tests/support/mod.rs` 的 `tty_name()`（`error[E0599]`：`portable-pty` 只给 Unix 的
+`MasterPty` 实现了它，ConPTY 没有设备节点）—— 与 `rustix::process` 同一类问题，只是这一处落在
+**测试脚手架**里，而它随 `akasha` 一起编译（那个成员带 C 依赖，本机核对不了）。处置：
+`slave_device_name` 按 `cfg(unix)` 分两条实现，三条串口 E2E 在非 Linux 平台上按
+`fake_serial_skip_reason` 显式跳过（问题 #160）。⚠️ **判据仍未达成** —— 结论要等下一次运行。
+
 **没有做的事**（见「留下的缺口」）：Windows 上的会话回收。判据里那四个带 C 依赖的成员
 （store / ssh / bw / app）本机核对不了，只能等 CI 的 Windows 格子 —— 而它要仓库先有 remote。

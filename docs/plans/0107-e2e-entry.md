@@ -2,7 +2,7 @@
 
 - **关联**：ROADMAP 阶段 1 ·「E2E 入口可实际运行」
 - **前置**：plan 0202 / 0203（E2E 目标已存在）、plan 0102（CI 矩阵）
-- **状态**：进行中（本地已完成并实测；CI 三平台格子待运行结论 —— 两次运行里该 job 都没有启动，见 plan 0102）
+- **状态**：进行中（本地已完成并实测；CI 上三个平台已实际执行 —— ubuntu 格通过，另两格待下一次运行，见 plan 0102）
 - **影响面**：`src-tauri/justfile`、`src-tauri/tests/{smoke,session_channel}.rs`、
   `.github/workflows/ci.yml`、`docs/just.md`
 
@@ -84,7 +84,10 @@ CI 的 `e2e` job 退回单平台。用例侧的探针修复与断言应当保留
 "无法启动"的错误结论 —— 端口探活一律写 `localhost`。另外 `--nocapture` 是必需的：
 跳过原因走 `eprintln!`，不打开它，"跳过"与"实际运行过"在摘要里无法区分。
 
-**还没验证的**：CI 三个 E2E 格子（本机无法模拟 Windows / macOS）。两次运行里 `e2e` 都因
-`needs: checks-linux` 没有启动（第一次卡在 sccache，第二次卡在 `libudev-dev` —— 处置见 plan 0102
-的「两次运行」），三个格子的结论仍未读到；重点为 Windows（Git Bash 下的判活 / 回收走 `tasklist` /
-`taskkill`）与 macOS 的 Vite 监听地址。
+**CI 上的读数（第三次运行起）**：前两次 `e2e` 都因 `needs: checks-linux` 没有启动（sccache 与
+`libudev-dev` 各挡了一次 —— 处置见 plan 0102 的「三次运行」），第三次才真的执行起来：
+**ubuntu 格通过**（`xvfb-run` 下的原生窗口句柄路径第一次走通）；内容里三条串口目标在 macOS 上
+打不开 PTY 从端、连带污染了它后面的 `bw_import`，收尾那行还有一个 bash 3.2 的解析问题
+（问题 #158 / #159 / #160 记了这三件事与处置）。**还没验证的**：修正之后的三格结论 ——
+重点是 Windows（Git Bash 下的判活 / 回收走 `tasklist` / `taskkill`，以及那三条串口目标在
+ConPTY 上同样只能跳过）与 macOS 的 `bw_import` 是否随串口跳过一起转绿。

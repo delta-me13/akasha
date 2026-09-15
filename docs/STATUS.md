@@ -50,13 +50,12 @@ CI 的 `checks-other` 执行的就是 `cargo check --workspace --all-targets`，
 不可能通过。已按平台门控（`rustix` 变成 unix 专属依赖），能本地核对的三个成员现在都是退出码 0。
 ⚠️ **可编译不等于有实现**：Windows 上「回收整个会话」仍然是空的 —— 那条缺口见「进行中 / 下一步」。
 
-**CI 的第二次运行把结论推进一步**（plan 0102）：首次三个 job 全红于同一个原因 —— 镜像上没有
-`sccache`（问题 #154）；清空 `RUSTC_WRAPPER` 之后 **macOS 那一格通过**（平台类型检查第一次有结论），
-而 Linux 与 Windows 各自暴露一个此前被它掩盖的问题：Linux 缺 `libudev-dev`（问题 #155），
-Windows 上 `openssl-src` 调用到的 `perl` 是 Git 自带的 msys 版本、缺模块（问题 #156）。
-三处处置已进 workflow（缓存键那一处见问题 #157）；`e2e` 两轮都因 `needs: checks-linux` 未启动 ——
-三平台 E2E 至今没有读数。⚠️ 推送之后本机已能读 Actions（`git credential fill` 可用），
-结论不再只能从网页看。
+**CI 的第三次运行把门禁推到两格绿**（plan 0102）：**Linux 的完整 `just ready` 与 Linux 的 E2E
+都通过**（xvfb 下第一次把 E2E 走完），macOS 的类型检查也通过；Windows 的类型检查红在一处**真实的
+`cfg` 错误**（测试脚手架用了 `portable-pty` 的 Unix 专有 `tty_name`，问题 #160），macOS 的 E2E 红在
+三条串口目标（PTY 从端在 macOS 上打不开）以及它的两处连带效应（问题 #158 / #159）。前两轮的红因
+（#154 sccache、#155 `libudev-dev`、#156 msys perl、#157 缓存工作区）都已处置并在这次运行里验证。
+⚠️ 推送之后本机已能读 Actions（`git credential fill` 可用），结论不再只能从网页看。
 
 **文档门禁改为非快速失败**（本会话）：`just docs-check` 原先把 `just docs-style` 作为独立一行调用，
 第一次失败即终止整个配方 —— 语体命中会把"命令未漂移 / ROADMAP 预算 / plan 预算"三类检查**全部掩盖**。
@@ -380,6 +379,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
+| ↑ **CI 第三次运行的实际读数**（run `34989700283` @ `b7f6a62`） | **Linux 的 `just ready` 通过**（门禁六步全绿）、**E2E（ubuntu-latest）通过**、**检查（macos-latest）通过**；`检查（windows-latest）` 红在类型检查：`error[E0599]: no method named tty_name`（`tests/support/mod.rs`，问题 #160）；`E2E（macos-latest）` 红在三条串口目标（`串口打不开：/dev/ttys000（Not a typewriter）`）与连带的 `bw_import`，收尾时 bash 报 `unbound variable` 把退出码换成 **127**（问题 #158 / #159）；第五个 job（`E2E（windows-latest）`）在本机读到时仍在运行。⚠️ 这次运行里 `RUSTC_WRAPPER` 为空、编译真的开始 —— #154 的处置得到验证 |
 | ↑ **CI 第二次运行的实际读数**（run `34987984477` @ `9081ac9`） | **macOS 那一格通过**（全部步骤绿，平台类型检查第一次有结论）；Linux 红在 `just ready` → `lint` → `clippy`、Windows 红在 `just check`：报错分别是 `libudev-sys` 的构建脚本找不到 `libudev.pc`（问题 #155）与 `openssl-sys` 的 vendored OpenSSL 配置失败（问题 #156）；`e2e` 仍为 `skipped`。日志里 `env:` 段落显示 `RUSTC_WRAPPER` 为空，编译确实开始 —— 空值这条处置有效。三处修正见 plan 0102 的「两次运行」 |
 | ↑ **CI 首次运行的实际读数**（run `34972060468` @ `24d4f72`；清理后的 workflow 再次运行 `34986599520` @ `31a4d7c` 同因） | 三个 job **全部失败于同一步**：Linux 的 `just ready`（红在 `lint` → `clippy`）、Windows 与 macOS 的 `just check`。三处报错逐字相同：`could not execute process` + `sccache <rustc> -vV` + `(never executed)`，以及 `No such file or directory (os error 2)`。**其余步骤全部成功**：checkout、系统依赖、`rust-toolchain`、`rust-cache`（首次 `No cache found`）、`install-action`（`just 1.58.0` 校验通过）、`npm install -g @ast-grep/cli@0.45.3`。`e2e` 状态为 **`skipped`**（`needs: checks-linux`），三平台 E2E 至今没有读数 |
 | `just test` | **473 tests run: 473 passed**（`akasha` **98** + `akasha-bw` **56** + `akasha-core` 30 + `akasha-pty` **40** + `akasha-serial` **25** + `akasha-ssh` **88** + `akasha-store` 136）。⚠️ `akasha` 的 91 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回；目标与用例数见下面那条 `just test-e2e` 与 `src-tauri/justfile` 的 `E2E_TARGETS`） |
@@ -507,6 +507,9 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   按独占打开，而真设备上 `serialport` 的 `TIOCEXCL` 会让**第二个**会话拿到 `EBUSY`。
   ⚠️ 反向的一条：**PTY 不是串口参数的忠实回读装置**，把它当成全部五个参数的证据会得到一份
   看起来完整、实际只覆盖三项的读数。
+  ⚠️ **macOS 上连"假设备"都造不出来**：同一个 PTY 从端在那边打开会得到 `Not a typewriter`
+  （CI 第三次运行实测），所以那三条 E2E 在 macOS 上按平台**显式跳过**并写明原因
+  （`fake_serial_skip_reason`）；Windows 更早一步 —— ConPTY 没有设备节点。
   ⚠️ **`AGENTS.md` §7 里 `introspect { action: "processes" }` 那一条对串口没有对象**
   （`session_leader()` 是 `None`，crate 也不 spawn 进程）："真正退出之后零残留"在这条路上只剩
   注册表（`live` / `registered` 回到打开前的读数，实测 `1/1`）—— 它与"没有任何进程/线程留下"
@@ -764,19 +767,21 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   给一个嵌套对象定文件格式要连界面一起设计（plan 0605 / 0704 的非目标）。
   ⚠️ 现状下"把退避改小"或"把并发上限调大"只能改代码。
 - [ ] **降级路径未实测**：v2 库在旧版本程序中会以 `UnsupportedVersion { found: 2 }` 被拒绝（有意为之）。
-- [x] **plan 0108（Windows 目标的类型检查）**：`akasha-pty` 的 `rustix::process` 已按平台门控，
-      三个能本地核对的成员在 Windows 目标上退出码 0 —— 判据与读数见该 plan。
+- [~] **plan 0108（Windows 目标的类型检查）**：`akasha-pty` 的 `rustix::process` 已按平台门控，
+      三个能本地核对的成员在 Windows 目标上退出码 0；第三次运行又暴露同一类的第二处
+      （测试脚手架的 `tty_name`，问题 #160），已修、**判据要等下一次运行**。
       ⚠️ 它只解决**编译**这一面
 - [ ] **Windows 上的会话回收仍是空的**（plan 0108 留下的缺口）：POSIX 的会话 / 进程组在 Windows 上
       不存在，等价物是 Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`：句柄一关，作业里的进程
       全部结束），它还能替掉伴生看门狗在那条平台上的路径。本机没有 Windows 主机 —— 连"现在的行为
       是什么样"（ConPTY 关闭时到底带走多少进程）都观测不到。展开时机是有 Windows 主机可执行 E2E 时；
       届时先写 ADR（进程模型，与 ADR-0005 同源）
-- [~] **plan 0102（CI 平台矩阵）**：本地部分完成，Windows 那格的编译面已由 plan 0108 处置；
-      两次运行之后 **macOS 那一格通过**，Linux 与 Windows 各自的镜像缺件已修（问题 #155 / #156，
-      缓存键那处见 #157）。最终判据 = 三个 job 全部通过 —— 第三次运行的结论待读
-- [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测；CI 三平台格子仍无读数
-      （两轮都停在 `needs: checks-linux` 上，见 plan 0102 的「两次运行」）
+- [~] **plan 0102（CI 平台矩阵）**：三次运行把红灯逐层换成了真实缺陷（#154 → #155 / #156 / #157
+      → #158 / #159 / #160），每一处都已处置。现状：**Linux 的完整门禁与 Linux 的 E2E 通过**，
+      macOS 的类型检查通过；Windows 的类型检查与 macOS 的 E2E 待下一次运行验证
+- [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：CI 上三个平台都真的执行起来了 ——
+      ubuntu 格通过（xvfb 下的原生窗口句柄路径第一次走通），macOS 格与 Windows 格的结论见
+      plan 0102 的「三次运行」
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
 
 ### 各轮（已完成，plan 0603–1103）
@@ -1242,3 +1247,21 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
      与 `could not find Cargo.toml in …`（该步骤仍判**成功**，键也照常给出 —— 所以它不会挡住任何
      东西，只会让缓存范围无法从日志判断）。它是 ADR-0004 的直接后果：该 action 的 `workspaces`
      默认值是 `. -> target`。处置：三处都补 `workspaces: src-tauri`。
+158. **用例中途失败会把标签页留在 app 上，后面的目标因此必红**（CI 第三次运行，macOS 的 E2E）：
+     macOS 上三条串口目标打不开 PTY 从端（问题 #160 那一类平台限制），失败发生在**开标签页之后**
+     —— 那三个标签页留在了 app 上，于是下一个目标 `bw_import` 的 `is_connected`（它要求标签页数
+     **恰好**等于脚本里写的那个数）永远不成立，报出来的是"提示问答没走完就连不上"，而状态栏明明
+     写着"已连接" —— 两句话看起来像产品缺陷，实际是上一个目标留下的污染。教训：**判据里数总量时，
+     失败路径的残留就是它的污染源**；平台跳过要发生在**动界面之前**，而不是等失败了再补救。
+159. **bash 会把紧跟在 `$变量` 后面的全角标点读进变量名**（CI 第三次运行，macOS 的 E2E 收尾）：
+     macOS 的 bash 3.2 在那里把 `$l）` 解析成变量名 `l` + 半个多字节序列，`set -u` 于是报
+     `l：unbound variable` 并以 **127** 退出 —— 而这一行只在**已经失败**时才执行，于是它把真正的
+     失败换成了"命令找不到"。同一行在 Linux 的 bash 5 上照常工作，所以它只在 macOS 上暴露。
+     处置：`$变量` 紧邻非 ASCII 字符时一律写花括号形式（本轮扫了全部 justfile 与测试脚手架，
+     7 处一并改掉）。
+160. **`portable-pty` 的 `tty_name` 只在 Unix 上有，而测试脚手架直接用了它**（CI 第三次运行，
+     Windows 的类型检查）：`error[E0599]: no method named tty_name found for struct Box<(dyn
+     MasterPty + Send + 'static)>` —— 测试要的是"从端的设备名"，而 ConPTY 没有设备节点这个概念。
+     它与问题 #149 同类（平台专有 API 漏了 `cfg`），只是这一处落在**测试**里，而 `akasha` 带 C 依赖、
+     本机无法为 Windows 目标构建 ⇒ 只有 CI 的 Windows 格子能给出读数。处置：`slave_device_name`
+     按 `cfg(unix)` 分两条实现，三条串口 E2E 在非 Linux 平台上按 `fake_serial_skip_reason` 显式跳过。
