@@ -15,6 +15,9 @@
 //! `.name.part`，完成后 `rename` —— 同目录的 `rename` 在 POSIX 与 Windows 上都是原子的
 //! （Windows 的 `fs::rename` 覆盖已存在的目标）。
 //!
+//! ⚠️ 那个临时名是**一次 `create_new` 抢来的**（`O_EXCL`），不是"先查存在、再创建" ——
+//! 两次调用之间那道缝正是两个同名文件的并发传输会踩的地方（见 [`claim_temp`]）。
+//!
 //! ⚠️ **不做 `fsync`**：判据是"用户看到最终名就等于成功"（`scope.md` §4.2），
 //! 而断电后文件是否还在磁盘上属于另一件事（远端那一侧同理，`fsync@openssh.com`
 //! 缺失时的降级同样没做 —— 见 ADR-0006 §4）。
@@ -26,8 +29,8 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::SshError;
 use crate::transfer::{
-    BoxFuture, Endpoint, Entry, EntryKind, FileRead, Listing, PendingWrite, file_failed,
-    temp_candidates,
+    BoxFuture, Endpoint, Entry, EntryKind, FileRead, Listing, PendingWrite, TEMP_ATTEMPTS,
+    file_failed, temp_candidates,
 };
 
 /// 本机文件系统作为一个端点。
@@ -134,10 +137,7 @@ impl Endpoint for LocalEndpoint {
                 .map(|name| name.to_string_lossy().into_owned())
                 .ok_or_else(|| file_failed(&path, "这个路径没有文件名，写不进一个临时名"))?;
             let dir = target.parent().map_or_else(PathBuf::new, PathBuf::from);
-            let temp = pick_temp(&dir, &name, &path).await?;
-            let file = fs::File::create(&temp)
-                .await
-                .map_err(|err| file_failed(&path, err))?;
+            let (file, temp) = claim_temp(&dir, &name, &path).await?;
             Ok(Box::new(LocalWrite {
                 file: Some(file),
                 temp,
@@ -148,19 +148,37 @@ impl Endpoint for LocalEndpoint {
     }
 }
 
-/// 在 `dir` 里挑一个还没被占用的临时名（`name` 是最终名那一部分）。
-async fn pick_temp(dir: &std::path::Path, name: &str, path: &str) -> Result<PathBuf, SshError> {
-    // 候选是无限的（`.name.part`、`.name.2.part`、…），但真正的冲突只会是少数几个 ——
-    // 无条件遍历下去等于把"挑不出名字"变成一次死循环。
-    for candidate in temp_candidates(name).take(16) {
+/// 在 `dir` 里**抢占**一个临时名：候选是 `.name.part`、`.name.2.part`、… 最多 [`TEMP_ATTEMPTS`] 个。
+///
+/// ⚠️ **抢占是"一次创建"，不是"先查存在、再创建"**：后者在两次调用之间有一道缝，而两个同名
+/// 文件同时传输时正好会踩进去 —— 双双看到"这个名字没人用"，双双创建，然后**交错写同一个
+/// 文件**。结局是两个都报成功，而落盘的那个既不是这一个也不是那一个（plan 0704 修的就是它，
+/// ADR-0006 D6）。`create_new` 是 `O_EXCL`：要么这个名字归我们，要么这一步失败，没有第三种。
+///
+/// 本机这一侧**分得清**"名字被占"与别的错误（`AlreadyExists` 是一个确定的 `ErrorKind`），
+/// 所以只有它换下一个候选；权限、路径不存在之类当场报出去。
+async fn claim_temp(
+    dir: &std::path::Path,
+    name: &str,
+    path: &str,
+) -> Result<(fs::File, PathBuf), SshError> {
+    for candidate in temp_candidates(name).take(TEMP_ATTEMPTS) {
         let full = dir.join(candidate);
-        match fs::try_exists(&full).await {
-            Ok(false) => return Ok(full),
-            Ok(true) => {}
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&full)
+            .await
+        {
+            Ok(file) => return Ok((file, full)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(err) => return Err(file_failed(path, err)),
         }
     }
-    Err(file_failed(path, "目标目录里连续的 16 个临时名都被占用了"))
+    Err(file_failed(
+        path,
+        format!("目标目录里连续的 {TEMP_ATTEMPTS} 个临时名都被占用了"),
+    ))
 }
 
 /// 本机这一侧的待落盘写入。

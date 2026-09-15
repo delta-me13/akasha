@@ -104,6 +104,8 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
         // 重连参数还没有文件形态（plan 0605 的非目标）—— 用模型里的默认值，
         // 而不是在这里另写一套数：默认值只有 `Reconnect::default()` 一处。
         reconnect: Config::default().reconnect,
+        // 传输的并发上限同理（plan 0704 的非目标）。
+        transfer: Config::default().transfer,
     })
 }
 
@@ -116,6 +118,17 @@ pub fn reconnect(app: &tauri::AppHandle) -> akasha_core::Reconnect {
     use tauri::Manager;
     app.try_state::<Config>()
         .map_or_else(akasha_core::Reconnect::default, |config| config.reconnect)
+}
+
+/// 生效的传输并发上限（ADR-0006 D6 的参数）：**一个 SFTP 会话同时搬几个文件**。
+///
+/// 与 [`reconnect`] 同一条口径：还没登记过（`.setup()` 没跑到 / 单独用命令测）就取模型里的
+/// 默认值 —— 配置读不到不该挡住任何东西，而"上限是多少"这个问题永远答得出来。
+pub fn in_flight(app: &tauri::AppHandle) -> u32 {
+    use tauri::Manager;
+    app.try_state::<Config>()
+        .map_or_else(akasha_core::Transfer::default, |config| config.transfer)
+        .in_flight
 }
 
 /// bin 同目录里那个便携数据目录（`portable.md` §4 第 1 条）——

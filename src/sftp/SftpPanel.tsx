@@ -23,10 +23,10 @@ import {
   connectSftpSide,
   listSftp,
   listSftpSessions,
-  listSftpTransfers,
   openSftp,
   sftpSides,
   startSftpTransfer,
+  type SftpInFlight,
   type SftpListing,
   type SftpOrigin,
   type SftpSide,
@@ -43,6 +43,11 @@ const OTHER: Record<SftpSide, SftpSide> = { left: "right", right: "left" };
 
 /** 固定顺序的两侧 —— 界面永远画两栏，哪怕后端还没有会话。 */
 const SIDES: readonly SftpSide[] = ["left", "right"];
+
+/** 并发读数（后端还没有会话时用）：上限未知、什么都没在搬。 */
+function idleInFlight(): SftpInFlight {
+  return { limit: 0, live: 0, peak: 0 };
+}
 
 /** 一侧在界面上的默认状态（后端还没有这一侧的信息时用）。 */
 function idleSide(side: SftpSide): SftpSideInfo {
@@ -103,7 +108,10 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
   /** 每一栏的路径输入框（"前往"用）。 */
   const [goto, setGoto] = useState<Partial<Record<SftpSide, string>>>({});
   const [transfers, setTransfers] = useState<readonly SftpTransfer[]>([]);
-  const [busy, setBusy] = useState<SftpSide | null>(null);
+  /** 并发读数（plan 0704）：同时几个在搬、上限多少、最多见过几个。 */
+  const [inFlight, setInFlight] = useState<SftpInFlight>(idleInFlight);
+  /** 哪几栏的连接命令在途。**按栏分开**：一栏在连不该让另一栏的按钮点不动（见 `connect`）。 */
+  const [busy, setBusy] = useState<readonly SftpSide[]>([]);
   const [problem, setProblem] = useState<string | null>(null);
 
   useEffect(() => {
@@ -124,6 +132,7 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
         setHandle(existing.handle);
         setSides(existing.sides);
         setTransfers(existing.transfers);
+        setInFlight(existing.inFlight);
         // 顺便把每一栏选中的来源摆回下拉框（否则界面上会显示"未选择"，而后端明明连着）。
         setChoice(
           Object.fromEntries(
@@ -145,9 +154,15 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
     setSides(await sftpSides(target));
   }, []);
 
-  const refreshTransfers = useCallback(async (target: number) => {
+  // 一次读数拿到传输列表与并发读数：两者同属那个会话，分两条命令读会让界面上出现
+  // "传输已经跑完了、而在搬的个数还是 1"这种拼接出来的中间态。
+  const refreshSession = useCallback(async (target: number) => {
     try {
-      setTransfers(await listSftpTransfers(target));
+      const sessions = await listSftpSessions();
+      const summary = sessions.find((session) => session.handle === target);
+      if (summary === undefined) return;
+      setTransfers(summary.transfers);
+      setInFlight(summary.inFlight);
     } catch {
       // 会话可能在后端已经不在了（例如被另一个面板关掉）—— 读传输不该再报一次错。
     }
@@ -157,9 +172,9 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
   const running = transfers.some((transfer) => transfer.state === "running");
   useEffect(() => {
     if (handle === null || !running) return;
-    const timer = setInterval(() => void refreshTransfers(handle), 250);
+    const timer = setInterval(() => void refreshSession(handle), 250);
     return () => clearInterval(timer);
-  }, [handle, running, refreshTransfers]);
+  }, [handle, running, refreshSession]);
 
   /** 新建一个 SFTP 会话（两侧都还没连）。**显式动作** —— 见文件头第 3 条。 */
   const start = useCallback(async () => {
@@ -168,11 +183,14 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
       const handle = await openSftp();
       setHandle(handle);
       setSides(await sftpSides(handle));
-      setTransfers([]);
+      // 传输列表与并发读数都从这个新会话读一次（此刻两者都是空 / 零，但**上限**是后端的
+      // 事实，界面不猜它 —— 它要等第一条传输跑完才更新的那种写法会让"上限是多少"在界面上
+      // 一直是 0）。
+      await refreshSession(handle);
     } catch (err) {
       setProblem(describe(err));
     }
-  }, []);
+  }, [refreshSession]);
 
   /** 连接某一侧，连上之后立刻把默认目录列出来（判据要看的正是这一步）。 */
   const connect = useCallback(
@@ -183,7 +201,7 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
         setProblem(`先在${SIDE_LABEL[side]}栏选本机或一台主机`);
         return;
       }
-      setBusy(side);
+      setBusy((current) => (current.includes(side) ? current : [...current, side]));
       setProblem(null);
       try {
         const info = await connectSftpSide(handle, side, origin);
@@ -199,7 +217,7 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
         } catch {
           // 会话可能在后端已经不在了（例如被另一个面板关掉）—— 状态刷新失败不足以再报一次。
         }
-        setBusy(null);
+        setBusy((current) => current.filter((candidate) => candidate !== side));
       }
     },
     [handle, choice, refreshSides],
@@ -242,12 +260,12 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
           other,
           join(targetDir, name),
         );
-        await refreshTransfers(handle);
+        await refreshSession(handle);
       } catch (err) {
         setProblem(describe(err));
       }
     },
-    [handle, listings, refreshTransfers],
+    [handle, listings, refreshSession],
   );
 
   /** 取消一次传输。**只是推信号** —— 状态由后端翻（见 `cancelSftpTransfer` 的文档）。 */
@@ -257,12 +275,12 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
       setProblem(null);
       try {
         await cancelSftpTransfer(handle, id);
-        await refreshTransfers(handle);
+        await refreshSession(handle);
       } catch (err) {
         setProblem(describe(err));
       }
     },
-    [handle, refreshTransfers],
+    [handle, refreshSession],
   );
 
   /** 结束会话：两侧断开、后端注销。幂等。 */
@@ -275,6 +293,7 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
       setSides([]);
       setListings({});
       setTransfers([]);
+      setInFlight(idleInFlight());
       setChoice({});
     } catch (err) {
       setProblem(describe(err));
@@ -316,7 +335,7 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
             // I/O 之前把它置上，直到这次命令返回才变成最终状态。所以这里照实显示它，
             // 而不是留着上一次那个"已连接" —— 否则一栏在重新连接期间看起来仍然可用
             // （`data-sftp-state` 也就不能当"后端现在是什么状态"来读）。
-            const state: SftpSideInfo["state"] = busy === side ? "connecting" : info.state;
+            const state: SftpSideInfo["state"] = busy.includes(side) ? "connecting" : info.state;
             return (
               <section
                 key={side}
@@ -354,10 +373,10 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
                   <button
                     type="button"
                     className="sftp-connect"
-                    disabled={busy !== null || (choice[side] ?? "") === ""}
+                    disabled={busy.includes(side) || (choice[side] ?? "") === ""}
                     onClick={() => void connect(side)}
                   >
-                    {busy === side ? "连接中…" : "连接"}
+                    {busy.includes(side) ? "连接中…" : "连接"}
                   </button>
                   <button
                     type="button"
@@ -449,7 +468,19 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
 
       {handle !== null && (
         <section className="sftp-transfers" aria-label="传输">
-          <header className="sftp-transfers-head">传输</header>
+          <header className="sftp-transfers-head">
+            传输
+            {/* 并发上限的读数（plan 0704）：三个数都由后端给 —— 界面上不做任何推断。
+                "同时在搬"比"还没结束的条数"少，就说明有传输在排队。 */}
+            <span
+              className="sftp-in-flight"
+              data-sftp-in-flight={inFlight.live}
+              data-sftp-limit={inFlight.limit}
+              data-sftp-peak={inFlight.peak}
+            >
+              同时在搬 {inFlight.live} / 上限 {inFlight.limit}（最多见过 {inFlight.peak}）
+            </span>
+          </header>
           {transfers.length === 0 ? (
             <p className="sftp-empty">还没有传输。</p>
           ) : (

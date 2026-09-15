@@ -45,7 +45,7 @@ use russh::{Channel, ChannelId, MethodSet, Pty};
 use russh_sftp::protocol::{
     Attrs, Data, File, FileAttributes, Handle as SftpHandle, Name, OpenFlags, Status, StatusCode,
 };
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, copy_bidirectional};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -102,6 +102,14 @@ pub struct Observed {
     /// 数的是"认下"而不是"收到"：被拒的那一次在客户端那一侧应当表现为
     /// `SftpClient` 建不起来 —— 两件事合起来才说明拒绝那条路通了。
     pub sftp_subsystems: usize,
+    /// 客户端请求**打开**的路径，按发生顺序（plan 0704）。
+    ///
+    /// 为什么这条事实值得记：临时名的抢占在协议层的形态是**一次** `open`（`CREATE|EXCLUDE`），
+    /// 而不是"先 `stat` 问一句、再 `open`" —— 后者每个文件多一次往返，而那两次请求之间的缝
+    /// 正是并发下同名文件撞在同一个临时名上的地方。"不再有探测"这条判据断言的就是这两样事实。
+    pub sftp_opens: Vec<String>,
+    /// 客户端 `stat` / `lstat` 过的路径，按发生顺序（同上：临时名的占用不再靠探测）。
+    pub sftp_stats: Vec<String>,
 }
 
 /// 一次 `tcpip-forward` 请求（对端要求我们在**自己这一侧**监听）。
@@ -530,6 +538,141 @@ impl Drop for Running {
     }
 }
 
+/// 一条**人为带时延的链路**（plan 0704）：把到 `target` 的字节按段延后转发。
+///
+/// 与 [`ServerOptions::sftp_delay`] 不是同一件事，两者不能互相替代：
+///
+/// * `sftp_delay` 放慢的是**服务端处理每一次请求**的时间 —— 它给"取消"一个确定的落点；
+/// * 这条链路放慢的是**一次往返** —— 每一段字节在到对面之前先等 `delay`。
+///
+/// 并发 in-flight 的收益全部来自往返（`scope.md` §4.1：小文件的墙钟时间几乎全是一次次往返的
+/// 叠加），而本机回环的一次往返在微秒级 —— 于是"串行 vs 并发"的差距会被系统噪声淹掉。
+/// 把往返放大到几十毫秒之后，"12 个小文件一个接一个"与"一起发出去"的墙钟时间差出一个量级，
+/// 而那个量级正是判据要看的（[`SlowLink::delay`] 与两端实测数字一起记进 plan 0704 的实施记录）。
+///
+/// ⚠️ 它按**读到的段**延后，不按协议的包延后（TCP 里没有包边界）：并发的几条请求若被合成
+/// 一段，就只延后一次。这个偏差只会让两边**靠得更近**，不会把"并发更快"变成一句可疑的话。
+///
+/// ⚠️ 服务端看到的对端地址因此永远是本机 —— 用例不该拿它当"客户端从哪来"的证据。
+pub struct SlowLink {
+    /// 客户端该连的地址（转发到 `target`）。
+    pub addr: SocketAddr,
+    /// 每段字节延后多久。
+    pub delay: Duration,
+    /// 这条链路一共搬过多少段（两个方向之和）—— 口径的读数口：段数越少，说明并发的那几条
+    /// 请求在链路上被**合**到了一起（这正是 in-flight 在做的事）。
+    chunks: Arc<AtomicU64>,
+    /// 监听那条任务；drop 时停掉（同 [`Running`] 的收尾：不留听着的端口）。
+    accept: tokio::task::JoinHandle<()>,
+}
+
+impl SlowLink {
+    /// 这条链路搬过多少段字节（两个方向之和）。
+    pub fn chunks(&self) -> u64 {
+        self.chunks.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for SlowLink {
+    fn drop(&mut self) {
+        self.accept.abort();
+    }
+}
+
+/// 起一条到 `target` 的带时延链路（见 [`SlowLink`]）。
+pub async fn slow_link(target: SocketAddr, delay: Duration) -> SlowLink {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("带时延链路的监听端口建不起来");
+    let addr = listener.local_addr().expect("监听地址读不出来");
+    let chunks = Arc::new(AtomicU64::new(0));
+    let accept = {
+        let chunks = Arc::clone(&chunks);
+        tokio::spawn(async move {
+            loop {
+                let Ok((inbound, _)) = listener.accept().await else {
+                    return;
+                };
+                let chunks = Arc::clone(&chunks);
+                tokio::spawn(async move {
+                    let Ok(outbound) = TcpStream::connect(target).await else {
+                        return;
+                    };
+                    // 关掉 Nagle：这条链路要量的是"一次往返有多久"，而合并小包会把请求攒起来。
+                    let _ = inbound.set_nodelay(true);
+                    let _ = outbound.set_nodelay(true);
+                    let (client_read, client_write) = inbound.into_split();
+                    let (server_read, server_write) = outbound.into_split();
+                    // ⚠️ 两个方向不能接反：上行读**客户端**那一半、写**服务端**那一半；
+                    // 接反的表现是把客户端自己的字节回声回去，而 SSH 客户端在那时看到的是一堆
+                    // 顺序不对的包（`Key exchange init failed`）—— 那看起来像握手实现坏了。
+                    let up = tokio::spawn(delayed_copy(
+                        client_read,
+                        server_write,
+                        delay,
+                        Arc::clone(&chunks),
+                    ));
+                    let down = tokio::spawn(delayed_copy(
+                        server_read,
+                        client_write,
+                        delay,
+                        Arc::clone(&chunks),
+                    ));
+                    let _ = tokio::join!(up, down);
+                });
+            }
+        })
+    };
+    SlowLink {
+        addr,
+        delay,
+        chunks,
+        accept,
+    }
+}
+
+/// 读一段、延后 `delay`、写一段，直到某一头结束（见 [`SlowLink`]）。
+///
+/// ⚠️ **时延是按段各自计的，不是"每一段排队等 10 ms"**：读那一侧不受写那一侧的拖累
+/// （读进来就交给一个无界队列），于是**前后几段同时在链路里**，各自的到期时刻互不影响 ——
+/// 那才是"一次往返有多久"的模型。实现成"读一段、睡一段、写一段"的循环会让链路本身变成
+/// 一个串行的瓶颈：并发发出去的请求会**在链路里排成队**，于是"并发更快"这件事在
+/// 上限 2、4 上几乎量不出来（plan 0704 的第一版正是如此）。
+async fn delayed_copy<R, W>(mut reader: R, mut writer: W, delay: Duration, chunks: Arc<AtomicU64>)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin,
+{
+    // 队列里带的是"这一段是什么时候到的"：到期时刻 = 到达时刻 + delay。
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(tokio::time::Instant, Vec<u8>)>();
+    let pump = tokio::spawn(async move {
+        let mut buffer = vec![0u8; 16 * 1024];
+        loop {
+            match reader.read(&mut buffer).await {
+                Ok(0) | Err(_) => return,
+                Ok(filled) => {
+                    let arrived = tokio::time::Instant::now();
+                    if tx.send((arrived, buffer[..filled].to_vec())).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+
+    // 顺序必须保持（SSH 的字节流不能重排），而所有段的期限相同、到达顺序非递减，
+    // 所以"按顺序等到期"天然就是不重排的。
+    while let Some((arrived, chunk)) = rx.recv().await {
+        tokio::time::sleep_until(arrived + delay).await;
+        chunks.fetch_add(1, Ordering::Relaxed);
+        if writer.write_all(&chunk).await.is_err() {
+            break;
+        }
+        let _ = writer.flush().await;
+    }
+    pump.abort();
+}
+
 /// 把种子落成真目录（plan 0702），返回那个目录。
 ///
 /// 目录名带进程号与一个自增号：同一个测试进程里可能同时开着几台服务端（`sftp_dual_pane`
@@ -752,7 +895,11 @@ impl russh::server::Handler for TestServer {
         self.shared.observed.lock().unwrap().sftp_subsystems += 1;
         let _ = session.channel_success(channel_id);
         let delay = self.shared.sftp_delay;
-        russh_sftp::server::run(channel.into_stream(), SftpRoot::new(root, delay)).await;
+        russh_sftp::server::run(
+            channel.into_stream(),
+            SftpRoot::new(root, delay, Arc::clone(&self.shared.observed)),
+        )
+        .await;
         Ok(())
     }
 
@@ -1022,6 +1169,8 @@ struct SftpRoot {
     root: PathBuf,
     /// 每个 `read` / `write` 之前先等这么久（`ServerOptions::sftp_delay`）。
     delay: Option<Duration>,
+    /// 服务端记下的事实（plan 0704 起：`open` 与 `stat` 两种请求各按顺序记一条）。
+    observed: Arc<Mutex<Observed>>,
     /// 打开着的文件句柄：句柄名 → (它指向哪个路径, 文件本体)。
     files: HashMap<String, (PathBuf, StdFile)>,
     /// 已经建好的目录句柄：句柄名 → **还没发出去的那些条目**。
@@ -1034,10 +1183,11 @@ struct SftpRoot {
 }
 
 impl SftpRoot {
-    fn new(root: PathBuf, delay: Option<Duration>) -> Self {
+    fn new(root: PathBuf, delay: Option<Duration>, observed: Arc<Mutex<Observed>>) -> Self {
         Self {
             root,
             delay,
+            observed,
             files: HashMap::new(),
             dirs: HashMap::new(),
             next_handle: 0,
@@ -1096,11 +1246,23 @@ impl SftpRoot {
         pflags: OpenFlags,
     ) -> Result<SftpHandle, StatusCode> {
         let resolved = self.resolve(path);
+        self.observed
+            .lock()
+            .unwrap()
+            .sftp_opens
+            .push(path.to_owned());
         let mut options = std::fs::OpenOptions::new();
         options.read(pflags.contains(OpenFlags::READ));
         options.write(pflags.contains(OpenFlags::WRITE));
         options.append(pflags.contains(OpenFlags::APPEND));
-        if pflags.contains(OpenFlags::CREATE) || pflags.contains(OpenFlags::EXCLUDE) {
+        // ⚠️ `EXCLUDE` 必须走 `create_new`（`O_EXCL`），不能与 `CREATE` 合在一起只加一个
+        // `create`：前者是"这个名字原来必须不存在"，后者是"没有就建，有就打开它"。
+        // 上游的 `From<OpenFlags> for fs::OpenOptions` 正是这样分的，而两者混淆的表现是
+        // **服务端悄悄忽略 `EXCLUDE`** —— 于是"抢占临时名"在这里看起来成立、实际没有
+        // （plan 0704 的两条同名传输会交错写同一个文件，而用例全绿）。
+        if pflags.contains(OpenFlags::EXCLUDE) {
+            options.create_new(true);
+        } else if pflags.contains(OpenFlags::CREATE) {
             options.create(true);
         }
         if pflags.contains(OpenFlags::TRUNCATE) {
@@ -1202,6 +1364,7 @@ impl russh_sftp::server::Handler for SftpRoot {
     }
 
     async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+        self.observed.lock().unwrap().sftp_stats.push(path.clone());
         let resolved = self.resolve(&path);
         let metadata = std::fs::metadata(&resolved).map_err(status_of)?;
         Ok(Attrs {
@@ -1211,6 +1374,7 @@ impl russh_sftp::server::Handler for SftpRoot {
     }
 
     async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+        self.observed.lock().unwrap().sftp_stats.push(path.clone());
         let resolved = self.resolve(&path);
         let metadata = std::fs::symlink_metadata(&resolved).map_err(status_of)?;
         Ok(Attrs {

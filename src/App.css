@@ -760,6 +760,12 @@ body {
   margin-bottom: 4px;
 }
 
+/* 并发读数（plan 0704）：传输列表表头右侧那三个数。 */
+.sftp-in-flight {
+  margin-left: 8px;
+  color: #88c0d0;
+}
+
 .sftp-transfer-list {
   margin: 0;
   padding: 0;

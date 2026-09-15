@@ -348,10 +348,19 @@ async fn discard(sink: &mut dyn PendingWrite, request: &TransferRequest<'_>, cau
 ///
 /// 由引擎这一层定义而不是各端点各写一份：`scope.md` §4.2 举的例子就是 `.name.part`，
 /// 而 ADR-0006 D6 要求同一批里两个同名文件不能撞在同一个临时名上 ——
-/// 端点负责在候选里挑第一个**不存在**的。
+/// 端点负责在候选里挑第一个**抢得到**的（怎么算"抢到"由端点的介质决定：本机是 `O_EXCL`，
+/// 远端是 `CREATE|EXCLUDE`，见 [`TEMP_ATTEMPTS`]）。
 pub fn temp_candidates(name: &str) -> impl Iterator<Item = String> + '_ {
     std::iter::once(format!(".{name}.part")).chain((2..).map(move |n| format!(".{name}.{n}.part")))
 }
+
+/// 一条传输最多试几个临时名。
+///
+/// 候选本身是无限的（`.name.2.part`、`.name.3.part`、…），但真正的冲突只会是少数几个 ——
+/// 无条件遍历下去等于把"抢不到名字"变成一次死循环。到顶之后报出来的必须是一条**真的**
+/// 错误（端点的原话），不能编一句"名字都被占用了"：远端那种介质分不出"被占"与"权限不足"
+/// （见 `crate::sftp` 的 `claim_temp`）。
+pub(crate) const TEMP_ATTEMPTS: usize = 16;
 
 #[cfg(test)]
 mod tests {

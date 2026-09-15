@@ -11,6 +11,7 @@ import {
   commands,
   type SftpEntry,
   type SftpError,
+  type SftpInFlight,
   type SftpListing,
   type SftpOrigin,
   type SftpSide,
@@ -23,6 +24,7 @@ import {
 
 export type {
   SftpEntry,
+  SftpInFlight,
   SftpListing,
   SftpOrigin,
   SftpSide,

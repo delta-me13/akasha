@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex};
 
 use akasha_core::SessionId;
 use akasha_ssh::transfer::{Cancel, Endpoint, Listing, Progress, TransferRequest};
-use akasha_ssh::{LocalEndpoint, SftpClient, SshConnection};
+use akasha_ssh::{InFlight, LocalEndpoint, SftpClient, SshConnection};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tokio::runtime::Handle as RuntimeHandle;
@@ -199,6 +199,25 @@ pub struct SftpSummary {
     pub sides: Vec<SftpSideInfo>,
     /// 这个会话发起过的传输，**新的在前**。
     pub transfers: Vec<SftpTransfer>,
+    /// 这个会话的并发读数（plan 0704 的 ADR-0006 D6）。
+    pub in_flight: SftpInFlight,
+}
+
+/// 并发上限的三个读数（plan 0704）。
+///
+/// 它们一起答一个问题："上限真的在起作用吗" —— `live` 是此刻在搬的文件数，`peak` 是这个
+/// 会话见过的最多同时几个（**会话生命期内**，不回落）。⚠️ 排队中的传输在
+/// [`SftpTransfer`] 里与"正在搬"长得一样（状态枚举只有"还没结束"这一档），
+/// 分辨它们靠 `live` 比"还没结束的条数"少。
+#[derive(Debug, Clone, Copy, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpInFlight {
+    /// 上限（来自配置，见 `akasha_core::Transfer::in_flight`）。
+    pub limit: u32,
+    /// 此刻有几个文件在搬。
+    pub live: u32,
+    /// 这个会话见过的最多同时几个。
+    pub peak: u32,
 }
 
 /// 一条目录条目的类型（过 IPC 的稳定短名）。
@@ -533,16 +552,36 @@ pub struct Sftp {
     transfers: Vec<Transfer>,
     /// 下一个传输编号。
     next_transfer: TransferId,
+    /// **并发上限**（plan 0704，ADR-0006 D6）：这个会话同时搬几个文件。
+    ///
+    /// 归**会话**而不是归某一次传输：上限要跨任务共享，而"一个文件一条命令"意味着
+    /// 一次调用看不见别的调用。克隆出去的是同一个（内部 `Arc`）。
+    in_flight: Arc<InFlight>,
 }
 
 impl Sftp {
-    /// 新建一个两侧都还没连的会话。
-    pub(crate) fn new(id: SessionId) -> Self {
+    /// 新建一个两侧都还没连的会话。`in_flight` 是同时搬几个文件的上限。
+    pub(crate) fn new(id: SessionId, in_flight: u32) -> Self {
         Self {
             id,
             sides: [Side::default(), Side::default()],
             transfers: Vec::new(),
             next_transfer: 1,
+            in_flight: Arc::new(InFlight::new(in_flight)),
+        }
+    }
+
+    /// 并发上限本身（克隆 = 同一个）。传输那条任务拿它去占空位。
+    pub(crate) fn in_flight(&self) -> Arc<InFlight> {
+        Arc::clone(&self.in_flight)
+    }
+
+    /// 三个读数（探针与界面读它）。
+    pub(crate) fn in_flight_info(&self) -> SftpInFlight {
+        SftpInFlight {
+            limit: self.in_flight.limit(),
+            live: self.in_flight.live(),
+            peak: self.in_flight.peak(),
         }
     }
 
@@ -735,10 +774,17 @@ impl Sftp {
 /// 登记一个两栏 SFTP 会话。
 ///
 /// **同步命令**：它只往注册表里放一个空实体（没有任何 I/O），连接是 [`sftp_connect`] 的事。
+/// 收 `AppHandle` 只为读一次并发上限（ADR-0006 D6 的参数）—— 那个数在会话建立那一刻定下来，
+/// 之后不随配置变（配置本身只在启动时读一次）。
 #[tauri::command]
 #[specta::specta]
-pub fn sftp_open(sessions: State<'_, Sessions>) -> Result<SessionHandle, SftpError> {
-    sessions.open_sftp().map_err(SftpError::from)
+pub fn sftp_open(
+    app: AppHandle,
+    sessions: State<'_, Sessions>,
+) -> Result<SessionHandle, SftpError> {
+    sessions
+        .open_sftp(crate::config::in_flight(&app))
+        .map_err(SftpError::from)
 }
 
 /// 让某一侧连上本机文件系统，或者池里的那一台主机。
@@ -846,7 +892,7 @@ pub async fn sftp_list(
     Ok(listing.into())
 }
 
-/// 把某一侧的一个文件搬到另一侧的某个路径上（plan 0702 / 0703）。
+/// 把某一侧的一个文件搬到另一侧的某个路径上（plan 0702 / 0703 / 0704）。
 ///
 /// 返回一个**编号**而不是结果：搬运是后台任务（`scope.md` §4.1 要求 progress 可见，
 /// 而一条几十秒的命令会把 IPC 堵住）。进度与结局走 [`sftp_transfers`] 与 `sftp` 探针读。
@@ -854,6 +900,9 @@ pub async fn sftp_list(
 /// 两栏都是主机时走哪一档不在这里决定：那是**目标那一栏的端点怎么来的**（B 档 = 那条连接
 /// 是经源那一栏的主机直通来的，见 [`sftp_connect`]），这里只把结果抄进这次传输的记录
 /// （[`SftpTransfer::via`]）。于是两档共用同一个引擎（ADR-0006 D5）。
+///
+/// **并发上限在会话那一层**（plan 0704）：这条任务先在这个会话的空位上排一个队，再动端点。
+/// 排队与"用户取消 / 关会话"是可抢占的 —— 排在队里就被取消的传输**一个端点都没碰过**。
 #[tauri::command]
 #[specta::specta]
 pub fn sftp_transfer(
@@ -869,6 +918,7 @@ pub fn sftp_transfer(
     let target = endpoint_of(&sessions, handle, to)?;
     // 目标那一栏是经哪台直通到达的 —— `None` = 本机直连，也就是本机内存中转那一档。
     let via = sessions.sftp_through(handle, to);
+    let in_flight = sessions.sftp_in_flight(handle)?;
 
     let tracked = Arc::new(Tracked::new(from, from_path, to, to_path, via));
     let runtime = app
@@ -887,14 +937,15 @@ pub fn sftp_transfer(
                 source_path: tracked.from_path.as_str(),
                 target_path: tracked.to_path.as_str(),
             };
-            let outcome = akasha_ssh::transfer::transfer(
-                &*source,
-                &*target,
-                &request,
-                &tracked.progress,
-                tracked.cancel.waiter(),
-            )
-            .await;
+            let outcome = in_flight
+                .transfer(
+                    &*source,
+                    &*target,
+                    &request,
+                    &tracked.progress,
+                    tracked.cancel.waiter(),
+                )
+                .await;
             tracked.finish(outcome);
         })
     };

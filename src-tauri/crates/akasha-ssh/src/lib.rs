@@ -49,6 +49,8 @@ mod error;
 /// **D9 的原语**：`direct-tcpip` = 一条流（跳板 / `-L` / SFTP B 档复用）。
 mod forward;
 mod handshake;
+/// **并发 in-flight 的上限**（plan 0704，ADR-0006 D6）：同时几个文件在搬。
+mod in_flight;
 mod keys;
 mod known_hosts;
 /// **本机端点**（plan 0702）：`scope.md` §4 的 "local ↔ host" 里的那个 local ——
@@ -83,6 +85,7 @@ pub use ending::{ForwardEnd, ForwardEnding};
 pub use error::{ForwardFailure, SshError};
 pub use forward::{SshConnection, SshStream, live_connections};
 pub use handshake::{HostKey, HostKeyVerifier, PinnedHostKey, SshConfig, SshConnect};
+pub use in_flight::InFlight;
 pub use keys::{KeyCandidate, SshAuth};
 pub use known_hosts::{
     HostKeyCache, HostKeyPrompt, KnownHostsVerifier, RecordedHostKey, RecordedIn,

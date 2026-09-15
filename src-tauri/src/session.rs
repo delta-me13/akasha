@@ -634,7 +634,7 @@ impl Sessions {
     /// 与 [`Self::open_tunnel`] 同一条纪律：**先放进注册表**，连接是调用方随后的事
     /// （那是 async 的，绝不能在这把锁里做）—— 于是 `live` / `registered` 的对等关系
     /// 从第一刻起就成立。
-    pub fn open_sftp(&self) -> Result<SessionHandle, IpcError> {
+    pub fn open_sftp(&self, in_flight: u32) -> Result<SessionHandle, IpcError> {
         let mut inner = self.lock()?;
         let id = inner
             .registry
@@ -643,10 +643,26 @@ impl Sessions {
                 message: err.to_string(),
             })?;
         let handle = Self::handle(id)?;
-        inner.sftps.insert(handle, Sftp::new(id));
+        inner.sftps.insert(handle, Sftp::new(id, in_flight));
         drop(inner);
         self.notify_changed();
         Ok(handle)
+    }
+
+    /// 这个 SFTP 会话的并发上限（**同一个**，克隆出来给传输那条任务用）。
+    ///
+    /// 克隆出来的是同一个上限而不是另一份计数：一次传输占一个空位，而这个空位属于
+    /// **整个会话** —— 那正是"上限约束的是全部传输，不区分它们来自几条命令"的落地。
+    pub(crate) fn sftp_in_flight(
+        &self,
+        handle: SessionHandle,
+    ) -> Result<Arc<akasha_ssh::InFlight>, IpcError> {
+        let inner = self.lock()?;
+        let sftp = inner
+            .sftps
+            .get(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        Ok(sftp.in_flight())
     }
 
     /// 这一侧要开始连了。
@@ -854,6 +870,7 @@ impl Sessions {
                 handle: *handle,
                 sides: sftp.sides(),
                 transfers: sftp.transfers(),
+                in_flight: sftp.in_flight_info(),
             })
             .collect();
         entries.sort_by_key(|entry| entry.handle);

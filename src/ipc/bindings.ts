@@ -142,6 +142,8 @@ export const commands = {
 	 *  登记一个两栏 SFTP 会话。
 	 * 
 	 *  **同步命令**：它只往注册表里放一个空实体（没有任何 I/O），连接是 [`sftp_connect`] 的事。
+	 *  收 `AppHandle` 只为读一次并发上限（ADR-0006 D6 的参数）—— 那个数在会话建立那一刻定下来，
+	 *  之后不随配置变（配置本身只在启动时读一次）。
 	 */
 	sftpOpen: () => typedError<number, SftpError>(__TAURI_INVOKE("sftp_open")),
 	/**
@@ -161,7 +163,7 @@ export const commands = {
 	/**  列某一侧某个目录。 */
 	sftpList: (handle: number, side: SftpSide, path: string) => typedError<SftpListing, SftpError>(__TAURI_INVOKE("sftp_list", { handle, side, path })),
 	/**
-	 *  把某一侧的一个文件搬到另一侧的某个路径上（plan 0702 / 0703）。
+	 *  把某一侧的一个文件搬到另一侧的某个路径上（plan 0702 / 0703 / 0704）。
 	 * 
 	 *  返回一个**编号**而不是结果：搬运是后台任务（`scope.md` §4.1 要求 progress 可见，
 	 *  而一条几十秒的命令会把 IPC 堵住）。进度与结局走 [`sftp_transfers`] 与 `sftp` 探针读。
@@ -169,6 +171,9 @@ export const commands = {
 	 *  两栏都是主机时走哪一档不在这里决定：那是**目标那一栏的端点怎么来的**（B 档 = 那条连接
 	 *  是经源那一栏的主机直通来的，见 [`sftp_connect`]），这里只把结果抄进这次传输的记录
 	 *  （[`SftpTransfer::via`]）。于是两档共用同一个引擎（ADR-0006 D5）。
+	 * 
+	 *  **并发上限在会话那一层**（plan 0704）：这条任务先在这个会话的空位上排一个队，再动端点。
+	 *  排队与"用户取消 / 关会话"是可抢占的 —— 排在队里就被取消的传输**一个端点都没碰过**。
 	 */
 	sftpTransfer: (handle: number, from: SftpSide, fromPath: string, to: SftpSide, toPath: string) => typedError<number, SftpError>(__TAURI_INVOKE("sftp_transfer", { handle, from, fromPath, to, toPath })),
 	/**
@@ -521,6 +526,23 @@ export type SftpError =
 } };
 
 /**
+ *  并发上限的三个读数（plan 0704）。
+ * 
+ *  它们一起答一个问题："上限真的在起作用吗" —— `live` 是此刻在搬的文件数，`peak` 是这个
+ *  会话见过的最多同时几个（**会话生命期内**，不回落）。⚠️ 排队中的传输在
+ *  [`SftpTransfer`] 里与"正在搬"长得一样（状态枚举只有"还没结束"这一档），
+ *  分辨它们靠 `live` 比"还没结束的条数"少。
+ */
+export type SftpInFlight = {
+	/**  上限（来自配置，见 `akasha_core::Transfer::in_flight`）。 */
+	limit: number,
+	/**  此刻有几个文件在搬。 */
+	live: number,
+	/**  这个会话见过的最多同时几个。 */
+	peak: number,
+};
+
+/**
  *  一次列目录的结果。
  * 
  *  `path` 是**端点规范化之后**的路径（远端是 `realpath`，本机是 `canonicalize`）：
@@ -599,6 +621,8 @@ export type SftpSummary = {
 	sides: SftpSideInfo[],
 	/**  这个会话发起过的传输，**新的在前**。 */
 	transfers: SftpTransfer[],
+	/**  这个会话的并发读数（plan 0704 的 ADR-0006 D6）。 */
+	inFlight: SftpInFlight,
 };
 
 /**  一次传输的**过 IPC 表示**。 */

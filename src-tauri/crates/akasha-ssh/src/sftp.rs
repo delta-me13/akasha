@@ -22,6 +22,11 @@
 //! 不等回答（它自己的文档写着"pending write errors and the close status are silently
 //! discarded"）。而"写完了"正是重命名之前必须成立的前提 —— 所以这里的每一条收尾路径
 //! 都显式 `close()`，不靠 drop。
+//!
+//! ⚠️ 临时名是**一次 `CREATE|EXCLUDE` 请求抢来的**（plan 0704），不再是"先 `stat` 问一句、
+//! 再 `create`"：两处请求之间那道缝会让同名文件的并发传输交错写同一个文件，而由对端保证的
+//! 独占没有那道缝 —— 代价是它**分不清**"名字被占"与通用的失败（v3 没有"已存在"这一档），
+//! 换下一个候选的规则因此比本机那一侧宽，见 [`SftpClient::claim_temp`]。
 
 use std::sync::Arc;
 
@@ -29,14 +34,14 @@ use russh::client::Handle;
 use russh_sftp::client::SftpSession;
 use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::fs::File;
-use russh_sftp::protocol::{FileType, StatusCode};
+use russh_sftp::protocol::{FileType, OpenFlags, StatusCode};
 
 use crate::error::{SshError, sftp_failed};
 use crate::handshake::Handler;
 use crate::target::SshTarget;
 use crate::transfer::{
-    BoxFuture, Endpoint, Entry, EntryKind, FileRead, Listing, PendingWrite, file_failed,
-    temp_candidates,
+    BoxFuture, Endpoint, Entry, EntryKind, FileRead, Listing, PendingWrite, TEMP_ATTEMPTS,
+    file_failed, temp_candidates,
 };
 
 /// 打开会话时等对端第一条回复的期限（秒）。与上游默认值一致。
@@ -174,12 +179,7 @@ impl Endpoint for SftpClient {
             if name.is_empty() {
                 return Err(file_failed(&path, "这个路径没有文件名，写不进一个临时名"));
             }
-            let temp = self.pick_temp(&dir, &name, &path).await?;
-            let file = self
-                .inner
-                .create(temp.as_str())
-                .await
-                .map_err(|err| file_failed(&path, err))?;
+            let (file, temp) = self.claim_temp(&dir, &name, &path).await?;
             Ok(Box::new(RemoteWrite {
                 file: Some(file),
                 client: self.clone(),
@@ -191,20 +191,55 @@ impl Endpoint for SftpClient {
     }
 }
 
+/// 抢占临时名用的打开标志（ADR-0006 D6）。
+///
+/// `CREATE|EXCLUDE` 就是 SFTP 协议里的 `O_EXCL`：由**对端**保证"这个名字只给一个人"。
+/// 为什么不用 `TRUNCATE`：抢占的前提是"这个名字**原来不存在**"，而 `TRUNCATE` 表达的是
+/// "存在也没关系，把内容丢掉" —— 那正好是 0702 那条判据（"别覆盖已存在的临时名"）要防的事。
+const TEMP_FLAGS: OpenFlags = OpenFlags::WRITE
+    .union(OpenFlags::CREATE)
+    .union(OpenFlags::EXCLUDE);
+
 impl SftpClient {
-    /// 在 `dir` 里挑一个还没被占用的临时名（`name` 是最终名那一部分）。
-    async fn pick_temp(&self, dir: &str, name: &str, path: &str) -> Result<String, SshError> {
-        // 候选是无限的（`.name.part`、`.name.2.part`、…），但真正的冲突只会是少数几个 ——
-        // 无条件遍历下去等于把"挑不出名字"变成一次死循环。
-        for candidate in temp_candidates(name).take(16) {
+    /// 在 `dir` 里**抢占**一个临时名（候选见 [`temp_candidates`]，最多 [`TEMP_ATTEMPTS`] 个）。
+    ///
+    /// ⚠️ **抢占是一次请求**：`CREATE|EXCLUDE` 要么把这个名字给我们，要么这一步就失败 ——
+    /// 没有"先 `stat` 问一句、再 `open`"那道缝（plan 0704 修的就是它，ADR-0006 D6）。
+    ///
+    /// ⚠️ **换下一个候选的唯一理由是"这个名字没能独占"**，而它在这里只能表现为**通用的
+    /// `Failure`**：SFTP v3 的状态码只有 8 个取值（`russh-sftp` 的 `StatusCode` 就是那 8 个），
+    /// 没有"文件已存在"这一档（那是 v4 才补的 `FILE_ALREADY_EXISTS`）。所以：
+    ///
+    /// * `StatusCode::Failure` → 可能是名字被占，也可能是目录写满一类的通用失败 —— 换下一个；
+    /// * **别的错误一律当场报出去**：`PermissionDenied` / `NoSuchFile` 是确定的失败，
+    ///   换 16 个候选只是把同一次失败问 16 遍；超时与断连更是（那会变成 16 倍等待）。
+    async fn claim_temp(
+        &self,
+        dir: &str,
+        name: &str,
+        path: &str,
+    ) -> Result<(File, String), SshError> {
+        let mut occupied: Option<SshError> = None;
+        for candidate in temp_candidates(name).take(TEMP_ATTEMPTS) {
             let full = under(dir, &candidate);
-            match self.inner.try_exists(full.as_str()).await {
-                Ok(false) => return Ok(full),
-                Ok(true) => {}
-                Err(err) => return Err(file_failed(path, err)),
+            match self.inner.open_with_flags(full.as_str(), TEMP_FLAGS).await {
+                Ok(file) => return Ok((file, full)),
+                Err(err) => match &err {
+                    SftpError::Status(status) if status.status_code == StatusCode::Failure => {
+                        occupied = Some(file_failed(path, err));
+                    }
+                    _ => return Err(file_failed(path, err)),
+                },
             }
         }
-        Err(file_failed(path, "目标目录里连续的 16 个临时名都被占用了"))
+        // 到顶了：把**最后一次**的错误报出去（不编一句"名字都被占用了" —— 上面那个 `Failure`
+        // 也可能来自"目录写满"，编一句会在那种情形下说假话）。原因进日志，错误本身照原样。
+        tracing::warn!(
+            path,
+            candidates = TEMP_ATTEMPTS,
+            "sftp temp name claim exhausted"
+        );
+        Err(occupied.unwrap_or_else(|| file_failed(path, "没有可用的临时名")))
     }
 }
 
