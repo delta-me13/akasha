@@ -281,7 +281,7 @@ test-e2e:
     fi; \
     if [ "$rc" != 0 ]; then \
       for l in "$tmp/akasha-e2e-app1.log" "$tmp/akasha-e2e-app2.log" "$tmp/akasha-e2e-app.log"; do \
-        if [ -f "$l" ]; then echo "—— app 日志尾部（$l）——"; tail -n 20 "$l"; fi; \
+        if [ -f "$l" ]; then echo "—— app 日志尾部（${l}）——"; tail -n 20 "$l"; fi; \
       done; \
     fi; \
     exit $rc
@@ -332,7 +332,7 @@ portable:
         p=${d%/}; p=${p##*/}; \
         pid_alive "$p" || continue; \
         curl -s -o /dev/null -m 2 "http://127.0.0.1:$(cat "${d}port" 2>/dev/null)/" || continue; \
-        echo "❌ 已经有一个 akasha 在跑（pid $p）——单实例（plan 0304）会让本配方起的第二份自己退掉，"; \
+        echo "❌ 已经有一个 akasha 在跑（pid ${p}）——单实例（plan 0304）会让本配方起的第二份自己退掉，"; \
         echo "   症状看起来像\"可搬迁性坏了\"。先把那个 app 关掉（just dev 起的也是它）再跑。"; \
         exit 1; \
       done; \
@@ -379,10 +379,10 @@ libudev-check:
     for t in x86_64-pc-windows-msvc aarch64-apple-darwin; do \
       if out=$(cargo tree --package akasha-serial --target "$t" -e normal); then \
         printf '%s\n' "$out" | grep -q libudev \
-          && { echo "❌ $t：依赖图里出现了 libudev"; fail=1; } \
-          || echo "✅ $t：依赖图里没有 libudev"; \
+          && { echo "❌ ${t}：依赖图里出现了 libudev"; fail=1; } \
+          || echo "✅ ${t}：依赖图里没有 libudev"; \
       else \
-        echo "❌ $t：cargo tree 失败（未安装该 target 时会这样）"; fail=1; \
+        echo "❌ ${t}：cargo tree 失败（未安装该 target 时会这样）"; fail=1; \
       fi; \
     done; \
     [ "$fail" = 0 ] || exit 1

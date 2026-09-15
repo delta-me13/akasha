@@ -151,11 +151,11 @@ ready:
         fi; \
         echo; \
         echo "❌ just ready 失败于: just $s"; \
-        echo "   完整输出: .just-ready-fail.log（或直接单跑 just $s）"; \
+        echo "   完整输出: .just-ready-fail.log（或直接单跑 just ${s}）"; \
         exit 1; \
       fi; \
     done; \
-    echo "✅ just ready 全绿（$ok/$total）"
+    echo "✅ just ready 全绿（${ok}/${total}）"
 
 # 文档纪律（四部分，规则见 AGENTS.md §8 / §8.1 / §8.2，plan 规则见 docs/plans/README.md）。
 # 四部分**每轮全部执行**（非快速失败）：第一类失败不终止其余三类 —— 一轮给出全部待修项。
