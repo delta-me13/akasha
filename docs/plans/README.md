@@ -150,8 +150,8 @@
 
 | 编号 | 标题 | 状态 | 前置 / 展开时机 | 文件 |
 |---|---|---|---|---|
-| 0801 | `src-tauri/crates/akasha-serial`：`libudev` 走 Linux-only feature | 已完成（2026-09-15：`Transport` 的串口实现落地；`just libudev-check` 按目标核对两侧依赖图且用两条负例验过；13 条单测 / PTY 往返全过；`just ready` 6/6。⚠️ Windows 目标的**原生编译**证据待问题 #149 修复） | plan 0105（`Transport` 已定形态） | [0801](./archive/0801-serial-crate-libudev.md) |
-| 0802 | 端口枚举与连接参数 | 已完成（2026-09-15：`ports()` 列本机 32 条且顺序稳定 / 无重复；参数在真 tty 上回读，越界取值报字段与取值；两条枚举实现各执行一遍 —— `just serial-check`；`just ready` 6/6。⚠️ 数据位 / 校验位在 PTY 上被归一化，真机证据见 STATUS 的「待验证」；⚠️ 串口接入 app 在 ROADMAP 里没有条目 —— 问题 #151） | plan 0801（已完成） | [0802](./archive/0802-serial-enumeration-params.md) |
+| 0801 | `src-tauri/crates/akasha-serial`：`libudev` 走 Linux-only feature | 已完成（2026-09-15：串口 `Transport` 落地；`just libudev-check` 按目标核对依赖图并用两条负例验过；13 条用例全过；`just ready` 6/6。⚠️ Windows 目标的原生编译待问题 #149） | plan 0105（`Transport` 已定形态） | [0801](./archive/0801-serial-crate-libudev.md) |
+| 0802 | 端口枚举与连接参数 | 已完成（2026-09-15：`ports()` 列本机 32 条且顺序稳定 / 无重复；参数在真 tty 上回读、越界取值报字段与取值；两条枚举实现各执行一遍 —— `just serial-check`；`just ready` 6/6。⚠️ 数据位 / 校验位在 PTY 上被归一化，真机证据见「待验证」） | plan 0801（已完成） | [0802](./archive/0802-serial-enumeration-params.md) |
 
 ### 阶段 9 — Bitwarden 导入
 

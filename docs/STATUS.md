@@ -30,11 +30,9 @@
   有 `limit` / `live` / `peak` 三个读数，**等空位可取消**）、临时名的占用从"先查存在、再创建"
   改成**一次**原子占用（本机 `create_new`、远端 `CREATE|EXCLUDE`）。
 
-**阶段 8 的两条都完成（plan 0801 / 0802）**：`akasha-serial` 落地 —— `Transport` 的串口实现
-（零 Tauri 依赖），`serialport` 的 `libudev` 走 Linux-only 的 target 段（读数口 `just libudev-check`）；
-端口枚举与连接参数落地 —— `ports()` 列出本机端口、参数在真 tty 上回读、越界取值报出字段与取值
-（读数口 `just serial-check`）。串口接入 app 已立为 **阶段 11**（plan 1101 / 1102 / 1103，
-三份骨架）—— 它是阶段 8 的续作。
+**阶段 8 的两条都完成（plan 0801 / 0802）**：`akasha-serial` 落地 —— `Transport` 的串口实现 +
+`ports()` 枚举 + 参数校验，零 Tauri 依赖、`libudev` 只在 Linux；判据与读数口见下文
+「阶段 8 的形状」。串口接入 app **不在阶段 8 内**，已立为 **阶段 11**（plan 1101–1103 骨架）。
 
 阶段 4 的八项（每项一句）：**SQLCipher 加密库可打开**（0401）、**口令只从一条路径进入且可真正验证**
 （0402 —— 拆分"打开"与"新建"；此前在文件不存在的路径上**任何口令都能打开**）、
@@ -201,34 +199,29 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | 事 | 落在哪 |
 |---|---|
 | crate | `src-tauri/crates/akasha-serial`：零 Tauri 依赖，对外只认 `akasha_pty::Transport`（与 `akasha-ssh` 同一条边界） |
-| 载体 | `transport.rs` 的 `SerialTransport::open(&SerialSettings)` + `Transport` 实现。**能力位是 `Capabilities::NONE`**（没有窗口尺寸、没有结局、没有本地进程）：`resize` 走 trait 的默认实现答 `Unsupported`，`exited()` 恒为 `Ok(None)`，`session_leader()` 是 `None`（串口没有本地进程，看门狗没有可回收的东西）。`shutdown` 幂等，做的是"立停止标志 + 尽力 flush" |
-| 参数 | `settings.rs` 的 `SerialSettings`（路径 / 波特率 / 数据位 / 停止位 / 校验 / 流控）。四个枚举的取值域与 serial 配置池的 `CHECK` 对齐（数据位 5..=8、停止位 1..=2），`serialport` 的类型只出现在 crate 内部。**从池里搬字段用 `DataBits::try_from` / `StopBits::try_from`**（越界报出字段与取值），`validate()` 查空路径与 `baud == 0` |
-| 枚举（plan 0802） | `enumerate.rs` 的 `ports()`：上游四种类别（USB 五项 / PCI / 蓝牙 / 未知）映射成 `PortKind`，输出**按路径排序、同一路径只留信息量最大的一档**。**空表是正常结果**；⚠️ **列出来的端口不保证能打开**（问题 #150） |
+| 载体 | `transport.rs` 的 `SerialTransport::open(&SerialSettings)` + `Transport` 实现。**能力位是 `Capabilities::NONE`**（没有窗口尺寸、没有结局、没有本地进程）：`resize` 答 `Unsupported`、`exited()` 恒为 `Ok(None)`、`session_leader()` 是 `None`；`shutdown` 幂等（立停止标志 + 尽力 flush） |
+| 参数 | `settings.rs` 的 `SerialSettings`：六个字段（路径 + 波特率 / 数据位 / 停止位 / 校验 / 流控），取值域与 serial 池的 `CHECK` 对齐（数据位 5..=8、停止位 1..=2），`serialport` 的类型只出现在 crate 内部；`DataBits::try_from` / `StopBits::try_from` 越界报出字段与取值，`validate()` 查空路径与 `baud == 0` |
+| 枚举（plan 0802） | `enumerate.rs` 的 `ports()`：上游四种类别映射成 `PortKind`（USB 带 vid / pid / 序列号 / 厂商 / 产品名五项），输出**按路径排序、同一路径只留信息量最大的一档**。**空表是正常结果**；⚠️ **列出来的端口不保证能打开**（问题 #150） |
 | 错误分域（plan 0802） | `error.rs` 把三组失败分开：`Enumerate`（列不出来）/ `Settings` · `NoPath`（参数不合法，报**字段与取值**）/ `Open` · `Handle`（这一个设备打不开，报**路径**） |
-| feature | `libudev = ["serialport/libudev"]` 且 `default = ["libudev"]`。**平台差异由上游的 target 段承担** —— 它把那个 optional 依赖声明在 `cfg(all(target_os = "linux", not(target_env = "musl")))` 里，于是 Windows / macOS 上打开这个 feature 激活的是一个**不存在的依赖**，什么都不编译 |
-| 判据的读数口 | **`just libudev-check`**（按目标核对依赖图：Linux 上必须有 libudev，Windows / macOS 上必须没有；两条负例验过 —— 见「上一轮完成」）与 **`just serial-check`**（两条枚举实现各执行一遍；负例验过 —— 见「本轮完成」） |
-| libudev 缺失时的降级 | Linux 上关闭该 feature（`default-features = false`）**仍能枚举** —— 上游另有一支 sysfs 实现；运行期拿不到 `libudev::Context` 时它返回**空表**而不是错误。所以发行版缺 libudev 的开发包**不是硬失败** |
+| feature | `libudev = ["serialport/libudev"]`、`default = ["libudev"]`，且 `serialport` 以 `default-features = false` 引入 —— 链不链 libudev 是 manifest 上看得见的事。**平台差异由上游的 target 段承担**：那个 optional 依赖只在 `cfg(all(target_os = "linux", not(target_env = "musl")))` 下存在，Windows / macOS 上打开这个 feature 什么都不编译 |
+| 判据的读数口 | `just libudev-check`（按目标核对依赖图，两条负例验过）与 `just serial-check`（两条枚举实现各执行一遍，负例验过）—— 数字见「已验证为通过」与「各轮」 |
+| libudev 缺失时的降级 | Linux 上关闭该 feature（`default-features = false`）**仍能枚举** —— 上游另有一支 sysfs 实现；运行期拿不到 `libudev::Context` 时它返回**空表**而不是错误。发行版缺 libudev 的开发包**不是硬失败** |
 
 ⚠️ **手动指定路径不依赖枚举**：`SerialTransport::open` 收的就是一个设备路径
-（`/dev/ttyUSB0` / `COM3`），所以"端口列表为空"或"libudev 整个不在"都不影响打开一个已知端口。
+（`/dev/ttyUSB0` / `COM3`），"端口列表为空"或"libudev 整个不在"都不影响打开一个已知端口。
 
-⚠️ **枚举的两种实现给出不同的结果**（plan 0802 实测）：默认配置（libudev）列出 **32 条**
-`/dev/ttyS*`，而 `--no-default-features`（sysfs）列出 **0 条** —— 后者的实现要求
-`/dev/<名字>` 存在，前者不要求。同一个 feature 开关还决定"哪一套代码被执行"，
-所以读数是"关闭该 feature 时另外半套也执行了一遍"。问题 #150 是这条的展开。
+⚠️ **两种枚举实现给出不同的结果**：默认配置（libudev）列出 32 条 `/dev/ttyS*`，
+`--no-default-features`（sysfs）列出 0 条（它要求 `/dev/<名字>` 存在）—— 读数与教训见问题 #150。
 
-⚠️ **Windows / macOS 的"原生编译"证据还差一层**（问题 #149）：`akasha-pty` 用了
-`rustix::process` 而没有 `cfg` 守卫，Windows 目标一开始就编译不过。plan 0801 的本地证据是依赖图
-与一次一次性探针（`serialport` 带 `libudev` feature 在三个目标上都编译通过）；原生证据要等
-CI 的 `checks-other`。
+⚠️ **Windows / macOS 的原生编译证据还差一层**（问题 #149）：`akasha-pty` 里的
+`rustix::process` 挡住那个目标，本地证据是依赖图与一次一次性探针。
 
-⚠️ **阶段 8 到 crate 层为止**：串口接入 app（命令 / 界面 / 设备消失时的表现）是 **阶段 11**
-（plan 1101 / 1102 / 1103）—— 它不是阶段 8 的第五条，也不接在 0802 后面。
-
-### 阶段 5 之前那些跨阶段的结论（还在生效）
+⚠️ **阶段 8 到 crate 层为止**：串口接入 app（命令 / 界面 / 设备消失时的表现）是**阶段 11**，
+不是阶段 8 的第五条。
 
 **关闭窗口的语义由配置与托盘可用性共同决定**（0302 + 0303）：
 
+### 阶段 5 之前那些跨阶段的结论（还在生效）
 | `close_behavior` | 托盘是否可用 | 点击关闭按钮之后 |
 |---|---|---|
 | `tray`（默认） | 是 | **窗口隐藏、进程保留** —— 会话与终端缓冲原样存活 |
@@ -286,7 +279,7 @@ CI 的 `checks-other`。
 | `just serial-check`（plan 0802） | 退出码 **0**：`akasha-serial` 的 **24 条**在两种 feature 配置下**各执行一遍**（默认走 libudev 的枚举实现，`--no-default-features` 走 sysfs 的），两次都是 **24 passed / 0 skipped** |
 | ↑ **判据：枚举在本机列出端口**（plan 0802） | ✅ `ports()` 在本机（libudev）返回 **32 条** `/dev/ttyS0`…`/dev/ttyS31`，**按路径排序、无重复、路径非空**，且每条在 `/sys/class/tty/<名字>` 里都有对应项（库内 `enumeration` 2 条）；关闭该 feature 后**同一套用例**返回 **0 条**且照常通过 —— "没有端口"与"枚举失败"因此是两种结果 |
 | ↑ **判据：参数错误给出可读报错**（plan 0802） | ✅ 越界取值报**字段与取值**（`data_bits = 9` / `stop_bits = 3` / `baud = 0`，库内 3 条）；打不开报**路径与 OS 原因**（不存在的设备与一个目录路径都实测过） |
-| ↑ **五个参数真的交到了 OS 手里**（plan 0802） | ✅ 真 tty 上的回读（PTY 从端）：请求 `115200 / 7 数据位 / 2 停止位 / 偶校验 / 软件流控` → 回读 `115200` / `Two` / `Software` **等于请求值**。⚠️ **数据位与校验位被 PTY 归一化**（回读 `Eight` / `None`），所以那两项只到"映射是全的"这一层 —— 见「待验证」 |
+| ↑ **参数在真 tty 上回读**（plan 0802） | ✅ 请求 `115200 / 7 数据位 / 2 停止位 / 偶校验 / 软件流控` → 回读 `115200` / `Two` / `Software` **等于请求值**；⚠️ 数据位与校验位被 PTY 归一化（回读 `Eight` / `None`），那两项只到"映射是全的" —— 见「待验证」 |
 | ↑ **判据：转发端口可访问远端服务**（plan 0602） | ✅ `tunnel_local_forward` E2E（真实 app + **测试进程内**一台 SSH 服务端与一个回声服务端，**1.05 s**）：界面打开池里那条规则 → 主机密钥与口令各答一轮 → probe 报 `bind = 127.0.0.1:<规则端口>` → 从测试进程连该端口**写一行、读回同一行**（回声服务答的） |
 | ↑ **走的是 `direct-tcpip`，且每条入站连接各开一条通道**（plan 0602） | ✅ **对端记到恰好 1 条 `direct-tcpip` 请求**（`host` = `akasha-local-forward.invalid`、`port` = 回声服务端口，**本机解析不出这个名字** —— 用例自行解析一次并断言失败）、中继字节数 `> 0`；同一端口再连一次 → 请求数变 **2** |
 | ↑ **端口被占用的报错可读**（plan 0602） | ✅ 规则指向一个被本进程占着的端口：界面显示「本地监听 127.0.0.1:38725 绑定失败：地址已在使用 (os error 98)」，且 probe 里**没有**它（**没登记成** —— 重试也不会好，用户要动的是端口） |
@@ -355,7 +348,7 @@ CI 的 `checks-other`。
 | ↑ **`nodelay` 实际生效**（plan 0505 修正） | ✅ `tcp_stream` 自建 TCP 时显式 `set_nodelay(true)`（问题 #120：上游仅在 `client::connect` 中读取 `Config::nodelay`，而两条路都使用 `connect_stream`） |
 | ↑ **`Cargo.lock` 增量仅一行**（plan 0504 / 0505） | ✅ 新增 `akasha → akasha-ssh` 这条边**只增加一行**；0505 **未增加任何行**（无新依赖，`rand` 早已是 `akasha-ssh` 的真依赖） |
 | `pnpm build`（tsc + vite build） | 退出码 0；产物 **869.79 kB / gzip 239.48 kB**（**+0.33 kB / +0.19 kB**：plan 0704 的并发读数那一行与按栏分开的 `busy`） |
-| `just docs-check` | 全部通过（ROADMAP 59 个条目 ≤3 行且无代码块 / 50 份 plan ≤200 行且索引一致） |
+| `just docs-check` | 全部通过（ROADMAP 62 个条目 ≤3 行且无代码块 / 53 份 plan ≤200 行且索引一致） |
 | `ast-grep scan` + `ast-grep test` | 均退出 **0**（plan 0704 未新增 / 修改规则） |
 | **三条 unsafe 注释 lint**（clippy，位于 `just lint`） | 退出码 **0**；三条各以一个探针验证其**确实会失败**（探针用后即撤） |
 | ↑ **解锁 / 锁定 / 内存回收**（0407） | ✅ 真实 app 上 `VmLck` **0 → 176～192 → 0 kB**；进程内存扫描（带正对照）：口令 `1 → 2 → 2 → 1` 处、派生密钥 `3 → 1` 处 |
@@ -592,58 +585,15 @@ CI 的 `checks-other`。
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测，剩余 CI 三平台格子
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
 
-### 本轮完成（plan 0802：端口枚举与连接参数）
-**判据（ROADMAP 原文）**：**枚举在本机列出真实端口；参数错误时给出可读报错**。
-
-- [x] **默认端口列表由 `ports()` 给出，且输出可以断言**：上游四种类别映射成 `PortKind`
-  （USB 带 vid / pid / 序列号 / 厂商 / 产品名五项），按路径排序，同一路径只留信息量最大的一档。
-  本机实测 **32 条**（`/dev/ttyS0`…`/dev/ttyS31`）—— ⚠️ 它们**全部打不开**，见问题 #150。
-- [x] **"没有端口"与"枚举失败"分开**：前者是空表（关闭该 feature 时实测 **0 条**，同一套用例照样
-  通过），后者是 `SerialError::Enumerate`。⚠️ 运行期缺 libudev 时上游返回空表，所以"缺库"
-  看起来与"没有设备"一样 —— 这正是"手动指定路径永远可用"那条兜底存在的理由。
-- [x] **参数在真 tty 上回读过**：请求 `115200 / 7 数据位 / 2 停止位 / 偶校验 / 软件流控`，
-  回读 `115200` / `Two` / `Software` 等于请求值。⚠️ **数据位与校验位被 PTY 归一化**
-  （回读 `Eight` / `None`），所以那两项只到"映射是全的"这一层 —— 见「待验证」。
-- [x] **参数错误报字段与取值**：`TryFrom<u8>` 把池里的越界值（`data_bits = 9`、
-  `stop_bits = 3`）挡在碰设备之前；`validate()` 挡空路径与 `baud = 0`（上游把 0 当成
-  "不要设置波特率"的暗号，而池的 `CHECK` 要求 `baud > 0`）。
-- [x] **24 条用例、两种 feature 配置各执行一遍**（`just serial-check`）：本次新增 11 条
-  （映射 5 + 取值域 3 + 真 tty 回读 1 + 真实枚举 2）。⚠️ 负例自检时发现：把 `ports()` 的排序
-  拿掉，**真实调用那两条仍然通过** —— 本机上游返回的顺序恰好已经是字典序，红的是用手造输入喂
-  `normalize()` 的三条单测。**只在真实机器上执行的断言可能是永真的**。
-- [x] **`just ready` 六步全绿**（`just test` **386 条**）。
-
-### 上一轮完成（plan 0801：`akasha-serial` 与 libudev feature）
-**判据（ROADMAP 原文）**：**Windows / macOS 构建不链接 libudev**。
-
-- [x] **crate 与 feature 结构**：`src-tauri/crates/akasha-serial`。它自己的 feature 表是
-  `default = ["libudev"]` + `libudev = ["serialport/libudev"]`，而 `serialport` 用
-  `default-features = false` 引入 —— 于是"链不链 libudev"是 manifest 上能一眼看见的事，
-  不是依赖树的默认值顺出来的。
-- [x] **载体与参数**：见上文「阶段 8 的形状」。
-- [x] **13 条用例全过**：9 条单测（读循环的四种判定：超时 / `Ok(0)` / `Interrupted` / 真错误，
-  外加能力位、空路径、缺失设备的报错里有路径）+ 4 条 PTY 往返（写出去 / 读回来 / 能力位 /
-  收尾让读端结束且幂等）。⚠️ PTY 那 4 条带 `--nocapture` 重新执行一次，确认它**没有走跳过分支** ——
-  一次"全部通过"区分不了"用例在工作"与"它在第一行就 return 了"。
-- [x] **判据的可重复形式**：新增 `just libudev-check`（按目标核对依赖图），并用**两条负例**验过：
-  把 `default` 改成 `[]` → Linux 那一行报 ❌；在 `[dependencies]` 里无条件加 `libudev = "0.3"` →
-  两个非 Linux 目标报 ❌；还原之后三条 ✅。
-  ⚠️ 这道自检不是形式：**探针第一次执行时假通过过一次** —— 那次 `cargo tree --target` 因 `~/.cargo`
-  只读而解析失败（问题 #105），而"没有 libudev"与"没有输出"在 `grep` 眼里一样。配方里那两条
-  "先看退出码"的注释就是这条教训。
-- [x] **一次性探针**：用一个临时 workspace 成员让 `serialport` 带 `libudev` feature 在三个目标上
-  各编译一次（Windows / macOS 都是 Finished），验完即删（`crates/` 下无残留、`Cargo.lock` 里也没有它的条目）。
-- [x] **`just ready` 六步全绿**（含 `deny-offline`：`serialport` 是 MPL-2.0，libudev 那一组
-  都在 `deny.toml` 的放行列表内）。
-- ⚠️ **`akasha-pty` 让 Windows 目标编译不过**（问题 #149），所以"原生编译"这半句的证据在 CI。
-
-### 阶段 8 之前各轮（已完成，plan 0603–0704）
+### 各轮（已完成，plan 0603–0802）
 
 逐轮的步骤与实施记录随各自的 plan 归档（索引见 [`plans/README.md`](./plans/README.md)），
 **本节只留之后会被引用的事实**：各轮的判据与实测。
 
 | plan | 判据（ROADMAP 原文） | 实测 |
 |---|---|---|
+| 0802 | 枚举在本机列出真实端口；参数错误时给出可读报错 | `ports()` 在本机（libudev）列 **32 条**且顺序稳定无重复、路径非空；同一套用例在 sysfs 那套实现下返回 **0 条**且照常通过（"没有端口"与"枚举失败"因此是两种结果）；真 tty 上回读参数、越界取值报字段与取值。⚠️ 负例自检：去掉排序只红了手造输入的三条单测 —— **只在真实机器上执行的断言可能是永真的** |
+| 0801 | Windows / macOS 构建不链接 libudev | 依赖图核对（`just libudev-check`，两条负例验过）+ 一次性探针让 `serialport` 带该 feature 在三个目标上各编译一次；13 条用例全过（PTY 那 4 条带 `--nocapture` 重新执行过，确认没走跳过分支）。⚠️ 原生编译待问题 #149 |
 | 0704 | 大量小文件的吞吐显著优于串行请求 | 上限归**会话持有的** `InFlight`（`limit` / `live` / `peak`；等空位可取消），临时名改成**一次**原子占用（本机 `create_new`、远端 `CREATE|EXCLUDE`）；库内 6 条（7 个文件 / 上限 3 → 目标端点同时只见 3 个 `begin_write`）+ `sftp_pipelining` E2E：12 个 1 KiB 文件在每方向延后 10 ms 的链路上 **1.509 s → 389 ms**（`peak 8`） |
 | 0703 | A 无法直连 B 时自动走 A 档；两档均不落盘 | `sftp_host_to_host` E2E **5.29 s**：B 档经跳板直通（跳板记到 1 条 `direct-tcpip`、中继搬了 55776 字节、目标真盘字节相同且没有临时名、源那台一个条目都没多）；直通被拒（`AdministrativelyProhibited`）→ 自动回退本机直连、原因留在 `throughFailure`；第二个文件照样落地而 `via` 为空；库内 3 条含**两半负控** |
 | 0702 | 中断传输后目标目录里没有看似完整的文件 | `sftp_transfer_atomic` E2E **6.19 s**：取消前搬了 **2883441 / 4194304** 字节、目标目录实测 `[".big.bin.part"]` → 取消后 **0 个条目**；上传的 300 KiB 在对端真盘上与源逐字节相同；库内 6 条（两个可控假端点，连续执行 8 次全绿） |
@@ -663,7 +613,6 @@ CI 的 `checks-other`。
 - SOCKS5 只允许绑回环（无认证 + 不可选）；`-R` 的绑定地址**不做**回环限制（那个端口开在服务端）。
 - 失败分档按"哪一层坏了"分（`retryable`）：传输层与端口没拿到会重试，认证 / 主机密钥 /
   配置与内部状态**不重试**；`tunnel_retry` 只认终态，且这条检查排在绑定之前。
-
 
 ## 结构现状（容易找错地方）
 
@@ -706,11 +655,10 @@ CI 的 `checks-other`。
   `akasha-ssh/src/socks5.rs`（`-D` 的协议本体：无认证的 `CONNECT` 与 `REP` 分类）→
   `akasha-ssh/src/remote.rs`（`-R`：请服务端监听 + 服务端发起的通道；⚠️ **不复用** D9 的原语）。
   状态名与事件名是**契约**（ADR-0003 §10 第 4 条）：改名要同时改 `bindings.ts`、前端与托盘。
-- **改 serial 之前先看**：`akasha-serial/src/enumerate.rs`（枚举，外加它的两条注意事项：
-  空表是正常结果、列出来的端口**不保证能打开**）→ `transport.rs`（打开与读循环）→
-  `settings.rs` / `error.rs`（取值域与三组失败）。读数口：`just serial-check`（两种 feature
-  配置各执行一遍）与 `just libudev-check`（按目标核对依赖图）。
-  ⚠️ 串口**还没有接进 app**（没有命令、没有界面）—— 已立为**阶段 11**（plan 1101–1103）。
+- **改 serial 之前先看**：`akasha-serial/src/enumerate.rs`（枚举；⚠️ 空表是正常结果、列出来的端口
+  **不保证能打开** —— 问题 #150）→ `transport.rs`（打开与读循环）→ `settings.rs` / `error.rs`
+  （取值域与三组失败）。读数口：`just serial-check`（两种 feature 配置各执行一遍）与 `just libudev-check`。
+  ⚠️ 串口**还没有接进 app** —— 阶段 11（plan 1101–1103）。
 - **新增 command / event 的三处**：`src-tauri/src/bindings.rs` 登记、`just gen-types` 重新生成、
   `just gen-types-check` 比对（`AGENTS.md` §5）；事件还必须在 `.setup()` 里 `mount_events`。
 - **排查"隧道为何没连上 / 为何转发不通"**：日志里 `ssh connection opening`（带 `hops` = 跳数）与
@@ -1041,8 +989,8 @@ CI 的 `checks-other`。
      它长期没暴露的原因是 CI 的 Windows 那一格（`checks-other`）到现在还没有真正执行过
      （状态见「待验证」里的 plan 0102）。修它不是补一个 `cfg` 那么简单：Windows 上"回收整个会话"
      没有 POSIX 进程组语义（要走 Job Object），而 `watchdog`（ADR-0005）的管道 EOF 机制本身也是
-     Unix 形状 —— 这是计划级的活。⚠️ 因此"Windows / macOS 构建不链接 libudev"这条判据在本机只能用
-     依赖图核对（`just libudev-check`），原生编译证据要等这个问题修好。
+     Unix 形状 —— 这是计划级的活。⚠️ 因此阶段 8 那条判据在本机只能用依赖图核对，
+     原生编译证据要等这个问题修好。
 150. **枚举出来的端口不保证能打开**（plan 0802 实测）：本机（libudev 那套）列出 32 条
      `/dev/ttyS0`…`/dev/ttyS31`，而 `/dev` 下**一个都没有** —— 上游按 udev 设备给 devnode，
      不检查那个节点在 `/dev` 下是否存在；它那句"打不开就跳过"的过滤
@@ -1051,12 +999,7 @@ CI 的 `checks-other`。
      因为它要求 `/dev/<名字>` 存在。教训：**"列出"不等于"能用"** —— 判据写成"枚举到的端口都能
      打开"会得到一条与真机相反的断言（本机恒假、接上设备恒真）；正确的位置是"枚举只负责列，
      打开失败带路径与原因"（`SerialError::Open`），而界面不要把列表当成"可用端口"。
-151. **串口接入 app 在 ROADMAP 里没有条目**（plan 0802 收尾时发现）：阶段 8 的两条
-     （0801 / 0802）都在 crate 层 —— 枚举与参数可用，但**没有任何命令、事件或界面**把它们接到
-     app 上，`scope.md` §2 承诺的"三大终端之一（serial）"因此还没有用户可见的形态。
-     缺的那一块不小：串口 `Session` 的打开 / 关闭与回收语义（`Capabilities::NONE`、
-     没有本地进程、`session_leader()` 是 `None`）、池行到参数的搬运、以及一个标签页。
-     处置（2026-09-15 已落地）：立为 **阶段 11「串口接入 app」**，三条骨架 plan
-     1101（会话接入）/ 1102（枚举与参数界面）/ 1103（设备消失）—— 缺的那一块因此有了条目与
-     判据，而不是接在某个已完成 plan 的后面。⚠️ 这条编号不复用，教训留给它：**一个阶段的判据
-     全在 crate 层时，产品形态的那一半要有自己的条目**，否则"完成"只对 crate 成立。
+151. **串口接入 app 在 ROADMAP 里没有条目**（plan 0802 收尾时发现）：阶段 8 的两条都在 crate 层 ——
+     枚举与参数可用，但没有任何命令、事件或界面把它们接到 app 上，`scope.md` §2 的"三大终端之一
+     （serial）"因此没有用户可见的形态。处置（2026-09-15 已落地）：立为**阶段 11**（plan 1101–1103）。
+     ⚠️ 编号不复用，教训留给它：**一个阶段的判据全在 crate 层时，产品形态的那一半要有自己的条目**。

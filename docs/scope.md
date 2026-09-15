@@ -569,8 +569,9 @@ Linux 装到 `/usr/bin`、Windows 装到 `Program Files`。
 > **`libudev` 的处置（已定案）**：`serialport` 在 Linux 上靠 libudev 枚举端口，
 > 这是 webview 之外的独立系统库。**把它做成 cargo feature，只在
 > `target_os = "linux"` 时实际编译** —— 于是 Windows / macOS / Android 的构建
-> 完全不受影响。副作用：Linux 上串口热插拔事件依赖 libudev，若某些发行版缺失，
-> 串口列表需要退化为"手动指定路径"而不是硬失败。
+> 完全不受影响。副作用：Linux 上串口热插拔事件依赖 libudev；实测它缺失**不是硬失败** ——
+> 关闭该 feature 时上游另有一支 sysfs 实现，运行期拿不到 `libudev::Context` 时列表为空，
+> 手动指定路径始终可用（plan 0801 / 0802）。
 
 ---
 
