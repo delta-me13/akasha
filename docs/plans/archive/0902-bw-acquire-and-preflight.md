@@ -2,7 +2,7 @@
 
 - **关联**：ROADMAP 阶段 9 ·「`bw` 的获取与前置检查」
 - **前置**：[ADR-0007](../adr/0007-bitwarden-cli-acquisition.md)（实现中）· 无代码依赖
-- **状态**：进行中（2026-09-15）
+- **状态**：已完成（2026-09-15）
 
 ## 目标
 
@@ -97,3 +97,40 @@ just ready
    提示静默消失。诱饵用例（`device-approval` 只出现在其它段落）与"命令表为空"两态都钉住。
 4. **`bw` 的启动慢**（约 140 MB 的 Node SEA）：纯本地命令也给 20 秒，`login` / `unlock`
    给 120 秒；超时路径**杀 + 收**（`kill` 之后 `wait`），不留僵尸。
+
+### 验收命令的实际输出
+
+```console
+$ cargo nextest run --package akasha-bw
+46 tests run: 46 passed（39 单测 + 7 条假 `bw` 的集成用例）
+
+$ just ready
+✅ just ready 全绿（6/6）
+
+$ cargo test -p akasha-bw --test probe_real_upstream -- --nocapture   # 一次性探针，读完数即删
+PROBE 上游最新 cli 版本 = 2026.8.0
+PROBE 落点 = /tmp/akasha-bw-real-70/bitwarden/bw-2026.8.0/bw
+PROBE sha256 = d8bbc213d3dbdb701709386af6ea3bd763482f922ae0b538fdc3fdb88b1b1704
+PROBE 体积 = 141819984 字节
+PROBE crate 报的版本 = 2026.8.0
+PROBE 变体 = Oss
+PROBE status --raw = Ok((Unauthenticated, None))
+# 与 `sha256sum` 直接算上游那个 zip 的结果**逐字符相同**；24.63 s
+```
+
+### 与计划的差异
+
+- **"真实路径走 app + Victauri MCP"这条在本沙箱里做不到**：每次 bash 调用都是独立的 bwrap
+  （问题 #33），app 把 Victauri 的发现目录写在它**自己那次调用的私有 `/tmp`** 里，
+  外面的 bridge 看不到它。于是改成**两半各自走真**：下载那一半用上面那条一次性探针
+  （真上游），app 接线那一半用 `just test-e2e` 里的 `bitwarden_login`（真实 app、真实命令、
+  假 CLI）。两条**不是同一次运行**，这一点如实记在 `docs/STATUS.md` 的待验证里。
+- **探针里那次"直接执行不设 `BITWARDENCLI_APPDATA_DIR`"输出为空**：这个沙箱的家目录只读，
+  `bw` 建不出它自己的 `data.json`。`managed` 那一轴因此不只是"便携性"，也是
+  "家目录不可写时唯一能用的一档"。
+
+### 留下的
+
+- `config.json` 的写路径没有"写一次再重启"的用例（单测覆盖了坏文件与只换那一段；
+  E2E 每次运行都会重写它并被 app 启动时读回，但没有专门断言"重启之后仍是上次选的那一个"）。
+- 界面里没有自签证书（`NODE_EXTRA_CA_CERTS`）那一栏 —— crate 的 `with_extra_ca` 已就位。
