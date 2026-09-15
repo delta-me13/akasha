@@ -13,6 +13,8 @@
 //!
 //! ⚠️ 与 E2E（`src-tauri/tests/sftp_dual_pane.rs`）的分工：这里验的是**库这条链**
 //! （通道、子系统、列目录），那边验的是**app 的接线**（两栏、两侧独立、会话归属）。
+//! ⚠️ `list` 由 [`Endpoint`] 提供，所以那个 trait 必须在作用域里（plan 0702 起它是
+//! 引擎与两个端点共用的那一份）。
 
 mod support;
 
@@ -20,7 +22,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use akasha_ssh::testing::{ServerOptions, SftpItem, start};
-use akasha_ssh::{CredentialCache, SftpKind, SshAuth, SshConnection, SshError};
+use akasha_ssh::transfer::EntryKind;
+use akasha_ssh::{CredentialCache, Endpoint, SshAuth, SshConnection, SshError};
 use support::{CountingProvider, connect_options};
 
 /// 登录口令（测试服务端与客户端约定的那一句）。
@@ -65,8 +68,8 @@ async fn sftp_lists_what_the_server_offers() {
             .find(|entry| entry.name == name)
             .map(|entry| entry.kind)
     };
-    assert_eq!(kind("alpha.txt"), Some(SftpKind::File));
-    assert_eq!(kind("beta"), Some(SftpKind::Directory));
+    assert_eq!(kind("alpha.txt"), Some(EntryKind::File));
+    assert_eq!(kind("beta"), Some(EntryKind::Directory));
 
     assert_eq!(
         server.shared.observed().sftp_subsystems,

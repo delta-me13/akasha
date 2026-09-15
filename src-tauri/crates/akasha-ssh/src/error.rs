@@ -223,8 +223,25 @@ pub enum SshError {
     /// 在 tokio 上下文里调同步门面。**返回错误而不是 panic**：
     /// `Handle::block_on` 在这里会 panic（"Cannot start a runtime from within a runtime"），
     /// 而这条路径的调用方是 app 的命令层 —— 那里 panic 会连带丢掉整个 app。
-    #[error("不能在 tokio 上下文里调用同步门面（会在同一线程上自锁）")]
+    #[error("不能在 tokio 上下文里调同步门面（会在同一线程上自锁）")]
     BlockingInsideRuntime,
+
+    /// **端点上的一个文件操作失败了**（plan 0702）：列目录、打开、读、写、重命名、清理。
+    ///
+    /// ⚠️ 与 [`SshError::Sftp`] 分开是刻意的：那一条说的是"会话建不起来 / 会话用不了了"，
+    /// 用户要看的是对端有没有开 SFTP；这一条说的是"这个文件这一步没成"，用户要看的是
+    /// **那个路径**（`path`）与端点自己的说法（`reason`）。把两者压成一句话，
+    /// 排查方向会指到对端的 `sshd_config` 上去。
+    ///
+    /// 本机与远端共用这一个变体：两侧的下一步动作是同一个（看那个文件），
+    /// 而"是本机还是对端"由路径本身说清（`/home/…` 与 `/var/…` 各在各的机器上）。
+    #[error("文件操作 {path} 失败：{reason}")]
+    File {
+        /// 出错的路径（端点自己那一侧的写法）。
+        path: String,
+        /// 端点自己的说法（操作系统的原话，或 SFTP 对端的回答）。
+        reason: String,
+    },
 }
 
 /// 把 `russh` 的错误折成我们的说法。

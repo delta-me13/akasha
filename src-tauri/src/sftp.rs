@@ -1,4 +1,4 @@
-//! **SFTP 实体、四条命令与两侧连接**（plan 0701）—— 双栏会话的资源模型落地处。
+//! **SFTP 实体、命令与两侧连接**（plan 0701 / 0702）—— 双栏会话的资源模型落地处。
 //!
 //! `docs/scope.md` §4 / §5.1 与 ADR-0006 D3 / D7 把这件事定得很死：
 //! **一个 SFTP 会话拥有两侧**，每侧一条**独立**的 SSH 连接；它不依赖任何终端 `Session`
@@ -10,9 +10,10 @@
 //! | 实体表与注册表 | [`crate::session::Sessions`] —— **同一张注册表**（ADR-0003 D6），不另立一份 |
 //! | 连接怎么建 | [`crate::ssh::connect_connection`]（已认证、没有通道的 `SshConnection`，含跳板链） |
 //! | 会话怎么开 | `akasha_ssh::SftpClient`（在一条流上的 SFTP 会话，ADR-0006 D2） |
+//! | 文件怎么搬 | `akasha_ssh::transfer`（只认两个 [`Endpoint`]，ADR-0006 D4） |
 //! | 过 IPC 的形状与 probe | 本模块（`sftp` 探针） |
 //!
-//! ## 两条边界
+//! ## 三条边界
 //!
 //! 1. **`side` 只是"哪一栏"**（ADR-0006 D7）：它是唯一进入契约的呈现概念，后端不给它
 //!    别的含义 —— 资源归那个 `Session`，不归某一侧。所以它只出现在命令参数与探针里，
@@ -20,17 +21,25 @@
 //! 2. **一侧失败不影响另一侧**：两侧各持各的连接，失败落在**那一侧**
 //!    （[`SftpSideState::Failed`] 与 [SftpSideInfo::failure]），另一侧照样可用 ——
 //!    这正是"两侧独立"在可断言形式下的样子。
+//! 3. **一侧连的是什么**是 [`SftpOrigin`]：本机文件系统，或者池里的一台主机。
+//!    两者在传输引擎眼里是**同一件事的两端**（plan 0702），差别只在那一次
+//!    [`Endpoint`] 的构造。
 //!
-//! ## 本阶段只做**读**
+//! ## 落盘不变量归端点，取消只有一条路径
 //!
-//! 判据是"两侧各自列目录成功"，所以命令只有开 / 连 / 列 / 关四条。
-//! 上传下载属于 plan 0702（它要在**端点**那一层定形状，ADR-0006 D4）。
+//! "临时名 + 原子重命名"在**端点**里（`scope.md` §4.2 / ADR-0006 D4），本模块只做三件事：
+//! 把两侧各变成一个端点、把两条端点交给引擎、把引擎的结局记成**可读的状态**。
+//! 于是"用户取消"与"关闭 `Session`"是同一个动作 —— 推那个 [`Cancel`]。
+
+use std::sync::{Arc, Mutex};
 
 use akasha_core::SessionId;
-use akasha_ssh::{SftpClient, SshConnection};
+use akasha_ssh::transfer::{Cancel, Endpoint, Listing, Progress, TransferRequest};
+use akasha_ssh::{LocalEndpoint, SftpClient, SshConnection};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tokio::runtime::Handle as RuntimeHandle;
+use tokio::task::JoinHandle;
 
 use crate::pools::HostId;
 use crate::session::{IpcError, SessionHandle, Sessions};
@@ -66,6 +75,19 @@ impl SftpSide {
     pub const ALL: [SftpSide; 2] = [SftpSide::Left, SftpSide::Right];
 }
 
+/// 一侧连的**是什么**：本机文件系统，还是池里的一台主机（plan 0702）。
+///
+/// `侧` 与 `源` 的关系是"这一栏此刻对着哪一边"，而传输的两个方向都是**侧到侧** ——
+/// 于是"本机 ↔ 主机"与将来的"主机 ↔ 主机"（plan 0703）在契约上是同一个形状。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SftpOrigin {
+    /// 本机文件系统。没有连接、没有认证、没有失败档 —— 连上就是"这一栏可以用了"。
+    Local,
+    /// 池里的一台主机。
+    Host { id: HostId },
+}
+
 /// 一侧的连接状态。
 ///
 /// 只有四个取值，而且**没有**"重连中"：SFTP 没有重连循环（那是隧道的事，ADR-0003 D13）。
@@ -88,8 +110,8 @@ pub enum SftpSideState {
 #[serde(rename_all = "camelCase")]
 pub struct SftpSideInfo {
     pub side: SftpSide,
-    /// 池里那一台的行 id（还没选就是 `None`）。
-    pub host_id: Option<HostId>,
+    /// 这一栏连的是什么（还没选就是 `None`）。
+    pub origin: Option<SftpOrigin>,
     /// 那一台的名字（界面上那一栏的标题；还没选就是空串）。
     pub name: String,
     pub state: SftpSideState,
@@ -100,6 +122,52 @@ pub struct SftpSideInfo {
     pub path: Option<String>,
 }
 
+/// 一次传输的编号（后端分配，进程内唯一）。
+///
+/// `u32` 而不是 `u64`：编号要过 IPC，而生成器**拒绝把 64 位的整数导出成 `number`**
+/// （`specta` 的 BigInt 禁令：JS 的 `number` 装不下它，悄悄截断比报错更糟）。
+/// 二十亿次传输够用，而"悄悄少一位"永远不会好用。
+pub type TransferId = u32;
+
+/// 一次传输的状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SftpTransferState {
+    /// 正在搬。
+    #[default]
+    Running,
+    /// 成功 —— **目标端点的重命名已经落地**（"看到最终名就等于成功"，`scope.md` §4.2）。
+    Done,
+    /// 失败（原因在 [`SftpTransfer::failure`]）。
+    Failed,
+    /// 被取消（用户点的，或者 `Session` 被关）。
+    Cancelled,
+}
+
+/// 一次传输的**过 IPC 表示**。
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpTransfer {
+    pub id: TransferId,
+    /// 从哪一栏、哪一个路径。
+    pub from: SftpSide,
+    pub from_path: String,
+    /// 到哪一栏、哪一个路径。
+    pub to: SftpSide,
+    pub to_path: String,
+    pub state: SftpTransferState,
+    /// 已经搬过去的字节数（传输中也读得到 —— 进度就是它）。
+    ///
+    /// ⚠️ `f64` 而不是 `u64`：同一个 BigInt 禁令（见 [`TransferId`]）。字节数是整数，
+    /// 而 `f64` 到 2^53（九千太字节）都精确 —— 传不完的风险不存在，
+    /// 换来的是前端不必碰 `BigInt`（那是 `JSON` 里根本没有的类型）。
+    pub done: f64,
+    /// 源文件的大小（还没打开源之前是 0）。
+    pub total: f64,
+    /// 失败原因（`state = failed` 时才有）。**字段值不虚构**（同 [`SftpSideInfo::failure`]）。
+    pub failure: Option<String>,
+}
+
 /// 一个 SFTP 会话的**过 IPC 表示**（只读命令与探针共用）。
 #[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -107,6 +175,8 @@ pub struct SftpSummary {
     pub handle: SessionHandle,
     /// 两侧，**永远两项**且顺序固定（`left` 在前）—— 前端因此不必处理"缺了一侧"。
     pub sides: Vec<SftpSideInfo>,
+    /// 这个会话发起过的传输，**新的在前**。
+    pub transfers: Vec<SftpTransfer>,
 }
 
 /// 一条目录条目的类型（过 IPC 的稳定短名）。
@@ -119,13 +189,13 @@ pub enum SftpEntryKind {
     Other,
 }
 
-impl From<akasha_ssh::SftpKind> for SftpEntryKind {
-    fn from(kind: akasha_ssh::SftpKind) -> Self {
+impl From<akasha_ssh::transfer::EntryKind> for SftpEntryKind {
+    fn from(kind: akasha_ssh::transfer::EntryKind) -> Self {
         match kind {
-            akasha_ssh::SftpKind::File => Self::File,
-            akasha_ssh::SftpKind::Directory => Self::Directory,
-            akasha_ssh::SftpKind::Symlink => Self::Symlink,
-            akasha_ssh::SftpKind::Other => Self::Other,
+            akasha_ssh::transfer::EntryKind::File => Self::File,
+            akasha_ssh::transfer::EntryKind::Directory => Self::Directory,
+            akasha_ssh::transfer::EntryKind::Symlink => Self::Symlink,
+            akasha_ssh::transfer::EntryKind::Other => Self::Other,
         }
     }
 }
@@ -140,8 +210,8 @@ pub struct SftpEntry {
 
 /// 一次列目录的结果。
 ///
-/// `path` 是**服务端规范化之后**的路径（`realpath`）：前端拿它当"当前目录"，
-/// 于是"返回上一级"不必在前端拼字符串。
+/// `path` 是**端点规范化之后**的路径（远端是 `realpath`，本机是 `canonicalize`）：
+/// 前端拿它当"当前目录"，于是"返回上一级"不必在前端拼字符串。
 #[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SftpListing {
@@ -149,8 +219,8 @@ pub struct SftpListing {
     pub entries: Vec<SftpEntry>,
 }
 
-impl From<akasha_ssh::SftpListing> for SftpListing {
-    fn from(listing: akasha_ssh::SftpListing) -> Self {
+impl From<Listing> for SftpListing {
+    fn from(listing: Listing) -> Self {
         Self {
             path: listing.path,
             entries: listing
@@ -182,8 +252,17 @@ pub enum SftpError {
     NotAnSftp { handle: SessionHandle },
 
     /// 这一侧还没有连接。**与失败分开**：那是"连过但没连上"，这是"还没连"。
-    #[error("SFTP 的 {side} 这一侧还没有连接（先连接，再列目录）")]
+    #[error("SFTP 的 {side} 这一侧还没有连接（先连接，再列目录或传输）")]
     NotConnected { side: String },
+
+    /// 这一步还没做。目前只有一处：**两栏都是主机**时的传输 ——
+    /// 那是 host ↔ host（plan 0703），本阶段明确拒绝，而不是让某一条更慢的路径悄悄顶上。
+    #[error("{message}")]
+    Unsupported { message: String },
+
+    /// 没有这个编号的传输（已经结束并从表里清掉了，或者编号本来就错）。
+    #[error("没有编号为 {id} 的传输")]
+    NoSuchTransfer { id: TransferId },
 
     /// 连接这条路失败。`kind` 是给界面分辨**警报**用的（同 `SshIpcError`）。
     #[error("{message}")]
@@ -245,7 +324,7 @@ impl From<IpcError> for SftpError {
 
 /// 一侧的连接：**连接本体 + 会话句柄**。
 ///
-/// 两者同生共死：会话跑在这条连接的通道上（ADR-0006 D2），连接没了会话也就没了。
+/// 两者同生共死：会话承载在这条连接的通道上（ADR-0006 D2），连接没了会话也就没了。
 /// 所以它们在一个结构里，回收时也一起交出去（[`SftpLink::close`]）。
 ///
 /// `pub(crate)`：换主机 / 关会话时，注册表把"上一次那条连接"整个交出来，
@@ -263,7 +342,7 @@ impl SftpLink {
     /// `Handle` 一 drop，上游的会话任务随之结束，服务端看到的是 TCP 断开。
     fn close(self, runtime: Option<&RuntimeHandle>) {
         let Self { connection, client } = self;
-        // 先放掉会话句柄：通道随那条流关闭，服务端因此先看到 SFTP 那一头收工，
+        // 先放掉会话句柄：通道随那条流关闭，服务端因此先看到 SFTP 那一头结束，
         // 再看到连接断开。
         drop(client);
         match runtime {
@@ -279,7 +358,7 @@ impl SftpLink {
 
 /// 一侧的全部状态。
 struct Side {
-    host_id: Option<HostId>,
+    origin: Option<SftpOrigin>,
     name: String,
     state: SftpSideState,
     failure: Option<String>,
@@ -290,7 +369,7 @@ struct Side {
 impl Default for Side {
     fn default() -> Self {
         Self {
-            host_id: None,
+            origin: None,
             name: String::new(),
             state: SftpSideState::Disconnected,
             failure: None,
@@ -304,7 +383,7 @@ impl Side {
     fn info(&self, side: SftpSide) -> SftpSideInfo {
         SftpSideInfo {
             side,
-            host_id: self.host_id,
+            origin: self.origin,
             name: self.name.clone(),
             state: self.state,
             failure: self.failure.clone(),
@@ -313,10 +392,110 @@ impl Side {
     }
 }
 
+/// 一次传输的**活的**状态：引擎那条任务写它，命令层与探针读它。
+///
+/// 它刻意**不放在会话表里**：搬字节的那条任务在另一条线上跑，让它每次都去抢会话表的锁
+/// 等于把"进度可读"变成"整个 SFTP 会话卡住"。于是这里只有两样东西：
+/// 一个原子读数（[`Progress`]）与一把只护状态字符串的短锁。
+pub(crate) struct Tracked {
+    from: SftpSide,
+    from_path: String,
+    to: SftpSide,
+    to_path: String,
+    /// 引擎写、探针读（`AtomicU64` × 2）。
+    progress: Progress,
+    /// 状态与失败原因。锁只在读写它时持有，里面没有 `await`。
+    outcome: Mutex<TrackedOutcome>,
+    /// 中止信号 —— **用户取消与关闭 `Session` 推的是同一个**（ADR-0006 D4）。
+    cancel: Cancel,
+}
+
+#[derive(Default)]
+struct TrackedOutcome {
+    state: SftpTransferState,
+    failure: Option<String>,
+}
+
+impl Tracked {
+    fn new(from: SftpSide, from_path: String, to: SftpSide, to_path: String) -> Self {
+        Self {
+            from,
+            from_path,
+            to,
+            to_path,
+            progress: Progress::default(),
+            outcome: Mutex::new(TrackedOutcome::default()),
+            cancel: Cancel::new(),
+        }
+    }
+
+    /// 引擎回来了：把结局记下来（**成功 = 目标端点的重命名已经落地**）。
+    fn finish(&self, outcome: Result<u64, akasha_ssh::SshError>) {
+        let mut slot = match self.outcome.lock() {
+            Ok(slot) => slot,
+            // 锁中毒只可能是别的线程 panic 过 —— 那不该让"这次传输的结局"丢失，
+            // 所以取回内层值继续写（这一条路径上没有任何需要保持一致的不变量）。
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match outcome {
+            Ok(_) => slot.state = SftpTransferState::Done,
+            Err(akasha_ssh::SshError::Cancelled) => slot.state = SftpTransferState::Cancelled,
+            Err(err) => {
+                slot.state = SftpTransferState::Failed;
+                slot.failure = Some(err.to_string());
+            }
+        }
+    }
+
+    /// 结局与失败原因（一次锁拿到两个，避免"状态是新的、原因是旧的"这种拼接）。
+    fn outcome(&self) -> (SftpTransferState, Option<String>) {
+        let slot = match self.outcome.lock() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        (slot.state, slot.failure.clone())
+    }
+}
+
+/// 登记表里的一条：状态 + 搬字节的那条任务。
+///
+/// 留着 `JoinHandle` 只为一件事：**关 `Session` 时要等清理落地**（`scope.md` §4.2 把
+/// "关闭 `Session`"与"失败 / 取消"列在同一格）。不等的话，`sftp_close` 会在远端临时文件
+/// 还没删掉的时候就断开连接 —— 用户看到的是"会话关了，而那个 `.part` 留下了"。
+struct Transfer {
+    /// 编号在**登记那一刻**由会话分配（`Tracked` 里没有它：那个结构是引擎与探针共用的，
+    /// 而编号是登记表的概念）。
+    id: TransferId,
+    tracked: Arc<Tracked>,
+    /// `None` = 任务已经等过了（`stop_transfers` 只等一次）。
+    task: Option<JoinHandle<()>>,
+}
+
+impl Transfer {
+    fn info(&self) -> SftpTransfer {
+        let (state, failure) = self.tracked.outcome();
+        SftpTransfer {
+            id: self.id,
+            from: self.tracked.from,
+            from_path: self.tracked.from_path.clone(),
+            to: self.tracked.to,
+            to_path: self.tracked.to_path.clone(),
+            state,
+            done: self.tracked.progress.done() as f64,
+            total: self.tracked.progress.total() as f64,
+            failure,
+        }
+    }
+}
+
 /// 一个 SFTP 会话：**两栏各自一条连接**（ADR-0006 D3）。
 pub struct Sftp {
     id: SessionId,
     sides: [Side; 2],
+    /// 发起过的传输，**新的在前**（探针与界面都按这个顺序读）。
+    transfers: Vec<Transfer>,
+    /// 下一个传输编号。
+    next_transfer: TransferId,
 }
 
 impl Sftp {
@@ -325,10 +504,12 @@ impl Sftp {
         Self {
             id,
             sides: [Side::default(), Side::default()],
+            transfers: Vec::new(),
+            next_transfer: 1,
         }
     }
 
-    /// 注册表里的名字（摘牌用）。
+    /// 注册表里的名字（注销用）。
     pub(crate) fn id(&self) -> SessionId {
         self.id
     }
@@ -340,21 +521,30 @@ impl Sftp {
             .collect()
     }
 
-    /// 这一侧要开始连了：记住它选的是哪台，并把状态推到 `连接中`。
+    /// 这个会话发起过的传输（新的在前）。
+    pub(crate) fn transfers(&self) -> Vec<SftpTransfer> {
+        self.transfers.iter().rev().map(Transfer::info).collect()
+    }
+
+    /// 这一侧要开始连了：记住它选的是什么，并把状态推到 `连接中`。
     ///
     /// ⚠️ **先把上一次的连接交出去**（返回给调用方在锁外收掉）：换一台主机等于放弃
     /// 上一条连接，两条连接同时挂着会漏掉一条 —— 而它没有主人，也就没人回收。
-    pub(crate) fn prepare_connect(&mut self, side: SftpSide, host_id: HostId) -> Option<SftpLink> {
+    pub(crate) fn prepare_connect(
+        &mut self,
+        side: SftpSide,
+        origin: SftpOrigin,
+    ) -> Option<SftpLink> {
         let slot = &mut self.sides[side.index()];
         let previous = slot.link.take();
-        slot.host_id = Some(host_id);
+        slot.origin = Some(origin);
         slot.state = SftpSideState::Connecting;
         slot.failure = None;
         slot.path = None;
         previous
     }
 
-    /// 这一侧连上了：把名字与连接挂上。
+    /// 这一侧连上了（一台主机）：把名字与连接挂上。
     pub(crate) fn attach(
         &mut self,
         side: SftpSide,
@@ -369,6 +559,16 @@ impl Sftp {
         slot.link = Some(SftpLink { connection, client });
     }
 
+    /// 这一侧连上了（**本机**，plan 0702）：没有连接可挂，只有起点目录。
+    pub(crate) fn attach_local(&mut self, side: SftpSide, name: String, path: String) {
+        let slot = &mut self.sides[side.index()];
+        slot.name = name;
+        slot.state = SftpSideState::Connected;
+        slot.failure = None;
+        slot.link = None;
+        slot.path = Some(path);
+    }
+
     /// 这一侧失败了。**只落这一侧** —— 另一侧照样可用（ADR-0006 D3）。
     pub(crate) fn fail(&mut self, side: SftpSide, reason: String) {
         let slot = &mut self.sides[side.index()];
@@ -377,15 +577,23 @@ impl Sftp {
         slot.link = None;
     }
 
-    /// 这一侧的会话句柄（列目录用）。
+    /// 这一侧的**端点**（引擎眼里的那一端，ADR-0006 D4）。
     ///
-    /// 返回的是**克隆**（上游内部是 `Arc`）：命令拿到它就可以放掉会话表的锁再去 `await`，
-    /// 而 `await` 期间别的命令照样能用这张表。
-    pub(crate) fn client(&self, side: SftpSide) -> Option<SftpClient> {
-        self.sides[side.index()]
-            .link
-            .as_ref()
-            .map(|link| link.client.clone())
+    /// `None` = 这一侧还没连上。返回的是可以脱离会话表使用的东西：
+    /// 本机端点没有状态，远端端点是会话句柄的一个克隆（上游内部是 `Arc`）——
+    /// 于是命令层可以放掉锁再去 `await`。
+    pub(crate) fn endpoint(&self, side: SftpSide) -> Option<Box<dyn Endpoint>> {
+        let slot = &self.sides[side.index()];
+        match (slot.state, slot.origin) {
+            (SftpSideState::Connected, Some(SftpOrigin::Local)) => {
+                Some(Box::new(LocalEndpoint::new()))
+            }
+            (SftpSideState::Connected, Some(SftpOrigin::Host { .. })) => slot
+                .link
+                .as_ref()
+                .map(|link| Box::new(link.client.clone()) as Box<dyn Endpoint>),
+            _ => None,
+        }
     }
 
     /// 记下这一侧当前在哪个目录（列目录成功后调用）。
@@ -393,8 +601,70 @@ impl Sftp {
         self.sides[side.index()].path = Some(path);
     }
 
+    /// 这一侧连的是什么（host ↔ host 的拒绝判据要看它）。
+    pub(crate) fn origin(&self, side: SftpSide) -> Option<SftpOrigin> {
+        self.sides[side.index()].origin
+    }
+
+    /// 登记一次传输，返回它的编号。
+    ///
+    /// 调用方在**起完任务之后**才登记（`sftp_transfer`）：编号要到这一刻才存在，
+    /// 而搬字节的那条任务不需要知道自己的编号。
+    pub(crate) fn register_transfer(
+        &mut self,
+        tracked: Arc<Tracked>,
+        task: JoinHandle<()>,
+    ) -> TransferId {
+        let id = self.next_transfer;
+        self.next_transfer += 1;
+        self.transfers.push(Transfer {
+            id,
+            tracked,
+            task: Some(task),
+        });
+        id
+    }
+
+    /// 推一次中止信号。返回"有没有这个编号"。
+    pub(crate) fn cancel_transfer(&self, id: TransferId) -> bool {
+        match self.transfers.iter().find(|transfer| transfer.id == id) {
+            Some(transfer) => {
+                transfer.tracked.cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 中止全部传输并**等清理落地**（`sftp_close` 的收尾，plan 0702）。
+    ///
+    /// ⚠️ 必须在**断开连接之前**调用：临时文件是用那条连接删掉的 ——
+    /// 先断连接的话，清理会永远做不到，而用户看到的是"会话关了，`.part` 留下了"。
+    pub(crate) async fn stop_transfers(&mut self) {
+        for transfer in &self.transfers {
+            transfer.tracked.cancel.cancel();
+        }
+        // 等**全部**任务收工再返回（不是只等被取消的那些）：已经跑完的任务本来就已经
+        // 结束了，等它们不需要时间；而"等来等去只等一部分"会让下面那句保证不成立。
+        for transfer in &mut self.transfers {
+            if let Some(task) = transfer.task.take() {
+                // 忽略返回值：任务 panic 过一次不该让关会话变成失败（清理已经尽力）。
+                let _ = task.await;
+            }
+        }
+    }
+
     /// 回收：两侧的连接都**显式断开**（同 plan 0606 的纪律：drop 不能代替显式回收）。
+    ///
+    /// 传输在这里只**推信号 + 放弃任务句柄**：这是应用退出的路径，没有任何调用方
+    /// 能等清理落地（`AGENTS.md` §3.3 的进程外兜底是看门狗，不是这里）。
     pub(crate) fn reclaim(mut self, runtime: Option<&RuntimeHandle>) {
+        for transfer in &mut self.transfers {
+            transfer.tracked.cancel.cancel();
+            if let Some(task) = transfer.task.take() {
+                task.abort();
+            }
+        }
         for side in &mut self.sides {
             if let Some(link) = side.link.take() {
                 link.close(runtime);
@@ -413,11 +683,12 @@ pub fn sftp_open(sessions: State<'_, Sessions>) -> Result<SessionHandle, SftpErr
     sessions.open_sftp().map_err(SftpError::from)
 }
 
-/// 让某一侧连上池里的那一台主机。
+/// 让某一侧连上本机文件系统，或者池里的那一台主机。
 ///
 /// ⚠️ **async**：命令体里有两次会阻塞几秒的等待（握手 + 开子系统），而同步命令跑在
 /// 处理 IPC 请求的那条线程上 —— 挡住它就等于挡住全部 IPC，包括用户回答问题要用的那三条
-/// （同 `open_ssh_session` 的理由）。
+/// （同 `open_ssh_session` 的理由）。本机那一档没有等待，走同一条命令只是为了
+/// "一栏只有一种连法"。
 #[tauri::command]
 #[specta::specta]
 pub async fn sftp_connect(
@@ -425,30 +696,45 @@ pub async fn sftp_connect(
     sessions: State<'_, Sessions>,
     handle: SessionHandle,
     side: SftpSide,
-    host_id: HostId,
+    origin: SftpOrigin,
 ) -> Result<SftpSideInfo, SftpError> {
     // 上一次的连接（换主机时留下的那条）交出来在**锁外**收掉。
-    if let Some(previous) = sessions.sftp_prepare_connect(handle, side, host_id)? {
+    if let Some(previous) = sessions.sftp_prepare_connect(handle, side, origin)? {
         previous.close(app.state::<Ssh>().runtime_handle().as_ref());
     }
 
-    let ssh = app.state::<Ssh>();
-    let vault = app.state::<Vault>();
-    match connect_side(&ssh, &vault, host_id).await {
-        Ok((name, connection, client)) => {
-            sessions.sftp_attach(handle, side, name, connection, client)?;
-            sessions
-                .sftp_side(handle, side)
-                .ok_or(SftpError::NotAnSftp { handle })
+    match origin {
+        // 本机：没有连接、没有认证，**也没有会失败的地方** —— 直接把那一栏点亮，
+        // 起点是用户的家目录（`LocalEndpoint::default_dir` 的三层兜底）。
+        SftpOrigin::Local => {
+            sessions.sftp_attach_local(
+                handle,
+                side,
+                LOCAL_NAME.to_owned(),
+                LocalEndpoint::default_dir(),
+            )?;
         }
-        Err(err) => {
-            // 失败**落在这一侧**：探针与界面因此都答得出"是左边还是右边没连上"。
-            // ⚠️ 忽略返回：会话可能在这次连接期间被用户关掉（`sftp_close`），
-            // 那时"哪一侧失败"这件事已经无处可记 —— 而真正要报的是下面这个 `Err`。
-            let _ = sessions.sftp_fail(handle, side, err.to_string());
-            Err(err)
+        SftpOrigin::Host { id } => {
+            let ssh = app.state::<Ssh>();
+            let vault = app.state::<Vault>();
+            match connect_side(&ssh, &vault, id).await {
+                Ok((name, connection, client)) => {
+                    sessions.sftp_attach(handle, side, name, connection, client)?;
+                }
+                Err(err) => {
+                    // 失败**落在这一侧**：探针与界面因此都答得出"是左边还是右边没连上"。
+                    // ⚠️ 忽略返回：会话可能在这次连接期间被用户关掉（`sftp_close`），
+                    // 那时"哪一侧失败"这件事已经无处可记 —— 而真正要报的是下面这个 `Err`。
+                    let _ = sessions.sftp_fail(handle, side, err.to_string());
+                    return Err(err);
+                }
+            }
         }
     }
+
+    sessions
+        .sftp_side(handle, side)
+        .ok_or(SftpError::NotAnSftp { handle })
 }
 
 /// 列某一侧某个目录。
@@ -460,15 +746,108 @@ pub async fn sftp_list(
     side: SftpSide,
     path: String,
 ) -> Result<SftpListing, SftpError> {
-    let client = sessions
-        .sftp_client(handle, side)?
+    let endpoint = sessions
+        .sftp_endpoint(handle, side)?
         .ok_or(SftpError::NotConnected {
             side: side.as_str().to_owned(),
         })?;
     // 从这里开始**不持会话表的锁**：`list` 会等在网络上，而别的命令照样要用那张表。
-    let listing = client.list(&path).await.map_err(SftpError::from)?;
+    let listing = endpoint.list(&path).await?;
     sessions.sftp_set_path(handle, side, listing.path.clone())?;
     Ok(listing.into())
+}
+
+/// 把某一侧的一个文件搬到另一侧的某个路径上（plan 0702）。
+///
+/// 返回一个**编号**而不是结果：搬运是后台任务（`scope.md` §4.1 要求 progress 可见，
+/// 而一条几十秒的命令会把 IPC 堵住）。进度与结局走 [`sftp_transfers`] 与 `sftp` 探针读。
+///
+/// ⚠️ **两栏都是主机**时明确拒绝：那是 host ↔ host（plan 0703），本阶段不做 ——
+/// 让一条更慢的路径悄悄顶上会让人以为 0703 已经完成了。
+#[tauri::command]
+#[specta::specta]
+pub fn sftp_transfer(
+    app: AppHandle,
+    sessions: State<'_, Sessions>,
+    handle: SessionHandle,
+    from: SftpSide,
+    from_path: String,
+    to: SftpSide,
+    to_path: String,
+) -> Result<TransferId, SftpError> {
+    reject_host_to_host(&sessions, handle, from, to)?;
+
+    let source = endpoint_of(&sessions, handle, from)?;
+    let target = endpoint_of(&sessions, handle, to)?;
+
+    let tracked = Arc::new(Tracked::new(from, from_path, to, to_path));
+    let runtime = app
+        .state::<Ssh>()
+        .runtime_handle()
+        .ok_or_else(|| SftpError::Internal {
+            message: "SSH 的 runtime 还没起来，传输排不上去".to_owned(),
+        })?;
+
+    let task = {
+        let tracked = Arc::clone(&tracked);
+        runtime.spawn(async move {
+            // 请求借用 `tracked` 里的两个路径 —— 所以它在**任务里面**构造，
+            // 而不是在外面构造好再移进来（那样借的东西活不过 spawn）。
+            let request = TransferRequest {
+                source_path: tracked.from_path.as_str(),
+                target_path: tracked.to_path.as_str(),
+            };
+            let outcome = akasha_ssh::transfer::transfer(
+                &*source,
+                &*target,
+                &request,
+                &tracked.progress,
+                tracked.cancel.waiter(),
+            )
+            .await;
+            tracked.finish(outcome);
+        })
+    };
+
+    // 登记是**最后**一步：任务已经跑起来了，登记只是把它记进表里。
+    // ⚠️ 会话可能在这期间被关掉 —— 那时实体已经摘牌，登记会失败；不能把这次传输丢下不管
+    // （它已经在搬了），所以推一次中止让它自己收拾干净，再把失败报出去。
+    match sessions.sftp_register_transfer(handle, tracked.clone(), task) {
+        Ok(id) => Ok(id),
+        Err(err) => {
+            tracked.cancel.cancel();
+            Err(SftpError::from(err))
+        }
+    }
+}
+
+/// 取消一次传输。
+///
+/// ⚠️ 它**只推信号就返回**：临时文件是引擎那条任务删的，而"删掉了"由任务自己写进状态 ——
+/// 调用方要看的是 [`sftp_transfers`] 里那条不再是 `running`（`AGENTS.md` §7：
+/// 等真正结束，而不是猜一段时间）。
+#[tauri::command]
+#[specta::specta]
+pub fn sftp_transfer_cancel(
+    sessions: State<'_, Sessions>,
+    handle: SessionHandle,
+    id: TransferId,
+) -> Result<(), SftpError> {
+    if sessions.sftp_cancel_transfer(handle, id)? {
+        Ok(())
+    } else {
+        Err(SftpError::NoSuchTransfer { id })
+    }
+}
+
+/// 这个会话发起过的传输（新的在前）。
+#[tauri::command]
+#[specta::specta]
+pub fn sftp_transfers(
+    sessions: State<'_, Sessions>,
+    handle: SessionHandle,
+) -> Result<Vec<SftpTransfer>, SftpError> {
+    sessions.sftp_transfers(handle).map_err(SftpError::from)
 }
 
 /// 两侧的状态（只读命令用）。
@@ -497,14 +876,19 @@ pub fn sftp_sessions(sessions: State<'_, Sessions>) -> Result<Vec<SftpSummary>, 
 /// ⚠️ **它是这个会话唯一的关闭入口**：面板是仅渲染的视图（`scope.md` §5.6），
 /// 关面板不停后端会话 —— 停止是这里这个显式动作（与隧道那边 `tunnel_stop` 同一条纪律）。
 /// 幂等：已经关过的句柄返回 `Ok`（不是失败）。
+///
+/// ⚠️ **顺序不能换**：先推中止、**等清理落地**，再断连接。临时文件是用那条连接删掉的，
+/// 反过来做的话 `scope.md` §4.2 那一格（"关闭 `Session` → 删除临时文件"）永远做不到。
+/// 等一下的上界是 SFTP 自己的请求期限（一次读或写、加上一次删除）—— 不会无限等。
 #[tauri::command]
 #[specta::specta]
-pub fn sftp_close(
+pub async fn sftp_close(
     app: AppHandle,
     sessions: State<'_, Sessions>,
     handle: SessionHandle,
 ) -> Result<(), SftpError> {
-    if let Some(sftp) = sessions.remove_sftp(handle)? {
+    if let Some(mut sftp) = sessions.remove_sftp(handle)? {
+        sftp.stop_transfers().await;
         sftp.reclaim(app.state::<Ssh>().runtime_handle().as_ref());
     }
     Ok(())
@@ -547,7 +931,50 @@ fn host_name(vault: &Vault, host_id: HostId) -> Result<String, SftpError> {
     Ok(row.name)
 }
 
-/// 只读探针 `sftp`：全部 SFTP 会话与它们两侧的状态（`AGENTS.md` §7 的探针纪律）。
+/// 本机那一栏在界面上的名字（后端给的默认名；用户可以不管它）。
+const LOCAL_NAME: &str = "本机";
+
+/// 取某一侧的端点，没连上就是 [`SftpError::NotConnected`]。
+fn endpoint_of(
+    sessions: &Sessions,
+    handle: SessionHandle,
+    side: SftpSide,
+) -> Result<Box<dyn Endpoint>, SftpError> {
+    sessions
+        .sftp_endpoint(handle, side)?
+        .ok_or(SftpError::NotConnected {
+            side: side.as_str().to_owned(),
+        })
+}
+
+/// 两栏都是主机时拒绝（host ↔ host 是 plan 0703）。
+///
+/// ⚠️ 它存在的理由不是"懒得做"，而是**不做而装作做了**最容易发生在这里：
+/// 两栏各连一条连接、字节经本机内存转一圈，代码上是通的 —— 但那条路既不是 B 档
+/// （不省带宽、也不解除"本机必须直达 B"的限制），也没有 0703 的判据守着。
+/// 明确拒绝让人一眼看出这一步还没做。
+fn reject_host_to_host(
+    sessions: &Sessions,
+    handle: SessionHandle,
+    from: SftpSide,
+    to: SftpSide,
+) -> Result<(), SftpError> {
+    let remote = |side: SftpSide| {
+        matches!(
+            sessions.sftp_origin(handle, side),
+            Some(SftpOrigin::Host { .. })
+        )
+    };
+    if remote(from) && remote(to) {
+        return Err(SftpError::Unsupported {
+            message: "两栏都是主机时的传输（host ↔ host）属于 plan 0703，本阶段还没做".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// 只读探针 `sftp`：全部 SFTP 会话、它们两侧的状态，以及各自发起过的传输
+/// （`AGENTS.md` §7 的探针纪律）。
 ///
 /// 为什么不是"塞进 `sessions` 探针"：那份说的是 `live` 与 `registered` **两个数必须相等**
 /// 这条不变量，混进别的东西会让那句不变量失去意义（同 `tunnels` 与 `residue` 的分工）。

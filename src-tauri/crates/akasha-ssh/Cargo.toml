@@ -34,8 +34,10 @@ russh-sftp = "=3.0.0"
 # AGENTS.md §3.4：错误用 thiserror 分域定义。
 thiserror = "2"
 # 只用到 traits 与 runtime handle：`rt` 给 `Handle`，`sync` 给两条队列，`net` 给 TcpStream，
-# `time` 给超时。**不要** `rt-multi-thread` —— 建 runtime 是 app 的事（D2）。
-tokio = { version = "1", features = ["rt", "sync", "net", "time", "io-util"] }
+# `time` 给超时，`io-util` 给 `AsyncReadExt`。`fs` 是本机端点（plan 0702）要的 ——
+# 它把 `std::fs` 放到阻塞池上，于是搬一个几百兆的文件不会占住一条 worker。
+# **不要** `rt-multi-thread` —— 建 runtime 是 app 的事（D2）。
+tokio = { version = "1", features = ["rt", "sync", "net", "time", "io-util", "fs"] }
 # 日志消息是事件名（AGENTS.md §3.4 / docs/logging.md）。本 crate 不装 subscriber：
 # app 那边已经有了，库再装一份只会把日志分成两处。
 tracing = "0.1.44"

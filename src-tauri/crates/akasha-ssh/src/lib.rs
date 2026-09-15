@@ -51,6 +51,9 @@ mod forward;
 mod handshake;
 mod keys;
 mod known_hosts;
+/// **本机端点**（plan 0702）：`scope.md` §4 的 "local ↔ host" 里的那个 local ——
+/// 与一个 SFTP 会话并列的第二种 [`Endpoint`]。
+mod local;
 /// **本地转发 `-L` 与动态转发 `-D`**：本地监听 + 每条入站连接一条 `direct-tcpip` 通道
 /// （plan 0602 / 0603）。
 mod relay;
@@ -66,6 +69,9 @@ mod target;
 ///
 /// ⚠️ 生产代码不要用它 —— 它开监听端口、接受任何带对口令的连接。理由与用法见模块文档。
 pub mod testing;
+/// **传输引擎**（plan 0702，ADR-0006 D4）：它只认两个 [`Endpoint`]，
+/// 于是"哪两个端点配对"就是三种拓扑的全部差别（D5）。
+pub mod transfer;
 mod transport;
 
 pub use akasha_pty::{TerminalSize, Transport, TransportError};
@@ -82,8 +88,13 @@ pub use known_hosts::{
     HostKeyCache, HostKeyPrompt, KnownHostsVerifier, RecordedHostKey, RecordedIn,
     user_known_hosts_file, user_ssh_config_file,
 };
+pub use local::LocalEndpoint;
 pub use relay::{ForwardTarget, Ingress, LocalForward, LocalListener};
 pub use remote::RemoteForward;
-pub use sftp::{SftpClient, SftpEntry, SftpKind, SftpListing};
+pub use sftp::SftpClient;
 pub use target::SshTarget;
+pub use transfer::{
+    Cancel, CancelWaiter, Endpoint, Entry, EntryKind, Listing, PendingWrite, Progress,
+    TransferRequest,
+};
 pub use transport::SshTransport;

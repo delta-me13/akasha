@@ -1,4 +1,4 @@
-// SFTP（plan 0701）—— 四条命令在前端这一侧的接线。
+// SFTP（plan 0701 / 0702）—— 命令在前端这一侧的接线。
 //
 // 为什么在 `src/ipc/`：前端唯一允许碰后端的目录（`AGENTS.md` §0 禁止 #1）。
 // 这一层**不做业务判断**：两侧的连接、失败落在哪一侧、目录内容都在后端
@@ -12,13 +12,26 @@ import {
   type SftpEntry,
   type SftpError,
   type SftpListing,
+  type SftpOrigin,
   type SftpSide,
   type SftpSideInfo,
   type SftpSideState,
   type SftpSummary,
+  type SftpTransfer,
+  type SftpTransferState,
 } from "./bindings";
 
-export type { SftpEntry, SftpListing, SftpSide, SftpSideInfo, SftpSideState, SftpSummary };
+export type {
+  SftpEntry,
+  SftpListing,
+  SftpOrigin,
+  SftpSide,
+  SftpSideInfo,
+  SftpSideState,
+  SftpSummary,
+  SftpTransfer,
+  SftpTransferState,
+};
 
 /** SFTP 操作失败。 */
 export class SftpFailed extends Error {
@@ -56,6 +69,10 @@ export class SftpFailed extends Error {
         return `会话 ${detail.detail.handle} 不是一个 SFTP 会话（已关闭或未打开）`;
       case "notConnected":
         return `SFTP 的 ${detail.detail.side} 这一侧还没有连接（先连接，再列目录）`;
+      case "unsupported":
+        return detail.detail.message;
+      case "noSuchTransfer":
+        return `没有编号为 ${detail.detail.id} 的传输（它可能已经结束了）`;
       case "failed":
         return `SFTP 连接失败：${detail.detail.message}`;
       case "internal":
@@ -71,13 +88,17 @@ export async function openSftp(): Promise<number> {
   return result.data;
 }
 
-/** 让某一侧连上池里那台主机。 */
+/**
+ * 让某一侧连上**本机**或者池里那台主机（plan 0702 起一栏可以选「本机」）。
+ *
+ * 本机那一档没有连接、没有认证，也就没有会失败的地方 —— 它连上就是"这一栏可以用了"。
+ */
 export async function connectSftpSide(
   handle: number,
   side: SftpSide,
-  hostId: number,
+  origin: SftpOrigin,
 ): Promise<SftpSideInfo> {
-  const result = await commands.sftpConnect(handle, side, hostId);
+  const result = await commands.sftpConnect(handle, side, origin);
   if (result.status === "error") throw new SftpFailed(result.error);
   return result.data;
 }
@@ -89,6 +110,42 @@ export async function listSftp(
   path: string,
 ): Promise<SftpListing> {
   const result = await commands.sftpList(handle, side, path);
+  if (result.status === "error") throw new SftpFailed(result.error);
+  return result.data;
+}
+
+/**
+ * 把 `from` 那一侧的一个文件搬到 `to` 那一侧的某个路径上，返回传输的编号。
+ *
+ * ⚠️ 它**立刻返回**：搬运在后台跑，进度与结局要读 [`listSftpTransfers`]（或 `sftp` 探针）。
+ * 这不是偷懒 —— 一条几十秒的命令会把 IPC 堵住，而"看得见进度"正是产品要的。
+ */
+export async function startSftpTransfer(
+  handle: number,
+  from: SftpSide,
+  fromPath: string,
+  to: SftpSide,
+  toPath: string,
+): Promise<number> {
+  const result = await commands.sftpTransfer(handle, from, fromPath, to, toPath);
+  if (result.status === "error") throw new SftpFailed(result.error);
+  return result.data;
+}
+
+/**
+ * 取消一次传输。
+ *
+ * ⚠️ 它也只推信号：临时文件是搬运那条任务删的。**"取消完成了"的判据是**
+ * [`listSftpTransfers`] 里那条不再是 `running` —— 界面不得在它变之前就宣布已经取消。
+ */
+export async function cancelSftpTransfer(handle: number, id: number): Promise<void> {
+  const result = await commands.sftpTransferCancel(handle, id);
+  if (result.status === "error") throw new SftpFailed(result.error);
+}
+
+/** 这个会话发起过的传输（新的在前）。 */
+export async function listSftpTransfers(handle: number): Promise<SftpTransfer[]> {
+  const result = await commands.sftpTransfers(handle);
   if (result.status === "error") throw new SftpFailed(result.error);
   return result.data;
 }

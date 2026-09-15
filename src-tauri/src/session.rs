@@ -32,13 +32,17 @@ use akasha_pty::{
     Batch, BatchPolicy, ExitStatus, PtyTransport, TerminalSize, Transport, TransportError,
     spawn_batcher,
 };
+use akasha_ssh::transfer::Endpoint;
 use akasha_ssh::{SftpClient, SshConnection};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody, JavaScriptChannelId};
 use tauri::{AppHandle, Emitter, State, Webview};
 use tauri_specta::Event;
 
-use crate::sftp::{Sftp, SftpLink, SftpSide, SftpSideInfo, SftpSummary};
+use crate::sftp::{
+    Sftp, SftpLink, SftpOrigin, SftpSide, SftpSideInfo, SftpSummary, SftpTransfer, Tracked,
+    TransferId,
+};
 use crate::tunnel::{Tunnel, TunnelStopSignal, TunnelSummary};
 
 /// 前端 raw 字节频道的句柄。
@@ -653,14 +657,14 @@ impl Sessions {
         &self,
         handle: SessionHandle,
         side: SftpSide,
-        host_id: crate::pools::HostId,
+        origin: SftpOrigin,
     ) -> Result<Option<SftpLink>, IpcError> {
         let mut inner = self.lock()?;
         let sftp = inner
             .sftps
             .get_mut(&handle)
             .ok_or(IpcError::NotFound { handle })?;
-        Ok(sftp.prepare_connect(side, host_id))
+        Ok(sftp.prepare_connect(side, origin))
     }
 
     /// 这一侧连上了：把名字、连接与会话句柄挂上去。
@@ -681,6 +685,23 @@ impl Sessions {
         Ok(())
     }
 
+    /// 这一侧连上了**本机**（plan 0702）：没有连接可挂，只有起点目录。
+    pub fn sftp_attach_local(
+        &self,
+        handle: SessionHandle,
+        side: SftpSide,
+        name: String,
+        path: String,
+    ) -> Result<(), IpcError> {
+        let mut inner = self.lock()?;
+        let sftp = inner
+            .sftps
+            .get_mut(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        sftp.attach_local(side, name, path);
+        Ok(())
+    }
+
     /// 这一侧失败了。原因留在**那一侧**（另一侧照样可用，ADR-0006 D3）。
     pub fn sftp_fail(
         &self,
@@ -697,21 +718,71 @@ impl Sessions {
         Ok(())
     }
 
-    /// 这一侧的会话句柄（列目录用）。
+    /// 这一侧的**端点**（列目录与传输都用它，plan 0702）。
     ///
     /// `Ok(None)` = 这一侧还没有连接（还没连 / 连失败了）；`Err(NotFound)` = 这个句柄
     /// **不是**一个 SFTP 会话 —— 两者对用户的下一步动作不同，所以分开。
-    pub fn sftp_client(
+    ///
+    /// 拿到的端点是**可以脱离这张表**用的：本机端点没有状态，远端端点是会话句柄的一个
+    /// 克隆（上游内部是 `Arc`）。于是调用方放掉锁再去 `await`。
+    pub fn sftp_endpoint(
         &self,
         handle: SessionHandle,
         side: SftpSide,
-    ) -> Result<Option<SftpClient>, IpcError> {
+    ) -> Result<Option<Box<dyn Endpoint>>, IpcError> {
         let inner = self.lock()?;
         let sftp = inner
             .sftps
             .get(&handle)
             .ok_or(IpcError::NotFound { handle })?;
-        Ok(sftp.client(side))
+        Ok(sftp.endpoint(side))
+    }
+
+    /// 这一侧连的是什么（host ↔ host 的拒绝判据要看它，plan 0702）。
+    pub fn sftp_origin(&self, handle: SessionHandle, side: SftpSide) -> Option<SftpOrigin> {
+        let inner = self.lock().ok()?;
+        inner.sftps.get(&handle)?.origin(side)
+    }
+
+    /// 登记一次传输（任务已经起好了），返回它的编号。
+    ///
+    /// `pub(crate)`：它收的 [`Tracked`] 是 SFTP 模块内部的类型（外面拿不到，也不需要）。
+    pub(crate) fn sftp_register_transfer(
+        &self,
+        handle: SessionHandle,
+        tracked: Arc<Tracked>,
+        task: tokio::task::JoinHandle<()>,
+    ) -> Result<TransferId, IpcError> {
+        let mut inner = self.lock()?;
+        let sftp = inner
+            .sftps
+            .get_mut(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        Ok(sftp.register_transfer(tracked, task))
+    }
+
+    /// 推一次中止信号。`Ok(false)` = 没有这个编号（**不是**失败：取消是幂等的愿望）。
+    pub fn sftp_cancel_transfer(
+        &self,
+        handle: SessionHandle,
+        id: TransferId,
+    ) -> Result<bool, IpcError> {
+        let inner = self.lock()?;
+        let sftp = inner
+            .sftps
+            .get(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        Ok(sftp.cancel_transfer(id))
+    }
+
+    /// 这个会话发起过的传输（新的在前）。
+    pub fn sftp_transfers(&self, handle: SessionHandle) -> Result<Vec<SftpTransfer>, IpcError> {
+        let inner = self.lock()?;
+        let sftp = inner
+            .sftps
+            .get(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        Ok(sftp.transfers())
     }
 
     /// 记下这一侧当前在哪个目录（列目录成功后调用）。
@@ -762,6 +833,7 @@ impl Sessions {
             .map(|(handle, sftp)| SftpSummary {
                 handle: *handle,
                 sides: sftp.sides(),
+                transfers: sftp.transfers(),
             })
             .collect();
         entries.sort_by_key(|entry| entry.handle);

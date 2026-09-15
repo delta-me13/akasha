@@ -145,15 +145,36 @@ export const commands = {
 	 */
 	sftpOpen: () => typedError<number, SftpError>(__TAURI_INVOKE("sftp_open")),
 	/**
-	 *  让某一侧连上池里的那一台主机。
+	 *  让某一侧连上本机文件系统，或者池里的那一台主机。
 	 * 
 	 *  ⚠️ **async**：命令体里有两次会阻塞几秒的等待（握手 + 开子系统），而同步命令跑在
 	 *  处理 IPC 请求的那条线程上 —— 挡住它就等于挡住全部 IPC，包括用户回答问题要用的那三条
-	 *  （同 `open_ssh_session` 的理由）。
+	 *  （同 `open_ssh_session` 的理由）。本机那一档没有等待，走同一条命令只是为了
+	 *  "一栏只有一种连法"。
 	 */
-	sftpConnect: (handle: number, side: SftpSide, hostId: number) => typedError<SftpSideInfo, SftpError>(__TAURI_INVOKE("sftp_connect", { handle, side, hostId })),
+	sftpConnect: (handle: number, side: SftpSide, origin: SftpOrigin) => typedError<SftpSideInfo, SftpError>(__TAURI_INVOKE("sftp_connect", { handle, side, origin })),
 	/**  列某一侧某个目录。 */
 	sftpList: (handle: number, side: SftpSide, path: string) => typedError<SftpListing, SftpError>(__TAURI_INVOKE("sftp_list", { handle, side, path })),
+	/**
+	 *  把某一侧的一个文件搬到另一侧的某个路径上（plan 0702）。
+	 * 
+	 *  返回一个**编号**而不是结果：搬运是后台任务（`scope.md` §4.1 要求 progress 可见，
+	 *  而一条几十秒的命令会把 IPC 堵住）。进度与结局走 [`sftp_transfers`] 与 `sftp` 探针读。
+	 * 
+	 *  ⚠️ **两栏都是主机**时明确拒绝：那是 host ↔ host（plan 0703），本阶段不做 ——
+	 *  让一条更慢的路径悄悄顶上会让人以为 0703 已经完成了。
+	 */
+	sftpTransfer: (handle: number, from: SftpSide, fromPath: string, to: SftpSide, toPath: string) => typedError<number, SftpError>(__TAURI_INVOKE("sftp_transfer", { handle, from, fromPath, to, toPath })),
+	/**
+	 *  取消一次传输。
+	 * 
+	 *  ⚠️ 它**只推信号就返回**：临时文件是引擎那条任务删的，而"删掉了"由任务自己写进状态 ——
+	 *  调用方要看的是 [`sftp_transfers`] 里那条不再是 `running`（`AGENTS.md` §7：
+	 *  等真正结束，而不是猜一段时间）。
+	 */
+	sftpTransferCancel: (handle: number, id: number) => typedError<null, SftpError>(__TAURI_INVOKE("sftp_transfer_cancel", { handle, id })),
+	/**  这个会话发起过的传输（新的在前）。 */
+	sftpTransfers: (handle: number) => typedError<SftpTransfer[], SftpError>(__TAURI_INVOKE("sftp_transfers", { handle })),
 	/**  两侧的状态（只读命令用）。 */
 	sftpSides: (handle: number) => typedError<SftpSideInfo[], SftpError>(__TAURI_INVOKE("sftp_sides", { handle })),
 	/**
@@ -170,6 +191,10 @@ export const commands = {
 	 *  ⚠️ **它是这个会话唯一的关闭入口**：面板是仅渲染的视图（`scope.md` §5.6），
 	 *  关面板不停后端会话 —— 停止是这里这个显式动作（与隧道那边 `tunnel_stop` 同一条纪律）。
 	 *  幂等：已经关过的句柄返回 `Ok`（不是失败）。
+	 * 
+	 *  ⚠️ **顺序不能换**：先推中止、**等清理落地**，再断连接。临时文件是用那条连接删掉的，
+	 *  反过来做的话 `scope.md` §4.2 那一格（"关闭 `Session` → 删除临时文件"）永远做不到。
+	 *  等一下的上界是 SFTP 自己的请求期限（一次读或写、加上一次删除）—— 不会无限等。
 	 */
 	sftpClose: (handle: number) => typedError<null, SftpError>(__TAURI_INVOKE("sftp_close", { handle })),
 };
@@ -475,6 +500,17 @@ export type SftpError =
 { kind: "notConnected"; detail: {
 	side: string,
 } } | 
+/**
+ *  这一步还没做。目前只有一处：**两栏都是主机**时的传输 ——
+ *  那是 host ↔ host（plan 0703），本阶段明确拒绝，而不是让某一条更慢的路径悄悄顶上。
+ */
+{ kind: "unsupported"; detail: {
+	message: string,
+} } | 
+/**  没有这个编号的传输（已经结束并从表里清掉了，或者编号本来就错）。 */
+{ kind: "noSuchTransfer"; detail: {
+	id: number,
+} } | 
 /**  连接这条路失败。`kind` 是给界面分辨**警报**用的（同 `SshIpcError`）。 */
 { kind: "failed"; detail: {
 	kind: SshFailureKind,
@@ -488,13 +524,25 @@ export type SftpError =
 /**
  *  一次列目录的结果。
  * 
- *  `path` 是**服务端规范化之后**的路径（`realpath`）：前端拿它当"当前目录"，
- *  于是"返回上一级"不必在前端拼字符串。
+ *  `path` 是**端点规范化之后**的路径（远端是 `realpath`，本机是 `canonicalize`）：
+ *  前端拿它当"当前目录"，于是"返回上一级"不必在前端拼字符串。
  */
 export type SftpListing = {
 	path: string,
 	entries: SftpEntry[],
 };
+
+/**
+ *  一侧连的**是什么**：本机文件系统，还是池里的一台主机（plan 0702）。
+ * 
+ *  `侧` 与 `源` 的关系是"这一栏此刻对着哪一边"，而传输的两个方向都是**侧到侧** ——
+ *  于是"本机 ↔ 主机"与将来的"主机 ↔ 主机"（plan 0703）在契约上是同一个形状。
+ */
+export type SftpOrigin = 
+/**  本机文件系统。没有连接、没有认证、没有失败档 —— 连上就是"这一栏可以用了"。 */
+{ kind: "local" } | 
+/**  池里的一台主机。 */
+{ kind: "host"; id: number };
 
 /**  两栏里的哪一栏。**唯一进入契约的呈现概念**（ADR-0006 D7）。 */
 export type SftpSide = "left" | "right";
@@ -502,8 +550,8 @@ export type SftpSide = "left" | "right";
 /**  一侧的**过 IPC 表示**。 */
 export type SftpSideInfo = {
 	side: SftpSide,
-	/**  池里那一台的行 id（还没选就是 `None`）。 */
-	hostId: number | null,
+	/**  这一栏连的是什么（还没选就是 `None`）。 */
+	origin: SftpOrigin | null,
 	/**  那一台的名字（界面上那一栏的标题；还没选就是空串）。 */
 	name: string,
 	state: SftpSideState,
@@ -537,7 +585,44 @@ export type SftpSummary = {
 	handle: number,
 	/**  两侧，**永远两项**且顺序固定（`left` 在前）—— 前端因此不必处理"缺了一侧"。 */
 	sides: SftpSideInfo[],
+	/**  这个会话发起过的传输，**新的在前**。 */
+	transfers: SftpTransfer[],
 };
+
+/**  一次传输的**过 IPC 表示**。 */
+export type SftpTransfer = {
+	id: number,
+	/**  从哪一栏、哪一个路径。 */
+	from: SftpSide,
+	fromPath: string,
+	/**  到哪一栏、哪一个路径。 */
+	to: SftpSide,
+	toPath: string,
+	state: SftpTransferState,
+	/**
+	 *  已经搬过去的字节数（传输中也读得到 —— 进度就是它）。
+	 * 
+	 *  ⚠️ `f64` 而不是 `u64`：同一个 BigInt 禁令（见 [`TransferId`]）。字节数是整数，
+	 *  而 `f64` 到 2^53（九千太字节）都精确 —— 传不完的风险不存在，
+	 *  换来的是前端不必碰 `BigInt`（那是 `JSON` 里根本没有的类型）。
+	 */
+	done: number | null,
+	/**  源文件的大小（还没打开源之前是 0）。 */
+	total: number | null,
+	/**  失败原因（`state = failed` 时才有）。**字段值不虚构**（同 [`SftpSideInfo::failure`]）。 */
+	failure: string | null,
+};
+
+/**  一次传输的状态。 */
+export type SftpTransferState = 
+/**  正在搬。 */
+"running" | 
+/**  成功 —— **目标端点的重命名已经落地**（"看到最终名就等于成功"，`scope.md` §4.2）。 */
+"done" | 
+/**  失败（原因在 [`SftpTransfer::failure`]）。 */
+"failed" | 
+/**  被取消（用户点的，或者 `Session` 被关）。 */
+"cancelled";
 
 /**  没动这一行的原因。**两个取值对应两个不同的下一步动作**（对用户说的是两句话）。 */
 export type SkipReason = 

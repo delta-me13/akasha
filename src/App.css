@@ -660,7 +660,8 @@ body {
   margin: 0 0 6px;
 }
 
-.sftp-host {
+.sftp-origin,
+.sftp-goto {
   flex: 1;
   min-width: 0;
   padding: 2px 4px;
@@ -673,7 +674,10 @@ body {
 }
 
 .sftp-connect,
-.sftp-up {
+.sftp-up,
+.sftp-goto-go,
+.sftp-send,
+.sftp-transfer-cancel {
   padding: 2px 8px;
   background: #222a35;
   border: 1px solid #2b3444;
@@ -685,7 +689,10 @@ body {
 }
 
 .sftp-connect:disabled,
-.sftp-up:disabled {
+.sftp-up:disabled,
+.sftp-goto-go:disabled,
+.sftp-send:disabled,
+.sftp-transfer-cancel:disabled {
   color: #5b6673;
   cursor: default;
 }
@@ -719,4 +726,63 @@ body {
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+}
+
+/* 传输列表：**进度与结局都来自后端**（`data-transfer-state`），这一块只负责画出来。 */
+.sftp-transfers {
+  margin-top: 10px;
+  border-top: 1px solid #2b3444;
+  padding-top: 8px;
+}
+
+.sftp-transfers-head {
+  font-size: 12px;
+  color: #8d99a8;
+  margin-bottom: 4px;
+}
+
+.sftp-transfer-list {
+  margin: 0;
+  padding: 0;
+  max-height: 160px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.sftp-transfer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  padding: 2px 0;
+  font-size: 12px;
+  color: #d8dee9;
+}
+
+.sftp-transfer-route {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sftp-transfer-state,
+.sftp-transfer-bytes {
+  color: #8d99a8;
+}
+
+.sftp-transfer[data-transfer-state="failed"] .sftp-transfer-state {
+  color: #bf616a;
+}
+
+.sftp-transfer[data-transfer-state="done"] .sftp-transfer-state {
+  color: #a3be8c;
+}
+
+.sftp-transfer[data-transfer-state="running"] .sftp-transfer-state {
+  color: #ebcb8b;
+}
+
+.sftp-transfer-failure {
+  flex-basis: 100%;
+  color: #bf616a;
 }

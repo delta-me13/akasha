@@ -26,8 +26,11 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::fs::File as StdFile;
 use std::io;
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -39,7 +42,9 @@ use russh::keys::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use russh::server::ChannelOpenHandle;
 use russh::server::{Auth, Msg, Response, Server, Session};
 use russh::{Channel, ChannelId, MethodSet, Pty};
-use russh_sftp::protocol::{File, FileAttributes, Handle as SftpHandle, Name, Status, StatusCode};
+use russh_sftp::protocol::{
+    Attrs, Data, File, FileAttributes, Handle as SftpHandle, Name, OpenFlags, Status, StatusCode,
+};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
@@ -139,9 +144,19 @@ pub struct ServerOptions {
     /// 没有匹配项的 `direct-tcpip` 一律**拒绝**（drop `reply`），与真实服务端的
     /// "转发不允许 / 连不上"同形。
     pub relay: Vec<Relay>,
-    /// 提供 `sftp` 子系统，根目录里列出这几项（plan 0701）。`None` = 不提供 ——
-    /// 那时 `subsystem_request` **明确拒绝**，客户端要在 `request_subsystem` 那里看到 false。
+    /// 提供 `sftp` 子系统，并在根目录里把这几项**真的建出来**（plan 0701 / 0702）。
+    /// `None` = 不提供 —— 那时 `subsystem_request` **明确拒绝**。
+    ///
+    /// ⚠️ 它在 `start()` 那一刻被**读一次并落成真目录**（见 [`Running::sftp_root`]）：
+    /// 此后改这个字段不会改变任何事。
     pub sftp: Option<Vec<SftpItem>>,
+    /// 每次 `read` / `write` 之前先睡这么久（plan 0702）。
+    ///
+    /// 存在的理由很具体：**传输的中断要有可乘之机**。全速跑的本机回环上，一个几兆的文件
+    /// 在一瞬间就搬完了，用例来不及点"取消" —— 于是判据会变成一条随机器快慢而红的用例。
+    /// 放慢服务端（而不是在用例里睡固定时间）让"取消"这件事发生在**确定的位置**：
+    /// 传输确实在跑，且它还剩很多没搬。
+    pub sftp_delay: Option<Duration>,
 }
 
 /// 一条中继映射：**对端要求连**的地址 → **我们真的连**哪。
@@ -167,21 +182,33 @@ impl ServerOptions {
     }
 }
 
-/// 测试服务端那个 SFTP 根目录里的一项（plan 0701）。
+/// 测试服务端那个 SFTP 根目录里的一项（plan 0701 / 0702）。
+///
+/// `start()` 把它**落到真盘上**：一个文件就是真文件（`content` 是它的字节），
+/// 一个目录就是真目录。于是"文件真的到了对端盘上"这条判据可以拿**真盘**去答，
+/// 而不是读客户端自己报的数。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SftpItem {
     /// 条目名。
     pub name: String,
     /// 是不是目录 —— 客户端据此决定"这一项能不能进去"。
     pub directory: bool,
+    /// 文件内容（目录忽略它）。
+    pub content: Vec<u8>,
 }
 
 impl SftpItem {
-    /// 一个普通文件。
+    /// 一个**空**的普通文件。
     pub fn file(name: &str) -> Self {
+        Self::file_with(name, Vec::new())
+    }
+
+    /// 一个有内容的普通文件（下载的判据要它：字节对不对得比）。
+    pub fn file_with(name: &str, content: impl Into<Vec<u8>>) -> Self {
         Self {
             name: name.to_owned(),
             directory: false,
+            content: content.into(),
         }
     }
 
@@ -190,6 +217,7 @@ impl SftpItem {
         Self {
             name: name.to_owned(),
             directory: true,
+            content: Vec::new(),
         }
     }
 }
@@ -226,6 +254,13 @@ pub struct Shared {
     /// ⚠️ 丢弃不再安全：上游把通道数据同时交给通道自己的接收端**与** `Handler::data()`
     /// （见 `shell_channels` 的说明），而"存下来"只是多一个持有者，不改变数据路径。
     session_channels: Arc<Mutex<HashMap<ChannelId, Channel<Msg>>>>,
+    /// SFTP 根目录（plan 0702）：**`Some` = 这个服务端提供 `sftp` 子系统**。
+    ///
+    /// 它是 `ServerOptions::sftp` 在 `start()` 那一刻落成的真目录 —— 之后那一条不再被读，
+    /// 于是"提供了没有"这个问题只有一个答案（两处各存一份必然漂移）。
+    sftp_root: Option<PathBuf>,
+    /// 每次 `read` / `write` 前的等待（见 `ServerOptions::sftp_delay`）。
+    sftp_delay: Option<Duration>,
 }
 
 /// 一条远端监听的键：`(对端请求的地址, 我们实际绑的端口)`。
@@ -298,6 +333,12 @@ pub struct Running {
     pub shared: Shared,
     /// accept 循环的任务句柄（[`Running::shutdown`] 用它把监听一起停掉）。
     accept: tokio::task::AbortHandle,
+    /// 这个服务端的 SFTP 根目录（真盘上的一棵临时目录）。
+    ///
+    /// 它同时是**这一侧判据的读数口**：传输有没有留下不完整的文件、最终名的字节对不对，
+    /// 都拿这个目录去答。持有它是为了在 [`Drop`] 里把目录删掉 —— 测试不该在 `/tmp`
+    /// 留东西。
+    sftp_root: Option<PathBuf>,
 }
 
 impl Running {
@@ -327,6 +368,14 @@ impl Running {
     pub async fn shutdown(&self) -> usize {
         self.accept.abort();
         self.cut_connections().await
+    }
+
+    /// 这个服务端的 SFTP 根目录（**真盘上**那一棵，plan 0702）。
+    ///
+    /// 传输的判据在这里读：目标目录里有没有最终名、有没有剩下的临时名、最终名的字节对不对。
+    /// `None` = 这个服务端根本没提供 `sftp` 子系统。
+    pub fn sftp_root(&self) -> Option<&Path> {
+        self.sftp_root.as_deref()
     }
 
     /// 服务端此刻**还开着几条连接**（plan 0606）。
@@ -421,6 +470,10 @@ pub async fn start(options: ServerOptions) -> Running {
     config.auth_rejection_time = Duration::from_millis(0);
     let config = Arc::new(config);
 
+    // SFTP 的根目录在这里**落地**（plan 0702）：`options.sftp` 是种子，真目录才是事实。
+    // 两个字段都要在 `options` 被 move 进 `Shared` 之前取出来。
+    let sftp_root = options.sftp.as_ref().map(|items| materialize_sftp(items));
+    let sftp_delay = options.sftp_delay;
     let shared = Shared {
         observed: Arc::new(Mutex::new(Observed::default())),
         options: Arc::new(Mutex::new(options)),
@@ -428,6 +481,8 @@ pub async fn start(options: ServerOptions) -> Running {
         relayed_bytes: Arc::new(AtomicU64::new(0)),
         connections: Arc::new(Mutex::new(Vec::new())),
         session_channels: Arc::new(Mutex::new(HashMap::new())),
+        sftp_root: sftp_root.clone(),
+        sftp_delay,
     };
     let mut server = TestServer {
         shared: shared.clone(),
@@ -461,7 +516,44 @@ pub async fn start(options: ServerOptions) -> Running {
         host_key_openssh,
         shared,
         accept: accept.abort_handle(),
+        sftp_root,
     }
+}
+
+impl Drop for Running {
+    /// 把 SFTP 根目录删掉（见那个字段的说明）。**尽力而为**：删不掉只记一条日志式忽略，
+    /// 因为 drop 里报错只会变成一次 panic，而它发生在用例的收尾上。
+    fn drop(&mut self) {
+        if let Some(root) = self.sftp_root.take() {
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+}
+
+/// 把种子落成真目录（plan 0702），返回那个目录。
+///
+/// 目录名带进程号与一个自增号：同一个测试进程里可能同时开着几台服务端（`sftp_dual_pane`
+/// 就是两台），它们各自的根目录不能撞在一起。
+fn materialize_sftp(items: &[SftpItem]) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "akasha-sftp-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    // 上一次没删干净（进程被杀）时先清掉：`create_dir_all` 不会因为目录已存在而失败，
+    // 于是旧的残留会让"列出来的条目"多出上一次的东西。
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("建 SFTP 根目录失败");
+    for item in items {
+        let path = dir.join(&item.name);
+        if item.directory {
+            std::fs::create_dir_all(&path).expect("建 SFTP 目录失败");
+        } else {
+            std::fs::write(&path, &item.content).expect("写 SFTP 文件失败");
+        }
+    }
+    dir
 }
 
 struct TestServer {
@@ -628,21 +720,22 @@ impl russh::server::Handler for TestServer {
         Ok(())
     }
 
-    /// `sftp` 子系统（plan 0701）。两档见 [`ServerOptions::sftp`]：开了这一档就认下并把
-    /// 通道交给一个最小的 SFTP 服务端；没开（或不是 `sftp`）**明确回绝** ——
-    /// 客户端要在 `request_subsystem` 那里拿到 `false`，而不是等到第一条请求超时。
+    /// `sftp` 子系统（plan 0701）。两档见 [`ServerOptions::sftp`]：`start()` 建出了根目录
+    /// 就认下并把通道交给一个最小但**碰真盘**的 SFTP 服务端；没有（或不是 `sftp`）
+    /// **明确回绝** —— 客户端要在 `request_subsystem` 那里拿到 `false`，
+    /// 而不是等到第一条请求超时。
     async fn subsystem_request(
         &mut self,
         channel_id: ChannelId,
         name: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        let items = if name == "sftp" {
-            self.shared.options.lock().unwrap().sftp.clone()
+        let root = if name == "sftp" {
+            self.shared.sftp_root.clone()
         } else {
             None
         };
-        let Some(items) = items else {
+        let Some(root) = root else {
             let _ = session.channel_failure(channel_id);
             return Ok(());
         };
@@ -658,7 +751,8 @@ impl russh::server::Handler for TestServer {
         };
         self.shared.observed.lock().unwrap().sftp_subsystems += 1;
         let _ = session.channel_success(channel_id);
-        russh_sftp::server::run(channel.into_stream(), SftpRoot::new(items)).await;
+        let delay = self.shared.sftp_delay;
+        russh_sftp::server::run(channel.into_stream(), SftpRoot::new(root, delay)).await;
         Ok(())
     }
 
@@ -911,25 +1005,111 @@ impl russh::server::Handler for TestServer {
     }
 }
 
-/// **最小的 SFTP 服务端**（plan 0701）：只回答本阶段客户端会问的那几个动作。
+/// **测试用的 SFTP 服务端**（plan 0701 起，plan 0702 扩到读写）。
 ///
-/// ⚠️ 它**不是**一个 SFTP 实现：没有读写文件、没有 `stat`、没有扩展。它只需要让"列目录"
-/// 走通 —— 多做的每一件都会变成一处**无人验证**的行为，而判据要看的正是客户端的这一条路。
+/// ⚠️ 它**不是**一个完整的 SFTP 实现：没有扩展、没有 `setstat`、没有符号链接，
+/// 权限位是粗的（只分清文件 / 目录 / 链接）。它要回答的只有一件事：
+/// **客户端那条路走通之后，真盘上发生了什么**。
+///
+/// 这个"真盘"是 plan 0702 改的。此前它是一张内存表，够验"列目录"，但答不出传输的判据 ——
+/// 交付的判据是"目标目录里**没有**最终名下的文件"，而内存表只能证明"客户端自己以为写成功了"。
+/// 根目录由 `start()` 建（见 [`materialize_sftp`]），路径 `/x/y` 映射到根目录下的 `x/y`。
+///
+/// ⚠️ 用的是阻塞的 `std::fs`：这里是测试脚手架，一次读写的耗时不值得为它引一层异步文件 API，
+/// 而它跑在测试进程里、不服务于生产代码（模块文档的"生产代码不要用它"）。
 struct SftpRoot {
-    items: Vec<SftpItem>,
-    /// 已经发过内容的目录句柄。
+    /// 真盘上的根目录；客户端看到的 `/` 就是它。
+    root: PathBuf,
+    /// 每个 `read` / `write` 之前先等这么久（`ServerOptions::sftp_delay`）。
+    delay: Option<Duration>,
+    /// 打开着的文件句柄：句柄名 → (它指向哪个路径, 文件本体)。
+    files: HashMap<String, (PathBuf, StdFile)>,
+    /// 已经建好的目录句柄：句柄名 → **还没发出去的那些条目**。
     ///
-    /// 为什么需要它：`readdir` 的结束条件是**回 `EOF`**（协议如此），而不是"发一批空的"。
-    /// 第二次问同一个句柄必须回 `EOF`，否则客户端会一直读下去。
-    sent: HashSet<String>,
+    /// 用"取走"而不是"记一个发过的标记"：`readdir` 的结束条件是回 `EOF`，
+    /// 而"发过一次就 EOF"正是这个结构表达的东西。
+    dirs: HashMap<String, Vec<File>>,
+    /// 句柄名里的自增部分（同一个连接里不能重复）。
+    next_handle: u64,
 }
 
 impl SftpRoot {
-    fn new(items: Vec<SftpItem>) -> Self {
+    fn new(root: PathBuf, delay: Option<Duration>) -> Self {
         Self {
-            items,
-            sent: HashSet::new(),
+            root,
+            delay,
+            files: HashMap::new(),
+            dirs: HashMap::new(),
+            next_handle: 0,
         }
+    }
+
+    /// 客户端给的路径 → 真盘上的路径。
+    ///
+    /// 自己解析 `.` / `..` 而不是 `Path::join`：SFTP 的路径规范是 POSIX 的，
+    /// 而 `..` 必须**夹在根目录上**（测试服务端不该让客户端走到 `/tmp` 去）——
+    /// `PathBuf::pop` 做不到这件事（它会一直退到文件系统根）。
+    fn resolve(&self, path: &str) -> PathBuf {
+        let mut parts: Vec<&str> = Vec::new();
+        for part in path.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                other => parts.push(other),
+            }
+        }
+        let mut resolved = self.root.clone();
+        for part in parts {
+            resolved.push(part);
+        }
+        resolved
+    }
+
+    /// 真盘上的路径 → 客户端看到的路径（`realpath` 与目录条目的名字都由它给）。
+    fn virtual_path(&self, resolved: &Path) -> String {
+        let relative = resolved.strip_prefix(&self.root).unwrap_or(resolved);
+        let text = relative.to_string_lossy().replace('\\', "/");
+        if text.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{text}")
+        }
+    }
+
+    /// 一个还没用过的句柄名。
+    fn handle(&mut self, kind: char) -> String {
+        self.next_handle += 1;
+        format!("{kind}{}", self.next_handle)
+    }
+
+    /// `open` 打开的那个路径（`fstat` 与 `close` 都要它）。
+    ///
+    /// ⚠️ `id` 必须**原样**进返回的句柄：上游的服务端分发是
+    /// `Ok(packet) => packet.into()`，也就是说响应里的请求号**取自 handler 的返回值**，
+    /// 不是分发器补上去的。写死 0 的表现是"服务端答了、客户端永远等不到"。
+    fn open_file(
+        &mut self,
+        id: u32,
+        path: &str,
+        pflags: OpenFlags,
+    ) -> Result<SftpHandle, StatusCode> {
+        let resolved = self.resolve(path);
+        let mut options = std::fs::OpenOptions::new();
+        options.read(pflags.contains(OpenFlags::READ));
+        options.write(pflags.contains(OpenFlags::WRITE));
+        options.append(pflags.contains(OpenFlags::APPEND));
+        if pflags.contains(OpenFlags::CREATE) || pflags.contains(OpenFlags::EXCLUDE) {
+            options.create(true);
+        }
+        if pflags.contains(OpenFlags::TRUNCATE) {
+            options.truncate(true);
+        }
+        let file = options.open(&resolved).map_err(status_of)?;
+        let name = self.handle('f');
+        self.files.insert(name.clone(), (resolved, file));
+        Ok(SftpHandle { id, handle: name })
     }
 }
 
@@ -940,47 +1120,203 @@ impl russh_sftp::server::Handler for SftpRoot {
         StatusCode::OpUnsupported
     }
 
-    async fn close(&mut self, id: u32, _handle: String) -> Result<Status, Self::Error> {
-        Ok(Status {
+    fn init(
+        &mut self,
+        _version: u32,
+        _extensions: HashMap<String, String>,
+    ) -> impl std::future::Future<Output = Result<russh_sftp::protocol::Version, Self::Error>> + Send
+    {
+        // 明确**不声明任何扩展**（`limits@openssh.com` / `fsync@openssh.com` 一个都不给）：
+        // 客户端在缺扩展时的降级路径因此每次都被走到，而那正是真实 `sshd` 之外最该覆盖的一档。
+        std::future::ready(Ok(russh_sftp::protocol::Version::new()))
+    }
+
+    async fn open(
+        &mut self,
+        id: u32,
+        filename: String,
+        pflags: OpenFlags,
+        _attrs: FileAttributes,
+    ) -> Result<SftpHandle, Self::Error> {
+        self.open_file(id, &filename, pflags)
+    }
+
+    async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
+        // 目录句柄与文件句柄共用一个命名空间（前缀不同），所以两边都试一下。
+        self.files.remove(&handle);
+        self.dirs.remove(&handle);
+        Ok(ok_status(id))
+    }
+
+    async fn read(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        len: u32,
+    ) -> Result<Data, Self::Error> {
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
+        let Some((_, file)) = self.files.get_mut(&handle) else {
+            return Err(StatusCode::Failure);
+        };
+        file.seek(SeekFrom::Start(offset)).map_err(status_of)?;
+        let mut buffer = vec![0u8; len as usize];
+        let filled = file.read(&mut buffer).map_err(status_of)?;
+        if filled == 0 {
+            // 协议规定的读完标记是 `EOF` 状态，不是"发一批空的"。
+            return Err(StatusCode::Eof);
+        }
+        buffer.truncate(filled);
+        Ok(Data { id, data: buffer })
+    }
+
+    async fn write(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<Status, Self::Error> {
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
+        let Some((_, file)) = self.files.get_mut(&handle) else {
+            return Err(StatusCode::Failure);
+        };
+        file.seek(SeekFrom::Start(offset)).map_err(status_of)?;
+        file.write_all(&data).map_err(status_of)?;
+        Ok(ok_status(id))
+    }
+
+    async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
+        let Some((_, file)) = self.files.get_mut(&handle) else {
+            return Err(StatusCode::Failure);
+        };
+        let metadata = file.metadata().map_err(status_of)?;
+        Ok(Attrs {
             id,
-            status_code: StatusCode::Ok,
-            error_message: "Ok".to_owned(),
-            language_tag: "en-US".to_owned(),
+            attrs: attributes_of(&metadata),
         })
+    }
+
+    async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+        let resolved = self.resolve(&path);
+        let metadata = std::fs::metadata(&resolved).map_err(status_of)?;
+        Ok(Attrs {
+            id,
+            attrs: attributes_of(&metadata),
+        })
+    }
+
+    async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+        let resolved = self.resolve(&path);
+        let metadata = std::fs::symlink_metadata(&resolved).map_err(status_of)?;
+        Ok(Attrs {
+            id,
+            attrs: attributes_of(&metadata),
+        })
+    }
+
+    async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
+        let resolved = self.resolve(&filename);
+        std::fs::remove_file(&resolved).map_err(status_of)?;
+        Ok(ok_status(id))
+    }
+
+    async fn rename(
+        &mut self,
+        id: u32,
+        oldpath: String,
+        newpath: String,
+    ) -> Result<Status, Self::Error> {
+        let from = self.resolve(&oldpath);
+        let to = self.resolve(&newpath);
+        std::fs::rename(&from, &to).map_err(status_of)?;
+        Ok(ok_status(id))
     }
 
     async fn opendir(&mut self, id: u32, path: String) -> Result<SftpHandle, Self::Error> {
-        Ok(SftpHandle { id, handle: path })
+        let resolved = self.resolve(&path);
+        let reader = std::fs::read_dir(&resolved).map_err(status_of)?;
+        let mut entries = Vec::new();
+        for entry in reader {
+            let entry = entry.map_err(status_of)?;
+            let metadata = entry.metadata().map_err(status_of)?;
+            entries.push(File::new(
+                entry.file_name().to_string_lossy().into_owned(),
+                attributes_of(&metadata),
+            ));
+        }
+        let name = self.handle('d');
+        self.dirs.insert(name.clone(), entries);
+        Ok(SftpHandle { id, handle: name })
     }
 
     async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
-        if !self.sent.insert(handle) {
-            return Err(StatusCode::Eof);
+        match self.dirs.get_mut(&handle) {
+            None => Err(StatusCode::Failure),
+            Some(entries) if entries.is_empty() => Err(StatusCode::Eof),
+            Some(entries) => Ok(Name {
+                id,
+                files: std::mem::take(entries),
+            }),
         }
-        Ok(Name {
-            id,
-            files: self
-                .items
-                .iter()
-                .map(|item| {
-                    // ⚠️ 顺序要紧：`dummy()` 给的权限位里**带着目录位**，
-                    // 所以"文件"那一支必须先摘掉它再补上普通文件位（反过来会得到两个类型位）。
-                    let mut attrs = FileAttributes::dummy();
-                    attrs.set_dir(item.directory);
-                    attrs.set_regular(!item.directory);
-                    File::new(item.name.clone(), attrs)
-                })
-                .collect(),
-        })
     }
 
-    async fn realpath(&mut self, id: u32, _path: String) -> Result<Name, Self::Error> {
-        // 根目录固定是 `/`：客户端那条 `canonicalize` 要的就是"一个绝对路径"，
-        // 而这一版不需要模拟真实服务端的家目录展开。
+    async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
+        // 客户端拿这一句的返回值当"当前目录"，所以这里必须回答**已经解析过**的路径
+        // （`.` → `/`，`/a/../b` → `/b`）—— 与真实服务端的 `realpath` 同义。
+        let resolved = self.resolve(&path);
         Ok(Name {
             id,
-            files: vec![File::dummy("/")],
+            files: vec![File::new(
+                self.virtual_path(&resolved),
+                FileAttributes::dummy(),
+            )],
         })
+    }
+}
+
+/// 一条 `OK` 状态回执。
+fn ok_status(id: u32) -> Status {
+    Status {
+        id,
+        status_code: StatusCode::Ok,
+        error_message: "Ok".to_owned(),
+        language_tag: "en-US".to_owned(),
+    }
+}
+
+/// 真盘的元数据 → 协议里的属性。
+///
+/// ⚠️ 只设**命中**的那一个类型位，而且**不得**顺手把另外两个设成 `false`：
+/// `set_dir(false)` 做的是 `permissions &= !DIR`，而 `REG`（0o100000）、`LNK`（0o120000）、
+/// `DIR`（0o040000）的位**互相重叠** —— 清掉 `LNK` 会连带清掉 `REG`，于是普通文件的类型
+/// 变成"都不是"，客户端读出来是 `Other`（实测：这一条正是本文件第一次跑出来的一处红）。
+fn attributes_of(metadata: &std::fs::Metadata) -> FileAttributes {
+    let mut attrs = FileAttributes::empty();
+    attrs.size = Some(metadata.len());
+    if metadata.is_dir() {
+        attrs.set_dir(true);
+    } else if metadata.file_type().is_symlink() {
+        attrs.set_symlink(true);
+    } else if metadata.is_file() {
+        attrs.set_regular(true);
+    }
+    attrs
+}
+
+/// 操作系统的错误 → 协议状态码。
+///
+/// 只分"没有这个文件"与"权限不够"两类：其余一律 `Failure`。**不猜**是一个刻意的选择 ——
+/// 猜错的类别会把客户端引到一条与实际原因无关的路上（同 `SshError` 的分法）。
+fn status_of(err: io::Error) -> StatusCode {
+    match err.kind() {
+        io::ErrorKind::NotFound => StatusCode::NoSuchFile,
+        io::ErrorKind::PermissionDenied => StatusCode::PermissionDenied,
+        _ => StatusCode::Failure,
     }
 }
 

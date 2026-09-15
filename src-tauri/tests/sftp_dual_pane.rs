@@ -5,7 +5,7 @@
 //! | 判据 | 断言在哪 |
 //! |---|---|
 //! | 不需要先开终端 | SFTP 打开前后**终端标签页数不变**（app 自带的那一个不算前置） |
-//! | 两侧独立选主机 | 池里两台主机分别指向**两台**进程内服务端（目录内容不同） |
+//! | 两侧独立选来源（plan 0702 起这一栏也能选「本机」） | 池里两台主机分别指向**两台**进程内服务端（目录内容不同） |
 //! | **两侧各自列目录成功** | 左栏列出 A 的条目、右栏列出 B 的条目；且左栏**没有** B 的条目 |
 //! | 两侧互不影响 | 只连左侧时，右侧仍是 `disconnected` |
 //! | 连接真的建立了 | 两台服务端各自记到 **1 次** `sftp` 子系统请求 |
@@ -138,7 +138,7 @@ async fn sftp_lists_both_panes_without_any_terminal() {
     open_sftp_panel(&mut client).await;
     start_session(&mut client).await;
 
-    // ── 5. 两侧各自选主机（左右指向**不同**的服务端）─────────────────────────
+    // ── 5. 两侧各自选来源（左右指向**不同**的服务端）─────────────────────────
     choose_host(&mut client, "left", left_id).await;
     choose_host(&mut client, "right", right_id).await;
 
@@ -327,25 +327,25 @@ async fn start_session(client: &mut VictauriClient) {
     .await;
 }
 
-/// 在某一栏里选中池里的那一行。
+/// 在某一栏里选中池里的那一行（plan 0702 起这一栏选的是**来源**：本机或一台主机）。
 ///
 /// 为什么要绕过 React 的 value tracker（用原型上的 setter 再手动派发 `change`）：
 /// 直接写 `select.value = …` 时 React 记着上一次的值，`change` 会被它当成"没变"。
 async fn choose_host(client: &mut VictauriClient, side: &str, host_id: u32) {
+    let value = format!("host:{host_id}");
     let script = format!(
         "(() => {{
-            const select = document.querySelector('.sftp-pane[data-side=\"{side}\"] .sftp-host');
+            const select = document.querySelector('.sftp-pane[data-side=\"{side}\"] .sftp-origin');
             if (!select) return 'no-select';
             const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
-            setter.call(select, '{host_id}');
+            setter.call(select, '{value}');
             select.dispatchEvent(new Event('change', {{ bubbles: true }}));
             return select.value;
         }})()"
     );
     let chosen = text(&client.eval_js(&script).await.unwrap());
     assert_eq!(
-        chosen,
-        host_id.to_string(),
+        chosen, value,
         "{side} 那一栏的主机没选上（得到 {chosen:?}）"
     );
 }
