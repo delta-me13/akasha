@@ -25,6 +25,12 @@ allow = [
     # 具体来源是托盘那条链：`tray-icon` → `libappindicator` → `libappindicator-sys`
     # → `libloading 0.7.4`（plan 0301）。**只放行许可证，不忽略任何包**。
     "ISC",
+    # CDLA-Permissive-2.0：**数据/内容**许可（Community Data License Agreement，
+    # 无 copyleft，条款与 MIT 同族）。来源是 `webpki-roots 1.x` —— 它是 TLS 的根证书
+    # 集合（一份数据），从 0.x 的 MPL-2.0 换成了这个许可。
+    # ⚠️ 它**此前只在 dev 那条链上**（victauri-test → reqwest），而 plan 0902 让
+    # `ureq`（akasha-bw 的 HTTP 客户端）把它带进了产物依赖 —— 所以这一条是那次改动的代价。
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 

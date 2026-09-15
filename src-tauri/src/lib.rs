@@ -1,5 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 pub mod bindings;
+pub mod bitwarden;
 pub mod config;
 pub mod lifecycle;
 pub mod pools;
@@ -74,6 +75,7 @@ pub fn run() {
     //
     // 提问表要单独 `manage` 一份（同一个 `Arc`，不是两份表）：三条回答命令只认它，
     // 而它们不该为了拿一份表去穿过 `Ssh`。
+    let bitwarden = bitwarden::Bitwarden::default();
     let ssh = ssh::Ssh::start();
     let ssh_error = ssh.startup_error().map(str::to_owned);
     let prompts = ssh.prompts().clone();
@@ -92,6 +94,12 @@ pub fn run() {
         .manage(vault::Vault::default())
         .manage(ssh)
         .manage(prompts)
+        // Bitwarden 的两个轴（plan 0902）：默认取 `host`（用户当次指令）。
+        // ⚠️ 这里**不解析也不下载** —— 启动路径上不做网络与磁盘的额外动作
+        //（`AGENTS.md` §3.3：可选能力失败不得挡住启动）。
+        // ⚠️ 先放默认值，`.setup()` 里再用配置文件里那两个轴与数据目录覆盖它 ——
+        // 启动期读不到数据目录（同 `config` 那一条：它在 `.setup()` 里才定下来）。
+        .manage(bitwarden.clone())
         .invoke_handler(builder.invoke_handler())
         // 比 `victauri_plugin::init()` 只多注册三个 probe：**关窗语义**（plan 0302/0303）、
         // **单实例**（plan 0304）与**会话表**（plan 0504）。它们给 E2E 一个"这台机器该验哪条、
@@ -124,6 +132,13 @@ pub fn run() {
                 .probe("tray", {
                     let sessions = sessions.clone();
                     move || tray::snapshot(&sessions)
+                })
+                // Bitwarden（plan 0902）：两个轴解析出来是什么、CLI 自报的版本与变体、
+                // **我们手里有没有 session key**（不是 key 本身）。
+                // ⚠️ 它**不起进程**：读的是上一次动作留下的读数。
+                .probe("bitwarden", {
+                    let bitwarden = bitwarden.clone();
+                    move || bitwarden::probe(&bitwarden)
                 })
                 // **关闭之后还剩什么**（plan 0606）：判据"关闭转发 Session 后连接数与重连任务数
                 // 都归零"（D5）的机器可读那一半。
@@ -181,6 +196,12 @@ pub fn run() {
             // 最后登记 —— 判据要同时看这两样，而"托盘建成没有"只有 `tray::setup` 的
             // 返回值知道，事后没人能再问出来。
             let config = config::load(app.handle());
+            // Bitwarden 的两个轴（plan 0902）：配置文件里写了就用它，没写就是默认的 `host`。
+            // ⚠️ 只读、不下载、不解析可执行文件 —— 那几步都在用户动作里做（启动路径上不碰网络）。
+            if let Some(dir) = config::data_dir_of(app.handle()) {
+                let settings = bitwarden::settings_from_config(&dir);
+                app.state::<bitwarden::Bitwarden>().configure(dir, settings);
+            }
             // 生效的配置登记成状态：命令侧（隧道重连的预算）要读它。
             // ⚠️ 登记的是**生效的那一份**（含默认值），不是文件里的原文。
             app.manage(config);

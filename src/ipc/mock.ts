@@ -261,6 +261,24 @@ export function installDevBackend(): void {
           kind: "failed",
           detail: { kind: "other", message: "dev-web 的模拟后端没有 SFTP 客户端（用 just dev）" },
         };
+      // Bitwarden 那一路（plan 0902 / 0905）同样**没有模拟后端**：没有 `bw`、也没有网。
+      // 每条都明确报错，而不是返回一份"看起来未登录"的空快照 —— 后者会让
+      // "这台机器上没有 `bw`"与"这个模拟后端不支持 Bitwarden"混成一件事。
+      // ⚠️ `bw_cli_status` 也报错：它是面板打开时读的第一条，正是该说清这件事的地方。
+      case "bw_cli_status":
+      case "bw_cli_settings":
+      case "bw_cli_install":
+      case "bw_status":
+      case "bw_server_set":
+      case "bw_login":
+      case "bw_unlock":
+      case "bw_lock":
+      case "bw_logout":
+      case "bw_sync":
+        throw {
+          kind: "commandFailed",
+          message: "dev-web 的模拟后端没有 Bitwarden CLI（用 just dev）",
+        };
       case "close_session": {
         const handle = Number(field(payload, "handle"));
         shells.get(handle)?.stop();

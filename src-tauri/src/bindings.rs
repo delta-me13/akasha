@@ -74,6 +74,23 @@ pub fn builder() -> Builder<tauri::Wry> {
             // 面板重新打开时接回已有的会话（关面板不停会话，见 `sftp_sessions` 的文档）。
             crate::sftp::sftp_sessions,
             crate::sftp::sftp_close,
+            // Bitwarden（plan 0902 / 0905）：两个轴、运行时下载、登录 / 解锁 / 锁定 / 登出。
+            // ⚠️ `bw_cli_install` 是 async：它要拉约 45 MB（同步命令会把处理 IPC 请求的
+            // 那条线程占住几十秒，同 `open_ssh_session` 的理由）。
+            // 其余几条是同步的：它们跑的是本地进程，量级在几百毫秒到几秒（`bw` 自己是个
+            // 约 140 MB 的 Node SEA，启动就要几百毫秒）—— 登录 / 解锁要联网 + KDF，
+            // 最长可到 `timeout::NETWORK`（120 秒），但那是用户按下按钮之后等在原地的那几秒，
+            // 而不是"每条 IPC 都被挡住"。
+            crate::bitwarden::bw_cli_status,
+            crate::bitwarden::bw_cli_settings,
+            crate::bitwarden::bw_cli_install,
+            crate::bitwarden::bw_status,
+            crate::bitwarden::bw_server_set,
+            crate::bitwarden::bw_login,
+            crate::bitwarden::bw_unlock,
+            crate::bitwarden::bw_lock,
+            crate::bitwarden::bw_logout,
+            crate::bitwarden::bw_sync,
         ])
         .events(collect_events![
             crate::session::SessionEnded,

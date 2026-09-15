@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import "./App.css";
 import type { HostEntry } from "./ipc/hosts";
 import type { SerialParams, SessionEnd, SessionTarget } from "./ipc/session";
+import { BwPanel } from "./bitwarden/BwPanel";
 import { SerialPicker } from "./serial/SerialPicker";
 import { SftpPanel } from "./sftp/SftpPanel";
 import { HostPicker } from "./ssh/HostPicker";
@@ -48,6 +49,8 @@ function App() {
   const [tunnelsOpen, setTunnelsOpen] = useState(false);
   /** SFTP 面板开着没有。同上：关掉面板不停那个会话（`docs/scope.md` §5.6）。 */
   const [sftpOpen, setSftpOpen] = useState(false);
+  /** Bitwarden 面板开着没有（plan 0902 / 0905）。同上：关掉面板什么后端状态都不变。 */
+  const [bitwardenOpen, setBitwardenOpen] = useState(false);
   /**
    * 最近一次"会话自己结束"的那句话（plan 1103）。
    *
@@ -167,6 +170,7 @@ function App() {
         onNewSerial={() => setPickingSerial((open) => !open)}
         onNewTunnel={() => setTunnelsOpen((open) => !open)}
         onNewSftp={() => setSftpOpen((open) => !open)}
+        onNewBitwarden={() => setBitwardenOpen((open) => !open)}
       />
       {picking && <HostPicker onConnect={openSshTab} onClose={() => setPicking(false)} />}
       {/* 串口面板与主机选择器同类（plan 1101，plan 1102 起是一张三输入的表单）：应用级浮层。 */}
@@ -178,6 +182,8 @@ function App() {
       {tunnelsOpen && <TunnelPanel onClose={() => setTunnelsOpen(false)} />}
       {/* SFTP 面板同一条理由：它也不是标签页，关掉面板不停那个会话（仅渲染的视图）。 */}
       {sftpOpen && <SftpPanel onClose={() => setSftpOpen(false)} />}
+      {/* Bitwarden 面板：既不是终端也不带关闭语义 —— 那几条命令都是显式动作。 */}
+      {bitwardenOpen && <BwPanel onClose={() => setBitwardenOpen(false)} />}
       {/* 提示面板是**应用级**的：提问发生在"会话开起来之前"，不属于任何一个标签页。 */}
       <PromptPanel />
       {/* 会话结束时的那句话（plan 1103）：它说的是**为什么**这个标签页没了，所以留在壳层。 */}

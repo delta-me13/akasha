@@ -237,6 +237,37 @@ export const commands = {
 	 *  等一下的上界是 SFTP 自己的请求期限（一次读或写、加上一次删除）—— 不会无限等。
 	 */
 	sftpClose: (handle: number) => typedError<null, SftpError>(__TAURI_INVOKE("sftp_close", { handle })),
+	/**  读一次 CLI 与状态（面板打开时用）。 */
+	bwCliStatus: () => __TAURI_INVOKE<BwSnapshot>("bw_cli_status"),
+	/**  换两个轴。**只改选择并记下来**，不下载（下载是 [`bw_cli_install`]）。 */
+	bwCliSettings: (binary: string, appdata: string) => typedError<BwSnapshot, BwIpcError>(__TAURI_INVOKE("bw_cli_settings", { binary, appdata })),
+	/**
+	 *  下载一份 OSS 变体并**改用它**（下载是用户动作，ADR-0007 D2）。
+	 * 
+	 *  ⚠️ **async 且把阻塞那一半放进阻塞池**：下载约 45 MB，同步命令会把处理 IPC 的那条线程
+	 *  占住（同 `open_ssh_session` 的理由）。下载**不持锁** —— 它只写数据目录下的版本目录，
+	 *  不碰 CLI 的状态文件，所以这期间面板还能读状态。
+	 */
+	bwCliInstall: () => typedError<BwSnapshot, BwIpcError>(__TAURI_INVOKE("bw_cli_install")),
+	/**
+	 *  读一次三态（界面刷新用）。
+	 * 
+	 *  **不返回 `Err`**：读不出来是快照里的一个字段（`problem`），而不是一次调用失败 ——
+	 *  界面要显示的是"为什么读不出来"那句话，而不是一个被抛出的错误。
+	 */
+	bwStatus: () => __TAURI_INVOKE<BwSnapshot>("bw_status"),
+	/**  设服务器地址（自托管）。官方云的默认值**不写** `config`：`bw` 自己的默认就是它。 */
+	bwServerSet: (url: string) => typedError<BwSnapshot, BwIpcError>(__TAURI_INVOKE("bw_server_set", { url })),
+	/**  登录（邮箱 + 主密码；两步验证可选）。成功时 session key 进内存。 */
+	bwLogin: (email: string, password: PassphraseInput, method: string | null, code: string | null) => typedError<BwSnapshot, BwIpcError>(__TAURI_INVOKE("bw_login", { email, password, method, code })),
+	/**  解锁。成功时**换掉**手上的 session key（旧的在 CLI 那一侧已经失效）。 */
+	bwUnlock: (password: PassphraseInput) => typedError<BwSnapshot, BwIpcError>(__TAURI_INVOKE("bw_unlock", { password })),
+	/**  锁定：让 CLI 那一侧的 key 失效，并抹掉手上的那一份。 */
+	bwLock: () => typedError<BwSnapshot, BwIpcError>(__TAURI_INVOKE("bw_lock")),
+	/**  登出：连登录态一起清掉。 */
+	bwLogout: () => typedError<BwSnapshot, BwIpcError>(__TAURI_INVOKE("bw_logout")),
+	/**  与上游对齐（纯 pull）。需要 session key。 */
+	bwSync: () => typedError<BwSnapshot, BwIpcError>(__TAURI_INVOKE("bw_sync")),
 };
 
 /** Events */
@@ -256,6 +287,64 @@ export const events = {
  *  池里加一种认证方式时**这里编译不过**。
  */
 export type AuthMethod = "password" | "publicKey" | "agent";
+
+/**  CLI 那一块：这两个轴解析出来是什么。 */
+export type BwCliInfo = {
+	/**  `host` / `managed`。 */
+	binary: string,
+	/**  `host` / `managed`。 */
+	appdata: string,
+	/**  解析到的可执行文件（解析不出来时为空）。 */
+	program: string | null,
+	version: string | null,
+	/**  `oss` / `proprietary` / `unknown`。 */
+	variant: string | null,
+	/**  需要提示许可证时的那句话（只有专有变体有）。 */
+	licenseNotice: string | null,
+	/**  解析不出来时的原因。**"没有 `bw`"与"还没下载"是不同的两句**（ADR-0007 D5）。 */
+	problem: string | null,
+};
+
+/**
+ *  与 [`akasha_bw::BwError`] 一一对应。分成两份是因为 IPC 上要的是一个能穷尽 `switch`
+ *  的枚举，而 crate 的错误带着内部细节（路径、长度、被拒绝的地址）。
+ */
+export type BwErrorKind = 
+/**  `PATH` 里没有 `bw`（`host` 那一轴）。 */
+"missingBinary" | 
+/**  还没下载过（`managed` 那一轴）。 */
+"notInstalled" | "notRunnable" | "unsupportedTarget" | "noRelease" | "network" | "tls" | "insecureUrl" | "invalidServer" | 
+/**  `bw` 说没有登录 —— 界面上该做的是"先登录"。 */
+"notLoggedIn" | 
+/**  `bw` 以非 0 退出而我们认不出类别（原话在 `message` 里）。 */
+"commandFailed" | "parse" | "archive" | "io" | "timeout" | "protectedPage" | "internal";
+
+/**  失败的形状。**界面按 `kind` 分辨**，不匹配消息字符串（同 `SshIpcError` 的口径）。 */
+export type BwIpcError = {
+	kind: BwErrorKind,
+	/**  `bw` 自己说的那句话（或我们的可读原因）。**只用来显示**。 */
+	message: string,
+};
+
+/**  一次命令之后的完整读数（也是 `bitwarden` probe 报的东西）。 */
+export type BwSnapshot = {
+	cli: BwCliInfo,
+	/**  CLI 说得出来的状态；`bw` 自己跑不起来时为 `None`。 */
+	status: BwVaultStatus | null,
+	/**  **我们手里有没有 session key**（不是 key 本身）。 */
+	hasSession: boolean,
+	/**  读状态失败的原因。 */
+	problem: string | null,
+};
+
+/**  三态的投影。取值与 `bw status --raw` 一致（`unauthenticated` / `locked` / `unlocked`）。 */
+export type BwVaultStatus = {
+	serverUrl: string | null,
+	lastSync: string | null,
+	userEmail: string | null,
+	userId: string | null,
+	state: string,
+};
 
 /**  报告里的一条：行号 + 关键字 + 说法。 */
 export type ConfigFinding = {

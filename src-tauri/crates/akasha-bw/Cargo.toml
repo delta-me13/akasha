@@ -1,0 +1,19 @@
+[package]
+name = "akasha-bw"
+version = "0.1.0"
+edition = "2024"
+description = "akasha 的 Bitwarden CLI 客户端：获取、调用与状态"
+publish = false
+
+[dependencies]
+akasha-store = { version = "0.1.0", path = "../akasha-store" }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+tracing = "0.1.44"
+
+[lints]
+workspace = true

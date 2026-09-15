@@ -144,6 +144,10 @@ akasha-ssh = { version = "0.1.0", path = "crates/akasha-ssh" }
 # `akasha_pty::Transport`，所以会话层与前端不为第三个后端另立契约（scope.md §2）。
 # ⚠️ 加它同时把 `serialport` 与（Linux 上的）libudev 带进 `cargo-deny` 的图 —— 那正是想要的。
 akasha-serial = { version = "0.1.0", path = "crates/akasha-serial" }
+# Bitwarden CLI 客户端（plan 0902 起 app 真的用它）：两个轴、运行时下载、`bw` 的调用与解析。
+# ⚠️ 它带进 `ureq`（rustls + ring，与 `russh` 同一个 crypto 后端）与 `zip`（只开 `deflate`）——
+# 那正是想要的：HTTP 与解包都是别人写过的活儿（`docs/bitwarden.md` §7 记着上游的下载形状）。
+akasha-bw = { version = "0.1.0", path = "crates/akasha-bw" }
 # 专用 runtime（ADR-0003 D2：库不自建 runtime，app 建**一个**并注入 `Handle`）。
 # features 与 D2 写下的那份一致（rt-multi-thread / time / sync / io-util / net）；
 # ⚠️ `sync` 是 plan 0504 加的：连接线程与 async 命令之间那条 oneshot 用它。

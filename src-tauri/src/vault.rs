@@ -96,6 +96,13 @@ impl PassphraseInput {
         self.0.into_bytes()
     }
 
+    /// **借**看一眼（不搬走）。Bitwarden 那条路要用它（plan 0902）：授权动作是把口令交给
+    /// `bw` 子进程的环境（ADR-0007 D8），而那份副本是子进程的、不是我们的 ——
+    /// 所以这里不需要（也不该）把口令的所有权交出去。
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
     /// 单测里造一个（真的路径只有一个来路：IPC 反序列化）。
     #[cfg(test)]
     pub(crate) fn for_test(secret: &str) -> Self {

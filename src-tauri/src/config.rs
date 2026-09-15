@@ -80,11 +80,108 @@ pub enum ConfigError {
 ///
 /// 与 [`Config`] 分开：前者允许"字段缺失"（缺失是正常的，用默认值），后者永远有值。
 /// 合成一个就得给每个字段编一个"未设置"的哨兵值，而哨兵值迟早会被当成真值用。
-#[derive(Debug, serde::Deserialize)]
+///
+/// ⚠️ **它也用来写**（plan 0902 起）：JSON 没有"改一个字段"这回事，写就是把整份重写，
+/// 所以读与写必须共用同一个形状 —— 分成两份 struct 一定会有一份漏掉后来加的字段，
+/// 而那次漏掉的后果是"用户写的配置被静默抹掉"。
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
     /// 只认字符串：写 `3` 或 `true` 的人想表达的不是"用默认值"，所以整份文件判为非法。
     close_behavior: Option<String>,
+    /// Bitwarden 的两个轴（plan 0902）。与 `close_behavior` 并列，但**不参与 [`Config`]**：
+    /// 它不是"关窗语义"那一类启动期配置，而是按需读取的使用设置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bitwarden: Option<FileBitwarden>,
+}
+
+/// `bitwarden` 那一段的两个轴（ADR-0007 D4）。
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileBitwarden {
+    binary: Option<String>,
+    appdata: Option<String>,
+}
+
+/// 写配置时可能出的问题。
+///
+/// ⚠️ **既有文件坏了就拒绝写**：整份重写意味着"读不出来"时继续写会把用户写的
+/// `close_behavior` 一起抹掉。这条判据比"能不能写进去"更重要。
+#[derive(Debug, thiserror::Error)]
+pub enum WriteError {
+    #[error("config file is not valid: {0}")]
+    Malformed(String),
+    #[error("{path}: {reason}")]
+    Io { path: String, reason: String },
+}
+
+/// 字符串 → 二进制来源。不认识的取值取默认值（口径同 [`load`]：配置读不出来不挡任何事）。
+fn binary_source(raw: Option<&str>) -> akasha_bw::BinarySource {
+    raw.and_then(akasha_bw::BinarySource::parse)
+        .unwrap_or_default()
+}
+
+/// 字符串 → 状态目录。同上。
+fn appdata_mode(raw: Option<&str>) -> akasha_bw::AppData {
+    raw.and_then(akasha_bw::AppData::parse).unwrap_or_default()
+}
+
+/// 读 Bitwarden 的两个轴。**永不失败**：文件没有 / 坏了 / 值不认识一律用默认值 + 一条日志。
+///
+/// 收**数据目录**而不是 `AppHandle`：`.setup()` 里数据目录已经算出来了，而命令侧要的是
+/// "同一个目录"这件事 —— 两处各自再算一遍 `data_dir_of` 迟早会有一处先改。
+pub fn bitwarden(dir: &Path) -> akasha_bw::Settings {
+    let fallback = akasha_bw::Settings::default();
+    let path = dir.join(FILE_NAME);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return fallback;
+    };
+    let Ok(file) = serde_json::from_str::<File>(&text) else {
+        tracing::warn!(path = %path.display(), "bitwarden settings unreadable");
+        return fallback;
+    };
+    let Some(settings) = file.bitwarden else {
+        return fallback;
+    };
+    akasha_bw::Settings {
+        binary: binary_source(settings.binary.as_deref()),
+        appdata: appdata_mode(settings.appdata.as_deref()),
+    }
+}
+
+/// 写 Bitwarden 的两个轴。
+///
+/// 顺序：读整份 → 只换 `bitwarden` → 写临时文件 → 改名。改名是原子的，所以不存在
+/// "写到一半的配置"（配置坏掉的后果是下一次启动回到默认值，而不是启动不了）。
+pub fn save_bitwarden(dir: &Path, settings: akasha_bw::Settings) -> Result<(), WriteError> {
+    let path = dir.join(FILE_NAME);
+    let mut file = match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str::<File>(&text)
+            .map_err(|err| WriteError::Malformed(err.to_string()))?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => File::default(),
+        Err(err) => {
+            return Err(WriteError::Io {
+                path: path.display().to_string(),
+                reason: err.to_string(),
+            });
+        }
+    };
+    file.bitwarden = Some(FileBitwarden {
+        binary: Some(settings.binary.as_str().to_owned()),
+        appdata: Some(settings.appdata.as_str().to_owned()),
+    });
+
+    let text = serde_json::to_string_pretty(&file)
+        .map_err(|err| WriteError::Malformed(err.to_string()))?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, text.as_bytes()).map_err(|err| WriteError::Io {
+        path: temporary.display().to_string(),
+        reason: err.to_string(),
+    })?;
+    std::fs::rename(&temporary, &path).map_err(|err| WriteError::Io {
+        path: path.display().to_string(),
+        reason: err.to_string(),
+    })
 }
 
 /// 解析配置文本。**纯函数** —— 路径与日志都在调用方，所以"坏文件怎么办"这条判据能单测。

@@ -52,6 +52,13 @@ interface TabStripProps {
    * 它不需要先开一个终端，也不随面板关闭而死。
    */
   onNewSftp(): void;
+  /**
+   * 打开 Bitwarden 面板（plan 0902 / 0905）。
+   *
+   * 与隧道同一条理由：它既不是终端（没有 PTY），也没有关闭语义要表达 ——
+   * 面板关掉不改变任何后端状态（那几条命令都是显式动作）。
+   */
+  onNewBitwarden(): void;
 }
 
 export function TabStrip({
@@ -64,6 +71,7 @@ export function TabStrip({
   onNewSerial,
   onNewTunnel,
   onNewSftp,
+  onNewBitwarden,
 }: TabStripProps) {
   return (
     <div className="tab-strip" role="tablist" aria-label="终端标签页">
@@ -141,6 +149,15 @@ export function TabStrip({
         onClick={onNewSftp}
       >
         SFTP
+      </button>
+      <button
+        type="button"
+        className="tab-new tab-new-bw"
+        title="Bitwarden（打开登录 / 解锁面板）"
+        aria-label="打开 Bitwarden 面板"
+        onClick={onNewBitwarden}
+      >
+        Bitwarden
       </button>
     </div>
   );
