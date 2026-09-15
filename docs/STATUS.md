@@ -50,10 +50,12 @@ CI 的 `checks-other` 执行的就是 `cargo check --workspace --all-targets`，
 不可能通过。已按平台门控（`rustix` 变成 unix 专属依赖），能本地核对的三个成员现在都是退出码 0。
 ⚠️ **可编译不等于有实现**：Windows 上「回收整个会话」仍然是空的 —— 那条缺口见「进行中 / 下一步」。
 
-**CI 的首次运行已由推送触发**（plan 0102）：`origin` 已配置为私有仓库，`main` 已推送，
-三个 job 的运行因此已经发生；本机没有可用的 GitHub 凭据（`git-credential-manager` 未配置凭据存储、
-无 `gh`），运行结论待从 Actions 页面读。本机可核对的项（六个动作固定点、工具来源、`just` / node /
-pnpm 版本、YAML 结构）已逐项核对，CI 文件的注释同时按「只留必要」重写。
+**CI 的首次运行已读出结论：三个 job 全红于同一个原因 —— 镜像上没有 `sccache`**（plan 0102）。
+`.cargo/config.toml` 把它写成 rustc-wrapper，于是 cargo 连探测 rustc 都失败；其余步骤
+（checkout / 系统依赖 / 工具链 / 缓存 / install-action / ast-grep）**全部成功**，`e2e` 因
+`needs: checks-linux` 未启动。处置：CI 上清空 `RUSTC_WRAPPER`（空值即"没有包装"，本机实测），
+不引入一个在 CI 上不可能命中的缓存工具（rust-cache 只缓存 `~/.cargo` 与 `target/`）。
+⚠️ 推送之后本机已能读 Actions（`git credential fill` 可用），结论不再只能从网页看。
 
 **文档门禁改为非快速失败**（本会话）：`just docs-check` 原先把 `just docs-style` 作为独立一行调用，
 第一次失败即终止整个配方 —— 语体命中会把"命令未漂移 / ROADMAP 预算 / plan 预算"三类检查**全部掩盖**。
@@ -377,6 +379,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
+| ↑ **CI 首次运行的实际读数**（run `34972060468` @ `24d4f72`；清理后的 workflow 再次运行 `34986599520` @ `31a4d7c` 同因） | 三个 job **全部失败于同一步**：Linux 的 `just ready`（红在 `lint` → `clippy`）、Windows 与 macOS 的 `just check`。三处报错逐字相同：`could not execute process` + `sccache <rustc> -vV` + `(never executed)`，以及 `No such file or directory (os error 2)`。**其余步骤全部成功**：checkout、系统依赖、`rust-toolchain`、`rust-cache`（首次 `No cache found`）、`install-action`（`just 1.58.0` 校验通过）、`npm install -g @ast-grep/cli@0.45.3`。`e2e` 状态为 **`skipped`**（`needs: checks-linux`），三平台 E2E 至今没有读数 |
 | `just test` | **473 tests run: 473 passed**（`akasha` **98** + `akasha-bw` **56** + `akasha-core` 30 + `akasha-pty` **40** + `akasha-serial` **25** + `akasha-ssh` **88** + `akasha-store` 136）。⚠️ `akasha` 的 91 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回；目标与用例数见下面那条 `just test-e2e` 与 `src-tauri/justfile` 的 `E2E_TARGETS`） |
 | `cargo check -p akasha-core -p akasha-pty -p akasha-serial --target x86_64-pc-windows-msvc`（plan 0108） | 三条都**退出码 0** —— 改之前 `akasha-pty` 是 3 个错误（E0432 `rustix::process` + E0433 ×2）、`akasha-serial` 因依赖它同样红。负例：撤掉 `teardown.rs` 的 `#[cfg(unix)]` 立刻重新变红（`cannot find module or crate rustix`），恢复后又回到 0 |
 | ↑ **同一命令带 `--all-targets` 在本机过不去** | `criterion`（dev-dependency，只有 bench 用它）拉进 `alloca v0.4.0`，它的 C 构建脚本要 MSVC 的 `lib.exe` —— 本机没有 MSVC 工具链。**与本次改动无关**；CI 的 Windows 格子上有那个工具链 |
@@ -1210,3 +1213,11 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 153. **裸词正则会匹配英文散文**：反向命令检查若把 `CLAUDE.md` 算进去，Victauri 自动生成块里的英文句子
      （`just` 后面紧跟 `retry` 一类单词）会被读成配方名。它不在检查范围内不是因为那个文件不重要，
      而是因为裸词正则只对中文文档成立（口径写在 `docs/just.md` §2）。
+154. **`rustc-wrapper` 让"没有 sccache 的环境一个文件都编译不了"**（CI 首次运行的唯一红因）：
+     `.cargo/config.toml` 里 `rustc-wrapper = "sccache"`，而镜像上没有 sccache —— cargo 在**探测
+     rustc** 时就失败，报错读起来像工具链坏了，与真正的编译错误不是同一种。两个可选处置：
+     **装 sccache**（`taiki-e/install-action` 的 `TOOLS.md` 三平台都收录）或**去掉那层包装**。
+     选后者的两条理由：`Swatinem/rust-cache` v2.7.8 的 README 逐项列出它缓存的目录，只有
+     `~/.cargo` 与 `./target`，**不含** sccache 自己的缓存目录 —— 那层包装在 CI 上不可能命中；
+     且空值即"没有包装"（本机 cargo 1.98.1 实测：把文件里的包装器换成不存在的那个，只要
+     `RUSTC_WRAPPER` 为空就照样通过，证明空值真的覆盖了配置）。

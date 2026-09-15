@@ -169,27 +169,30 @@ macOS 需要用 `github.server_url == 'https://github.com'` 在 **job 级**排�
 `npm --prefix` 绕权限。它们的共同点是**看起来更"稳"，实际上只是在承担兼容层的成本** ——
 遇到这类写法，先确认它是为哪个 forge 写的。
 
-### 首次运行准备（2026-09-15）
+### 首次运行（2026-09-15）
 
 `origin` 已配置（私有仓库 `delta-me13/akasha`），`main` 已推送：本地与 `origin/main` 同为
-`24d4f72`，reflog 记 `update by push`，因此三个 job 的首次运行已由那次推送触发。本机没有可用的
-GitHub 凭据（`git-credential-manager` 未配置凭据存储、无 `gh`），运行结论只能从 Actions 页面读。
+`24d4f72`，reflog 记 `update by push`，三个 job 的首次运行因此由那次推送触发。
 
-本机可核对的项已逐项核对：六个 `uses:` 的固定点均能在 GitHub 上解析；`install-action` 那个提交的
-`TOOLS.md` 收录 `just` / `cargo-nextest` / `cargo-deny`（装到 `$CARGO_HOME/bin`）；`casey/just`
-1.58.0、node 26.8.2、pnpm 12.3.4 在各自发行源上存在且与 `mise.toml` 一致；YAML 解析出的顶层键与
-job 结构与本 plan 的「验收命令」一致（7 / 5 / 10 步）。
+**结论：三个 job 全红，唯一原因是镜像上没有 `sccache`**（run `34972060468`；清理后的 workflow
+再次运行 `34986599520` 同因）。三个失败步骤报错逐字相同 —— `could not execute process` +
+`sccache <rustc> -vV` + `(never executed)` 与 `No such file or directory`：`.cargo/config.toml`
+把 sccache 写成 rustc-wrapper，而它不在镜像上。**其余步骤全部成功**（checkout / 系统依赖 /
+`rust-toolchain` / `rust-cache` / `install-action` / ast-grep），失败点只在编译那一步；`e2e` 因
+`needs: checks-linux` 状态为 `skipped`，三平台 E2E 至今没有读数。
 
-本次对 workflow 的改动（随下一次推送生效）：注释按「只留必要」重写；`@ast-grep/cli` 写定 0.45.3
-（与本地同版本；该工具不在 `install-action` 的支持列表内）；`dtolnay/rust-toolchain` 的注释日期按
-该提交的实际日期改正（原写 `master (2026-06)`，实际为 2026-03-27）。
+**处置**：workflow 里清空 `RUSTC_WRAPPER`（空值即「没有包装」，本机 cargo 1.98.1 实测：把文件里的
+包装器换成不存在的那个，只要该变量为空就照样通过），**不装 sccache** —— `Swatinem/rust-cache`
+v2.7.8 的 README 逐项列出它缓存的目录，只有 `~/.cargo` 与 `./target`，不含 sccache 自己的缓存目录，
+那层包装在 CI 上不可能命中。
 
-上一轮记的第二条 runner-only 风险（`victauri-test` 那个 composite action 是否受
-`permissions: contents: read` 限制）已不适用：现工作流直接执行 `just test-e2e`，不引用该 action。
+推送前在本机核对过的项：六个 `uses:` 的固定点均能解析；`install-action` 那个提交的 `TOOLS.md`
+收录 `just` / `cargo-nextest` / `cargo-deny`；`casey/just` 1.58.0、node 26.8.2、pnpm 12.3.4 与
+`mise.toml` 一致；YAML 的顶层键与 job 结构与「验收命令」一致（7 / 5 / 10 步）。
 
-仍只能在 runner 上验证的风险（本地无 Windows / macOS 主机、无 GitHub 凭据）：
+仍只能在 runner 上验证的风险：
 
-1. `actions/checkout` 与 `Swatinem/rust-cache` 的缓存是否如预期命中；
+1. 缓存是否如预期命中（首次运行 `No cache found`，第二次起才有效）；
 2. E2E 能否在 runner 上启动 webkit2gtk 与 xvfb 的窗口；
 3. Windows 上 Tauri 的构建脚本能否过 `just check`（不过就按步骤 10 单独决策）。
 
