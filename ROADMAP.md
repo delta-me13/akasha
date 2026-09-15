@@ -269,9 +269,9 @@
 - [x] 端口枚举与参数接进界面（列端口 + 手动路径兜底 + 池行取值 + 可读报错）
       验收：界面上看到本机枚举结果并据此（或手输路径）打开；取值越界时显示字段与取值
       → [plan 1102](./docs/plans/archive/1102-serial-ports-ui.md)
-- [ ] 设备消失时串口会话以可读原因结束，标签页随之关闭
+- [x] 设备消失时串口会话以可读原因结束，标签页随之关闭
       验收：把测试用的 PTY 主端关闭（等价于拔掉设备）时会话结束、没有残留注册
-      → [plan 1103](./docs/plans/1103-serial-device-gone.md)
+      → [plan 1103](./docs/plans/archive/1103-serial-device-gone.md)
 
 ---
 
