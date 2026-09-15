@@ -34,6 +34,13 @@ pub enum SshError {
     #[error("凭据要不到：{0}")]
     CredentialUnavailable(String),
 
+    /// 一把私钥解析不了（plan 0904 的离线自检要**从私钥算出公钥指纹**，那一步先要解析它）。
+    /// 带口令的私钥也算这一档：那条路上我们没有口令可给。
+    ///
+    /// ⚠️ 不静默给一个空指纹 —— 那会让"这把钥匙坏了"看起来像"指纹对不上"。
+    #[error("私钥用不了：{reason}")]
+    PrivateKeyUnusable { reason: String },
+
     /// 连不上：DNS、TCP、协议协商、握手中的任意一步。
     #[error("连接 {target} 失败：{reason}")]
     Connect {

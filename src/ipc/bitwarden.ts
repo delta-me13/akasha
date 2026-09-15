@@ -14,14 +14,16 @@
 
 import {
   commands,
+  type BwCacheReport,
   type BwImportError,
   type BwImportReport,
   type BwIpcError,
+  type BwRefreshReport,
   type BwSnapshot,
 } from "./bindings";
 
 /** 界面看得见的一份完整读数（CLI 那一块 + 三态 + 有没有 session）。 */
-export type { BwSnapshot, BwIpcError, BwImportReport };
+export type { BwSnapshot, BwIpcError, BwImportReport, BwCacheReport, BwRefreshReport };
 
 /** 两个轴的取值。**故意不用布尔**：`host` 与 `managed` 是两件不同的事，不是开关的两面。 */
 export type BinarySource = "host" | "managed";
@@ -181,6 +183,28 @@ export class BwImportUnavailable extends Error {
  */
 export async function bwImportKeys(overwrite = false): Promise<BwImportReport> {
   const result = await commands.bwImportKeys(overwrite);
+  if (result.status === "error") throw new BwImportUnavailable(result.error);
+  return result.data;
+}
+
+/**
+ * **离线**自检：库里那份私钥还配得上导入时记下的指纹吗（plan 0904）。
+ *
+ * 这条命令**不联网、也不起 `bw`** —— 断网时它照样能用。
+ */
+export async function bwCacheVerify(): Promise<BwCacheReport> {
+  const result = await commands.bwCacheVerify();
+  if (result.status === "error") throw new BwImportUnavailable(result.error);
+  return result.data;
+}
+
+/**
+ * **联网**比对：上游那几条的 `revisionDate` 与缓存里的还一样吗（plan 0904）。
+ *
+ * 它**只报不改**：刷新是用户再点一次导入。
+ */
+export async function bwCacheCheck(): Promise<BwRefreshReport> {
+  const result = await commands.bwCacheCheck();
   if (result.status === "error") throw new BwImportUnavailable(result.error);
   return result.data;
 }

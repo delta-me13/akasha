@@ -10,6 +10,10 @@
 //! | **可用该密钥建立 SSH 连接** | 用那一行开会话 → 连上，且服务端记下的 `offered_keys` 里就是**那个指纹**（"连上"与"用的是这把钥匙"是两件事，都要断） |
 //! | 库锁着时不写 | 单独一步：不登录（没有 session）就导入 → 报的是"先登录/先解锁"那一档，池里一行都没多 |
 //!
+//! 第 8 / 9 段是 **plan 0904**（离线缓存）的判据：自检先报"完好"、把库里那把私钥换成另一把
+//! 之后必须报"对不上"（诱饵 —— 少了它，"自检"与"永远说好"分不开）；再改掉假 `bw` 的
+//! `revisionDate`，联网比对从"没变"翻成"上游变过"。
+//!
 //! ## 这台机器上跑它需要什么
 //!
 //! * app 起得来（`just test-e2e` 自己会起）；
@@ -46,27 +50,29 @@ const HOST_NAME: &str = "akasha-e2e-bw-host";
 const LOGIN_CIPHER: &str = "11111111-1111-1111-1111-111111111111";
 /// SSH key 那一条的 id。
 const KEY_CIPHER: &str = "22222222-2222-2222-2222-222222222222";
-/// 上游报的 `revisionDate`。
+/// 上游报的 `revisionDate`（"上游变过"那一档就是把它改掉）。
 const REVISION: &str = "2026-09-02T03:04:05.000Z";
+/// 改过之后的那个值。
+const REVISION_LATER: &str = "2027-01-01T00:00:00.000Z";
 
 /// 假 `bw`：只实现本集成用到的那几条命令，状态放在 `BITWARDENCLI_APPDATA_DIR` 里。
 ///
 /// `list` 那一段用**引号包住的 heredoc**（`<<'JSON'`）：整份 JSON 原样进 stdout，
 /// 里面的 `$` / 反引号一个都不会被 shell 解释。
-fn fake_bw_script(private_pem: &str, fingerprint: &str) -> String {
+fn fake_bw_script(private_pem: &str, fingerprint: &str, revision: &str) -> String {
     let item = json!([
         {
             "id": LOGIN_CIPHER,
             "type": 1,
             "name": "e2e login",
             "login": { "username": "me", "password": "e2e-not-a-key" },
-            "revisionDate": REVISION,
+            "revisionDate": revision,
         },
         {
             "id": KEY_CIPHER,
             "type": 5,
             "name": KEY_NAME,
-            "revisionDate": REVISION,
+            "revisionDate": revision,
             "sshKey": {
                 "privateKey": private_pem,
                 "publicKey": "ssh-ed25519 AAAA e2e",
@@ -199,7 +205,10 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     let _ = fs::remove_dir_all(data_dir.join("bitwarden"));
     forget_previous(&vault);
     unlock(&mut client).await;
-    install_fake_bw(&data_dir, &fake_bw_script(&private_pem, &fingerprint));
+    install_fake_bw(
+        &data_dir,
+        &fake_bw_script(&private_pem, &fingerprint, REVISION),
+    );
     let settings = invoke(
         &mut client,
         "bw_cli_settings",
@@ -370,7 +379,91 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     let shell = String::from_utf8_lossy(&observed(&server).shell_data).to_string();
     assert!(shell.contains("echo via-bitwarden-key"), "收到 {shell:?}");
 
-    // ── 8. 收尾：关标签页（会话零残留由别的目标盯），把轴放回默认 ──────────
+    // ── 8. 离线自检（plan 0904）：先一致，再把库里那把私钥换掉 —— 必须报不一致 ──
+    click(&mut client, "[data-bw-cache-verify]", "校验缓存（离线）").await;
+    wait_js(
+        &mut client,
+        "!!document.querySelector('[data-bw-cache-report]')",
+        20_000,
+        "自检的读数出现在面板上",
+    )
+    .await;
+    let verified = text_of(&mut client, "[data-bw-cache-report]").await;
+    eprintln!("面板上的缓存自检：{verified}");
+    assert!(
+        verified.contains("完好") && verified.contains(&fingerprint),
+        "刚导入的那一份该报「完好」，且带上算出来的指纹：{verified}"
+    );
+
+    // ⚠️ 诱饵：把库里那把私钥换成**另一把**（等价于"缓存被换过 / 坏了"）。
+    //    少了这一步，"自检"与"永远说好"分不开。
+    {
+        let (other_pem, _) = akasha_ssh::testing::key_pair();
+        let conn = open_vault(&vault);
+        let id = akasha_store::pools::keys::find_by_name(&conn, KEY_NAME)
+            .unwrap()
+            .expect("库里该有那把钥匙");
+        let mut other = akasha_store::pools::keys::PrivateKey::new(other_pem.into_bytes()).unwrap();
+        akasha_store::pools::keys::set_private_key(&conn, id, &mut other).unwrap();
+    }
+    click(
+        &mut client,
+        "[data-bw-cache-verify]",
+        "再校验一次（私钥已被换掉）",
+    )
+    .await;
+    wait_js(
+        &mut client,
+        "document.querySelector('[data-bw-cache-report]')?.textContent?.includes('对不上') ?? false",
+        20_000,
+        "自检报出不一致",
+    )
+    .await;
+    eprintln!(
+        "换掉私钥之后的自检：{}",
+        text_of(&mut client, "[data-bw-cache-report]").await
+    );
+
+    // ── 9. 联网比对（plan 0904）：先"没变"，改掉上游的 revisionDate 之后报"变过" ──
+    click(&mut client, "[data-bw-cache-check]", "检查上游有没有变").await;
+    wait_js(
+        &mut client,
+        "!!document.querySelector('[data-bw-refresh-report]')",
+        20_000,
+        "比对的读数出现在面板上",
+    )
+    .await;
+    let same = text_of(&mut client, "[data-bw-refresh-report]").await;
+    eprintln!("面板上的上游比对：{same}");
+    assert!(
+        same.contains("没变"),
+        "`revisionDate` 一个字没动，该报「没变」：{same}"
+    );
+
+    // 换一份假 `bw`：上游那一条的 `revisionDate` 变了（等价于用户在 Bitwarden 那边改了它）。
+    install_fake_bw(
+        &data_dir,
+        &fake_bw_script(&private_pem, &fingerprint, REVISION_LATER),
+    );
+    click(
+        &mut client,
+        "[data-bw-cache-check]",
+        "上游改过之后再比对一次",
+    )
+    .await;
+    wait_js(
+        &mut client,
+        "document.querySelector('[data-bw-refresh-report]')?.textContent?.includes('上游变过') ?? false",
+        20_000,
+        "比对报出「上游变过」",
+    )
+    .await;
+    eprintln!(
+        "上游改过之后的比对：{}",
+        text_of(&mut client, "[data-bw-refresh-report]").await
+    );
+
+    // ── 10. 收尾：关标签页（会话零残留由别的目标盯），把轴放回默认 ──────────
     let closed = client
         .eval_js(
             "(() => { const tabs = document.querySelectorAll('.tab.is-active .tab-close'); \

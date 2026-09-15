@@ -277,6 +277,22 @@ export const commands = {
 	 *  这一条**不返回快照**：导入不改三态，也不改两个轴 —— 面板上要刷新的东西由调用方自己再读一次。
 	 */
 	bwImportKeys: (overwrite: boolean) => typedError<BwImportReport, BwImportError>(__TAURI_INVOKE("bw_import_keys", { overwrite })),
+	/**
+	 *  **离线**自检：库里那份私钥还配得上导入时记下的指纹吗（plan 0904）。
+	 * 
+	 *  起进程数为 **0**、联网 **0**：所以断网时它照样能用 —— 这正是 `fingerprint` 那条路
+	 *  存在的理由（`revisionDate` 那条必须联网）。
+	 * 
+	 *  需要库解锁（要读私钥），**不需要** session。逐行报，一行坏了不影响其余行。
+	 */
+	bwCacheVerify: () => typedError<BwCacheReport, BwImportError>(__TAURI_INVOKE("bw_cache_verify")),
+	/**
+	 *  **联网**比对：上游那几条的 `revisionDate` 与缓存里的还一样吗（plan 0904）。
+	 * 
+	 *  **只报不改**：刷新是用户再点一次导入（`overwrite`）。自动刷新会把一次网络往返变成
+	 *  一次对库的写入，而那条路径上没有任何人看着。
+	 */
+	bwCacheCheck: () => typedError<BwRefreshReport, BwImportError>(__TAURI_INVOKE("bw_cache_check")),
 };
 
 /** Events */
@@ -296,6 +312,36 @@ export const events = {
  *  池里加一种认证方式时**这里编译不过**。
  */
 export type AuthMethod = "password" | "publicKey" | "agent";
+
+/**  一条缓存的校验结果。 */
+export type BwCacheEntry = {
+	name: string,
+	cipherId: string,
+	/**  导入时记下的上游指纹（参照物）。 */
+	recordedFingerprint: string,
+	/**  从库里这把私钥**算出来的**指纹；读不出来时是 `null`。 */
+	computedFingerprint: string | null,
+	verdict: BwCacheVerdict,
+};
+
+/**  缓存自检的一份读数（**不联网、不起 `bw`**）。 */
+export type BwCacheReport = {
+	/**  库里有多少条来历行（= 有多少把钥匙被这一层看着）。 */
+	checked: number,
+	entries: BwCacheEntry[],
+};
+
+/**  三档，对应三个不同的下一步动作。 */
+export type BwCacheVerdict = 
+/**  算出来的与记下的**逐字符相同**：这份缓存完好。 */
+"match" | 
+/**
+ *  对不上：库里的私钥**不是**当初导入的那一把（或被改过）。这一条要用户自己判断 ——
+ *  也可能是他有意换的，所以命令只报，不动任何东西。
+ */
+"mismatch" | 
+/**  私钥读不出来 / 解析不了（带口令的私钥也算）。`detail` 里有原因。 */
+"unreadable";
 
 /**  CLI 那一块：这两个轴解析出来是什么。 */
 export type BwCliInfo = {
@@ -389,6 +435,30 @@ export type BwIpcError = {
 	/**  `bw` 自己说的那句话（或我们的可读原因）。**只用来显示**。 */
 	message: string,
 };
+
+/**  一条缓存与上游的比对结果。 */
+export type BwRefreshEntry = {
+	name: string,
+	cipherId: string,
+	state: BwRefreshState,
+};
+
+/**  上游比对的一份读数（**要 session**：它起一次 `bw list items --raw`）。 */
+export type BwRefreshReport = {
+	/**  上游一共给了多少条（全部类型）。 */
+	seen: number,
+	entries: BwRefreshEntry[],
+	/**  **上游有、缓存里没有**的 SSH key 条目名（"该导入一次"的提示）。 */
+	newUpstream: string[],
+};
+
+/**
+ *  三档。⚠️ `Changed` **不由 `fingerprint` 判**（那是"本地这份还好吗"）：上游的
+ *  `revisionDate` 才是"有没有变过"的判据（`docs/bitwarden.md` §5）。
+ */
+export type BwRefreshState = "upToDate" | "changed" | 
+/**  上游已经看不到这一条了（被删或被移走）——"再导一次"救不了它。 */
+"gone";
 
 /**  一次命令之后的完整读数（也是 `bitwarden` probe 报的东西）。 */
 export type BwSnapshot = {

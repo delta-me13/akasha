@@ -10,6 +10,7 @@
 
 use akasha_store::pools::keys::MAX_PEM_LEN;
 use akasha_store::protected::{Exposed, Protected};
+use russh::keys::{HashAlg, decode_secret_key};
 
 use crate::error::SshError;
 
@@ -44,6 +45,21 @@ impl KeyCandidate {
         let text = std::str::from_utf8(&guard).map_err(|_| SshError::CredentialNotUtf8)?;
         Ok(f(text))
     }
+}
+
+/// 从一把私钥算出**公钥的 `SHA256:…` 指纹**（plan 0904 的离线自检）。
+///
+/// 为什么住在这里：解析私钥要 `ssh_key`，而那个 crate 只在本 crate 里（`russh::keys`）——
+/// 让 `akasha-bw` 或 app 各自引一份，就会多出第二个版本的 `ssh-key`，而"指纹算的是不是同一个
+/// 东西"正是这条判据的全部内容。
+///
+/// 输入是**从受保护页借出来的那一段**（`&[u8]`）：本函数不留副本。
+pub fn fingerprint_of_private_key(pem: &[u8]) -> Result<String, SshError> {
+    let text = std::str::from_utf8(pem).map_err(|_| SshError::CredentialNotUtf8)?;
+    let key = decode_secret_key(text, None).map_err(|err| SshError::PrivateKeyUnusable {
+        reason: err.to_string(),
+    })?;
+    Ok(key.public_key().fingerprint(HashAlg::Sha256).to_string())
 }
 
 /// 认证材料：要不要用 agent、agent 在哪、以及密钥池给出的候选私钥（**按顺序**）。
@@ -117,6 +133,25 @@ mod tests {
             assert_eq!(text.len(), pem.len());
         })
         .unwrap();
+    }
+
+    /// 指纹 = 那一对密钥里公钥的 `SHA256:…`。正例与诱饵成对：
+    /// 少了正例，"算不出指纹"与"算出来是别的"分不开。
+    #[test]
+    fn the_fingerprint_of_a_private_key_is_the_one_its_pair_reports() {
+        let (pem, fingerprint) = crate::testing::key_pair();
+        assert_eq!(
+            fingerprint_of_private_key(pem.as_bytes()).unwrap(),
+            fingerprint
+        );
+    }
+
+    #[test]
+    fn an_unparsable_key_is_refused_instead_of_yielding_an_empty_fingerprint() {
+        assert!(matches!(
+            fingerprint_of_private_key(b"-----BEGIN OPENSSH PRIVATE KEY-----\nnope\n"),
+            Err(SshError::PrivateKeyUnusable { .. })
+        ));
     }
 
     #[test]

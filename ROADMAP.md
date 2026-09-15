@@ -243,9 +243,9 @@
 - [x] 只读导入 SSH key 条目（`sshKey.privateKey`）：导入落进密钥池并记一行来历（上游 id / `revisionDate` / `fingerprint`）
       验收：导入后可用该密钥建立 SSH 连接（`IdentityFile` 的文件名与钥匙名相同时接上那一行）
       → [plan 0903](./docs/plans/archive/0903-bw-readonly-import.md)
-- [ ] 离线缓存：**私钥离线自检用 `fingerprint`**，联网刷新用 `revisionDate`
+- [x] 离线缓存：**私钥离线自检用 `fingerprint`**（不起进程、不联网），联网刷新用 `revisionDate`
       验收：断网时能校验缓存完整性；联网且 `revisionDate` 变化时提示刷新
-      → [plan 0904](./docs/plans/0904-bw-offline-cache.md)
+      → [plan 0904](./docs/plans/archive/0904-bw-offline-cache.md)
 
 ---
 

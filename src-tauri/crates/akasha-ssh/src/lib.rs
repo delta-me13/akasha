@@ -86,7 +86,7 @@ pub use error::{ForwardFailure, SshError};
 pub use forward::{SshConnection, SshStream, live_connections};
 pub use handshake::{HostKey, HostKeyVerifier, PinnedHostKey, SshConfig, SshConnect};
 pub use in_flight::InFlight;
-pub use keys::{KeyCandidate, SshAuth};
+pub use keys::{KeyCandidate, SshAuth, fingerprint_of_private_key};
 pub use known_hosts::{
     HostKeyCache, HostKeyPrompt, KnownHostsVerifier, RecordedHostKey, RecordedIn,
     user_known_hosts_file, user_ssh_config_file,

@@ -30,13 +30,14 @@
   有 `limit` / `live` / `peak` 三个读数，**等空位可取消**）、临时名的占用从"先查存在、再创建"
   改成**一次**原子占用（本机 `create_new`、远端 `CREATE|EXCLUDE`）。
 
-**阶段 9 的前三条已完成**（plan 0902 获取与前置检查、plan 0905 登录 / 解锁 / 锁定接进前端、
-plan 0903 只读导入，三条都已归档）：口径由 [ADR-0007](./adr/0007-bitwarden-cli-acquisition.md) 定
+**阶段 9 的四条已完成**（plan 0902 获取与前置检查、plan 0905 登录 / 解锁 / 锁定接进前端、
+plan 0903 只读导入、plan 0904 离线缓存，四条都已归档）：口径由 [ADR-0007](./adr/0007-bitwarden-cli-acquisition.md) 定
 —— 两个轴默认都取宿主机那一档、运行时下载只取 OSS 变体、session key 只在内存；
 **导入**这一条把 SSH key 条目只读搬进密钥池，并额外记一行**来历**（上游条目 id / `revisionDate`
 / `fingerprint`）—— 那行来历就是 plan 0904 要用的缓存。库格式因此到 **v3**（`bw_items`，
-v2 → v3 只加表）。剩下的两条：**0901 那三项真实输出**（需要一个真实 vault）与 **0904 离线缓存**。
-形状与判据见下文「阶段 9 的形状」。
+v2 → v3 只加表）。**离线缓存**那一条把 plan 0903 记下的 `fingerprint` / `revisionDate` 用起来：
+自检**不联网、不起 `bw`**（断网也能用），与上游比对只报不改。剩下的一条是
+**0901 那三项真实输出**（需要一个真实 vault）。形状与判据见下文「阶段 9 的形状」。
 
 **阶段 8 的两条都完成（plan 0801 / 0802）、阶段 11 的三条也已完成（plan 1101 / 1102 / 1103）**：
 `akasha-serial` 落地（`Transport` 的串口实现 + `ports()` 枚举 + 参数校验，零 Tauri 依赖、
@@ -280,10 +281,11 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | 状态同步 | 三态的唯一真相是 `bw status --raw`；每次动作之后重读一次，`status` 说不是 `unlocked` 就丢掉手上的 key（D10） |
 | 导入（0903） | 一次 `bw list items --raw` → **只留 `type = 5`** → 私钥进 `keys`（受保护页）→ 来历进 `bw_items`（cipher_id / name / revision_date / fingerprint / key_id，`ON DELETE CASCADE`）。同名默认不动，`overwrite` 才替换 |
 | 导入的钥匙怎么被用上 | `~/.ssh/config` 导入时 `IdentityFile` 的 **basename** 与池里钥匙的 `name` **逐字符相同** → 把 `hosts.key_id` 接上并在报告里说明；不同名时行为与 plan 0506 完全一致 |
+| 缓存检查（0904） | `bw_cache_verify`（**离线**：逐行从密钥池取私钥 → 算公钥指纹 → 与记下的比；0 进程、0 网络）+ `bw_cache_check`（联网：按 `cipher_id` 比 `revisionDate`；**只报不改**，刷新仍是用户再点一次导入）。算指纹在 `akasha_ssh::fingerprint_of_private_key` |
 | 明文面 | `list items --raw` 交出**整个 vault 的解密后内容**（上游没有按类型过滤的开关）：只有上面那几个字段会进我们的类型，那段 stdout 包在 `zeroize::Zeroizing` 里读完即擦零，错误消息不带原文 |
 | 库格式 | **v3**：v2 + `bw_items`（只加表；`TABLES_V2` 留在 `tables_of` 里，否则真 v2 库会被当成"不认识的版本"） |
 | app 侧 | `src-tauri/src/bitwarden.rs`：同一时刻只放一个 `bw` 进程的那把锁 + 十一条命令 + `bitwarden` probe |
-| 命令 | `bw_cli_status` · `bw_cli_settings` · `bw_cli_install`（**async**，约 45 MB）· `bw_status` · `bw_server_set` · `bw_login` · `bw_unlock` · `bw_lock` · `bw_logout` · `bw_sync` · `bw_import_keys`（**零个事件**） |
+| 命令 | `bw_cli_status` · `bw_cli_settings` · `bw_cli_install`（**async**，约 45 MB）· `bw_status` · `bw_server_set` · `bw_login` · `bw_unlock` · `bw_lock` · `bw_logout` · `bw_sync` · `bw_import_keys` · `bw_cache_verify` · `bw_cache_check`（**零个事件**） |
 | probe | `bitwarden` → 同一份快照（两个轴、可执行文件、版本、变体、许可证提示、三态、`hasSession`）；**不起进程** |
 | 前端 | `src/ipc/bitwarden.ts` + `src/bitwarden/BwPanel.tsx`（应用级浮层，关闭面板不改任何后端状态）；选择器 `[data-bw-*]`（导入那一块是 `[data-bw-import*]`） |
 
@@ -426,6 +428,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | ↑ **`just test-e2e` 全部通过** | 退出码 **0**：第一段（默认收托盘）**27 个目标 / 32 个用例**（`bitwarden_login` **27.13 s**、`bw_import` **29.88 s** —— 见下面那条：本机 `host` 轴上的 `bw` 是发行版的 npm 包，报一次错要 13 秒）+ 第二段 `exit_residue` **1 个用例** = **27 个目标 / 32 个用例**、0 失败；第三段（可搬迁性）`portable` **3 passed**。⚠️ `E2E_NO_APP` 的 `session_watchdog` 不在第一段的目标清单里（另有入口），`E2E_SELF_APP` 的 `portable` 由第三段执行、不计在上面那个数里 |
 | ↑ **判据：对着真实上游下载一次**（一次性探针，plan 0902；读完数即删） | ✅ `cargo test -p akasha-bw --test probe_real_upstream -- --nocapture`（**24.63 s**）：解析到上游最新 `cli-v2026.8.0` → 真的从 GitHub 拉下资产 → 落在 `<数据目录>/bitwarden/bw-2026.8.0/bw`、**141819984 字节** → crate 报的 SHA-256 是 `d8bbc213…b1b1704`，与 `sha256sum` 直接算那个 zip 的**逐字符相同** → `Cli::version()` 报 `2026.8.0`、`Cli::variant()` 报 `Oss`、`Cli::status()` 报 `Unauthenticated`。⚠️ 探针里那次**直接执行**（不设 `BITWARDENCLI_APPDATA_DIR`）输出为空：这个沙箱的家目录只读，`bw` 建不出它自己的 `data.json` —— 这正是"`managed` 那一轴有必要"的一个旁证 |
 | ↑ **一个把 IPC 占住 27 秒的问题（plan 0902 的实现期发现）** | ⚠️ 本机 `host` 轴上**确实有一个 `bw`**（发行版的 `bitwarden-cli` 把 `/usr/bin/bw` 指向 npm 包），而它在这个只读家目录里要 **13 秒**才报错。第一版每个快照都起三次进程（版本 / 帮助 / 状态），于是 `bw_cli_settings` 撞上 Victauri 的 30 秒 eval 上限。处置两条：**探测结果按"解析出来的程序路径"缓存**（版本与变体对一个给定的程序文件是不变的），并且**连 `--version` 都答不出来的那一份不再往下问状态**（那不是"状态读不出来"，是"这一份 `bw` 用不了"）。⇒ 正常机器上每个快照不再起进程；本机这个坏 `bw` 上每次切到它也只要一次 13 秒 |
+| ↑ **判据：断网能校验缓存、联网能看出上游变过**（E2E `bw_import` 第 8 / 9 段，plan 0904） | ✅ 同一个目标里接着验：导入后自检 = "完好"且带上算出来的指纹 → **把库里那把私钥换成另一把** → 自检报"对不上"（诱饵：少了它，"自检"与"永远说好"分不开；两次算出的指纹确实不同）→ 上游比对 = "没变" → **只改假 `bw` 的 `revisionDate`** → 比对报"上游变过"。自检那条**不起进程、不联网**，所以断网时它照样成立 |
 | ↑ **判据：导入后可用该密钥建立 SSH 连接**（E2E `bw_import`，plan 0903） | ✅ 假 `bw` 的 `list items --raw` 交出一份**真的** ed25519 私钥 + 一条登录条目 → 面板导入报告说"上游给了 2 条，其中 SSH 密钥 1 条；新增 1 条"并带名字与上游给的指纹（登录条目一个字都没进）→ `~/.ssh/config` 里 `IdentityFile` 的 basename 与钥匙名相同 → `vault_hosts` 那一行 `keyId` 指向它 → 开会话连上，**服务端 `offered_keys` 里的指纹与导入时存下的逐字符相同**（"连上了"与"用的是这把钥匙"是两件事）→ 字节能双向流。另一步：没登录时导入只报一句话、池里一行都没多 |
 | ↑ **判据：登录 / 解锁 / 锁定在界面上跟着 CLI 走**（E2E `bitwarden_login`） | ✅ 假 `bw`（脚本，状态放在隔离目录里）：`host` 轴报"PATH 里找不到 bw"、`managed` 轴报"还没有下载过"（**两句话分得开**）→ 落点里放一份可执行文件之后报出它的版本与 `oss` 变体 → 面板显示同一串 → 填自托管地址 → 显示的**是读回来的那一串** → 口令错时面板上的话是 `bw` 自己的原话 → 口令对则"已解锁 + session key 在内存里"（且输入框里那份主密码被清掉）→ 点锁定变"已登录，未解锁 + 没有 session key" → 解锁回到已解锁 → **外部**删掉假 CLI 的解锁标记（等价于在别处执行了一次 `bw lock`）再点刷新 → 界面跟到 `locked` 且 `hasSession = false`（ADR-0007 D10）→ 登出回到未登录 |
 
@@ -690,10 +693,10 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 
 ## 进行中 / 下一步
 
-- [ ] **下一步 = 阶段 9 剩下的两条**：先做 `0904` 离线缓存（[`0904`](./plans/0904-bw-offline-cache.md)），
-  再做 [`0901`](./plans/0901-bw-noninteractive-probe.md) 的**真实输出**（门槛只有一个：**需要一个真实 vault**；
-  变体判定与"未登录时的报错"两项已完成，见 `bitwarden.md` §2.2 / §7.2，条目形状读自上游实现见 §4.1）。
-  ⚠️ 它不再压着 plan 0903 —— 只读导入已完成并归档。
+- [ ] **下一步 = 阶段 9 只剩最后一条**：[`0901`](./plans/0901-bw-noninteractive-probe.md) 的**真实输出**
+  （门槛只有一个：**需要一个真实 vault**）。变体判定与"未登录时的报错"两项已完成
+  （`bitwarden.md` §2.2 / §7.2），条目形状读自上游实现（§4.1）—— 差的是"在真 vault 上看一眼"。
+  自托管实例的地址由用户提供；主密码不经过本仓库。
 - [ ] **自签证书那一栏还没接进界面**：crate 的 `with_extra_ca`（`NODE_EXTRA_CA_CERTS`）已就位、
   也在本地桩上实测有效，但设置里没有"CA 证书路径"这一项，所以自托管的服务器目前只能靠
   系统信任库。这是计划级的活（要连配置文件格式一起定）。

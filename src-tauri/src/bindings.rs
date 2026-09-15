@@ -94,6 +94,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             // 只读导入 SSH key 条目（plan 0903）。同步：一次本地进程调用 + 一次事务，
             // 与面板上其余几条同档（读整个 vault 那一步会多花几百毫秒到几秒）。
             crate::bitwarden::bw_import_keys,
+            // 离线缓存的两条检查（plan 0904）：自检**不联网、不起 bw**，比对要 session。
+            crate::bitwarden::bw_cache_verify,
+            crate::bitwarden::bw_cache_check,
         ])
         .events(collect_events![
             crate::session::SessionEnded,

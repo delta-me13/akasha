@@ -161,7 +161,7 @@
 | 0902 | `bw` 的获取与前置检查（两个轴 + 运行时下载 + 变体判定） | 已完成（2026-09-15：`akasha-bw` 46 条用例；真实上游拉过一次（SHA-256 与 zip 逐字符相同）；app 那一侧由 `bitwarden_login` 覆盖） | ADR-0007（实现中） | [0902](./archive/0902-bw-acquire-and-preflight.md) |
 | 0905 | 登录 / 解锁 / 锁定接进前端（含自托管） | 已完成（2026-09-15：E2E `bitwarden_login` 十步全过（5.84 s）；真实 vault 的成功登录路径仍未实测） | plan 0902（已完成） | [0905](./archive/0905-bw-login-session-ui.md) |
 | 0903 | 只读导入 SSH key 条目（含"导入的钥匙接到主机上"那条规则） | 已完成（2026-09-15：E2E `bw_import` —— 服务端看到的指纹与导入时存下的逐字符相同；库格式 v3） | plan 0902 / 0905（已完成） | [0903](./archive/0903-bw-readonly-import.md) |
-| 0904 | 离线缓存（fingerprint / revisionDate） | 未规划（骨架） | 展开时机：plan 0903 之后 | [0904](./0904-bw-offline-cache.md) |
+| 0904 | 离线缓存（fingerprint / revisionDate） | 已完成（2026-09-15：E2E 里自检从"完好"翻成"对不上"、比对从"没变"翻成"上游变过"；无新的库格式迁移） | plan 0903（已完成） | [0904](./archive/0904-bw-offline-cache.md) |
 
 ### 阶段 10 — Android（延迟）
 

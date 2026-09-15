@@ -20,6 +20,8 @@ import { useCallback, useEffect, useState } from "react";
 import {
   BwImportUnavailable,
   BwUnavailable,
+  bwCacheCheck,
+  bwCacheVerify,
   bwImportKeys,
   bwLock,
   bwLogin,
@@ -31,7 +33,9 @@ import {
   setBwServer,
   type AppDataMode,
   type BinarySource,
+  type BwCacheReport,
   type BwImportReport,
+  type BwRefreshReport,
   type BwSnapshot,
 } from "../ipc/bitwarden";
 
@@ -47,6 +51,20 @@ const VARIANT_LABEL: Record<string, string> = {
   oss: "OSS（GPL-3.0-only）",
   proprietary: "专有（许可限制在生产环境使用）",
   unknown: "判不出变体",
+};
+
+/** 缓存自检的三档（plan 0904）。 */
+const VERDICT_LABEL: Record<string, string> = {
+  match: "完好（指纹与导入时一致）",
+  mismatch: "对不上：库里这把私钥不是当初导入的那一把",
+  unreadable: "读不出来（私钥解析不了）",
+};
+
+/** 与上游比对的三档。 */
+const REFRESH_LABEL: Record<string, string> = {
+  upToDate: "没变",
+  changed: "上游变过：重新导入一次就刷新了",
+  gone: "上游已经没有这一条了",
 };
 
 /** 没导入进来那几条的原因 —— 后端给出的每一档都有一句给用户看的话。 */
@@ -105,6 +123,9 @@ export function BwPanel({ onClose }: { readonly onClose: () => void }) {
   /** 导入那一块的忙/失败是**独立**的：它不改三态，所以不该走 `run`（那条路会刷新快照）。 */
   const [importing, setImporting] = useState(false);
   const [importFailure, setImportFailure] = useState<string | null>(null);
+  /** 两条缓存检查的读数（plan 0904）。**分开存**：离线自检与联网比对是两件事。 */
+  const [cache, setCache] = useState<BwCacheReport | null>(null);
+  const [refresh, setRefresh] = useState<BwRefreshReport | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -142,6 +163,28 @@ export function BwPanel({ onClose }: { readonly onClose: () => void }) {
     setImportFailure(null);
     try {
       setReport(await bwImportKeys(overwrite));
+    } catch (err) {
+      setImportFailure(
+        err instanceof BwImportUnavailable || err instanceof BwUnavailable
+          ? err.message
+          : String(err),
+      );
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  /**
+   * 两条缓存检查（plan 0904）。与导入一样**独立于三态**，所以不走 `run`。
+   *
+   * 自检那条**不联网**：断网时它照样能用 —— 这正是 `fingerprint` 那条路存在的理由。
+   */
+  const check = async (which: "verify" | "refresh") => {
+    setImporting(true);
+    setImportFailure(null);
+    try {
+      if (which === "verify") setCache(await bwCacheVerify());
+      else setRefresh(await bwCacheCheck());
     } catch (err) {
       setImportFailure(
         err instanceof BwImportUnavailable || err instanceof BwUnavailable
@@ -386,6 +429,22 @@ export function BwPanel({ onClose }: { readonly onClose: () => void }) {
           >
             导入并覆盖同名
           </button>
+          <button
+            type="button"
+            disabled={busy !== null || importing}
+            data-bw-cache-verify
+            onClick={() => void check("verify")}
+          >
+            校验缓存（离线）
+          </button>
+          <button
+            type="button"
+            disabled={busy !== null || importing}
+            data-bw-cache-check
+            onClick={() => void check("refresh")}
+          >
+            检查上游有没有变
+          </button>
         </div>
         {importFailure && (
           <p className="bw-failure" role="alert" data-bw-import-failure>
@@ -422,6 +481,36 @@ export function BwPanel({ onClose }: { readonly onClose: () => void }) {
                 {note}
               </p>
             ))}
+          </div>
+        )}
+        {cache && (
+          <div data-bw-cache-report>
+            <p>缓存自检：{cache.checked} 条</p>
+            <ul>
+              {cache.entries.map((entry) => (
+                <li key={entry.cipherId}>
+                  {entry.name}：{VERDICT_LABEL[entry.verdict] ?? entry.verdict}
+                  {entry.computedFingerprint ? ` · ${entry.computedFingerprint}` : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {refresh && (
+          <div data-bw-refresh-report>
+            <p>与上游比对：上游给了 {refresh.seen} 条</p>
+            <ul>
+              {refresh.entries.map((entry) => (
+                <li key={entry.cipherId}>
+                  {entry.name}：{REFRESH_LABEL[entry.state] ?? entry.state}
+                </li>
+              ))}
+            </ul>
+            {refresh.newUpstream.length > 0 && (
+              <p className="bw-note">
+                上游还有这几条没导进来：{refresh.newUpstream.join("、")}
+              </p>
+            )}
           </div>
         )}
       </fieldset>

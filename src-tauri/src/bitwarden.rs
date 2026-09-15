@@ -824,6 +824,207 @@ pub fn bw_import_keys(
     })
 }
 
+// ── 离线缓存的两条检查（plan 0904） ────────────────────────────────────────
+
+/// 缓存自检的一份读数（**不联网、不起 `bw`**）。
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BwCacheReport {
+    /// 库里有多少条来历行（= 有多少把钥匙被这一层看着）。
+    pub checked: u32,
+    pub entries: Vec<BwCacheEntry>,
+}
+
+/// 一条缓存的校验结果。
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BwCacheEntry {
+    pub name: String,
+    pub cipher_id: String,
+    /// 导入时记下的上游指纹（参照物）。
+    pub recorded_fingerprint: String,
+    /// 从库里这把私钥**算出来的**指纹；读不出来时是 `null`。
+    pub computed_fingerprint: Option<String>,
+    pub verdict: BwCacheVerdict,
+}
+
+/// 三档，对应三个不同的下一步动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum BwCacheVerdict {
+    /// 算出来的与记下的**逐字符相同**：这份缓存完好。
+    Match,
+    /// 对不上：库里的私钥**不是**当初导入的那一把（或被改过）。这一条要用户自己判断 ——
+    /// 也可能是他有意换的，所以命令只报，不动任何东西。
+    Mismatch,
+    /// 私钥读不出来 / 解析不了（带口令的私钥也算）。`detail` 里有原因。
+    Unreadable,
+}
+
+/// 上游比对的一份读数（**要 session**：它起一次 `bw list items --raw`）。
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BwRefreshReport {
+    /// 上游一共给了多少条（全部类型）。
+    pub seen: u32,
+    pub entries: Vec<BwRefreshEntry>,
+    /// **上游有、缓存里没有**的 SSH key 条目名（"该导入一次"的提示）。
+    pub new_upstream: Vec<String>,
+}
+
+/// 一条缓存与上游的比对结果。
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BwRefreshEntry {
+    pub name: String,
+    pub cipher_id: String,
+    pub state: BwRefreshState,
+}
+
+/// 三档。⚠️ `Changed` **不由 `fingerprint` 判**（那是"本地这份还好吗"）：上游的
+/// `revisionDate` 才是"有没有变过"的判据（`docs/bitwarden.md` §5）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum BwRefreshState {
+    UpToDate,
+    Changed,
+    /// 上游已经看不到这一条了（被删或被移走）——"再导一次"救不了它。
+    Gone,
+}
+
+/// **离线**自检：库里那份私钥还配得上导入时记下的指纹吗（plan 0904）。
+///
+/// 起进程数为 **0**、联网 **0**：所以断网时它照样能用 —— 这正是 `fingerprint` 那条路
+/// 存在的理由（`revisionDate` 那条必须联网）。
+///
+/// 需要库解锁（要读私钥），**不需要** session。逐行报，一行坏了不影响其余行。
+#[tauri::command]
+#[specta::specta]
+pub fn bw_cache_verify(
+    vault: TauriState<'_, crate::vault::Vault>,
+) -> Result<BwCacheReport, BwImportError> {
+    let rows = vault
+        .with_conn(|conn| {
+            let mut out = Vec::new();
+            for row in akasha_store::pools::bw_items::items(conn)? {
+                // 逐行取私钥：它进受保护页，算完指纹就 drop（页随之降权）。
+                let (computed, verdict) =
+                    match akasha_store::pools::keys::private_key(conn, row.key_id) {
+                        Ok(mut key) => match key.expose() {
+                            Ok(pem) => match akasha_ssh::fingerprint_of_private_key(&pem) {
+                                Ok(computed) => {
+                                    let verdict = if computed == row.fingerprint {
+                                        BwCacheVerdict::Match
+                                    } else {
+                                        BwCacheVerdict::Mismatch
+                                    };
+                                    (Some(computed), verdict)
+                                }
+                                // 解析不了（带口令的私钥也算）：报"读不出来"，
+                                // **不给一个空指纹** —— 那看起来像"指纹对不上"。
+                                Err(_) => (None, BwCacheVerdict::Unreadable),
+                            },
+                            Err(_) => (None, BwCacheVerdict::Unreadable),
+                        },
+                        Err(_) => (None, BwCacheVerdict::Unreadable),
+                    };
+                out.push(BwCacheEntry {
+                    name: row.name,
+                    cipher_id: row.cipher_id,
+                    recorded_fingerprint: row.fingerprint,
+                    computed_fingerprint: computed,
+                    verdict,
+                });
+            }
+            Ok(out)
+        })
+        .map_err(BwImportError::from)?;
+
+    let checked = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+    tracing::info!(
+        checked,
+        mismatch = rows
+            .iter()
+            .filter(|entry| entry.verdict == BwCacheVerdict::Mismatch)
+            .count(),
+        unreadable = rows
+            .iter()
+            .filter(|entry| entry.verdict == BwCacheVerdict::Unreadable)
+            .count(),
+        "bitwarden cache verified"
+    );
+    Ok(BwCacheReport {
+        checked,
+        entries: rows,
+    })
+}
+
+/// **联网**比对：上游那几条的 `revisionDate` 与缓存里的还一样吗（plan 0904）。
+///
+/// **只报不改**：刷新是用户再点一次导入（`overwrite`）。自动刷新会把一次网络往返变成
+/// 一次对库的写入，而那条路径上没有任何人看着。
+#[tauri::command]
+#[specta::specta]
+pub fn bw_cache_check(
+    bitwarden: TauriState<'_, Bitwarden>,
+    vault: TauriState<'_, crate::vault::Vault>,
+) -> Result<BwRefreshReport, BwImportError> {
+    let akasha_bw::Inventory { total, ssh_keys } = list_ssh_keys(&bitwarden)?;
+    // 上游按 `cipher_id` 建表：缓存里的每一条都要能一眼查到"上游现在说的是什么"。
+    let upstream: std::collections::BTreeMap<String, akasha_bw::SshKeyItem> = ssh_keys
+        .into_iter()
+        .map(|key| (key.id.clone(), key))
+        .collect();
+
+    let cached = vault
+        .with_conn(akasha_store::pools::bw_items::items)
+        .map_err(BwImportError::from)?;
+
+    let entries: Vec<BwRefreshEntry> = cached
+        .iter()
+        .map(|row| BwRefreshEntry {
+            name: row.name.clone(),
+            cipher_id: row.cipher_id.clone(),
+            state: match upstream.get(&row.cipher_id) {
+                None => BwRefreshState::Gone,
+                Some(key) if key.revision_date == row.revision_date => BwRefreshState::UpToDate,
+                Some(_) => BwRefreshState::Changed,
+            },
+        })
+        .collect();
+    let new_upstream = upstream
+        .iter()
+        .filter(|(id, key)| {
+            key.has_private_key()
+                && !cached
+                    .iter()
+                    .any(|row| row.cipher_id.as_str() == id.as_str())
+        })
+        .map(|(_, key)| key.name.clone())
+        .collect::<Vec<_>>();
+
+    tracing::info!(
+        seen = total,
+        cached = entries.len(),
+        changed = entries
+            .iter()
+            .filter(|entry| entry.state == BwRefreshState::Changed)
+            .count(),
+        gone = entries
+            .iter()
+            .filter(|entry| entry.state == BwRefreshState::Gone)
+            .count(),
+        new_upstream = new_upstream.len(),
+        "bitwarden cache compared with upstream"
+    );
+
+    Ok(BwRefreshReport {
+        seen: u32::try_from(total).unwrap_or(u32::MAX),
+        entries,
+        new_upstream,
+    })
+}
+
 /// 跑一次 `bw list items --raw` 并解析成 [`akasha_bw::Inventory`]（**不碰库**）。
 ///
 /// 那段输出是整个 vault 的明文，它在这一趟里的生命期就是这一行：`Cli::items` 返回
