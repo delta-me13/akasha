@@ -27,7 +27,7 @@
       `AGENTS.md` §8；命名约定已写入 §3.1）
 - [x] **ADR 队列收敛为 3 份**（见 [`docs/adr/README.md`](./docs/adr/README.md)）
 - [~] **CI 通过** —— 工作流已重写（`checks-linux` / `checks-other` / `e2e` 三个 job）
-      验收：CI 上三个 job 通过 —— **待首次推送确认**
+      验收：CI 上三个 job 通过 —— 首次运行已由推送触发，结论待读（`origin` 为私有仓库）
 - [x] **ADR-0001 定案** —— 已定案（2026-09-11），决策二裁定见其 §0.3
       验收：`docs/adr/0001` 状态已改为"已定案" ✓
 

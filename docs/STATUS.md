@@ -50,6 +50,11 @@ CI 的 `checks-other` 执行的就是 `cargo check --workspace --all-targets`，
 不可能通过。已按平台门控（`rustix` 变成 unix 专属依赖），能本地核对的三个成员现在都是退出码 0。
 ⚠️ **可编译不等于有实现**：Windows 上「回收整个会话」仍然是空的 —— 那条缺口见「进行中 / 下一步」。
 
+**CI 的首次运行已由推送触发**（plan 0102）：`origin` 已配置为私有仓库，`main` 已推送，
+三个 job 的运行因此已经发生；本机没有可用的 GitHub 凭据（`git-credential-manager` 未配置凭据存储、
+无 `gh`），运行结论待从 Actions 页面读。本机可核对的项（六个动作固定点、工具来源、`just` / node /
+pnpm 版本、YAML 结构）已逐项核对，CI 文件的注释同时按「只留必要」重写。
+
 阶段 4 的八项（每项一句）：**SQLCipher 加密库可打开**（0401）、**口令只从一条路径进入且可真正验证**
 （0402 —— 拆分"打开"与"新建"；此前在文件不存在的路径上**任何口令都能打开**）、
 **口令在内存中同样受保护**（0406）、**四类池可增删改查**（0403）、**库中数据可导出也可还原**
@@ -627,9 +632,9 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 - **Windows 目标的类型检查只覆盖到三个成员**（plan 0108）：`akasha-core` / `akasha-pty` /
   `akasha-serial` 在非 Windows 主机上能核对；`akasha-store` / `akasha-ssh` / `akasha-bw` /
   `akasha` 因为 vendored OpenSSL 与 `ring` 的 C 构建脚本在 check 阶段就失败（本机没有 MSVC 工具链），
-  这四个成员只能由 CI 的 Windows 格子给出结论 —— 而 CI 至今没有运行过。
+  这四个成员只能由 CI 的 Windows 格子给出结论 —— 首次运行已由推送触发，结论待读。
 - **权限位、单实例、托盘在非 Linux 平台未验证**：CI 的类型检查无法覆盖运行期差异；CI 三个 job
-  至今未运行（仓库没有 remote）。
+  的首次运行已由推送触发（`origin` 已配置），结论待读。
 - **前端类型检查不在任何门禁内**：`just ready` 只覆盖 Rust 与文档，`pnpm build`（tsc）需手动运行。
 - **`just dev-web` 的模拟后端未在真实浏览器中操作过**：SSH 两条命令在其中**显式报错**
   （"没有 SSH 客户端"），因此主机选择器在浏览器中只会显示该提示。
@@ -757,7 +762,8 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       是什么样"（ConPTY 关闭时到底带走多少进程）都观测不到。展开时机是有 Windows 主机可执行 E2E 时；
       届时先写 ADR（进程模型，与 ADR-0005 同源）
 - [~] **plan 0102（CI 平台矩阵）**：本地部分完成；**Windows 那一格原先必红**（问题 #149），
-      编译面已由 plan 0108 处置。最终判据 = 推送后三个 job 全部通过，仍阻塞于仓库无 remote
+      编译面已由 plan 0108 处置。最终判据 = 三个 job 全部通过 —— 首次运行已由推送触发，结论待读
+      （本机没有可用的 GitHub 凭据）
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测，剩余 CI 三平台格子
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
 
@@ -1172,7 +1178,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
      `#[cfg(not(windows))]`，而 `teardown.rs` / `watchdog.rs` 直接用它的 `Pid` / `Signal` /
      `kill_process` / `setsid` —— 于是 Windows 目标编译不过（`cargo check --target
      x86_64-pc-windows-msvc` 在 `akasha-pty` 就红，3 个 E0432 / E0433）。它长期没暴露的原因是
-     CI 的 Windows 那一格（`checks-other`）到现在还没有真正执行过（状态见「待验证」里的 plan 0102）。
+     CI 的 Windows 那一格（`checks-other`）在此之前没有执行过（首次运行已由推送触发，见 plan 0102）。
      **现在的边界**：编译不再是障碍，但 Windows 上"回收整个会话"**仍然是空的**（`kill_session`
      返回 0，`Child::kill()` 只收得走 shell 自身）—— 等价物是 Job Object，它要一台 Windows 主机
      才能验收，那条缺口记在「进行中 / 下一步」。⚠️ 阶段 8 那条判据（Windows / macOS 的原生编译）

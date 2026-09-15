@@ -22,7 +22,7 @@
 ## 前置检查
 
 ```bash
-git remote -v                                   # 现在是空 —— CI 还没在任何 forge 上跑过
+git remote -v                                   # origin 已配置（私有仓库）；运行结论从 Actions 页面读
 grep -nE 'runs-on|needs:|if:' .github/workflows/ci.yml
 just ready                                      # 本地门禁必须先是绿的
 ```
@@ -131,13 +131,9 @@ CI 配置改动只影响门禁，不影响产物与用户数据。
 `checks-linux` 7 步（工具三件套一次装机）、`checks-other` 5 步、`e2e` 10 步；
 非注释行里 `uname|GITHUB_PATH|--prefix` 计数为 **0**；`just ready` 退出码 0。
 
-新增的两条**只在真 runner 上才能验证**的风险：
-
-1. `install-action` 装 `just`（它确实在支持列表里，源码是
-   `taiki-e/install-action` 的 `TOOLS.md`）—— 第一次在本仓库这么用，需确认它是否落在
-   `$CARGO_HOME/bin` 且能被后续步骤找到；
-2. `permissions: contents: read` 是否足以供 `victauri-test` 那个 composite action 使用
-   （不足则在此处补一条并写明理由，不得直接删掉整个 `permissions`）。
+新增的两条**只在真 runner 上才能验证**的风险（结论见「首次运行准备」）：`install-action` 装的
+`just` 是否落在 `$CARGO_HOME/bin` 且能被后续步骤找到；`permissions: contents: read` 是否足以供
+`victauri-test` 那个 composite action 使用（不足则补一条并写明理由，不得删掉整个 `permissions`）。
 
 ### 放弃记录：双 forge 兼容层（2026-09-11）
 
@@ -173,12 +169,28 @@ macOS 需要用 `github.server_url == 'https://github.com'` 在 **job 级**排�
 `npm --prefix` 绕权限。它们的共同点是**看起来更"稳"，实际上只是在承担兼容层的成本** ——
 遇到这类写法，先确认它是为哪个 forge 写的。
 
-### 最终判据仍未达成 —— 所以状态是「进行中」
+### 首次运行准备（2026-09-15）
 
-- **仓库当前没有配置任何 git remote**（`git remote -v` 为空）：这不是"等一次推送"，
-  而是等托管到位。
-- 三条**只在真 runner 上才能验证**的风险：
-  1. `actions/checkout` 与 `Swatinem/rust-cache` 的缓存是否如预期命中；
-  2. E2E 能否在 runner 上启动 webkit2gtk + xvfb 的窗口；
-  3. Windows 上 Tauri 的构建脚本能否过 `cargo check`（不过就按步骤 10 单独决策）。
-- 阶段 0 的「CI 通过」条目（`ROADMAP.md` 里标 `[~]`）依赖的是同一条。
+`origin` 已配置（私有仓库 `delta-me13/akasha`），`main` 已推送：本地与 `origin/main` 同为
+`24d4f72`，reflog 记 `update by push`，因此三个 job 的首次运行已由那次推送触发。本机没有可用的
+GitHub 凭据（`git-credential-manager` 未配置凭据存储、无 `gh`），运行结论只能从 Actions 页面读。
+
+本机可核对的项已逐项核对：六个 `uses:` 的固定点均能在 GitHub 上解析；`install-action` 那个提交的
+`TOOLS.md` 收录 `just` / `cargo-nextest` / `cargo-deny`（装到 `$CARGO_HOME/bin`）；`casey/just`
+1.58.0、node 26.8.2、pnpm 12.3.4 在各自发行源上存在且与 `mise.toml` 一致；YAML 解析出的顶层键与
+job 结构与本 plan 的「验收命令」一致（7 / 5 / 10 步）。
+
+本次对 workflow 的改动（随下一次推送生效）：注释按「只留必要」重写；`@ast-grep/cli` 写定 0.45.3
+（与本地同版本；该工具不在 `install-action` 的支持列表内）；`dtolnay/rust-toolchain` 的注释日期按
+该提交的实际日期改正（原写 `master (2026-06)`，实际为 2026-03-27）。
+
+上一轮记的第二条 runner-only 风险（`victauri-test` 那个 composite action 是否受
+`permissions: contents: read` 限制）已不适用：现工作流直接执行 `just test-e2e`，不引用该 action。
+
+仍只能在 runner 上验证的风险（本地无 Windows / macOS 主机、无 GitHub 凭据）：
+
+1. `actions/checkout` 与 `Swatinem/rust-cache` 的缓存是否如预期命中；
+2. E2E 能否在 runner 上启动 webkit2gtk 与 xvfb 的窗口；
+3. Windows 上 Tauri 的构建脚本能否过 `just check`（不过就按步骤 10 单独决策）。
+
+阶段 0 的「CI 通过」条目（`ROADMAP.md` 里标 `[~]`）依赖的是同一条结论。
