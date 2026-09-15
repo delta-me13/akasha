@@ -5,7 +5,11 @@
 //! 校验位与流控取自固定的三值集合。**不合法的取值在这里写不出来** ——
 //! 于是"9 个数据位"这类输入不会拖到打开串口时才被拒。
 //!
-//! 池的行 ↔ 本类型的映射（含"库里出现不合法值时怎么报"）是 plan 0802 的事。
+//! 库里的行是本类型的**原始取值来源**：往里搬字段时用 `DataBits::try_from` /
+//! `StopBits::try_from`，越界值在那里被拒并报出字段与取值（plan 0802）。
+//! "哪一行、哪个字段"的搬运属于 app。
+
+use crate::error::SerialError;
 
 /// 数据位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +24,27 @@ pub enum DataBits {
     Eight,
 }
 
+impl TryFrom<u8> for DataBits {
+    type Error = SerialError;
+
+    /// 从 serial 配置池里的取值还原。
+    ///
+    /// 取值域与库的 `CHECK`（`data_bits IN (5,6,7,8)`）一致。越界值意味着那一行坏了
+    /// （库本该拦住它），所以报错里带上**实际取值**：用户要改的是那一行那个字段。
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            5 => Ok(Self::Five),
+            6 => Ok(Self::Six),
+            7 => Ok(Self::Seven),
+            8 => Ok(Self::Eight),
+            other => Err(SerialError::Settings {
+                field: "data_bits",
+                value: other.to_string(),
+            }),
+        }
+    }
+}
+
 /// 停止位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopBits {
@@ -27,6 +52,22 @@ pub enum StopBits {
     One,
     /// 2 位。
     Two,
+}
+
+impl TryFrom<u8> for StopBits {
+    type Error = SerialError;
+
+    /// 见 [`DataBits::try_from`]：取值域与库的 `CHECK`（`stop_bits IN (1,2)`）一致。
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::One),
+            2 => Ok(Self::Two),
+            other => Err(SerialError::Settings {
+                field: "stop_bits",
+                value: other.to_string(),
+            }),
+        }
+    }
 }
 
 /// 校验位。
@@ -86,6 +127,29 @@ impl SerialSettings {
             flow: Flow::None,
         }
     }
+
+    /// 在碰设备之前能判定的部分。
+    ///
+    /// 只查两件：
+    ///
+    /// - **路径非空**：手动指定路径是这条路唯一的输入，空值没有任何可尝试的东西；
+    /// - **波特率不为 0**：上游把 0 当成"不要设置波特率"的暗号（它给 PTY 用），而 serial 配置池
+    ///   的 `CHECK` 要求 `baud > 0` —— 产品里没有它的位置，留着只会变成一个
+    ///   **静默不生效**的参数。
+    ///
+    /// 其余的取值不合法在类型层就写不出来（四个枚举的取值域是封闭的）。
+    pub fn validate(&self) -> Result<(), SerialError> {
+        if self.path.trim().is_empty() {
+            return Err(SerialError::NoPath);
+        }
+        if self.baud == 0 {
+            return Err(SerialError::Settings {
+                field: "baud",
+                value: "0".to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -103,5 +167,60 @@ mod tests {
         assert_eq!(settings.parity, Parity::None);
         assert_eq!(settings.flow, Flow::None);
         assert_eq!(settings.baud, 115200);
+    }
+
+    #[test]
+    fn every_value_the_pool_allows_round_trips() {
+        // 池的 `CHECK` 允许 5..=8 与 1..=2；这个入口就是"从库里搬过来"的那一步。
+        for (raw, expected) in [
+            (5u8, DataBits::Five),
+            (6, DataBits::Six),
+            (7, DataBits::Seven),
+            (8, DataBits::Eight),
+        ] {
+            assert_eq!(DataBits::try_from(raw).unwrap(), expected);
+        }
+        for (raw, expected) in [(1u8, StopBits::One), (2, StopBits::Two)] {
+            assert_eq!(StopBits::try_from(raw).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn an_out_of_range_value_names_the_field_and_the_value() {
+        // 报错要能直接指到字段与取值：库里出现 9 或 3 时，用户要改的是那一行那个字段。
+        for raw in [0u8, 4, 9] {
+            let rendered = DataBits::try_from(raw).unwrap_err().to_string();
+            assert!(
+                rendered.contains("data_bits"),
+                "错误里没有字段名：{rendered}"
+            );
+            assert!(
+                rendered.contains(&raw.to_string()),
+                "错误里没有取值：{rendered}"
+            );
+        }
+        for raw in [0u8, 3, 9] {
+            let rendered = StopBits::try_from(raw).unwrap_err().to_string();
+            assert!(
+                rendered.contains("stop_bits"),
+                "错误里没有字段名：{rendered}"
+            );
+            assert!(
+                rendered.contains(&raw.to_string()),
+                "错误里没有取值：{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_path_or_a_zero_baud_rate_is_rejected_before_anything_is_opened() {
+        assert!(matches!(
+            SerialSettings::new("  ", 9600).validate(),
+            Err(SerialError::NoPath)
+        ));
+        let err = SerialSettings::new("/dev/ttyUSB0", 0)
+            .validate()
+            .unwrap_err();
+        assert!(err.to_string().contains("baud"), "{err}");
     }
 }

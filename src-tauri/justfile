@@ -380,6 +380,19 @@ libudev-check:
     done; \
     [ "$fail" = 0 ] || exit 1
 
+# serial 的两条枚举实现都要真的执行一次（plan 0802 的判据）。
+#
+# 为什么是一条配方：Linux 上**哪一套**枚举实现被编译进去，完全由 `libudev` 这个 feature
+# 决定（`serialport` 的 `enumerate.rs` 里两个分支：开着它走 tty 子系统，关掉它扫 sysfs）。
+# 所以"只执行默认配置"等于另一套实现一次都没有被执行过 —— 而它正是发行版缺 libudev 时的
+# 降级路径。两次的用例集合相同，差别只有被编译进去的那一套实现。
+#
+# 本机实测（plan 0802 的「前置检查」）：默认配置列出 32 条 `/dev/ttyS*`（而 `/dev` 下
+# 一个都没有），`--no-default-features` 列出 0 条 —— 两个分支确实在走不同的代码。
+serial-check:
+    cargo nextest run --package akasha-serial
+    cargo nextest run --package akasha-serial --no-default-features
+
 # ── 性能基线 ────────────────────────────────────────────────────────────────
 
 # 吞吐基线（criterion）。**不是门禁**（AGENTS.md §7）：MB/s 随机器与编译器版本浮动，

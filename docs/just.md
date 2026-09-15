@@ -40,6 +40,7 @@
 | `just bench` | 吞吐基线（criterion）。**不是门禁**，用于改动前后对比 | 转发 |
 | `just portable` | 可搬迁性：把 **bin 所在文件夹整个移动**之后数据还在吗（`docs/portable.md` §5 的五步，外加 §4 第 3 条"便携目录不可写就拒绝启动"）。**自行启动 app** —— 把二进制复制进临时布局，在 A 启动一次、移动为 B、再启动一次，两次都用 app 自己的命令读回四类池，并用库函数逐项比对内容。⚠️ **不能与别的 akasha 同时运行**：单实例（plan 0304）会让它启动的第二份自己退掉，所以先查一遍并说清该关闭什么；Vite 复用或自起（与 `just test-e2e` 同一套做法）。`just test-e2e` 的自起分支在**第三段**调用它，复用别人的 app 时那一段显式跳过并输出原因 | 转发 |
 | `just libudev-check` | serial 的 libudev 只在 Linux 上（plan 0801 的判据）：按**目标**核对 `akasha-serial` 的依赖图 —— Linux 上必须有，Windows / macOS 上必须没有。⚠️ `cargo tree --target` 会取回那个目标独有的依赖，冷缓存下需要联网；每条分支都先看 `cargo tree` 自己的退出码，否则「图没解析出来」会被读成「没有 libudev」 | 转发 |
+| `just serial-check` | serial 的**两条枚举实现都要真的执行一次**（plan 0802）：`akasha-serial` 的全部用例在默认配置（libudev）与 `--no-default-features`（sysfs）下各执行一遍。Linux 上哪一套实现被编译进去完全由那个 feature 决定（`serialport` 的 `enumerate.rs` 两个分支），所以「只执行默认配置」等于另一套一次都没有被执行过 —— 而它正是发行版缺 libudev 时的降级路径。本机实测：默认配置列出 32 条 `/dev/ttyS*`（`/dev` 下一个都没有），关闭该 feature 后列出 0 条 | 转发 |
 | `just deny` | 依赖门禁：许可证 / 漏洞 / 来源（需联网）。⚠️ 带 `--workspace`，理由见下 | 转发 |
 | `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |
 | `just gen-types` | Rust command/event → `src/ipc/bindings.ts`（生成物，**禁止手改**） | 转发 |
@@ -64,7 +65,8 @@ justfile                 ← 在此执行命令（项目级 + 转发）
                                             ↓
 src-tauri/justfile       ← crate 级命令真正实现的地方
     check / clippy / fmt / fmt-check / watch
-    test / test-e2e / portable / bench / deny / deny-offline / gen-types / gen-types-check
+    test / test-e2e / portable / bench / libudev-check / serial-check
+    deny / deny-offline / gen-types / gen-types-check
 ```
 
 **为什么要分两个**：just 用 **justfile 所在目录**作为配方的工作目录。

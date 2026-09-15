@@ -8,6 +8,7 @@ use std::time::Duration;
 use akasha_pty::{Capabilities, ExitStatus, Transport, TransportError};
 use serialport::SerialPort;
 
+use crate::error::SerialError;
 use crate::settings::{DataBits, Flow, Parity, SerialSettings, StopBits};
 
 /// 读端多久醒一次看停止标志。
@@ -15,36 +16,6 @@ use crate::settings::{DataBits, Flow, Parity, SerialSettings, StopBits};
 /// 它同时是 `read` 至多阻塞多久，因此也是 [`SerialTransport::shutdown`] 最坏多晚被读端
 /// 看见的上界。⚠️ **不能是 0**：0 让每次 `read` 立刻超时，读循环就变成忙等。
 const READ_TICK: Duration = Duration::from_millis(100);
-
-/// 打开串口时的失败。
-///
-/// 分域定义（`AGENTS.md` §3.4）：两种情形必须分得开 —— "这个路径（设备）打不开"
-/// （不存在 / 权限 / 被别的进程占着）与"打开了，但拿不到第二个句柄"（这条路径可能根本不是
-/// 串口）。两者都带上**路径**：用户要去看的是那个设备，不是我们代码里的哪一行。
-#[derive(Debug, thiserror::Error)]
-pub enum SerialError {
-    /// 路径是空的。手动指定路径是这条路唯一的输入，空值没有任何可尝试的东西。
-    #[error("串口路径为空")]
-    NoPath,
-    /// 打不开。
-    #[error("串口打不开：{path}（{source}）")]
-    Open {
-        /// 设备路径（原样回显，便于对照用户的输入）。
-        path: String,
-        /// 上游的错误（含它的 `ErrorKind` 与可读描述）。
-        #[source]
-        source: serialport::Error,
-    },
-    /// 打开了，但复制不出第二个句柄。
-    #[error("串口句柄不可用：{path}（{source}）")]
-    Handle {
-        /// 设备路径。
-        path: String,
-        /// 上游的错误。
-        #[source]
-        source: serialport::Error,
-    },
-}
 
 /// 串口载体。
 ///
@@ -76,9 +47,9 @@ impl SerialTransport {
     ///
     /// 路径是**显式**的（见模块文档）：不依赖端口枚举，所以枚举不可用时这条路照常可用。
     pub fn open(settings: &SerialSettings) -> Result<Self, SerialError> {
-        if settings.path.trim().is_empty() {
-            return Err(SerialError::NoPath);
-        }
+        // 能在碰设备之前判定的都在这里（空路径与波特率 0）：报出字段与取值，
+        // 而不是等 OS 给出一个只有它看得懂的原因。
+        settings.validate()?;
         let port = serialport::new(&settings.path, settings.baud)
             .data_bits(map_data_bits(settings.data_bits))
             .stop_bits(map_stop_bits(settings.stop_bits))
@@ -378,5 +349,43 @@ mod tests {
             "错误里没有路径：{rendered}"
         );
         assert!(matches!(err, SerialError::Open { .. }));
+    }
+
+    /// 真 tty 上的回读：内核留得住的那几项必须等于请求值。
+    #[cfg(unix)]
+    #[test]
+    fn a_pseudo_terminal_reports_the_parameters_it_can_hold() {
+        // ⚠️ 这里**只**断言波特率 / 停止位 / 流控。数据位与校验位在 PTY 上会被归一化
+        // （实测：请求 7 数据位回读 8 位、请求偶校验回读不校验），在 PTY 上断言那两项
+        // 只会得到一条"用例对、被测代码无从判断"的断言 —— 它们的证据是映射的全量单测
+        // （settings.rs 的 `TryFrom`）与真机（plan 0802 的「待验证」）。
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("造一对 PTY 失败");
+        // ⚠️ 设备名在**主端**上问（`tty_name` 是 `MasterPty` 的方法）。
+        let path = pair.master.tty_name().expect("拿不到 PTY 从端的设备名");
+        let mut settings = SerialSettings::new(path.to_string_lossy(), 115200);
+        settings.data_bits = DataBits::Seven;
+        settings.stop_bits = StopBits::Two;
+        settings.parity = Parity::Even;
+        settings.flow = Flow::Software;
+
+        let transport = SerialTransport::open(&settings).expect("把 PTY 从端当串口打开失败");
+        assert_eq!(transport.port.baud_rate().unwrap(), 115200);
+        assert_eq!(
+            transport.port.stop_bits().unwrap(),
+            serialport::StopBits::Two
+        );
+        assert_eq!(
+            transport.port.flow_control().unwrap(),
+            serialport::FlowControl::Software
+        );
+        // 主端要活到断言结束：从端那一路的 fd 全关之后，从端就不存在了。
+        drop(pair);
     }
 }

@@ -83,6 +83,10 @@ portable:
 libudev-check:
     just --justfile {{SRC}}/justfile libudev-check
 
+# serial 的两条枚举实现都要真的执行一次（需两种 feature 配置）
+serial-check:
+    just --justfile {{SRC}}/justfile serial-check
+
 # 吞吐基线（criterion）。**不是门禁** —— 它是用于改动前后对比的基线
 bench:
     just --justfile {{SRC}}/justfile bench
