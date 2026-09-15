@@ -36,8 +36,13 @@
 //! | Windows | 什么都不做（没有 POSIX 会话；等价物要上 Job Object） |
 //!
 //! 后两行的缺口是**已知且被记录**的（plan 0204 的实施记录、`docs/STATUS.md` 的已知问题），
-//! 不是"顺手忽略了"。
+//! 不是"顺手忽略了"。⚠️ **可编译不等于有实现**：本模块在 Windows 上编译得过（plan 0108
+//! 给这几处补上了 `cfg` 守卫），但它在 Windows 上**仍然什么都不做** —— 那条缺口留在
+//! plan 0108 的「留下的缺口」里，实现它要有 Windows 主机可验收。
 
+// ⚠️ 只在 unix 上：上游把 `rustix::process` 限定在 `#[cfg(not(windows))]`，
+// Windows 上没有这个模块（问题 #149，plan 0108）。
+#[cfg(unix)]
 use rustix::process::{Pid, Signal};
 
 /// 收掉 `leader` 这个会话里的全部进程，返回**成功发出信号的个数**。
@@ -98,6 +103,10 @@ fn session_of(pid: i32) -> Option<u32> {
 }
 
 /// 给 `pid` 发 SIGKILL。返回是否真的发出去了。
+///
+/// 只给 Linux 的会话扫描用（非 Linux 的 unix 走 `kill_group`）—— 不写这条守卫，
+/// macOS 上它就是一个没人调用的私有函数（dead_code 警告）。
+#[cfg(target_os = "linux")]
 fn sigkill(pid: i32) -> bool {
     let Some(pid) = Pid::from_raw(pid) else {
         return false;

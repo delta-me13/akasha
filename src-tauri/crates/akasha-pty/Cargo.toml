@@ -16,10 +16,16 @@ publish = false
 portable-pty = "0.9.0"
 # AGENTS.md §3.4：错误用 thiserror 分域定义。
 thiserror = "2"
-# 收掉整个会话（`teardown` 模块）要发 SIGKILL，而 workspace 的 `unsafe_code = "forbid"`
+# 收掉整个会话（`teardown` 模块）要发 SIGKILL，而 workspace 的 `unsafe_code = "deny"`
 # 不允许我们自己写 `unsafe { libc::kill(…) }` —— 走 rustix 的**安全**封装。
 # 它本来就在依赖树里（同一个版本），所以不新增下载，只是升格为直接依赖。
 # 许可证 Apache-2.0 WITH LLVM-exception OR MIT，在 deny.toml 的 allow 列表内。
+#
+# ⚠️ **只在 unix 上**（plan 0108）：上游把 `rustix::process` 限定在
+# `#[cfg(not(windows))]`，Windows 目标上引用它直接编译不过（问题 #149）。
+# 写成目标专属依赖而不是只在代码里加守卫 —— "哪个平台需要它"因此是**manifest 上的事实**，
+# 与 `akasha-serial` 把 libudev 关进 Linux-only feature 是同一条口径（plan 0801）。
+[target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["process"] }
 
 [dev-dependencies]

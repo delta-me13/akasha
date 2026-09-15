@@ -111,8 +111,25 @@ pub struct WatchdogReport {
 ///
 /// 失败**不致命**（`setsid` 在"自己已经是进程组长"时会失败，而这里没有别的退路）：
 /// 那种情况下看门狗照样工作，只是多了一条"被 `^C` 顺手带走"的路径。
+///
+/// ⚠️ **平台对应的做法不一样，不是同一件事的两种写法**：
+///
+/// | 平台 | 脱钩靠什么 |
+/// |---|---|
+/// | unix | 本函数：`setsid` —— 另起一个会话，从此收不到打给前台进程组的那几个信号 |
+/// | Windows | **不用做事**：控制台归属在**创建那一刻**就定了，所以由 `SessionWatchdog::spawn` 带上 `CREATE_NO_WINDOW`（没有控制台，`CTRL_C_EVENT` 就送不到它手上） |
+#[cfg(unix)]
 pub fn detach() -> io::Result<()> {
     rustix::process::setsid().map_err(io::Error::from)?;
+    Ok(())
+}
+
+/// Windows：脱钩在创建那一侧完成（见上表），这里没有对应动作。
+///
+/// 保留这个函数而不是在调用点写 `cfg`：调用方（app 的 `watchdog::run_if_watchdog`）
+/// 因此不必知道平台差异，只表达"看门狗要脱钩"这一件事。
+#[cfg(not(unix))]
+pub fn detach() -> io::Result<()> {
     Ok(())
 }
 
@@ -176,12 +193,23 @@ impl SessionWatchdog {
     /// stdout / stderr 都接到空设备：看门狗不是 app 输出的一部分，也没有读者；
     /// 更不能让它**攥着一条管道**不放（那会让调用方以为"进程还没退出"）。
     pub fn spawn(exe: &Path) -> io::Result<Self> {
-        let mut child = Command::new(exe)
+        let mut command = Command::new(exe);
+        command
             .arg(FLAG)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stderr(Stdio::null());
+
+        // Windows 上的"脱钩"（见 `detach` 的平台表）：不带控制台创建，
+        // 于是打给控制台的 `CTRL_C_EVENT` 送不到看门狗手上。
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let mut child = command.spawn()?;
 
         let pid = child.id();
         let control = child
