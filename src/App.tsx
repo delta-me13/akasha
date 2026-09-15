@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import "./App.css";
 import type { HostEntry } from "./ipc/hosts";
-import type { SerialParams, SessionTarget } from "./ipc/session";
+import type { SerialParams, SessionEnd, SessionTarget } from "./ipc/session";
 import { SerialPicker } from "./serial/SerialPicker";
 import { SftpPanel } from "./sftp/SftpPanel";
 import { HostPicker } from "./ssh/HostPicker";
@@ -48,6 +48,14 @@ function App() {
   const [tunnelsOpen, setTunnelsOpen] = useState(false);
   /** SFTP 面板开着没有。同上：关掉面板不停那个会话（`docs/scope.md` §5.6）。 */
   const [sftpOpen, setSftpOpen] = useState(false);
+  /**
+   * 最近一次"会话自己结束"的那句话（plan 1103）。
+   *
+   * 为什么它必须住在壳层：说出这句话的那个面**随即就被卸载了**（标签页与会话同生命期）。
+   * 它也补上了一个一直没被显示过的字段 —— `session_ended` 从一开始就带着 `status`
+   * （"退出码 N" / 被信号终止），只是此前中间那几层把它丢掉了。
+   */
+  const [notice, setNotice] = useState<string | null>(null);
   const nextKey = useRef(1);
 
   const openLocalTab = useCallback(() => {
@@ -127,6 +135,20 @@ function App() {
     [tabs, active],
   );
 
+  /**
+   * 一个会话**自己**结束了：先把那句话挂到通知行，再关掉它的标签页。
+   *
+   * 顺序是有意的 —— 反过来的话，说出这句话的那个面已经没了，而"为什么没了"正是本条
+   * 唯一要留给用户的东西。
+   */
+  const endedTab = useCallback(
+    (tab: OpenTab, status: SessionEnd) => {
+      setNotice(status ? `「${tab.title}」已结束：${status}` : `「${tab.title}」已结束`);
+      closeTab(tab.key);
+    },
+    [closeTab],
+  );
+
   const views: TabView[] = tabs.map((tab) => ({
     key: tab.key,
     kind: tab.kind,
@@ -158,6 +180,12 @@ function App() {
       {sftpOpen && <SftpPanel onClose={() => setSftpOpen(false)} />}
       {/* 提示面板是**应用级**的：提问发生在"会话开起来之前"，不属于任何一个标签页。 */}
       <PromptPanel />
+      {/* 会话结束时的那句话（plan 1103）：它说的是**为什么**这个标签页没了，所以留在壳层。 */}
+      {notice && (
+        <p className="app-notice" role="status" data-session-notice>
+          {notice}
+        </p>
+      )}
       <div className="tab-panes">
         {tabs.map((tab) => (
           <div
@@ -169,12 +197,12 @@ function App() {
             {/* ⚠️ 所有标签页都**保持挂载**（`active` 只用来交焦点）：卸载 = 关会话，
                 见 `closeTab`。非活动的那个由 CSS 隐藏 —— 用 `visibility`，不是 `display`。
 
-                会话**自己**结束时（终端里敲了 `exit`）走的是同一条关标签页路径：
-                后端收掉它 + 发事件 → 这里 `closeTab`。 */}
+                会话**自己**结束时（终端里敲了 `exit`、串口设备被拔掉、SSH 掉线）走的是
+                同一条关标签页路径：后端收掉它 + 发事件 → `endedTab`（先记下那句话再关）。 */}
             <TerminalPane
               target={tab.target}
               active={tab.key === active}
-              onSessionEnded={() => closeTab(tab.key)}
+              onSessionEnded={(status) => endedTab(tab, status)}
             />
           </div>
         ))}

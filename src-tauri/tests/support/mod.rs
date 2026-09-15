@@ -635,15 +635,42 @@ pub async fn wait_text_contains(client: &mut VictauriClient, selector: &str, nee
 pub struct FakeSerialDevice {
     path: String,
     /// 主端的写端：用例往这里写 = "设备发出来的东西"。
-    writer: Box<dyn Write + Send>,
+    ///
+    /// `None` 有两种来源，含义相同（这台设备不再接任何东西）：**可拔插**那一台从不取它
+    /// （见 [`FakeSerialDevice::unpluggable`]），或者已经拔掉了。
+    writer: Option<Box<dyn Write + Send>>,
     /// 主端读到的东西（一条线程收进来：断言侧只读缓冲，**不阻塞在 `read` 上** —— 问题 #26）。
-    seen: Arc<Mutex<Vec<u8>>>,
-    _pair: portable_pty::PtyPair,
+    /// `None` = 这台设备**不读主端**（`unpluggable()`：那条线程持有一份主端副本，会让拔插失效）。
+    seen: Option<Arc<Mutex<Vec<u8>>>>,
+    /// 主端本身。`None` = 已经拔掉了。
+    master: Option<portable_pty::PtyPair>,
 }
 
 impl FakeSerialDevice {
-    /// 造一对 PTY。尺寸随便填：串口没有窗口尺寸这回事（`Capabilities::NONE`）。
+    /// 造一台**会搬字节**的设备（`serial_session` / `serial_ports_ui` 用）。
     pub fn new() -> Self {
+        Self::open(true)
+    }
+
+    /// 造一台**可拔插**的设备：它不读主端，于是 [`Self::unplug`] 真的拔得掉（plan 1103）。
+    ///
+    /// 两处刻意的取舍：
+    ///
+    /// * **不起主端读线程**：`try_clone_reader` 给的是一份主端副本，只要它还在，从端那一路
+    ///   就仍然有效 —— "拔掉一半"既不是任何真实形态，也让断言失去意义；
+    /// * **不取主端写端**：`portable-pty` 的写端 `Drop` 会往从端写一个换行 + `VEOF`
+    ///   （它把"关写端"当"发 EOF"，本机实测那两个字节是 `0a 04`）。拔掉设备前先吐两个字节
+    ///   给被测的那条会话，会把"设备消失"这件事连同一条假输出一起交出去。
+    ///
+    /// 于是这台设备只持有**一份**主端，`unplug()` 一关就是从端的读写当场失败（实测 `BrokenPipe`，
+    /// 33 µs）。它没有 `send` / `wait_received` 可用的字节通道 —— 本条要验的是"设备没了"，
+    /// 不是"字节到了"（那是上面那台的事）。
+    pub fn unpluggable() -> Self {
+        Self::open(false)
+    }
+
+    /// 造一对 PTY。尺寸随便填：串口没有窗口尺寸这回事（`Capabilities::NONE`）。
+    fn open(reads_master: bool) -> Self {
         let pair = portable_pty::native_pty_system()
             .openpty(portable_pty::PtySize {
                 rows: 24,
@@ -658,27 +685,32 @@ impl FakeSerialDevice {
             .expect("拿不到 PTY 从端的设备名")
             .to_string_lossy()
             .into_owned();
-        let writer = pair.master.take_writer().expect("取主端写端失败");
-        let mut reader = pair.master.try_clone_reader().expect("取主端读端失败");
-        let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
-        {
-            let seen = Arc::clone(&seen);
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 1024];
-                while let Ok(n) = reader.read(&mut buf) {
-                    if n == 0 {
-                        break;
+        let (writer, seen) = if reads_master {
+            let writer = pair.master.take_writer().expect("取主端写端失败");
+            let mut reader = pair.master.try_clone_reader().expect("取主端读端失败");
+            let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
+            {
+                let seen = Arc::clone(&seen);
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 1024];
+                    while let Ok(n) = reader.read(&mut buf) {
+                        if n == 0 {
+                            break;
+                        }
+                        seen.lock().unwrap().extend_from_slice(&buf[..n]);
                     }
-                    seen.lock().unwrap().extend_from_slice(&buf[..n]);
-                }
-            });
-        }
-        eprintln!("假串口设备：{path}（本进程持有主端）");
+                });
+            }
+            (Some(writer), Some(seen))
+        } else {
+            (None, None)
+        };
+        eprintln!("假串口设备：{path}（本进程持有主端，读主端={reads_master}）");
         Self {
             path,
             writer,
             seen,
-            _pair: pair,
+            master: Some(pair),
         }
     }
 
@@ -689,15 +721,36 @@ impl FakeSerialDevice {
 
     /// **设备 → 界面**：往主端写一串（就当作设备发出来的）。
     pub fn send(&mut self, text: &str) {
-        self.writer
-            .write_all(text.as_bytes())
-            .expect("往主端写失败");
-        self.writer.flush().expect("flush 主端失败");
+        let writer = self
+            .writer
+            .as_mut()
+            .expect("这台假设备没有写端（可拔插的那台从不取它，拔掉之后也没有）");
+        writer.write_all(text.as_bytes()).expect("往主端写失败");
+        writer.flush().expect("flush 主端失败");
     }
 
     /// 主端此刻收到的字节（`lossy`：断言的是"这一串在不在"，不是编码）。
     pub fn received(&self) -> String {
-        String::from_utf8_lossy(&self.seen.lock().unwrap()).to_string()
+        let seen = self
+            .seen
+            .as_ref()
+            .expect("这台假设备不读主端（`unpluggable()`）—— 字节断言要用 `new()` 造的那台");
+        String::from_utf8_lossy(&seen.lock().unwrap()).to_string()
+    }
+
+    /// **拔掉设备**（plan 1103）：关掉手上**唯一**那份主端 —— 从端那一路的读写从此失败。
+    ///
+    /// 只有 [`Self::unpluggable`] 那台真的拔得掉（`new()` 的读线程持有一份主端副本）。
+    /// 半拔掉的状态不是任何真实形态，所以这里直接断言，而不是做出一个"看起来拔掉了"的假象。
+    pub fn unplug(&mut self) {
+        assert!(
+            self.seen.is_none(),
+            "这台假设备带了一条主端读线程 —— 它持有主端的一份副本，拔不掉；\
+             要用 FakeSerialDevice::unpluggable() 造"
+        );
+        // 写端在这里一并丢掉：可拔插那台没有写端，走到这一行时它是 `None`。
+        self.writer = None;
+        self.master = None;
     }
 
     /// **界面 → 设备**：等主端收到某一段（有截止时间的轮询，不是 sleep 猜）。

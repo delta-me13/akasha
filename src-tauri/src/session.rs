@@ -206,7 +206,12 @@ impl ShutdownReport {
 pub struct SessionEnded {
     /// 哪个会话结束了。前端按它找要关掉的那个标签页。
     pub handle: SessionHandle,
-    /// 结局的可读描述（`None` = 这个载体不报结局，或收尾时出了岔子 —— 见 `retire`）。
+    /// 这次结束的**可读描述**：载体有结局就报结局（"退出码 0" / "被信号 … 终止"），
+    /// 没有结局的载体（串口）报的是它输出流断掉的原因（"串口设备已断开：…"）。
+    /// `None` = 既没有结局也没有原因（收尾时出了岔子 —— 见 `retire`）。
+    ///
+    /// 两种都进同一个字段是刻意的：界面要说的是"这条会话怎么结束的"，那是**一句话**，
+    /// 分成两个字段只会让调用方去猜该显示哪一个。
     pub status: Option<String>,
 }
 
@@ -225,6 +230,12 @@ pub struct Retired {
     pub id: SessionId,
     /// 载体的结局（`None` = 载体不报结局，或收尸失败 —— 后者只记日志）。
     pub status: Option<ExitStatus>,
+    /// 载体自己报的**输出流失败原因**（`None` = 正常结束，或这个载体不记录）。
+    ///
+    /// 它和 `status` 各答一半：`status` 说"结局是什么"（退出码 / 信号），这一条说
+    /// "流为什么不是正常结束"。串口两样都没有（没有退出码），于是设备被拔掉时**只有**
+    /// 这一条能让那条会话结束得说得清（plan 1103）。
+    pub stream_error: Option<String>,
 }
 
 impl Sessions {
@@ -436,6 +447,9 @@ impl Sessions {
                 None
             }
         };
+        // 原因在**收尾之后**读：收尾立起载体的停止标志，此后读端给的是 EOF（不是错误），
+        // 所以这一格只可能装着"它自己断掉"那一类（`Transport::stream_error`）。
+        let stream_error = live.transport.stream_error();
 
         if let Err(err) = inner.registry.close(live.id) {
             tracing::warn!(handle, session = live.id.get(), %err, "session unregister failed");
@@ -449,6 +463,7 @@ impl Sessions {
         Ok(Some(Retired {
             id: live.id,
             status,
+            stream_error,
         }))
     }
 
@@ -938,7 +953,9 @@ impl Sessions {
                     report.shut_down += 1;
                     // 收干净了才撤销登记：失败的那些留着，让看门狗在 EOF 时再试一次。
                     self.forget(live.leader);
-                    log_ended("session reclaimed", handle, live.id, &status);
+                    // 不给原因：这条是"退出时全部回收"，会话此刻还活着，没有"它为什么断掉"
+                    // 这回事（原因只在会话**自己**结束那条路上产生，见 `retire`）。
+                    log_ended("session reclaimed", handle, live.id, &status, None);
                 }
                 Err(err) => {
                     tracing::error!(handle, session = live.id.get(), %err, "session reclaim failed");
@@ -1150,9 +1167,20 @@ fn retire_and_report(sessions: &Sessions, app: &AppHandle, handle: SessionHandle
         }
     };
 
-    log_ended("session retired", handle, retired.id, &retired.status);
+    log_ended(
+        "session retired",
+        handle,
+        retired.id,
+        &retired.status,
+        retired.stream_error.as_deref(),
+    );
 
-    let status = retired.status.map(|status| status.to_string());
+    // 结局优先、原因次之：有结局的载体（PTY / SSH）用结局说话，没有的那个（串口）
+    // 说的是它断掉的原因。两者同时出现时原因只是重复（它是同一次结束的另一面）。
+    let status = retired
+        .status
+        .map(|status| status.to_string())
+        .or(retired.stream_error);
     let event = SessionEnded { handle, status };
     if let Err(err) = app.emit(SessionEnded::NAME, event) {
         // 前端可能已经走了（窗口销毁 / webview 没了）。后端该收的已经收完了，
@@ -1166,11 +1194,16 @@ fn retire_and_report(sessions: &Sessions, app: &AppHandle, handle: SessionHandle
 /// 结局分两支（正常退出码 / 被信号终止），字段也跟着分两支 —— [`ExitStatus`] 的
 /// `Display` 是给用户看的中文、`Debug` 会带上 `Some(ExitStatus::Code(..))` 包装，
 /// 两个都不适合当日志字段。形态规则见 `docs/logging.md`。
+///
+/// 没有结局的载体多一支：那时能进字段的只有它报的**原因**（串口没有退出码）。
+/// 用的是 `%err` —— `docs/logging.md` §2 里"错误本体，用 `%err`（Display）"那一栏；
+/// 中文出现在**字段值**里是允许的（§6 的边界：那是数据，不是我们的话术）。
 fn log_ended(
     event: &'static str,
     handle: SessionHandle,
     session: SessionId,
     status: &Option<ExitStatus>,
+    stream_error: Option<&str>,
 ) {
     match status {
         Some(ExitStatus::Code(code)) => {
@@ -1184,7 +1217,12 @@ fn log_ended(
         Some(ExitStatus::Signal(signal)) => {
             tracing::info!(handle, session = session.get(), signal = %signal, "{event}");
         }
-        None => tracing::info!(handle, session = session.get(), "{event}"),
+        None => match stream_error {
+            Some(reason) => {
+                tracing::info!(handle, session = session.get(), err = %reason, "{event}");
+            }
+            None => tracing::info!(handle, session = session.get(), "{event}"),
+        },
     }
 }
 
@@ -1360,6 +1398,8 @@ mod tests {
         closed: bool,
         /// 本地会话首进程 pid（看门狗兜底凭据）。`None` = 这个假载体没有本地进程。
         leader: Option<u32>,
+        /// 载体自报的输出流失败原因（plan 1103）。`None` = 正常结束。
+        stream_error: Option<&'static str>,
     }
 
     impl Recording {
@@ -1370,12 +1410,19 @@ mod tests {
                 fail,
                 closed: false,
                 leader: None,
+                stream_error: None,
             }
         }
 
         /// 让这个假载体看起来像"有一个本地会话"。
         fn leader(mut self, leader: u32) -> Self {
             self.leader = Some(leader);
+            self
+        }
+
+        /// 让这个假载体看起来像"输出流被一个故障打断了"（串口那条路的形态）。
+        fn reporting(mut self, reason: &'static str) -> Self {
+            self.stream_error = Some(reason);
             self
         }
     }
@@ -1395,6 +1442,10 @@ mod tests {
         fn output_stream(&mut self) -> Option<Box<dyn std::io::Read + Send>> {
             // 立刻 EOF 的读端：合批线程马上收工，测试不必再管它。
             Some(Box::new(std::io::empty()))
+        }
+
+        fn stream_error(&self) -> Option<String> {
+            self.stream_error.map(str::to_string)
         }
 
         fn shutdown(&mut self) -> Result<Option<ExitStatus>, TransportError> {
@@ -1730,6 +1781,41 @@ mod tests {
             .register(Recording::new(&log, name, false), BatchPolicy::DEFAULT)
             .expect("登记失败")
             .0
+    }
+
+    #[test]
+    fn a_carrier_reason_is_carried_out_of_retire() {
+        // plan 1103：串口没有退出码，设备被拔掉时它唯一能说的就是"输出流为什么结束"。
+        // 这条用例钉住"那句话确实出得了载体"；它怎么进界面由 E2E 验。
+        let sessions = Sessions::default();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (handle, _batches) = sessions
+            .register(
+                Recording::new(&log, "gone", false).reporting("串口设备已断开：/dev/ttyUSB0"),
+                BatchPolicy::DEFAULT,
+            )
+            .expect("登记失败");
+
+        let retired = sessions
+            .retire(handle)
+            .expect("retire 失败")
+            .expect("仍然要摘牌");
+        assert_eq!(
+            retired.stream_error.as_deref(),
+            Some("串口设备已断开：/dev/ttyUSB0"),
+            "载体报的原因必须原样交出来（会话层不拼它）"
+        );
+
+        // 反例：不报原因的载体（PTY / SSH）不该凭空多出一句。两例成对 —— 只断言前者
+        // 分不清"字段在工作"与"它永远是同一个值"。
+        let (handle, _batches) = sessions
+            .register(Recording::new(&log, "quiet", false), BatchPolicy::DEFAULT)
+            .expect("登记失败");
+        let retired = sessions
+            .retire(handle)
+            .expect("retire 失败")
+            .expect("仍然要摘牌");
+        assert_eq!(retired.stream_error, None);
     }
 
     #[test]

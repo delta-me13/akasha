@@ -1,8 +1,8 @@
 //! 串口载体：打开、写、读、收尾。
 
 use std::io::{self, Read, Write};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use akasha_pty::{Capabilities, ExitStatus, Transport, TransportError};
@@ -28,6 +28,8 @@ pub struct SerialTransport {
     reader: Option<SerialReader<Box<dyn SerialPort>>>,
     /// 停止标志，与读端共享。
     stop: Arc<AtomicBool>,
+    /// 读端那个错误的**文本快照**，与读端共享（见 [`SerialReader::failure`]）。
+    failure: Arc<Mutex<Option<String>>>,
     /// 是否已经收尾。`shutdown` 幂等，且收尾之后的写必须被拒。
     closed: bool,
 }
@@ -69,13 +71,18 @@ impl SerialTransport {
             source,
         })?;
         let stop = Arc::new(AtomicBool::new(false));
+        let failure = Arc::new(Mutex::new(None));
         Ok(Self {
             port,
             reader: Some(SerialReader {
                 source: read_half,
                 stop: Arc::clone(&stop),
+                // 路径交给读端：报错里要说清是**哪一台设备**（同 `SerialError::Open` 的理由）。
+                path: settings.path.clone(),
+                failure: Arc::clone(&failure),
             }),
             stop,
+            failure,
             closed: false,
         })
     }
@@ -100,6 +107,18 @@ impl Transport for SerialTransport {
         self.reader
             .take()
             .map(|reader| Box::new(reader) as Box<dyn Read + Send>)
+    }
+
+    /// 读端那个错误的那句话（plan 1103）。
+    ///
+    /// 与 [`Transport::shutdown`] 的分工见 trait 的文档：串口没有退出码，所以设备被拔掉时
+    /// 会话层唯一能说的就是这一句。收尾**之后**调用得到的是同一句话（它只增不减）——
+    /// 收尾立起停止标志，读端此后给的是 EOF，不会再往这一格里写。
+    fn stream_error(&self) -> Option<String> {
+        self.failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     fn shutdown(&mut self) -> Result<Option<ExitStatus>, TransportError> {
@@ -127,6 +146,14 @@ impl Transport for SerialTransport {
 struct SerialReader<S> {
     source: S,
     stop: Arc<AtomicBool>,
+    /// 设备路径（报错里要说清是**哪一台**设备）。
+    path: String,
+    /// 遇到**真实**读错误时把 [`SerialError::DeviceGone`] 那句话写在这里，与载体共享。
+    ///
+    /// 为什么记在这里而不是交给上游：`spawn_batcher` 的读循环对错误与 EOF 一视同仁
+    /// （它同时服务 PTY 与 SSH，那条判定不能为串口改），所以"为什么结束"出了这个结构体
+    /// 就再也拿不回来了。快照成 `String` 是因为 `io::Error` 不能克隆，而它还要原样交回去。
+    failure: Arc<Mutex<Option<String>>>,
 }
 
 impl<S: Read> Read for SerialReader<S> {
@@ -142,7 +169,19 @@ impl<S: Read> Read for SerialReader<S> {
                 Ok(0) => continue,
                 Ok(n) => return Ok(n),
                 Err(err) if is_idle(&err) => continue,
-                Err(err) => return Err(err),
+                Err(err) => {
+                    // 记下来再交回去：这里是唯一见到它的地方（见 `failure` 字段）。
+                    let said = SerialError::DeviceGone {
+                        path: self.path.clone(),
+                        description: err.to_string(),
+                    }
+                    .to_string();
+                    *self
+                        .failure
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(said);
+                    return Err(err);
+                }
             }
         }
     }
@@ -240,11 +279,21 @@ mod tests {
         }
     }
 
+    /// 脚本化读端用的设备路径（断言"那句话说得清是哪台设备"）。
+    const PATH: &str = "/dev/akasha-serial-probe";
+
     fn reader(steps: Vec<io::Result<Vec<u8>>>) -> SerialReader<Scripted> {
         SerialReader {
             source: Scripted::new(steps),
             stop: Arc::new(AtomicBool::new(false)),
+            path: PATH.to_string(),
+            failure: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// 读端这一刻记下的那句话（生产路径上由 [`SerialTransport::stream_error`] 读）。
+    fn recorded<S>(reader: &SerialReader<S>) -> Option<String> {
+        reader.failure.lock().expect("失败格锁中毒").clone()
     }
 
     #[test]
@@ -261,6 +310,9 @@ mod tests {
         let mut buf = [0u8; 4];
         assert_eq!(reader.read(&mut buf).unwrap(), 4);
         assert_eq!(&buf, b"ping");
+        // 反例：安静不是故障 —— 原因那一格必须还是空的，否则每次"设备先沉默一会儿"
+        // 都会在会话结束时冒出一句不该有的原因。
+        assert!(recorded(&reader).is_none());
     }
 
     #[test]
@@ -294,6 +346,10 @@ mod tests {
             reader.read(&mut buf).unwrap_err().kind(),
             io::ErrorKind::BrokenPipe
         );
+        // 而且**要说得出是哪台设备**：会话说"结束了"，用户要知道的是哪一条路断了。
+        let said = recorded(&reader).expect("真实错误必须被记下来");
+        assert!(said.contains(PATH), "原因里没有设备路径：{said}");
+        assert!(said.contains("已断开"), "原因里没说发生了什么：{said}");
     }
 
     #[test]
@@ -303,9 +359,64 @@ mod tests {
         let mut reader = SerialReader {
             source: NeverRead,
             stop: Arc::new(AtomicBool::new(true)),
+            path: PATH.to_string(),
+            failure: Arc::new(Mutex::new(None)),
         };
         let mut buf = [0u8; 8];
         assert_eq!(reader.read(&mut buf).unwrap(), 0);
+        assert!(
+            recorded(&reader).is_none(),
+            "我们自己收尾不是设备故障：那条 EOF 不该记成原因"
+        );
+    }
+
+    /// 拔掉设备（关掉 PTY 主端）时的完整形态：读端报错 + 那句话说得清是哪台设备。
+    ///
+    /// 它同时是 plan 1103「前置检查」留下的证据：探针实测"从端那一路的 `read` 立刻返回
+    /// `BrokenPipe`，**不是** `Ok(0)`" —— 后者会被 [`SerialReader`] 当成"设备安静"继续等，
+    /// 于是这条会话永远不结束。上游为什么是 `Err`：`serialport` 的 POSIX 读端先 `poll`，
+    /// 见到 `POLLHUP` / `POLLNVAL` 报 `BrokenPipe`，否则报 `Other(EIO)` —— 真设备被拔掉
+    /// （EIO 那一支）与这里走的是同一个判定。
+    #[cfg(unix)]
+    #[test]
+    fn an_unplugged_device_says_why_the_stream_ended() {
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("造一对 PTY 失败");
+        let path = pair
+            .master
+            .tty_name()
+            .expect("拿不到 PTY 从端的设备名")
+            .to_string_lossy()
+            .into_owned();
+        let mut transport = SerialTransport::open(&SerialSettings::new(path.clone(), 115200))
+            .expect("把 PTY 从端当串口打开失败");
+        let mut output = transport.output_stream().expect("取输出流失败");
+        assert!(transport.stream_error().is_none(), "设备还在时不该有原因");
+
+        // 关掉主端 = 拔掉设备。
+        drop(pair);
+        let mut buf = [0u8; 8];
+        assert!(
+            output.read(&mut buf).is_err(),
+            "拔掉设备必须是 Err：Ok(0) 会被读端当成\"设备安静\"，这条会话就永远不结束"
+        );
+
+        let said = transport
+            .stream_error()
+            .expect("读端失败之后必须说得出原因");
+        // 两样都要有：**哪台设备**（用户要去看的那个东西）与**发生了什么**。
+        assert!(said.contains(&path), "原因里没有设备路径：{said}");
+        assert!(said.contains("已断开"), "原因里没说发生了什么：{said}");
+        // 问几次都是同一句话：收尾之后读端给的是 EOF，不会把这一格改掉。
+        assert_eq!(transport.stream_error().as_deref(), Some(said.as_str()));
+        assert_eq!(transport.shutdown().expect("收尾失败"), None);
+        assert_eq!(transport.stream_error().as_deref(), Some(said.as_str()));
     }
 
     #[test]

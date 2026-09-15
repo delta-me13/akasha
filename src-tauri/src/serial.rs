@@ -298,6 +298,12 @@ impl From<SerialError> for SerialIpcError {
             SerialError::Enumerate { source } => Self::Enumerate {
                 message: source.to_string(),
             },
+            // 设备消失**到不了这里**：它发生在会话已经开起来之后，由读端记下来、经
+            // `session_ended` 的文案交给界面（plan 1103），没有任何命令返回它。
+            // 留这一支是因为这是一张共用的表：漏了它就是"契约多一档、这里少一个分支"。
+            SerialError::DeviceGone { path, description } => Self::Internal {
+                message: format!("{path}：{description}"),
+            },
         }
     }
 }

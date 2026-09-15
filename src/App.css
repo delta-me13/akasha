@@ -179,6 +179,22 @@ body {
   font-size: 13px;
 }
 
+/*
+ * 应用级通知行（plan 1103）：一句"某条会话为什么结束了"。
+ *
+ * 它存在的理由与 `.terminal-error` 不同：那个说"这个面开不起来"（面还在），
+ * 这个说的是"那个面已经没了" —— 所以它只能挂在壳层上。
+ */
+.app-notice {
+  margin: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid #33405a;
+  background: #1b2230;
+  color: #cbd5e1;
+  font-size: 12px;
+  user-select: none;
+}
+
 .terminal-status {
   display: flex;
   justify-content: space-between;

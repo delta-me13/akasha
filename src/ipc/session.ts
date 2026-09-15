@@ -82,19 +82,31 @@ export type SessionTarget =
 export type { SerialParams };
 
 /**
+ * 一条会话结束时的**可读描述**（= `session_ended` 的 `status`，后端那两个来源见 `Retired`）。
+ *
+ * 两种都可能：有退出结局的载体给结局（"退出码 0"），没有的给原因（"串口设备已断开：…"）；
+ * `null` = 这个载体什么都没说（收尾时出了岔子）。界面上要说的那句话就是它。
+ */
+export type SessionEnd = string | null;
+
+/**
  * 把"后端已经开好了"这件事包成一个可控的会话。
  *
  * 本地终端与 SSH 共用它：句柄、`session_ended` 的订阅、结束后一律不再发命令 —— 这三件事
  * 抄第二份的下场是两条路对"会话已经走了"有不同判断（一条静默、一条报错）。
+ *
+ * `onEnded` 收的是**结束的可读描述**（`session_ended` 的 `status`）：有退出结局的载体给结局
+ * （"退出码 0"），没有的给原因（串口被拔掉："串口设备已断开：…"）。壳层用它说清"为什么
+ * 没了"——标签页随后就关了，那句话只能留在壳层（见 `App.tsx` 的 `[data-session-notice]`）。
  */
-export function adoptSession(handle: number, onEnded: () => void): TerminalSession {
+export function adoptSession(handle: number, onEnded: (status: SessionEnd) => void): TerminalSession {
   // 会话结束之后**一律不再发命令**：后端已经把它摘牌收掉了，再发只会收到 `NotFound` ——
   // 那不是错误，是"它已经走了"。所以这里记住这件事，让 write / resize / close 变成空操作。
   let ended = false;
-  const unsubscribe = subscribeSessionEnded(handle, () => {
+  const unsubscribe = subscribeSessionEnded(handle, (status) => {
     if (ended) return;
     ended = true;
-    onEnded();
+    onEnded(status);
   });
 
   return {
@@ -128,11 +140,16 @@ export function adoptSession(handle: number, onEnded: () => void): TerminalSessi
 // 只把回调注销掉（`cleanupCallback`），**不会**通知 `onmessage` —— 前端光看字节通道
 // 是看不出"流结束了"的。
 
-/** 已经结束、但还没有人订阅的会话。见 [`subscribeSessionEnded`] 里的窄窗口说明。 */
-const endedBeforeSubscribe = new Set<number>();
+/**
+ * 已经结束、但还没有人订阅的会话 —— 存的是它那句话。见 [`subscribeSessionEnded`] 里的窄窗口说明。
+ *
+ * ⚠️ 这里存的必须是 `status` 本身而**不是**"结束过"这个事实：晚一步订阅的那个人拿到的
+ * 是同一句话，否则"开起来就立刻结束"那条路上原因会随订阅时机时有时无。
+ */
+const endedBeforeSubscribe = new Map<number, SessionEnd>();
 
-/** `handle → 关心它结束的回调`。 */
-const endedHandlers = new Map<number, Set<() => void>>();
+/** `handle → 关心它结束的回调`（回调收的是 `session_ended` 的那句话）。 */
+const endedHandlers = new Map<number, Set<(status: SessionEnd) => void>>();
 
 let listenerStarted = false;
 
@@ -146,15 +163,15 @@ function ensureListening(): void {
   if (listenerStarted) return;
   listenerStarted = true;
   void events.sessionEnded.listen((event) => {
-    const { handle } = event.payload;
+    const { handle, status } = event.payload;
     const handlers = endedHandlers.get(handle);
     if (!handlers || handlers.size === 0) {
       // 窄窗口：会话一开起来就立刻结束（shell 起不来就会这样），事件可能**早于**订阅到达。
       // 先记下来，订阅时补发 —— 否则那个标签页会留在界面上，里面是一个死终端。
-      endedBeforeSubscribe.add(handle);
+      endedBeforeSubscribe.set(handle, status);
       return;
     }
-    for (const handler of [...handlers]) handler();
+    for (const handler of [...handlers]) handler(status);
   });
 }
 
@@ -163,9 +180,12 @@ function ensureListening(): void {
  *
  * 事件若在订阅**之前**就到了（见 [`ensureListening`]），这里立刻回调一次。
  */
-function subscribeSessionEnded(handle: number, handler: () => void): () => void {
-  if (endedBeforeSubscribe.delete(handle)) {
-    handler();
+function subscribeSessionEnded(handle: number, handler: (status: SessionEnd) => void): () => void {
+  if (endedBeforeSubscribe.has(handle)) {
+    // 补发时把它取走：这句话只该送到第一个订阅者手里（同一条会话不会结束两次）。
+    const status = endedBeforeSubscribe.get(handle) ?? null;
+    endedBeforeSubscribe.delete(handle);
+    handler(status);
     return () => {};
   }
   let handlers = endedHandlers.get(handle);
@@ -190,7 +210,7 @@ function subscribeSessionEnded(handle: number, handler: () => void): () => void 
 export async function openTerminalSession(
   onBatch: (bytes: Uint8Array) => void,
   /** 这个会话**自己**结束了（敲 `exit` / shell 崩了）—— 壳层据此关掉它的标签页。 */
-  onEnded: () => void,
+  onEnded: (status: SessionEnd) => void,
 ): Promise<TerminalSession> {
   // 频道收的是 **ArrayBuffer**：后端发的是 `InvokeResponseBody::Raw`。
   // 若哪天有人把它改成 `Channel<Vec<u8>>`，这里收到的会变成 number[] ——
@@ -256,7 +276,7 @@ export class SshInvokeError extends Error {
 export async function openSshTerminalSession(
   hostId: number,
   onBatch: (bytes: Uint8Array) => void,
-  onEnded: () => void,
+  onEnded: (status: SessionEnd) => void,
 ): Promise<TerminalSession> {
   const channel = new Channel<ArrayBuffer>();
   channel.onmessage = (payload) => onBatch(new Uint8Array(payload));
@@ -314,7 +334,7 @@ export class SerialInvokeError extends Error {
 export async function openSerialTerminalSession(
   params: SerialParams,
   onBatch: (bytes: Uint8Array) => void,
-  onEnded: () => void,
+  onEnded: (status: SessionEnd) => void,
 ): Promise<TerminalSession> {
   const channel = new Channel<ArrayBuffer>();
   channel.onmessage = (payload) => onBatch(new Uint8Array(payload));

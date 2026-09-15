@@ -8,6 +8,7 @@ import {
   openSerialTerminalSession,
   openSshTerminalSession,
   openTerminalSession,
+  type SessionEnd,
   type SessionTarget,
   type TerminalSession,
 } from "../ipc/session";
@@ -26,9 +27,12 @@ export interface TerminalHandlers {
   /**
    * 会话**自己**结束了（终端里敲了 `exit` / shell 崩了）：壳层据此关掉这个标签页。
    *
+   * 参数是那一句**可读描述**（"退出码 0" / "串口设备已断开：…"）：标签页随之就关了，
+   * 所以这句话要交给壳层去说（`App.tsx` 的通知行），不能留在正在被卸载的这个面里。
+   *
    * ⚠️ 它**不是**"用户关了标签页"那条路（0305）—— 那条路走的是下面的清理函数。
    */
-  onEnded(): void;
+  onEnded(status: SessionEnd): void;
 }
 
 /**
@@ -109,8 +113,8 @@ export function attachTerminal(
   handlers.onStatus("connecting");
   // 会话自己结束 → 交回壳层（关标签页）。`disposed` 之后不再回调：那时这个面已经没人要了，
   // 而"关标签页"会由清理函数负责。
-  const onEnded = () => {
-    if (!disposed) handlers.onEnded();
+  const onEnded = (status: SessionEnd) => {
+    if (!disposed) handlers.onEnded(status);
   };
 
   /**

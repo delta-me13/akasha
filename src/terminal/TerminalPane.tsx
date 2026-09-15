@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { SessionTarget } from "../ipc/session";
+import type { SessionEnd, SessionTarget } from "../ipc/session";
 import { attachTerminal, type TerminalStatus } from "./attach";
 import { activateProbe, type RendererKind } from "./surface";
 
@@ -27,8 +27,9 @@ interface TerminalPaneProps {
    * 这个面的会话**自己**结束了（终端里敲了 `exit` / shell 崩了）。
    *
    * 壳层收到就关掉这个标签页 —— 标签页与会话同生命期（`docs/scope.md` §5.6）。
+   * 参数是结束的那句可读描述（见 `SessionEnd`）：它只能由壳层显示，这个面随后就被卸下了。
    */
-  onSessionEnded(): void;
+  onSessionEnded(status: SessionEnd): void;
 }
 
 /**
@@ -58,7 +59,7 @@ export function TerminalPane({ target, active, onSessionEnded }: TerminalPanePro
     return attachTerminal(host, target, {
       onStatus: (kind, detail) => setStatus({ kind, detail }),
       onRenderer: setRenderer,
-      onEnded: () => endedRef.current(),
+      onEnded: (status) => endedRef.current(status),
     });
   }, []);
 

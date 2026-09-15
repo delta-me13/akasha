@@ -164,6 +164,26 @@ pub trait Transport: Send {
         Ok(None)
     }
 
+    /// 输出流**被载体自己的故障打断**时的可读原因（`None` = 正常结束，或这个载体不记录）。
+    ///
+    /// 它补的是 [`Self::shutdown`] 答不了的那一半：那里报的是"结局"（退出码 / 信号），
+    /// 而没有结局可报的载体（serial）断掉时只能答 `Ok(None)` —— 于是"设备被拔掉"与
+    /// "用户敲了 exit"在会话层长得一模一样。这一条把前者单独说出来。
+    ///
+    /// 三条边界：
+    ///
+    /// * **只在故障时给东西**：正常结束（EOF / 自己 `shutdown`）返回 `None`，
+    ///   否则每条会话结束都要多一句"原因"；
+    /// * **返回渲染好的句子**：载体自己知道该说什么（是哪个设备、哪个方向），会话层不替它拼。
+    ///   这也是它不返回 `io::Error` 的理由 —— 那个错误到不了用户跟前，能到的只有一句话；
+    /// * **默认 `None`**：有 `exit_status` 的载体用结局说话，内存载体没有可断的地方。
+    ///
+    /// 谁读它：会话层在 [`Self::shutdown`] **之后**读（`Sessions::retire`），
+    /// 于是它和结局一起进 `SessionEnded` —— 界面说的那一句与日志里的那一行是同一句话。
+    fn stream_error(&self) -> Option<String> {
+        None
+    }
+
     /// 本载体背后**本地进程**的会话首进程 pid（没有就是 `None`）。
     ///
     /// 它存在的理由只有一条：`tauri dev` 的重编译重启是 SIGKILL，进程里没有任何代码
@@ -203,6 +223,19 @@ mod tests {
         assert_ne!(
             busy.to_string(),
             TransportError::Unsupported("write").to_string()
+        );
+    }
+
+    #[test]
+    fn a_stream_error_is_opt_in() {
+        // 默认 `None` 是刻意的：没有故障、或这个载体不记录，都不该凭空多出一句"原因"。
+        // 会话层靠这个默认值把"有结局的载体"与"只有原因的载体"分开，所以它必须在类型层钉住。
+        assert_eq!(
+            Transport::stream_error(&crate::testing::FakeTransport::new(
+                Capabilities::NONE,
+                TerminalSize::DEFAULT,
+            )),
+            None
         );
     }
 
