@@ -34,9 +34,11 @@ env:
   RUSTC_WRAPPER: ""
   # 系统依赖列表的唯一来源。Tauri 官方 Debian/Ubuntu 列表：https://v2.tauri.app/start/prerequisites/
   # 名称须为 libayatana-appindicator3-dev；旧名 libappindicator3-dev 在 ubuntu-latest 上不存在（问题 #10）。
+  # libudev-dev 不在那份官方列表里：它是 serialport（经 libudev-sys）的需求，缺了它会在 clippy
+  # 阶段停在 libudev-sys 的构建脚本上（问题 #155）。
   APT_DEPS: >-
     libwebkit2gtk-4.1-dev build-essential curl wget file
-    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libudev-dev
 
 jobs:
   # 完整门禁：执行的即本地那一条 just ready，不在本文件另写 cargo 命令（AGENTS.md §12）。
@@ -59,7 +61,11 @@ jobs:
           components: clippy, rustfmt
 
       # 缓存 ~/.cargo 与 target；缓存键由该 action 自动包含操作系统与 rustc 版本。
+      # workspaces 的默认值是仓库根（`. -> target`），而本仓库的 workspace 在 src-tauri/
+      # （ADR-0004）—— 不指认它，该 action 会在根目录执行 cargo metadata 并失败（问题 #157）。
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        with:
+          workspaces: src-tauri
 
       # 预编译产物 + SHA256 / attestation 校验；just 的版本与 mise.toml 对齐。
       - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
@@ -86,11 +92,15 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      - uses: ./.github/actions/windows-perl
+
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-03-27)
         with:
           toolchain: stable
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        with:
+          workspaces: src-tauri
 
       - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
         with:
@@ -130,6 +140,8 @@ jobs:
           toolchain: stable
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        with:
+          workspaces: src-tauri
 
       - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
         with:
@@ -150,6 +162,8 @@ jobs:
       # 后端由该配方自行构建。
       - name: 前端依赖
         run: pnpm install --frozen-lockfile
+
+      - uses: ./.github/actions/windows-perl
 
       - name: E2E（Linux：xvfb 提供 X11）
         if: runner.os == 'Linux'

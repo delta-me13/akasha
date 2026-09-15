@@ -1,0 +1,31 @@
+# openssl-src 在 Windows 上调用 perl 执行 OpenSSL 的 Configure。镜像上 PATH 里排在前面的那个是
+# Git 自带的 msys perl（模块路径是 /usr/share/perl5/core_perl/...），它缺 Locale::Maketext::Simple
+# 等模块，构建因此失败；Strawberry Perl 随镜像安装（chocolatey 的 strawberryperl），只是排在后面。
+# 把这个变量指过去即可 —— openssl-src 优先读 OPENSSL_SRC_PERL（问题 #156）。
+#
+# 非 Windows 平台不做任何事：那里的 perl 可用，指认反而会指错。
+#
+# 选中之后先探一次模块再写进 GITHUB_ENV：失败因此停在这一步，而不是推迟到 cargo 的构建脚本里
+# —— 那个报错读起来像 OpenSSL 坏了，与真正的原因不是同一种。
+
+name: Windows Perl for openssl-src
+description: 在 Windows 上把 openssl-src 用的 Perl 指向镜像自带的 Strawberry Perl
+
+runs:
+  using: composite
+  steps:
+    - if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $candidates = @(
+          'C:\Strawberry\perl\bin\perl.exe'
+          Get-Command perl.exe -All -ErrorAction SilentlyContinue |
+            Where-Object { $_.Source -notlike '*\Git\*' } |
+            Select-Object -ExpandProperty Source
+        )
+        $perl = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+        if (-not $perl) { throw 'Strawberry Perl 不在预期位置（C:\Strawberry\perl\bin\perl.exe）' }
+        & $perl -MLocale::Maketext::Simple -MIPC::Cmd -e 'exit 0'
+        if ($LASTEXITCODE -ne 0) { throw "Perl 缺 OpenSSL Configure 需要的模块: $perl" }
+        "OPENSSL_SRC_PERL=$perl" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        Write-Output "OPENSSL_SRC_PERL=$perl"
