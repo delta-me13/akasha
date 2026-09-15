@@ -360,14 +360,22 @@ impl Sessions {
     }
 
     /// 调整窗口尺寸（"尽力"语义 —— 载体可以拒绝，见 `akasha_pty` 的能力位）。
+    ///
+    /// ⚠️ **没有该能力的载体上这是空操作，不是失败**（plan 1101）：`Transport::resize` 的契约
+    /// 明确要求调用方**先看能力位**，而这里就是那个调用方。反过来的写法（把 `Unsupported`
+    /// 原样报上去）在串口上会立刻露馅：那类载体没有窗口尺寸，而前端每次 `fit()` 都发一次
+    /// `resize_session` —— 于是串口标签页**一打开就是红的**。判断只从载体自己来
+    /// （`capabilities()`），所以"谁能 resize"仍然只有一个来源。
     pub fn resize(&self, handle: SessionHandle, size: TerminalSize) -> Result<(), IpcError> {
         let mut inner = self.guard_for(handle)?;
-        inner
+        let live = inner
             .live
             .get_mut(&handle)
-            .ok_or(IpcError::NotFound { handle })?
-            .transport
-            .resize(size)?;
+            .ok_or(IpcError::NotFound { handle })?;
+        if !live.transport.capabilities().resize {
+            return Ok(());
+        }
+        live.transport.resize(size)?;
         Ok(())
     }
 

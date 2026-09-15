@@ -4,6 +4,7 @@ pub mod config;
 pub mod lifecycle;
 pub mod pools;
 pub mod prompt;
+pub mod serial;
 pub mod session;
 pub mod sftp;
 pub mod single_instance;

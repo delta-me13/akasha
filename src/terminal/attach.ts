@@ -5,6 +5,7 @@
 // 用闭包持有会话与渲染面，`TerminalPane` 只负责挂载/卸载它。
 
 import {
+  openSerialTerminalSession,
   openSshTerminalSession,
   openTerminalSession,
   type SessionTarget,
@@ -115,20 +116,34 @@ export function attachTerminal(
   /**
    * 真的去开那个会话。
    *
-   * ⚠️ **SSH 这条路要推迟一个微任务**再发出去，本地那条不用 —— 差别在"开的过程中要不要问人"：
+   * ⚠️ **只有本地终端同步发出去，SSH 与串口都推迟一个微任务** —— 差别在"开一次会不会留下
+   * 痕迹"：
    *
    * React 的 StrictMode（dev 构建）把 effect 走两遍（挂载 → 清理 → 挂载，**同一次 commit
-   * 里同步完成**）。本地终端多起一个 shell 再立刻收掉是无害的，而 SSH 会话在连的过程中会
-   * **弹出提示**（凭据 / 没见过的主机密钥）—— 被丢掉的那一次如果已经发出去了，它的问题会与
-   * 真正那次**叠在同一个面板里**，而用户只会答其中一个：另一个一直等（最长
-   * `PROMPT_TIMEOUT`），于是"点了 SSH 却一直连不上"。
+   * 里同步完成**）。本地终端多起一个 shell 再立刻收掉是无害的（它是这条路上唯一可以随便
+   * 重复的东西），而另外两条都会**在设备/对端上留下痕迹**：
+   *
+   *   * **SSH**：连接过程中会**弹出提示**（凭据 / 没见过的主机密钥）—— 被丢掉的那一次如果
+   *     已经发出去了，它的问题会与真正那次**叠在同一个面板里**，而用户只会答其中一个：
+   *     另一个一直等（最长 `PROMPT_TIMEOUT`），于是"点了 SSH 却一直连不上"；
+   *   * **串口**：设备是**独占**开的（`serialport` 默认打 `TIOCEXCL` + 独占 `flock`，
+   *     见 plan 1101 的实施记录）。第一遍那次如果真把设备打开了，第二遍就会**当场收到
+   *     `Device or resource busy`** —— 实测正是这个现象：界面上是一个红的串口标签页。
+   *     对真实设备而言独占是对的（两个进程抢一个串口本来就不该成功），所以这里不做
+   *     "关掉独占"，而是**不让那次被丢弃的挂载发出命令**。
    *
    * 同一次 commit 里排的微任务在清理**之后**才跑，所以第一遍那次根本没发出去。
    */
-  const start = () =>
-    target.kind === "ssh"
-      ? openSshTerminalSession(target.hostId, (bytes) => surface.write(bytes), onEnded)
-      : openTerminalSession((bytes) => surface.write(bytes), onEnded);
+  const start = () => {
+    switch (target.kind) {
+      case "ssh":
+        return openSshTerminalSession(target.hostId, (bytes) => surface.write(bytes), onEnded);
+      case "serial":
+        return openSerialTerminalSession(target.params, (bytes) => surface.write(bytes), onEnded);
+      case "local":
+        return openTerminalSession((bytes) => surface.write(bytes), onEnded);
+    }
+  };
 
   const begin = () => {
     if (disposed) return;
@@ -147,8 +162,9 @@ export function attachTerminal(
       .catch(fail);
   };
 
-  if (target.kind === "ssh") queueMicrotask(begin);
-  else begin();
+  // 见上面那段：只有本地终端可以重复地开（它是无痕的）。
+  if (target.kind === "local") begin();
+  else queueMicrotask(begin);
 
   return () => {
     if (disposed) return;

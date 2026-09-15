@@ -225,6 +225,19 @@ export function installDevBackend(): void {
           kind: "failed",
           detail: { kind: "other", message: "dev-web 的模拟后端没有 SSH 客户端（用 just dev）" },
         };
+      // 串口那一路（plan 1101）同样**没有模拟后端**：没有真实设备、也没有库。
+      // 两条都明确报错，而不是假装开成了 —— 后者会让"设备打不开"与"这个模拟后端没有串口"
+      // 混成一件事（同上面两条的理由）。
+      case "vault_serials":
+        throw { kind: "locked" };
+      case "open_serial_session":
+        throw {
+          kind: "open",
+          detail: {
+            path: String(field(payload, "port")),
+            message: "dev-web 的模拟后端没有串口（用 just dev）",
+          },
+        };
       // SFTP 那一路（plan 0701 / 0702）同样**没有模拟后端**：没有 SFTP 客户端、也没有库。
       // 每一条都明确报错，而不是返回一个空列表 ——"目录是空的"与"这个模拟后端不支持 SFTP"
       // 是两件事，混在一起会让人以为连接成功了（同上一段的理由）。

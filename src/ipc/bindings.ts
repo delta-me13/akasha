@@ -65,6 +65,23 @@ export const commands = {
 	 */
 	vaultForwards: () => typedError<ForwardEntry[], VaultError>(__TAURI_INVOKE("vault_forwards")),
 	/**
+	 *  库里 serial 配置池的全部行（按名字排序 —— 顺序确定，界面才不会每次刷新换一个样）。
+	 * 
+	 *  库锁着 → [`VaultError::Locked`]：**只有"列出来"这一步需要解锁**（池在库里）；
+	 *  真正打开设备的那条命令不碰库。
+	 */
+	vaultSerials: () => typedError<SerialEntry[], VaultError>(__TAURI_INVOKE("vault_serials")),
+	/**
+	 *  打开一个串口会话，输出经 `channel` 以 **raw 字节**送出。
+	 * 
+	 *  与 [`crate::session::open_session`] 的关系：**同一条尾巴**（注册 → 频道 → 收尾线程），
+	 *  差的是载体怎么来 —— 本地那条是 `PtyTransport::spawn_default()`，这条是"照这六个字段开一个设备"。
+	 * 
+	 *  ⚠️ 设备被拔掉时读端报错、那条流结束、会话**自己结束**（`retire` → `session_ended`）
+	 *  —— 这条路径与 local / SSH 是同一条。**"原因可读"不在本条**（plan 1103）。
+	 */
+	openSerialSession: (channel: RawChannel, params: SerialParams) => typedError<number, SerialIpcError>(__TAURI_INVOKE("open_serial_session", { channel, params })),
+	/**
 	 *  打开一个终端会话，输出经 `channel` 以 **raw 字节**送出。
 	 * 
 	 *  返回的 id 是前端后续 `write_session` / `resize_session` / `close_session` 要用的句柄。
@@ -471,6 +488,78 @@ export type RawChannel = string;
  *  三种都是"一句秘密"，答案的走法完全相同。
  */
 export type SecretKind = "loginPassword" | "keyboardInteractive" | "keyPassphrase";
+
+/**
+ *  界面看得见的一条串口配置。
+ * 
+ *  `data_bits` / `stop_bits` 保持**库里的原始数值**（`5..=8` / `1..=2`）：取值范围由库的
+ *  `CHECK` 与 `TryFrom` 两头夹着，而这一层多做一个枚举只会让"越界取值"多一个说不清来路的地方。
+ */
+export type SerialEntry = {
+	/**  池里的行 id。 */
+	id: number,
+	/**  用户给这条配置起的名字（池里唯一）。标签页标题用它。 */
+	name: string,
+	/**  设备路径（`/dev/ttyUSB0` / `COM3`）。 */
+	port: string,
+	baud: number,
+	dataBits: number,
+	stopBits: number,
+	parity: SerialParity,
+	flow: SerialFlow,
+};
+
+/**  流控过 IPC 的形状。理由同 [`SerialParity`]。 */
+export type SerialFlow = "none" | "software" | "hardware";
+
+/**  IPC 边界的串口错误。变体按**用户的下一步动作**分（同 `VaultError` / `SshIpcError` 的原则）。 */
+export type SerialIpcError = 
+/**
+ *  参数不合法。报的是**字段与取值** —— 用户要改的是那一个字段（池行里那一格，
+ *  或者 plan 1102 的表单上那一栏）。
+ */
+{ kind: "settings"; detail: {
+	field: string,
+	value: string,
+} } | 
+/**
+ *  打开这个设备失败。**路径在这里**，因为用户要去看的是那个设备、不是我们代码里的哪一行
+ *  （与 `akasha-serial` 的 `SerialError::Open` / `Handle` 同一条口径）。
+ */
+{ kind: "open"; detail: {
+	path: string,
+	message: string,
+} } | 
+/**  内部状态不可用（会话表中毒、收尾线程起不来、频道句柄无效）。 */
+{ kind: "internal"; detail: {
+	message: string,
+} };
+
+/**
+ *  开一个串口会话要的**全部参数**（过 IPC 的形态）。
+ * 
+ *  为什么是一个结构体而不是六个平铺参数：一来六个参数加 `app` / `webview` / `channel`
+ *  会越过 clippy 的上限，二来它本来就是**一个概念**（"用这套参数开一个设备"）——
+ *  生成物里因此只有一项，前端把池行原样填进来即可。
+ */
+export type SerialParams = {
+	/**  设备路径（`/dev/ttyUSB0` / `COM3`）。 */
+	port: string,
+	baud: number,
+	dataBits: number,
+	stopBits: number,
+	parity: SerialParity,
+	flow: SerialFlow,
+};
+
+/**
+ *  校验位过 IPC 的形状。
+ * 
+ *  与 `akasha_store::pools::serial::Parity` 分开：存储 crate **不依赖 specta**
+ *  （那是 app 钉住版本的东西），串口 crate 也**不带 serde**。两侧的映射都写成穷尽 `match`，
+ *  于是任一侧加一种取值时**这里编译不过** —— 而不是悄悄少一个分支。
+ */
+export type SerialParity = "none" | "even" | "odd";
 
 /**
  *  一个会话**自己**结束了：载体（PTY 里的 shell）退出 —— 用户敲了 `exit`、shell 崩了、

@@ -33,6 +33,11 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::pools::import_ssh_config,
             // 转发规则池的只读读取（plan 0601）：界面据此列出"有哪些隧道可以打开"。
             crate::pools::vault_forwards,
+            // 串口配置池的只读读取（plan 1101）：界面据此列出"有哪些串口可以打开"。
+            crate::serial::vault_serials,
+            // 串口会话（plan 1101）。**同步**：打开一个本地设备没有握手，而参数在碰设备
+            // 之前就校验完了 —— 与 `open_session`（本地 PTY）同档，不是与 `open_ssh_session` 同档。
+            crate::serial::open_serial_session,
             crate::session::open_session,
             // SSH 会话（plan 0504）。⚠️ 它**必须**留着 async：命令体里有一次会阻塞几秒的
             // 握手（最长 `connect_timeout`），而同步命令跑在处理 IPC 请求的那条线程上 ——

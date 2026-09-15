@@ -11,7 +11,14 @@
 //   2. 除了这里，前端不许在别处出现裸 `invoke("字符串命令名")`（`AGENTS.md` §0 绝对禁止 #1）。
 
 import { Channel } from "@tauri-apps/api/core";
-import { commands, events, type IpcError, type SshIpcError } from "./bindings";
+import {
+  commands,
+  events,
+  type IpcError,
+  type SerialIpcError,
+  type SerialParams,
+  type SshIpcError,
+} from "./bindings";
 
 /** 后端返回的错误，原样带着 [`IpcError`] 的结构抛出（调用方多半只是显示它）。 */
 export class IpcInvokeError extends Error {
@@ -62,7 +69,17 @@ export interface TerminalSession {
  */
 export type SessionTarget =
   | { readonly kind: "local" }
-  | { readonly kind: "ssh"; readonly hostId: number };
+  | { readonly kind: "ssh"; readonly hostId: number }
+  | { readonly kind: "serial"; readonly params: SerialParams };
+
+/**
+ * 开一个串口会话要的参数（plan 1101）。
+ *
+ * 用**生成物**里的 `SerialParams` 而不是在这里手写一份：它是后端 `open_serial_session` 的
+ * 唯一参数（六个字段），而手写第二份签名正是 `AGENTS.md` §5 禁止的那种漂移
+ * （生成物改了、前端这份不变，两边的差异没有任何门禁会红）。
+ */
+export type { SerialParams };
 
 /**
  * 把"后端已经开好了"这件事包成一个可控的会话。
@@ -246,5 +263,59 @@ export async function openSshTerminalSession(
 
   const opened = await commands.openSshSession(channel.toJSON(), hostId);
   if (opened.status === "error") throw new SshInvokeError(opened.error);
+  return adoptSession(opened.data, onEnded);
+}
+
+/**
+ * 串口那条路失败时的错误。
+ *
+ * 与 `SshInvokeError` 分开：那一族说的是"连不上 / 不让连"（有**警报**那一档），
+ * 这一族说的是"参数不对 / 这个设备打不开"—— 前端能据此做的动作不同
+ * （前者去核对指纹，后者去看那个字段或那个设备）。
+ */
+export class SerialInvokeError extends Error {
+  readonly detail: SerialIpcError;
+
+  constructor(detail: SerialIpcError) {
+    super(SerialInvokeError.describe(detail));
+    this.name = "SerialInvokeError";
+    this.detail = detail;
+  }
+
+  /** 参数不合法：界面该指出**哪一个字段**、值是多少（plan 1102 的取值越界就是这一档）。 */
+  get settingsProblem(): { field: string; value: string } | null {
+    return this.detail.kind === "settings" ? this.detail.detail : null;
+  }
+
+  private static describe(detail: SerialIpcError): string {
+    switch (detail.kind) {
+      case "settings":
+        return `串口参数不合法：${detail.detail.field} = ${detail.detail.value}`;
+      case "open":
+        return `串口打不开：${detail.detail.path}（${detail.detail.message}）`;
+      case "internal":
+        return `内部状态不可用：${detail.detail.message}`;
+    }
+  }
+}
+
+/**
+ * 打开一个**串口**会话，输出逐批交给 `onBatch`。
+ *
+ * 与本地终端那条的区别只有一处：后端照这六个字段去开一个设备。串口**没有窗口尺寸、
+ * 没有退出结局、没有本地进程**（`Capabilities::NONE`）—— 前两件后端自己处理
+ * （`resize` 在没有该能力的载体上是空操作），第三件使"关闭标签页零残留"这条判据
+ * 只能看注册表（同 SSH，ADR-0003 D4）。
+ */
+export async function openSerialTerminalSession(
+  params: SerialParams,
+  onBatch: (bytes: Uint8Array) => void,
+  onEnded: () => void,
+): Promise<TerminalSession> {
+  const channel = new Channel<ArrayBuffer>();
+  channel.onmessage = (payload) => onBatch(new Uint8Array(payload));
+
+  const opened = await commands.openSerialSession(channel.toJSON(), params);
+  if (opened.status === "error") throw new SerialInvokeError(opened.error);
   return adoptSession(opened.data, onEnded);
 }

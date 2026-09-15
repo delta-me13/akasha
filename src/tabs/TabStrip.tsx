@@ -8,7 +8,7 @@
 // 所以 `×` 是**按 `kind` 渲染**的，而不是"所有标签页都长一样"。
 
 /** 标签页的种类。转发 / 密码库 / 文件传输到来时**新增**变体，不复用终端。 */
-export type TabKind = "terminal" | "ssh";
+export type TabKind = "terminal" | "ssh" | "serial";
 
 /**
  * **有关闭按钮**的种类（`docs/scope.md` §5.6：三大终端 local / ssh / serial）。
@@ -17,7 +17,7 @@ export type TabKind = "terminal" | "ssh";
  * 视图（无 ×），它们的停止是各自的显式动作。把这条规则写成一个清单而不是散在 JSX 里，
  * 是为了让"哪一类能关"只有一处可改。
  */
-const CLOSABLE: readonly TabKind[] = ["terminal", "ssh"];
+const CLOSABLE: readonly TabKind[] = ["terminal", "ssh", "serial"];
 
 /** 标签栏要显示的一项。**只是呈现数据** —— 会话的归属与回收在后端（`Session`）。 */
 export interface TabView {
@@ -36,6 +36,8 @@ interface TabStripProps {
   onNew(): void;
   /** 打开主机选择器（新建 SSH 会话的第一步）。 */
   onNewSsh(): void;
+  /** 打开串口选择器（新建串口会话的第一步，plan 1101）。 */
+  onNewSerial(): void;
   /**
    * 打开隧道面板（端口转发）。
    *
@@ -59,6 +61,7 @@ export function TabStrip({
   onClose,
   onNew,
   onNewSsh,
+  onNewSerial,
   onNewTunnel,
   onNewSftp,
 }: TabStripProps) {
@@ -111,6 +114,15 @@ export function TabStrip({
         onClick={onNewSsh}
       >
         SSH
+      </button>
+      <button
+        type="button"
+        className="tab-new tab-new-serial"
+        title="新建串口会话（先选一条串口配置）"
+        aria-label="新建串口会话"
+        onClick={onNewSerial}
+      >
+        串口
       </button>
       <button
         type="button"

@@ -189,14 +189,15 @@ body {
   user-select: none;
 }
 
-/* ── SSH：主机选择器与提示面板（plan 0504）───────────────────────────────── */
+/* ── SSH：主机选择器与提示面板（plan 0504）· 串口选择器（plan 1101）──────── */
 /*
  * 只有一条要求：**能被 E2E 驱动**（`AGENTS.md` §4.0 —— 当前界面是功能验证壳层）。
  * 所以这两块都是普通文档流里的浮层，选择器/类名稳定（`.ssh-prompt[data-prompt-kind]`、
  * `.host-picker-item[data-host-id]`），没有动画、没有依赖布局时序的东西。
  */
 
-.host-picker {
+.host-picker,
+.serial-picker {
   position: absolute;
   top: 44px;
   left: 12px;
@@ -209,30 +210,36 @@ body {
   box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
 }
 
-.host-picker-title {
+.host-picker-title,
+.serial-picker-title {
   margin: 0 0 8px;
   font-size: 13px;
   color: #c3ccd8;
 }
 
 .host-picker-problem,
-.host-picker-empty {
+.host-picker-empty,
+.serial-picker-problem,
+.serial-picker-empty {
   margin: 0 0 8px;
   font-size: 12px;
   color: #ffb4b4;
 }
 
-.host-picker-empty {
+.host-picker-empty,
+.serial-picker-empty {
   color: #8d99a8;
 }
 
-.host-picker-list {
+.host-picker-list,
+.serial-picker-list {
   margin: 0 0 8px;
   padding: 0;
   list-style: none;
 }
 
-.host-picker-item {
+.host-picker-item,
+.serial-picker-item {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -248,12 +255,14 @@ body {
   cursor: pointer;
 }
 
-.host-picker-item:hover {
+.host-picker-item:hover,
+.serial-picker-item:hover {
   border-color: #3f4d66;
   background: #1e242e;
 }
 
-.host-picker-target {
+.host-picker-target,
+.serial-picker-target {
   font-size: 11px;
   color: #7b8794;
 }
@@ -264,7 +273,8 @@ body {
   color: #b48ead;
 }
 
-.host-picker-actions {
+.host-picker-actions,
+.serial-picker-actions {
   display: flex;
   justify-content: flex-end;
 }
