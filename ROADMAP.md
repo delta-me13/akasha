@@ -200,9 +200,9 @@
 - [x] 双栏界面骨架 + 两侧独立选主机（**不需要先开终端 Session**）
       验收：直接打开 SFTP 即可用，无终端依赖
       → [plan 0701](./docs/plans/archive/0701-sftp-dual-pane.md)
-- [ ] local ↔ host 双向；**临时名 + 原子重命名**落盘
+- [x] local ↔ host 双向；**临时名 + 原子重命名**落盘
       验收：中断传输后目标目录里**没有**看似完整的文件
-      → [plan 0702](./docs/plans/0702-transfer-atomic-rename.md)
+      → [plan 0702](./docs/plans/archive/0702-transfer-atomic-rename.md)
 - [ ] host ↔ host：**优先 B 档（`direct-tcpip`），失败回退 A 档（内存 relay）**
       验收：A 无法直连 B 时自动走 A 档；两档均不落盘
       → [plan 0703](./docs/plans/0703-host-to-host-topology.md)

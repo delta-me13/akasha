@@ -138,8 +138,8 @@
 | 编号 | 标题 | 状态 | 前置 / 展开时机 | 文件 |
 |---|---|---|---|---|
 | 0701 | 双栏界面骨架 + 两侧独立选主机 | 已完成（2026-09-15：真实 app 上两侧各连一台服务端、各自列目录；SFTP 之前之后终端标签页数不变；`just ready` 6/6） | plan 0505（已完成）· 形状见 ADR-0006 | [0701](./archive/0701-sftp-dual-pane.md) |
-| 0702 | local ↔ host：临时名 + 原子重命名 | 未规划（骨架） | 展开时机：plan 0701（已完成） | [0702](./0702-transfer-atomic-rename.md) |
-| 0703 | host ↔ host：B 档优先，回退 A 档 | 未规划（骨架） | 展开时机：plan 0505 / 0702 之后 | [0703](./0703-host-to-host-topology.md) |
+| 0702 | local ↔ host：临时名 + 原子重命名 | 已完成（2026-09-15：库内 6 条用两个可控假端点把"传到哪一步"变成可等待的事件；E2E 取消后目标目录 0 个条目、上传字节与源相同；`just ready` 6/6） | plan 0701（已完成）· 形状见 ADR-0006 | [0702](./archive/0702-transfer-atomic-rename.md) |
+| 0703 | host ↔ host：B 档优先，回退 A 档 | 未规划（骨架） | 展开时机：plan 0505 / 0702（已完成）之后 | [0703](./0703-host-to-host-topology.md) |
 | 0704 | 并发 in-flight 请求 | 未规划（骨架） | 展开时机：plan 0702 之后 | [0704](./0704-pipelining.md) |
 
 > 本阶段的形状先固化在 [ADR-0006](../adr/0006-sftp-stack-and-transfer-engine.md)（状态「实现中」）：
