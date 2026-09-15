@@ -50,8 +50,15 @@ struct Inner {
     /// 数据目录在 `.setup()` 里才知道；在那之前一切都是"还没初始化"。
     dir: Option<PathBuf>,
     settings: Settings,
+    /// 上一次**探测**出来的东西（起因与缓存键见 [`inspect`] 的文档）。
+    probed: Option<(PathBuf, Probed)>,
     /// 手上的 session key（**只在内存**）。
     session: Option<Session>,
+    /// CLI 里**当前配置的**服务器（`bw config server` 的回读）。
+    ///
+    /// ⚠️ 它与 `status.server_url` **不是同一个东西**：未登录时上游的 `status` 给的是
+    /// `null`（实测），而配置好的地址一直读得出来 —— 面板在登录之前要显示的是这一个。
+    server: Option<String>,
     /// 最近一次读到状态 —— 只给快照用，"真相"永远在下一次 `bw status` 里。
     last: Option<Status>,
 }
@@ -193,6 +200,8 @@ impl From<Status> for BwVaultStatus {
 #[serde(rename_all = "camelCase")]
 pub struct BwSnapshot {
     pub cli: BwCliInfo,
+    /// CLI 里当前配置的服务器（`bw config server` 的回读）—— 登录之前也读得到。
+    pub server: Option<String>,
     /// CLI 说得出来的状态；`bw` 自己跑不起来时为 `None`。
     pub status: Option<BwVaultStatus>,
     /// **我们手里有没有 session key**（不是 key 本身）。
@@ -201,37 +210,89 @@ pub struct BwSnapshot {
     pub problem: Option<String>,
 }
 
+/// 探测出来的东西里**与程序有关**的那一半（缓存的就是它）。
+#[derive(Clone)]
+struct Probed {
+    version: Option<String>,
+    variant: Option<String>,
+    license_notice: Option<String>,
+    problem: Option<String>,
+}
+
 /// 解析出可执行文件与它的自报信息（会起进程：`--version` 与 `--help`）。
-fn inspect(paths: &Paths, settings: Settings) -> (BwCliInfo, Option<Cli>) {
-    let mut info = BwCliInfo {
-        binary: settings.binary.as_str().to_owned(),
-        appdata: settings.appdata.as_str().to_owned(),
-        program: None,
+///
+/// ## 为什么带缓存
+///
+/// `bw` 的启动不便宜（上游那份是约 140 MB 的 Node SEA；本机这个 npm 版在只读家目录下 13 秒
+/// 才报错），而每个快照都要读版本与变体 —— 那两条对一个**给定的程序文件**是不变的。
+/// 缓存键因此是**解析出来的程序路径**：换轴、换版本目录、或用户装/卸 `bw` 之后它自己失效。
+///
+/// ⚠️ 缓存的是**与程序有关**的那一半；`binary` / `appdata` 两个字段每次都按当前设置重写
+/// （否则换轴之后快照会报上一次的轴）。
+fn inspect(inner: &mut Inner, paths: &Paths, settings: Settings) -> (BwCliInfo, Option<Cli>) {
+    let located = match paths.resolve(settings) {
+        Ok(located) => located,
+        Err(err) => {
+            let info = BwCliInfo {
+                binary: settings.binary.as_str().to_owned(),
+                appdata: settings.appdata.as_str().to_owned(),
+                program: None,
+                version: None,
+                variant: None,
+                license_notice: None,
+                problem: Some(err.to_string()),
+            };
+            // 解析不到就不是"那一份程序变了"，把缓存丢掉（下次解析成功时要重新探测）。
+            inner.probed = None;
+            return (info, None);
+        }
+    };
+    let program = located.program.clone();
+    let cli = Cli::new(&located);
+
+    let probed = match &inner.probed {
+        Some((cached, probed)) if *cached == program => probed.clone(),
+        _ => {
+            let probed = ask(&cli);
+            inner.probed = Some((program.clone(), probed.clone()));
+            probed
+        }
+    };
+
+    (
+        BwCliInfo {
+            binary: settings.binary.as_str().to_owned(),
+            appdata: settings.appdata.as_str().to_owned(),
+            program: Some(program.display().to_string()),
+            version: probed.version,
+            variant: probed.variant,
+            license_notice: probed.license_notice,
+            problem: probed.problem,
+        },
+        Some(cli),
+    )
+}
+
+/// 真的去问那一份 CLI：版本、变体、许可证提示。
+///
+/// ⚠️ 名字不叫 `probe`：本模块另有一个给 Victauri 的 `pub fn probe(&Bitwarden)`。
+fn ask(cli: &Cli) -> Probed {
+    let mut probed = Probed {
         version: None,
         variant: None,
         license_notice: None,
         problem: None,
     };
-    let located = match paths.resolve(settings) {
-        Ok(located) => located,
-        Err(err) => {
-            info.problem = Some(err.to_string());
-            return (info, None);
-        }
-    };
-    info.program = Some(located.program.display().to_string());
-    let cli = Cli::new(&located);
-
     match cli.version() {
-        Ok(version) => info.version = Some(version),
+        Ok(version) => probed.version = Some(version),
         Err(err) => {
-            info.problem = Some(err.to_string());
-            return (info, Some(cli));
+            probed.problem = Some(err.to_string());
+            return probed;
         }
     }
     match cli.variant() {
         Ok(variant) => {
-            info.variant = Some(
+            probed.variant = Some(
                 match variant {
                     akasha_bw::Variant::Oss => "oss",
                     akasha_bw::Variant::Proprietary => "proprietary",
@@ -240,16 +301,16 @@ fn inspect(paths: &Paths, settings: Settings) -> (BwCliInfo, Option<Cli>) {
                 .to_owned(),
             );
             if variant.needs_license_notice() {
-                info.license_notice = Some(format!(
+                probed.license_notice = Some(format!(
                     "这一份是{}：它的许可证把用途限制在内部开发与测试、非生产环境。\
                      要避开这条限制，可以改用运行时下载的 OSS 那一份。",
                     variant.describe()
                 ));
             }
         }
-        Err(err) => info.problem = Some(err.to_string()),
+        Err(err) => probed.problem = Some(err.to_string()),
     }
-    (info, Some(cli))
+    probed
 }
 
 /// 组装快照：解析 → （可选）读状态 → 处理 session。
@@ -269,16 +330,26 @@ fn snapshot(bitwarden: &Bitwarden, refresh: bool) -> BwSnapshot {
                 license_notice: None,
                 problem: Some("还没初始化（数据目录未定）".to_owned()),
             },
+            server: None,
             status: None,
             has_session: false,
             problem: None,
         };
     };
     let paths = Paths::new(&dir);
-    let (info, cli) = inspect(&paths, settings);
+    let (info, cli) = inspect(&mut inner, &paths, settings);
     let mut problem = info.problem.clone();
 
-    if refresh && let Some(cli) = &cli {
+    // ⚠️ 这一份 CLI 连 `--version` 都答不出来时**不再起后面的进程**：那不是"状态读不出来"，
+    // 而是"这一份 `bw` 根本用不了"—— 本机的 `/usr/bin/bw`（发行版的 npm 包）在只读家目录下
+    // 要 **13 秒**才报错，而每个快照原本要起三次进程（版本 / 帮助 / 状态），
+    // 那会把处理 IPC 的那条线程占住半分钟。
+    let usable = info.version.is_some();
+    if refresh
+        && usable
+        && let Some(cli) = &cli
+    {
+        inner.server = cli.server().unwrap_or(None);
         match cli.status() {
             Ok(status) => {
                 // D10：状态说不是解锁，就丢掉手上的 key。
@@ -294,6 +365,7 @@ fn snapshot(bitwarden: &Bitwarden, refresh: bool) -> BwSnapshot {
     let status = inner.last.clone().map(BwVaultStatus::from);
     BwSnapshot {
         cli: info,
+        server: inner.server.clone(),
         status,
         has_session: inner.session.is_some(),
         problem,
@@ -318,7 +390,10 @@ fn act(
         let located = paths.resolve(settings).map_err(BwIpcError::from)?;
         let cli = Cli::new(&located);
         action(&cli, &mut inner).map_err(BwIpcError::from)?;
-        // 动作之后重新读一次状态（ADR-0007 D10）。
+        // 动作之后重新读一次配置与状态（ADR-0007 D10）。设服务器那一条改的就是前者，
+        // 而未登录时 `status` 里的 `serverUrl` 是 `null`（实测）—— 只看它就等于
+        // "刚设完地址，界面还显示没设"。
+        inner.server = cli.server().unwrap_or(None);
         match cli.status() {
             Ok(status) => {
                 if !status.state.allows_session() {

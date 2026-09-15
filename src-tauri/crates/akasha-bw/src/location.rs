@@ -146,14 +146,29 @@ impl Paths {
         found
     }
 
-    /// 按设置解析出**这一台机器上现在该用的那一份 CLI**。
+    /// 按设置解析出**这一台机器上现在该用的那一份 CLI**（`PATH` 取自进程环境）。
     ///
     /// `managed` 那一条会在需要时建出隔离状态目录 —— 每一次 `bw` 调用都可能写
     /// `data.json`（实测：连 `bw --version` 都会创建它），所以那个目录必须在**调用之前**存在。
     pub fn resolve(&self, settings: Settings) -> Result<Located, BwError> {
+        self.resolve_in(settings, std::env::var_os("PATH").as_deref())
+    }
+
+    /// [`Paths::resolve`] 的**可注入版本**：`PATH` 是参数。
+    ///
+    /// 为什么要有它：判据"这台机器上没有 `bw`"是关于**环境**的断言，而在进程环境里改 `PATH`
+    /// 在 edition 2024 是 `unsafe`（问题 #109）。不给这条口子，那条单测就只能在
+    /// "跑它的那台机器恰好没有 `bw`"时成立 —— 而本机**恰好有一个**（`/usr/bin/bw`，
+    /// 发行版的 `bitwarden-cli` 包），于是它会以"环境变了"的方式红。
+    pub fn resolve_in(
+        &self,
+        settings: Settings,
+        path_var: Option<&OsStr>,
+    ) -> Result<Located, BwError> {
         let program = match settings.binary {
-            BinarySource::Host => find_in_path(std::env::var_os("PATH").as_deref(), EXECUTABLE)
-                .ok_or(BwError::MissingBinary)?,
+            BinarySource::Host => {
+                find_in_path(path_var, EXECUTABLE).ok_or(BwError::MissingBinary)?
+            }
             BinarySource::Managed => {
                 let version = self
                     .installed_versions()
@@ -278,16 +293,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `host` 轴上"没有 `bw`"是它自己的一档。**`PATH` 是造出来的**：这条判据关于环境，
+    /// 而本机**确实**装着一个 `bw`（发行版的 `bitwarden-cli` 把 `/usr/bin/bw` 指向 npm 包）
+    /// —— 读进程环境写这条断言的版本会以"环境变了"的方式红（问题 #87）。
     #[test]
     fn a_missing_host_binary_is_its_own_error() {
         let dir = scratch("missing-host");
+        let empty = dir.join("empty-path");
+        std::fs::create_dir_all(&empty).unwrap();
+        let path_var = std::env::join_paths([&empty]).unwrap();
+
         let paths = Paths::new(&dir);
         let err = paths
-            .resolve(Settings::default())
-            .expect_err("PATH 里没有 bw（测试进程的 PATH 里确实没有）");
-        // ⚠️ 这条断言依赖"测试机的 PATH 里没有 bw"。装了 bw 的机器上它会红 ——
-        // 那正说明这条判据在工作（它读的确实是环境）。
+            .resolve_in(Settings::default(), Some(&path_var))
+            .expect_err("这条 PATH 里没有 bw");
         assert!(matches!(err, BwError::MissingBinary), "{err:?}");
+
+        // 诱饵：同一条 PATH 里放一个**不叫** `bw` 的文件时，判据仍然说"没有"。
+        std::fs::write(empty.join("bw-oss"), b"not it").unwrap();
+        assert!(matches!(
+            paths.resolve_in(Settings::default(), Some(&path_var)),
+            Err(BwError::MissingBinary)
+        ));
+
+        // 正例：放上那个名字之后它就被解析到了（少了这一半，"永远报没有"也会通过）。
+        let binary = empty.join(EXECUTABLE);
+        std::fs::write(&binary, b"fake").unwrap();
+        let located = paths
+            .resolve_in(Settings::default(), Some(&path_var))
+            .unwrap();
+        assert_eq!(located.program, binary);
+        assert_eq!(located.appdata, None, "`host` 那一轴不设状态目录");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -92,7 +92,7 @@ export function BwPanel({ onClose }: { readonly onClose: () => void }) {
         if (!alive) return;
         setSnapshot(next);
         // 只回填第一次：用户正在改那一栏时别把它顶掉。
-        setServer((current) => current || (next.status?.serverUrl ?? ""));
+        setServer((current) => current || (next.server ?? ""));
       },
       (err: unknown) => {
         if (alive) setFailure(err instanceof Error ? err.message : String(err));
@@ -199,8 +199,10 @@ export function BwPanel({ onClose }: { readonly onClose: () => void }) {
         >
           使用这个服务器
         </button>
+        {/* 显示的是 **CLI 里配置的**那一个（`bw config server` 的回读），不是 `bw status`
+            里的：未登录时上游的 `status` 给的是 `null`，而配置好的地址一直读得出来。 */}
         <p className="bw-server-current" data-bw-server-current>
-          当前：{snapshot?.status?.serverUrl ?? "（还没有读到）"}
+          当前：{snapshot?.server ?? "（还没有读到）"}
         </p>
       </fieldset>
 
@@ -305,6 +307,11 @@ export function BwPanel({ onClose }: { readonly onClose: () => void }) {
         <p data-bw-has-session>
           {snapshot?.hasSession ? "session key 在内存里" : "内存里没有 session key"}
         </p>
+        {/* 刷新：状态的三态**只有后端一个来源**，而它可能被我们之外的动作改掉
+            （例如用户在终端里跑了 `bw lock`）—— 那时界面该能重新问一次（ADR-0007 D10）。 */}
+        <button type="button" disabled={busy !== null} data-bw-refresh onClick={() => run("refresh", bwStatus)}>
+          刷新状态
+        </button>
         {snapshot?.problem && (
           <p className="bw-problem" role="status" data-bw-status-problem>
             {snapshot.problem}

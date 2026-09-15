@@ -793,3 +793,26 @@ pub async fn open_serial_panel(client: &mut VictauriClient) {
     )
     .await;
 }
+
+/// 打开 Bitwarden 面板，并保证它**重新读一遍**读数（plan 0905）。
+///
+/// 与 [`open_tunnel_panel`] / [`open_serial_panel`] 同一条理由：`.tab-new-bw` 是**切换**，
+/// 而各个 E2E 目标共用一个 app；面板的读数又是挂载时读一次的。
+pub async fn open_bitwarden_panel(client: &mut VictauriClient) {
+    if !text_of(client, ".bw-panel").await.is_empty() {
+        click(
+            client,
+            "[data-bw-close]",
+            "关闭 Bitwarden 面板（好让它重新读一次）",
+        )
+        .await;
+    }
+    click(client, ".tab-new-bw", "打开 Bitwarden 面板").await;
+    wait_js(
+        client,
+        "!!document.querySelector('.bw-panel')",
+        10_000,
+        "Bitwarden 面板打开了",
+    )
+    .await;
+}

@@ -329,6 +329,8 @@ export type BwIpcError = {
 /**  一次命令之后的完整读数（也是 `bitwarden` probe 报的东西）。 */
 export type BwSnapshot = {
 	cli: BwCliInfo,
+	/**  CLI 里当前配置的服务器（`bw config server` 的回读）—— 登录之前也读得到。 */
+	server: string | null,
 	/**  CLI 说得出来的状态；`bw` 自己跑不起来时为 `None`。 */
 	status: BwVaultStatus | null,
 	/**  **我们手里有没有 session key**（不是 key 本身）。 */
