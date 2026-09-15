@@ -263,9 +263,9 @@
 
 目标：`scope.md` §2 的第三个后端在 app 上可用（阶段 8 的续作，crate 已就位）。
 
-- [ ] 串口 `Session` 接入 app（命令 + 注册表 + 标签页 + 关闭与回收）
+- [x] 串口 `Session` 接入 app（命令 + 注册表 + 标签页 + 关闭与回收）
       验收：真实 app 上打开一个串口会话并双向传字节；关闭标签页后 `live` / `registered` 归零
-      → [plan 1101](./docs/plans/1101-serial-session-ipc.md)
+      → [plan 1101](./docs/plans/archive/1101-serial-session-ipc.md)
 - [ ] 端口枚举与参数接进界面（列端口 + 手动路径兜底 + 池行取值 + 可读报错）
       验收：界面上看到本机枚举结果并据此（或手输路径）打开；取值越界时显示字段与取值
       → [plan 1102](./docs/plans/1102-serial-ports-ui.md)

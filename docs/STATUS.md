@@ -32,7 +32,10 @@
 
 **阶段 8 的两条都完成（plan 0801 / 0802）**：`akasha-serial` 落地 —— `Transport` 的串口实现 +
 `ports()` 枚举 + 参数校验，零 Tauri 依赖、`libudev` 只在 Linux；判据与读数口见下文
-「阶段 8 的形状」。串口接入 app **不在阶段 8 内**，已立为 **阶段 11**（plan 1101–1103 骨架）。
+「阶段 8 的形状」。串口接入 app **不在阶段 8 内**，已立为 **阶段 11** ——
+它的**第一条已完成**（plan 1101）：一条串口 `Session` 能从界面打开、字节双向流动、
+关标签页即回收；形状见下文「阶段 11 的形状」。1102（端口枚举与参数接进界面）与
+1103（设备消失时以可读原因结束）仍未规划。
 
 阶段 4 的八项（每项一句）：**SQLCipher 加密库可打开**（0401）、**口令只从一条路径进入且可真正验证**
 （0402 —— 拆分"打开"与"新建"；此前在文件不存在的路径上**任何口令都能打开**）、
@@ -219,6 +222,34 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 ⚠️ **阶段 8 到 crate 层为止**：串口接入 app（命令 / 界面 / 设备消失时的表现）是**阶段 11**，
 不是阶段 8 的第五条。
 
+### 阶段 11 的形状（plan 1101 的接线；1102 / 1103 待做）
+
+**串口与 local / SSH 是同一种东西**：一条 `Transport` 装进 `Sessions` 的 `live` 表 ——
+没有第四张表、没有新的会话模型、没有新的收尾路径。变的只有"载体从哪来"。
+
+| 事 | 落在哪 |
+|---|---|
+| app 侧接线 | `src-tauri/src/serial.rs`：`SerialEntry` + `vault_serials`（列池里的行）、`SerialParams`（六个字段的 IPC 形状）、`open_serial_session`（**同步**）、`SerialIpcError`（`settings{field,value}` / `open{path,message}` / `internal`，**没有 `locked`**） |
+| 取值域两侧的映射 | `SerialParity` / `SerialFlow` 两个 IPC 枚举 → `akasha_store::pools::serial` 与 `akasha_serial` **各一个穷尽 `match`**；`data_bits` / `stop_bits` 保持库里的原始数值，越界由 crate 的 `TryFrom` 报字段与取值 |
+| 命令 | `vault_serials` · `open_serial_session(channel, params)` |
+| 载体从哪来 | **参数显式，不是池行 id**：打开一个设备不碰库（没有秘密），所以这条路径**不需要解锁**；`locked` 只挡"列出池里有哪些"。于是 plan 1102 的"手输路径 + 参数可编辑"复用**同一条**命令 |
+| 前端 | `SessionTarget` 的 `serial` 变体、`TabKind` 加 `"serial"` 并进 `CLOSABLE`、`src/serial/SerialPicker.tsx`（列池里的行）、`src/ipc/serials.ts` |
+| 判据的读数口 | `app_state { probe: "sessions" }`（串口**没有本地进程**，"关闭零残留"只能看注册表 —— 同 ADR-0003 D4）；E2E `tests/serial_session.rs` 自己造一对 PTY，把**从端的路径**当设备 |
+
+⚠️ **`resize` 的 `Unsupported` 不是失败**（plan 1101）：`Sessions::resize` 现在**先看能力位**
+（`Transport::resize` 的契约本来就要求调用方这么做）。不改的话串口标签页一打开就是红的 ——
+前端每次 `fit()` 都发一次 `resize_session`，而串口的能力位是 `Capabilities::NONE`。
+
+⚠️ **`serialport` 默认独占打开**（`TIOCEXCL` + 独占 `flock`，上游 `posix/tty.rs`）：
+同一台设备被第二个会话打开会当场得到 `EBUSY`。这对真实设备是对的（两个进程抢一个串口本来
+就不该成功），**不要**为了绕开它去关独占。⚠️ 它与 **React StrictMode 的两次挂载**撞上过一次：
+被丢弃的那次挂载真的把设备打开了，于是活下来的那次收到 `Device or resource busy` ——
+处置是把"推迟一个微任务再开"从 SSH 扩到串口（`src/terminal/attach.ts`），
+**只有本地终端保持同步发出去**（它是这条路上唯一可以重复且无痕的东西）。
+
+⚠️ **设备被拔掉这条路本条就成立**：读端报错 → 输出流结束 → `retire` → `session_ended`
+→ 标签页随之关闭（与 local / SSH 同一条）。**"原因可读"不在本条**（plan 1103）。
+
 **关闭窗口的语义由配置与托盘可用性共同决定**（0302 + 0303）：
 
 ### 阶段 5 之前那些跨阶段的结论（还在生效）
@@ -340,7 +371,9 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | ↑ **判据：大量小文件的吞吐显著优于串行请求**（plan 0704） | ✅ `sftp_pipelining` E2E（真实 app + 测试进程内一台服务端，主机行指向一条**每方向延后 10 ms** 的链路，**5.39 s**）：左栏本机、右栏那台主机 → **串行**（12 个文件逐个发、逐个等结束）**1.553 s**、探针 `peak = 1` → **并发**（一口气发完）**561 ms**、`limit = 8`、`live = 0`、`peak = 5` —— **2.8×**；两批之后对端**真盘**上 12 个文件的字节逐一相同、目录里没有临时名，链路共搬了 208 段。⚠️ 耗时与 `peak` 每次不同（另一轮实测串行 1.509 s / 并发 389 ms / `peak 8`），断言只有"并发明显更快"这一条 |
 | ↑ **上限真的在，且排队与取消都在并发下正确**（plan 0704，crate 层 6 条） | ✅ `akasha-ssh` 新增 `pipelining` 6 条：7 个文件 / 上限 3 时目标端点**同时**只见到 3 个 `begin_write`（第 4 个连闸门都进不去）、放行后 7 个都落地而 `peak` 停在 3 / 排队中被取消的那条**一个端点都没碰过**（它的路径从未被 `open`）、进去的那条走收尾、目标目录空 / 5 个文件中间那个写失败 → 另外 4 个字节正确落地 / 两条并发传输写**同一个最终名**时目标目录里是**两个**不同的临时名（放行后最终名的字节等于两条源之一）/ 上传一个文件：服务端记到的 `open` 恰好一次（`/.probe.bin.part`）且临时名没出现在 `stat` 里（"由对端保证的唯一性"在协议层就是少一次往返） |
 | ↑ **分档数字**（plan 0704，crate 层） | 12 个 1 KiB 文件在带时延链路上：上限 1 = **1.168 s**、2 = 1.159 s、4 = 563 ms、8 = 377 ms、16 = 211 ms（每个文件 97.3 → 17.6 ms）。⚠️ **上限 2 与串行一样慢**，那一段没有定位（见「进行中 / 下一步」）；默认值因此不按饱和点取 |
-| ↑ **`just test-e2e` 全部通过** | 退出码 **0**：清单里的 24 个 E2E 目标（`E2E_TARGETS` 21 + `E2E_TARGETS_EXIT` 1 + `E2E_NO_APP` 1）共 **29 个用例**，三段（默认收托盘 / `close_behavior=exit` / 可搬迁性）全通过、0 失败。⚠️ `E2E_SELF_APP` 的 `portable` 3 条由 `just portable` 单独执行，不在这个数里 |
+| ↑ **`just test-e2e` 全部通过** | 退出码 **0**：清单里的 24 个 E2E 目标（`E2E_TARGETS` 22 + `E2E_TARGETS_EXIT` 1 + `E2E_NO_APP` 1）共 **30 个用例**，三段（默认收托盘 / `close_behavior=exit` / 可搬迁性）全通过、0 失败。⚠️ `E2E_SELF_APP` 的 `portable` 3 条由 `just portable` 单独执行，不在这个数里 |
+| ↑ **判据：串口会话能打开并双向传字节、关标签页即回收**（plan 1101） | ✅ `serial_session` E2E（真实 app + **测试进程自己造的一对 PTY**（从端的路径当设备），**1.00 s**）：界面点"串口" → 选池里那一行 → 标签页出现且"已连接" → **设备 → 界面**（往主端写 `from-device-1101`，屏幕文本里出现它）→ **界面 → 设备**（在标签页里敲 `to-device-1101`，主端读到同一串）→ 关标签页后 `sessions` probe 回到打开前的 `{"live":1,"registered":1}`（**两数相等**） |
+| ↑ **池行 → 参数这条搬运**（plan 1101，crate 层 5 条） | ✅ `akasha --lib serial` **5 passed**：两个 IPC 枚举的全量映射 / 六个字段的搬运 / **越界取值报字段与取值**（`data_bits` 与 `stop_bits` 各三个取值）/ **空路径报出用户给的那一串** / 不存在的设备报出它试过的路径 |
 | ↑ **判据：主机密钥变化即拒绝，未见过的询问一次**（plan 0503） | ✅ `akasha-ssh` 的 7 条：未知且无人可问 → `HostKeyUnknown`（携带用于核对的指纹，且**认证尚未开始**）；确认 → 写入缓存，**第二个连接 0 次询问**；记录不匹配 → `HostKeyChanged`（**两个指纹都在**）且**不发起询问**；用户拒绝 → 拒绝连接且**不记录**；用户文件中已认可 → 连通且文件**逐字节未变** |
 | ↑ **本仓库首次格式迁移**（plan 0503） | ✅ `akasha-store` 的 6 条：`DDL_V1` 构造出**真实 v1 库** → `open` 之后 `user_version = 2`、五张表存在、**该 host 行仍在**；再次打开当前格式的库**不写入任何字节**；缺表的 v1 **不迁移**；加密导出与明文导出两条还原路径均**升级副本、来源逐字节不变** |
 | ↑ **判据：同主机三个连接仅询问一次凭据**（plan 0502） | ✅ `three_sessions_ask_for_one_credential`：`provider.calls() == 1`、缓存 `len() == 1`、服务端三次均收到**同一口令** |
@@ -369,6 +402,17 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   所以那两项的证据只到"映射是全的"（纯函数用例），"在真设备上生效"未实测。
   ⚠️ 这条同时说明反向的一件事：**PTY 不是串口参数的忠实回读装置**，把它当成全部五个参数的
   证据会得到一份看起来完整、实际只覆盖三项的读数。
+  ⚠️ **plan 1101 的端到端判据也建立在这同一条替代口径上**：`serial_session` 的两串字节
+  确实经过内核的 PTY 走了一个来回（两个方向各是独立的证据），但"与一台**真实串口设备**
+  互操作"仍然没有证据 —— 真设备上有 USB 串口芯片、模数转换、流控引脚，PTY 一样都没有。
+  ⚠️ 还有一条只在本机成立的前提：`portable-pty` 造出来的从端**不会**被别的进程按独占打开，
+  而真实设备上 `serialport` 的 `TIOCEXCL` 会让**第二个**会话拿到 `EBUSY`。
+  ⚠️ **`AGENTS.md` §7 里 `introspect { action: "processes" }` 那一条对串口没有对象**：
+  串口没有本地进程（`session_leader()` 是 `None`，crate 也不 spawn 进程）——
+  所以"真正退出之后零残留"在这条路上只剩注册表（`live` / `registered` 回到打开前的读数，
+  实测 `1/1`）。这两件事**不是同一件**：注册表归零说的是"没有留下可管理的会话"，
+  而"没有任何进程/线程留下"这一句在这里由**结构**保证（设备句柄 + 合批线程随流结束而退出），
+  没有单独的读数口 —— `residue` 探针报的是 SSH 连接与隧道看护任务。
 - **SFTP 只与自建的测试服务端对接过**（plan 0701 / 0702）：客户端这两条链（子系统请求、
   `realpath`、`readdir`；以及 `open` / `read` / `write` / `rename` / `remove`）**未与真实 `sshd`
   的 sftp 子系统互操作**；`limits@openssh.com` / `fsync@openssh.com` 这类扩展缺失时的降级路径
@@ -542,10 +586,11 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 
 ## 进行中 / 下一步
 
-- [ ] **下一步 = 展开 plan 1101 的骨架**（阶段 11）：[阶段 11](../ROADMAP.md) 是阶段 8 的续作 ——
-  `scope.md` §2 承诺的"三大终端之一（serial）"目前还没有用户可见的形态（没有命令、没有界面）。
-  1101 的骨架已写好目标 / 非目标 / 判据；开工前要补齐可粘贴的验收命令（本机没有串口硬件，
-  用 `portable-pty` 的从端当设备）。1102 / 1103 排在它之后。
+- [ ] **下一步 = 展开 plan 1102 的骨架**（阶段 11 的第二条，**已完成 1101**）：串口现在能开、
+  能双向传字节、关标签页即回收，但界面只有**一条输入路径** —— 从池里挑一行。
+  [`1102`](./plans/1102-serial-ports-ui.md) 要补上"列端口 + 手动输入路径 + 参数可编辑 + 越界报错"，
+  而它**复用同一条命令**（`open_serial_session` 收的是六个字段，不是池行 id）。
+  ⚠️ 展开时注意问题 #150：列出来的端口**不保证能打开**，所以判据用"手输 PTY 从端的路径"收口。
 - [ ] 之后是 **阶段 9 的第一条**（`bw` 对 `sshKey` 条目的非交互行为实测）：
   [`0901`](./plans/0901-bw-noninteractive-probe.md) 仍是骨架，但它**不依赖任何代码** ——
   骨架里写的"需要真实 vault"是它唯一的门槛。
@@ -592,6 +637,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 
 | plan | 判据（ROADMAP 原文） | 实测 |
 |---|---|---|
+| 1101 | 真实 app 上打开一个串口会话并双向传字节；关闭标签页后 `live` / `registered` 归零 | `serial_session` E2E **1.00 s**：设备是测试进程自己造的一对 PTY 的从端；界面点"串口"→ 选池里那一行 → 标签页"已连接"；**两个方向各一条独立证据**（主端写的 `from-device-1101` 出现在屏幕上 / 标签页里敲的 `to-device-1101` 被主端读到）；关闭标签页后 `sessions` 回到 `{"live":1,"registered":1}`。⚠️ 实测发现一处问题：`serialport` 默认**独占**打开，而 StrictMode 的两次挂载让被丢弃的那次真的占了设备（第二遍收到 `EBUSY`）—— 处置是把"推迟一个微任务再开"从 SSH 扩到串口。见「阶段 11 的形状」 |
 | 0802 | 枚举在本机列出真实端口；参数错误时给出可读报错 | `ports()` 在本机（libudev）列 **32 条**且顺序稳定无重复、路径非空；同一套用例在 sysfs 那套实现下返回 **0 条**且照常通过（"没有端口"与"枚举失败"因此是两种结果）；真 tty 上回读参数、越界取值报字段与取值。⚠️ 负例自检：去掉排序只红了手造输入的三条单测 —— **只在真实机器上执行的断言可能是永真的** |
 | 0801 | Windows / macOS 构建不链接 libudev | 依赖图核对（`just libudev-check`，两条负例验过）+ 一次性探针让 `serialport` 带该 feature 在三个目标上各编译一次；13 条用例全过（PTY 那 4 条带 `--nocapture` 重新执行过，确认没走跳过分支）。⚠️ 原生编译待问题 #149 |
 | 0704 | 大量小文件的吞吐显著优于串行请求 | 上限归**会话持有的** `InFlight`（`limit` / `live` / `peak`；等空位可取消），临时名改成**一次**原子占用（本机 `create_new`、远端 `CREATE|EXCLUDE`）；库内 6 条（7 个文件 / 上限 3 → 目标端点同时只见 3 个 `begin_write`）+ `sftp_pipelining` E2E：12 个 1 KiB 文件在每方向延后 10 ms 的链路上 **1.509 s → 389 ms**（`peak 8`） |
@@ -628,7 +674,8 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   `testing`（进程内服务端））、
   `akasha`（app 包 = IPC 薄壳 + 托盘 + 配置 + 数据目录 + 窗口关闭语义 + 单实例 + 退出钩子 +
   看门狗接线 + 库的解锁状态 + SSH 的 runtime / 提问往返 / 池读取 / **跳板链** + 代码生成 bin）。
-- **前端**：`src/ipc/`（唯一允许调用后端的目录）、`src/tabs/`、`src/terminal/`、`src/ssh/`、`src/App.tsx`。
+- **前端**：`src/ipc/`（唯一允许调用后端的目录）、`src/tabs/`、`src/terminal/`、`src/ssh/`、
+  `src/tunnels/`、`src/sftp/`、`src/serial/`、`src/App.tsx`。
 - **排查"SSH 为何连不上"**：日志中 `ssh session opening`（带 `hops` = 跳数）/
   `ssh authenticated`（带 `method`）/ **`ssh direct-tcpip opening`（带 `via` = 经过的主机）**；
   主机密钥一档见 `ssh host key accepted` / `rejected` / `unusable`；提问是否有人应答见
@@ -657,8 +704,12 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   状态名与事件名是**契约**（ADR-0003 §10 第 4 条）：改名要同时改 `bindings.ts`、前端与托盘。
 - **改 serial 之前先看**：`akasha-serial/src/enumerate.rs`（枚举；⚠️ 空表是正常结果、列出来的端口
   **不保证能打开** —— 问题 #150）→ `transport.rs`（打开与读循环）→ `settings.rs` / `error.rs`
-  （取值域与三组失败）。读数口：`just serial-check`（两种 feature 配置各执行一遍）与 `just libudev-check`。
-  ⚠️ 串口**还没有接进 app** —— 阶段 11（plan 1101–1103）。
+  （取值域与三组失败）→ **app 侧的接线** `src-tauri/src/serial.rs`（`vault_serials` / `open_serial_session`
+  两条命令 + 两个 IPC 枚举的映射 + `SerialIpcError` 的三档）→ `src/serial/SerialPicker.tsx`。
+  读数口：`just serial-check`（两种 feature 配置各执行一遍）与 `just libudev-check`；
+  会话侧只有 `app_state { probe: "sessions" }`（串口没有本地进程）。
+  ⚠️ 串口已经接进 app（plan 1101），但**输入路径只有一条**（从池里挑一行）——
+  端口枚举与手输路径是 plan 1102。⚠️ 打开是**独占**的（`TIOCEXCL`）：第二个会话会得到 `EBUSY`。
 - **新增 command / event 的三处**：`src-tauri/src/bindings.rs` 登记、`just gen-types` 重新生成、
   `just gen-types-check` 比对（`AGENTS.md` §5）；事件还必须在 `.setup()` 里 `mount_events`。
 - **排查"隧道为何没连上 / 为何转发不通"**：日志里 `ssh connection opening`（带 `hops` = 跳数）与
