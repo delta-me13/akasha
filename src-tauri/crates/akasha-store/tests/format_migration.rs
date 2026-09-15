@@ -15,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use akasha_store::{
-    DDL_V1, FORMAT_VERSION, StoreError, export, hosts, open, open_unmigrated, vault_path,
+    DDL_V1, DDL_V2, FORMAT_VERSION, StoreError, export, hosts, open, open_unmigrated, vault_path,
 };
 use common::{PASSPHRASE, columns_of, fixture_dir, pass};
 use rusqlite::{Connection, ffi};
@@ -41,6 +41,31 @@ fn create_v1(dir: &Path) -> PathBuf {
     )
     .unwrap();
     conn.pragma_update(None, "user_version", 1).unwrap();
+    db
+}
+
+/// 造一个**真正的 v2 库**：v1 + v2 的冻结定义（`DDL_V2` 至今没改过，所以它就是 v2 的定义）
+/// + 一条 host + 一条 known_hosts，`user_version = 2`。
+///
+/// 为什么要第二个历史版本：v3 只在 v2 之上加表，而"从 v2 升上来"与"从 v1 升上来"走的
+/// 是**同一段循环的两步** —— 只有 v1 那一份的话，"`tables_of(2)` 那一档还在不在"没人验
+/// （少了它，真 v2 库会被当成不认识的版本直接拒绝）。
+#[allow(unsafe_code)] // 本 crate 是唯一允许碰 ffi 的地方（no-unsafe-outside-store.yml）
+fn create_v2(dir: &Path) -> PathBuf {
+    let db = vault_path(dir);
+    let conn = Connection::open(&db).unwrap();
+    key(&conn);
+
+    conn.execute_batch(DDL_V1).unwrap();
+    conn.execute_batch(DDL_V2).unwrap();
+    conn.execute_batch(
+        "INSERT INTO hosts (name, host, port, user, auth)
+         VALUES ('web', 'example.com', 22, 'root', 'agent');
+         INSERT INTO known_hosts (host, port, key_type, key_blob, fingerprint)
+         VALUES ('example.com', 22, 'ssh-ed25519', X'0001', 'SHA256:v2');",
+    )
+    .unwrap();
+    conn.pragma_update(None, "user_version", 2).unwrap();
     db
 }
 
@@ -73,6 +98,43 @@ fn raw_version(db: &Path) -> i64 {
 }
 
 // ── 1. 升级：版本、表、**内容** ─────────────────────────────────────────────
+
+#[test]
+fn a_v2_vault_is_upgraded_to_v3_and_keeps_its_rows() {
+    let dir = fixture_dir("migrate-v2-to-v3");
+    let db = create_v2(&dir);
+    assert_eq!(raw_version(&db), 2, "前提：造出来的确实是 v2");
+
+    let conn = open(&db, &mut pass(PASSPHRASE)).unwrap();
+    let found: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(found, FORMAT_VERSION);
+
+    // v3 加的那张表在，且形状就是 DDL 说的那样。
+    assert_eq!(
+        columns_of(&conn, "bw_items"),
+        [
+            "cipher_id",
+            "name",
+            "revision_date",
+            "fingerprint",
+            "key_id"
+        ]
+    );
+
+    // **内容一条不少**：v2 的 known_hosts 与更早那条 host 都还在。
+    assert_eq!(hosts::hosts(&conn).unwrap().len(), 1);
+    let keys = conn
+        .query_row("SELECT count(*) FROM known_hosts", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+    assert_eq!(keys, 1, "v2 那条 known_hosts 必须还在");
+
+    drop(conn);
+    assert_eq!(raw_version(&db), FORMAT_VERSION);
+}
 
 #[test]
 fn a_v1_vault_is_upgraded_on_open_and_keeps_its_rows() {

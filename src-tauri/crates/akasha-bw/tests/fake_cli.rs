@@ -46,6 +46,7 @@ case "$1" in
   unlock) printf 'sess-%s\n' "$BW_PASSWORD" ;;
   lock) printf 'locked\n' ;;
   sync) printf 'Syncing complete.\n' ;;
+  list) printf '[{"id":"c-1","type":1,"name":"a login","login":{"password":"hunter2"}},{"id":"c-2","type":5,"name":"k","revisionDate":"rev","sshKey":{"privateKey":"pem","publicKey":"pub","fingerprint":"SHA256:x"}}]\n' ;;
   *) printf 'unknown command\n' ;;
 esac
 "#;
@@ -164,6 +165,7 @@ fn the_session_key_travels_in_the_environment_too() {
 fn failures_are_classified_from_what_the_cli_prints() {
     for (printed, expected) in [
         ("You are not logged in.\n", "not logged in"),
+        ("Vault is locked.\n", "锁着"),
         (
             "Unable to fetch ServerConfig from https://api.bitwarden.com FetchError: ETIMEDOUT\n",
             "网络失败",
@@ -180,6 +182,7 @@ fn failures_are_classified_from_what_the_cli_prints() {
         let err = cli.status().unwrap_err();
         match expected {
             "not logged in" => assert!(matches!(err, BwError::NotLoggedIn), "{err:?}"),
+            "锁着" => assert!(matches!(err, BwError::Locked), "{err:?}"),
             "网络失败" => assert!(matches!(err, BwError::Network { .. }), "{err:?}"),
             other => match err {
                 BwError::CommandFailed { message, .. } => {
@@ -190,6 +193,35 @@ fn failures_are_classified_from_what_the_cli_prints() {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// `list items`：session key 走环境、命令带 `--raw`，而**解析只在纯函数那一层**
+/// （所以这里拿到的是原始字节，一个登录口令也没被我们留下）。
+#[test]
+fn listing_items_goes_through_the_same_session_environment() {
+    let dir = scratch("items");
+    let cli = Cli::new(&fake_bw(&dir));
+    let mut session = cli.unlock("pw").unwrap();
+
+    let raw = cli.items(&mut session).unwrap();
+    let found = akasha_bw::items::parse(&raw).unwrap();
+    assert_eq!(found.total, 2);
+    assert_eq!(
+        found
+            .ssh_keys
+            .iter()
+            .map(|k| k.name.as_str())
+            .collect::<Vec<_>>(),
+        ["k"],
+        "登录那一条不许进"
+    );
+
+    let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
+    assert_eq!(
+        args, "list\nitems\n--raw\n--nointeraction\n",
+        "少了 --raw 拿到的是给人看的那一版；少了 --nointeraction 会让它等人回答"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 超时：**杀掉并收干净**，不许把一个还在跑的 `bw` 留在那里。

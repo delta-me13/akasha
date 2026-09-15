@@ -11,11 +11,16 @@
 //
 // ⚠️ 这一版**没有**自签证书（`NODE_EXTRA_CA_CERTS`）那一栏：自托管的服务器要么用一张
 // 被系统信任的证书，要么先把 CA 装进系统信任库。这条缺口记在 `docs/STATUS.md`。
+//
+// 导入那一块（plan 0903）刻意**不显示私钥**：界面上出现的是名字与上游给的指纹 ——
+// 私钥只在库里（受保护页那一条路），连报告里都不带它。
 
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  BwImportUnavailable,
   BwUnavailable,
+  bwImportKeys,
   bwLock,
   bwLogin,
   bwLogout,
@@ -26,6 +31,7 @@ import {
   setBwServer,
   type AppDataMode,
   type BinarySource,
+  type BwImportReport,
   type BwSnapshot,
 } from "../ipc/bitwarden";
 
@@ -41,6 +47,16 @@ const VARIANT_LABEL: Record<string, string> = {
   oss: "OSS（GPL-3.0-only）",
   proprietary: "专有（许可限制在生产环境使用）",
   unknown: "判不出变体",
+};
+
+/** 没导入进来那几条的原因 —— 后端给出的每一档都有一句给用户看的话。 */
+const SKIP_LABEL: Record<string, string> = {
+  exists: "池里已经有同名的行了",
+  duplicateName: "这一批里重名（改名或分开导）",
+  claimed: "池里那一行已经归另外一条上游条目了",
+  noPrivateKey: "这一条只有公钥，没有私钥可导",
+  noProvenance: "上游没有给出 id / revisionDate，来历记不下来",
+  tooLong: "私钥超过一页（16 KiB），进不了库",
 };
 
 /** 一步动作的公共骨架：跑一个命令、把结果或那句话写进界面。 */
@@ -84,6 +100,11 @@ export function BwPanel({ onClose }: { readonly onClose: () => void }) {
   /** 两步验证那一对（空着就是不用）。 */
   const [method, setMethod] = useState("");
   const [code, setCode] = useState("");
+  /** 最近一次导入的报告（`null` = 这一轮还没导过）。 */
+  const [report, setReport] = useState<BwImportReport | null>(null);
+  /** 导入那一块的忙/失败是**独立**的：它不改三态，所以不该走 `run`（那条路会刷新快照）。 */
+  const [importing, setImporting] = useState(false);
+  const [importFailure, setImportFailure] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -109,6 +130,28 @@ export function BwPanel({ onClose }: { readonly onClose: () => void }) {
   /** 两个轴：一个下拉一个下拉，**各自独立**（ADR-0007 D4）。 */
   const switchTo = (binary: BinarySource, appdata: AppDataMode) =>
     run("switch", () => setBwCli(binary, appdata));
+
+  /**
+   * 从 Bitwarden 导入 SSH key 条目（plan 0903）。
+   *
+   * ⚠️ 这一条**不动三态**，所以它不经过 `run` —— 那条路会顺手刷新一次快照，
+   * 而这里要留下的东西是**报告本身**（导入了哪几条、哪几条没进来以及为什么）。
+   */
+  const importKeys = async (overwrite: boolean) => {
+    setImporting(true);
+    setImportFailure(null);
+    try {
+      setReport(await bwImportKeys(overwrite));
+    } catch (err) {
+      setImportFailure(
+        err instanceof BwImportUnavailable || err instanceof BwUnavailable
+          ? err.message
+          : String(err),
+      );
+    } finally {
+      setImporting(false);
+    }
+  };
 
   return (
     <section className="bw-panel" aria-label="Bitwarden">
@@ -316,6 +359,70 @@ export function BwPanel({ onClose }: { readonly onClose: () => void }) {
           <p className="bw-problem" role="status" data-bw-status-problem>
             {snapshot.problem}
           </p>
+        )}
+      </fieldset>
+
+      {/* ── 导入那一块（plan 0903） ───────────────────────────────────── */}
+      <fieldset className="bw-import">
+        <legend>只读导入 SSH 密钥</legend>
+        <p className="bw-import-what">
+          读的是一次 <code>bw list items --raw</code>：只取其中 type = 5 的条目，
+          私钥进本地密钥池，其余条目一条都不留；不回写上游。
+        </p>
+        <div className="bw-buttons">
+          <button
+            type="button"
+            disabled={busy !== null || importing}
+            data-bw-import
+            onClick={() => void importKeys(false)}
+          >
+            {importing ? "导入中…" : "导入（同名不动）"}
+          </button>
+          <button
+            type="button"
+            disabled={busy !== null || importing}
+            data-bw-import-overwrite
+            onClick={() => void importKeys(true)}
+          >
+            导入并覆盖同名
+          </button>
+        </div>
+        {importFailure && (
+          <p className="bw-failure" role="alert" data-bw-import-failure>
+            {importFailure}
+          </p>
+        )}
+        {report && (
+          <div data-bw-import-report>
+            <p>
+              上游给了 {report.seen} 条，其中 SSH 密钥 {report.sshKeys} 条； 新增{" "}
+              {report.created.length} 条、替换 {report.replaced.length} 条、跳过{" "}
+              {report.skipped.length} 条。
+            </p>
+            {report.created.length + report.replaced.length > 0 && (
+              <ul>
+                {[...report.created, ...report.replaced].map((key) => (
+                  <li key={key.name}>
+                    {key.name} · {key.fingerprint || "（上游没有给指纹）"}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {report.skipped.length > 0 && (
+              <ul>
+                {report.skipped.map((key) => (
+                  <li key={key.name}>
+                    {key.name} 没进来：{SKIP_LABEL[key.reason] ?? key.reason}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {report.notes.map((note) => (
+              <p className="bw-note" key={note}>
+                {note}
+              </p>
+            ))}
+          </div>
         )}
       </fieldset>
 

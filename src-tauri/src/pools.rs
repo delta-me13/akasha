@@ -308,9 +308,23 @@ pub fn import_ssh_config(
             })
             .collect(),
         ignored: parsed.ignored.into_iter().map(finding).collect(),
-        notes: parsed.notes,
+        notes: linked_notes(&outcome.linked, parsed.notes),
         path: shown,
     })
+}
+
+/// 把"接上了池里哪把钥匙"逐条写进报告的说明里（plan 0903）。
+///
+/// 为什么要单独成句：`IdentityFile` 本身**总是**在 `ignored` 里（私钥不从配置导入），
+/// 而"这一条实际上用上了池里那把钥匙"是它的一个**例外** —— 不说出来的话，用户会以为
+/// 连接走的是 ssh-agent。
+fn linked_notes(linked: &[(String, String)], mut notes: Vec<String>) -> Vec<String> {
+    for (host, key) in linked {
+        notes.push(format!(
+            "条目 `{host}` 的 `IdentityFile` 接上了池里的钥匙 `{key}`（文件名与钥匙名相同）。"
+        ));
+    }
+    notes
 }
 
 /// `akasha-store` 的说法 → 过 IPC 的形状。

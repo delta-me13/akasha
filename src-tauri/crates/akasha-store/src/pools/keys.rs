@@ -138,6 +138,19 @@ pub fn keys(conn: &Connection) -> Result<Vec<Key>, StoreError> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// 按**名字**找一行（找不到是 `None`，不是错误）。
+///
+/// 谁在用这条：`~/.ssh/config` 导入时，`IdentityFile` 的 basename 与池里的名字**逐字符
+/// 相同**就把 `key_id` 接上（plan 0903）。它是"看起来像同名"而不是"猜一个"：名字是
+/// 池里的 `UNIQUE` 列，匹配不上时行为与不加这条规则时**完全一致**。
+pub fn find_by_name(conn: &Connection, name: &str) -> Result<Option<i64>, StoreError> {
+    Ok(conn
+        .query_row("SELECT id FROM keys WHERE name = ?1", [name], |row| {
+            row.get(0)
+        })
+        .optional()?)
+}
+
 /// 读某一把私钥 —— **出库即进受保护页**（ADR-0002 D13）。
 ///
 /// ⚠️ 这份私钥在自己的生命期里经过了两块普通内存，照实记：

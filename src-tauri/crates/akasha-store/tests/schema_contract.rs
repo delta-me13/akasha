@@ -14,7 +14,9 @@
 
 mod common;
 
-use akasha_store::{DDL_V1, StoreError, TABLES, TABLES_V1, VaultState, create, open, vault_path};
+use akasha_store::{
+    DDL_V1, StoreError, TABLES, TABLES_V1, TABLES_V2, VaultState, create, open, vault_path,
+};
 use common::{PASSPHRASE, columns_of, fixture_dir, new_vault, pass};
 
 // ── 1. STRICT 表的前提：SQLite 得够新 ────────────────────────────────────────
@@ -36,7 +38,7 @@ fn sqlite_is_new_enough_for_strict_tables() {
     );
 }
 
-// ── 2. 表与它们的列：v1 与 v2 两个形状 ──────────────────────────────────────
+// ── 2. 表与它们的列：v1 / v2 / v3 三个形状 ──────────────────────────────────
 
 #[test]
 fn the_tables_are_the_ones_the_current_version_promises() {
@@ -46,9 +48,21 @@ fn the_tables_are_the_ones_the_current_version_promises() {
         "v1 的清单**冻结**：顺序就是建表顺序（外键的目标要先存在）"
     );
     assert_eq!(
-        TABLES,
+        TABLES_V2,
         ["keys", "hosts", "serials", "forwards", "known_hosts"],
         "v2 = v1 + known_hosts（plan 0503）"
+    );
+    assert_eq!(
+        TABLES,
+        [
+            "keys",
+            "hosts",
+            "serials",
+            "forwards",
+            "known_hosts",
+            "bw_items"
+        ],
+        "v3 = v2 + bw_items（plan 0903，scope.md §7 的导入池）"
     );
 
     let (_dir, conn) = new_vault("schema-tables");
@@ -148,6 +162,37 @@ fn the_shape_of_v2_is_pinned() {
         ddl.contains("UNIQUE (host, port, key_type)"),
         "同一主机同一类型只认一把：{ddl}"
     );
+}
+
+/// **v3 的形状快照**（plan 0903 加的导入池）。同一条纪律：加列 / 改列 = 换格式。
+#[test]
+fn the_shape_of_v3_is_pinned() {
+    let (_dir, conn) = new_vault("schema-shape-v3");
+
+    assert_eq!(
+        columns_of(&conn, "bw_items"),
+        [
+            "cipher_id",
+            "name",
+            "revision_date",
+            "fingerprint",
+            "key_id"
+        ],
+        "bw_items 的列变了 —— 同 v1 那条：改列要 `FORMAT_VERSION + 1` 加迁移"
+    );
+
+    let ddl: String = conn
+        .prepare("SELECT sql FROM sqlite_master WHERE name = 'bw_items'")
+        .unwrap()
+        .query_row([], |row| row.get(0))
+        .unwrap();
+    // 两条约束值得钉住：来历行随钥匙一起走（导入池里没有"孤儿"这种状态），
+    // 以及"一把钥匙只有一条来历"（`UNIQUE` 让重复导入变成更新而不是第二行）。
+    assert!(
+        ddl.contains("ON DELETE CASCADE"),
+        "删掉钥匙时那行来历要跟着走：{ddl}"
+    );
+    assert!(ddl.contains("UNIQUE"), "一把钥匙只该有一条来历：{ddl}");
 }
 
 // ── 3. 外键：声明 ≠ 生效 ────────────────────────────────────────────────────
@@ -440,13 +485,14 @@ fn a_version_we_do_not_know_is_refused_before_the_tables_are_checked() {
     // 否则用户会以为自己的库坏了，而真相是"这个库是更新的程序写的"（ADR-0002 D7 的降级处置）。
     let dir = fixture_dir("version-before-tables");
     let db = vault_path(&dir);
+    let newer = akasha_store::FORMAT_VERSION + 1;
     {
         let conn = create(&db, &mut pass(PASSPHRASE)).unwrap();
-        conn.pragma_update(None, "user_version", 3).unwrap();
+        conn.pragma_update(None, "user_version", newer).unwrap();
     }
     let err = open(&db, &mut pass(PASSPHRASE)).unwrap_err();
     assert!(
-        matches!(err, StoreError::UnsupportedVersion { found: 3 }),
+        matches!(err, StoreError::UnsupportedVersion { found } if found == newer),
         "{err:?}"
     );
 }

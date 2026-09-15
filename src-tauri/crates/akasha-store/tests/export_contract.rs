@@ -524,10 +524,12 @@ fn dump_shows_what_is_in_the_vault_and_nothing_secret() {
     assert_eq!(read.keys.len(), 1, "密钥池列出的是**不含私钥**的行");
 
     let text = read.to_text();
+    let version_line = format!("format: v{FORMAT_VERSION}");
     for expected in [
-        // 写死当前版本号（plan 0503 起是 v2）：它红了就意味着格式变了，
-        // 而那件事本来就该在这里被看见一次（同 `schema_contract` 的快照）。
-        "format: v2",
+        // 版本号**由 `FORMAT_VERSION` 推出来**：这一条判据问的是"dump 报的是库里的真值吗"，
+        // 不是"当前格式是几"—— 后者一变，这里就会以一句与判据无关的坏消息红掉。
+        // "格式变了"该被看见的地方是 `schema_contract` 的形状快照，不是这里。
+        version_line.as_str(),
         "work",
         "ssh-ed25519 AAAAC3Nza work",
         "bastion",
@@ -557,7 +559,7 @@ fn dump_shows_what_is_in_the_vault_and_nothing_secret() {
     assert_eq!(nothing.row_counts(), [0, 0, 0, 0]);
     let text = nothing.to_text();
     for expected in [
-        "format: v2",
+        version_line.as_str(),
         "keys: 0",
         "hosts: 0",
         "serials: 0",

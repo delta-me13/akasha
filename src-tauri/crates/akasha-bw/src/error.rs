@@ -10,6 +10,7 @@
 //! | [`BwError::Network`] | 看网络 / 代理 |
 //! | [`BwError::InsecureUrl`] | 把服务器地址改成 https |
 //! | [`BwError::NotLoggedIn`] | 先登录 |
+//! | [`BwError::Locked`] | 先解锁（`bw` 说的，不是我们推断的） |
 //! | [`BwError::NoSession`] | 先解锁 |
 //! | [`BwError::CommandFailed`] | 看那句原话（我们认不出的失败原样交给用户） |
 //! | 其余 | 内部 / 磁盘 / 输出形状问题 |
@@ -52,6 +53,13 @@ pub enum BwError {
     /// `bw` 说没有登录（实测原文 `You are not logged in.`，退出码 1）。
     #[error("还没有登录这个 vault")]
     NotLoggedIn,
+    /// `bw` 说这个 vault 锁着（上游 `errorIfLocked` 的原文 `Vault is locked.`）——
+    /// 已登录、但手上没有能解开它的密钥。
+    ///
+    /// 与 [`BwError::NotLoggedIn`] 分开是**用户的下一步动作不同**：那一档是"先登录"，
+    /// 这一档是"先解锁"。归成一个变体，界面就只能给出一句含糊的话。
+    #[error("这个 vault 是锁着的：先解锁")]
+    Locked,
     /// `bw` 以非 0 退出，而输出里的信号我们认不出来。
     #[error("bw 以 {code} 退出：{message}")]
     CommandFailed { code: i32, message: String },

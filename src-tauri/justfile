@@ -86,7 +86,7 @@ test:
 #   * 第一段（本清单）：没有配置文件 = 默认"收托盘" → `window_close` 有判据；
 #   * 第二段（`E2E_TARGETS_EXIT`）：写 `close_behavior=exit` 再起一次 app → `exit_residue`
 #     拿到的就是"关窗即退出"这条**可移植**的刺激（不需要托盘宿主，CI 上照样成立）。
-E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status vault_unlock ssh_session ssh_jump ssh_config_import tunnel_state tunnel_local_forward tunnel_dynamic_forward tunnel_remote_forward tunnel_reconnect tunnel_teardown sftp_dual_pane sftp_transfer_atomic sftp_host_to_host sftp_pipelining serial_session serial_ports_ui serial_device_gone bitwarden_login"
+E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status vault_unlock ssh_session ssh_jump ssh_config_import tunnel_state tunnel_local_forward tunnel_dynamic_forward tunnel_remote_forward tunnel_reconnect tunnel_teardown sftp_dual_pane sftp_transfer_atomic sftp_host_to_host sftp_pipelining serial_session serial_ports_ui serial_device_gone bitwarden_login bw_import"
 
 # 需要 `close_behavior=exit` 的目标：**只能**在第二段跑（见上）。
 E2E_TARGETS_EXIT := "exit_residue"

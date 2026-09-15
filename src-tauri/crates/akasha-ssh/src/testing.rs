@@ -38,6 +38,7 @@ use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use rand::rng;
+use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use russh::server::ChannelOpenHandle;
 use russh::server::{Auth, Msg, Response, Server, Session};
@@ -456,6 +457,19 @@ impl Connection {
 pub fn host_key_from_openssh(text: &str) -> HostKey {
     let key = PublicKey::from_openssh(text).expect("测试公钥必须是合法的 OpenSSH 文本");
     HostKey::from_public(&key).expect("测试公钥必须能编码成线格式")
+}
+
+/// 现生成一对一次性的 ed25519 密钥：`(私钥的 OpenSSH 文本, 公钥的 SHA256 指纹)`。
+///
+/// 给"**用某一把钥匙**认证"那类用例用（plan 0903 的端到端：私钥从 Bitwarden 导入进来，
+/// 服务端只认它的公钥）。两半必须来自**同一对**密钥，所以由同一个函数产出 ——
+/// 分开生成会得到一条"客户端带的那把与服务端认的那把不是同一把"的用例，
+/// 而它照样会通过（只是没在验那件事）。
+pub fn key_pair() -> (String, String) {
+    let key = PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("生成密钥失败");
+    let fingerprint = key.public_key().fingerprint(HashAlg::Sha256).to_string();
+    let pem = key.to_openssh(LineEnding::LF).expect("私钥编码失败");
+    (pem.to_string(), fingerprint)
 }
 
 /// 起一个测试服务端（绑定 `127.0.0.1:0`，随机端口）。

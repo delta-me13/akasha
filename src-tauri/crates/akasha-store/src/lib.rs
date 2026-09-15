@@ -32,10 +32,11 @@
 //! （`schema`），[`open`] 除版本号外还要确认**那个版本该有的表**都在 —— `user_version`
 //! 的含义是"**这些表**"，不是"一个空库"。四套池的增删改查在 [`pools`]。
 //!
-//! **格式到 v2 了**（plan 0503）：v1 = 四张池表，v2 = v1 + `known_hosts`（ADR-0003 D11 的
-//! 信任缓存）。`open` 会自动把 v1 升到 v2（[`upgrade`]），因为 `vault_unlock` 是 app 唯一的
-//! 开门路径 —— 不自动升级等于"用户的旧库突然打不开了"。**降级不行**：v2 的库被旧版本程序
-//! 打开会得到 `UnsupportedVersion { found: 2 }`，这是 D7 有意的处置。
+//! **格式到 v3 了**（plan 0903）：v1 = 四张池表，v2 = v1 + `known_hosts`（ADR-0003 D11 的
+//! 信任缓存），v3 = v2 + `bw_items`（`scope.md` §7 的 Bitwarden 导入池）。`open` 会自动把
+//! 旧库升上来（[`upgrade`]），因为 `vault_unlock` 是 app 唯一的开门路径 —— 不自动升级等于
+//! "用户的旧库突然打不开了"。**降级不行**：v3 的库被旧版本程序打开会得到
+//! `UnsupportedVersion { found: 3 }`，这是 D7 有意的处置。
 //!
 //! 库里的东西怎么拿出去：看有什么用 [`dump`]（**结构上不含机密**），拿走用 [`export`]
 //! （加密 / 明文两条路，后者有门槛），放回来用 [`export::restore`]（D6 的"导出件就是库"）。
@@ -63,7 +64,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::ffi;
 
 pub use passphrase::{MAX_LEN, Passphrase};
-pub use pools::{forwards, hosts, keys, known_hosts, serial};
+pub use pools::{bw_items, forwards, hosts, keys, known_hosts, serial};
 /// 解好的连接 —— **就是上游 `rusqlite` 那个类型**，这里只是把它再导出一遍。
 ///
 /// 为什么要在这一层转一次手：`open` / `create` / [`dump::dump`] 的签名里本来就有它，
@@ -72,7 +73,7 @@ pub use pools::{forwards, hosts, keys, known_hosts, serial};
 /// 两个版本连编都编不过。**这不是给 app 开一条绕开四套池直接写 SQL 的路**：
 /// 想拿到连接仍然只能经 `open` / `create`，而那两条路已经是公开的。
 pub use rusqlite::Connection;
-pub use schema::{DDL_V1, TABLES, TABLES_V1};
+pub use schema::{DDL_V1, DDL_V2, TABLES, TABLES_V1, TABLES_V2};
 /// 库文件名（ADR-0002 D1）：四套池与 Bitwarden 缓存**同一个**文件。
 ///
 /// 放在这里而不是调用方：它是**磁盘上的格式**的一部分，改它等于迁移用户数据。
@@ -80,10 +81,11 @@ pub const STORE_FILE_NAME: &str = "akasha.db";
 
 /// 格式版本（ADR-0002 D7）：`PRAGMA user_version` 的当前取值。
 ///
-/// v1 = 四张池表，**v2 = v1 + known_hosts**（plan 0503，ADR-0003 D11 的信任缓存）。
-/// `> 2` = 更新版本的程序写的，明确拒绝；`1` = 待升级（[`open`] 自动做）；
+/// v1 = 四张池表，**v2 = v1 + known_hosts**（plan 0503，ADR-0003 D11 的信任缓存），
+/// **v3 = v2 + bw_items**（plan 0903，`scope.md` §7 的 Bitwarden 导入池）。
+/// `> 3` = 更新版本的程序写的，明确拒绝；`1` / `2` = 待升级（[`open`] 自动做）；
 /// `0` 见 [`open`]（v1 之前没有版本，非空文件里出现 0 说明它不是本程序的库）。
-pub const FORMAT_VERSION: i64 = 2;
+pub const FORMAT_VERSION: i64 = 3;
 
 /// 打开之后、密钥送入之后的第一条**读库**语句。
 ///

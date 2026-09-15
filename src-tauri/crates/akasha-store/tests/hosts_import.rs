@@ -173,6 +173,68 @@ fn a_built_jump_host_never_overwrites_a_row_you_wrote() {
     );
 }
 
+// ── `IdentityFile` 与池里的钥匙（plan 0903）──────────────────────────────────
+
+/// 池里有一把**同名**的钥匙时，`IdentityFile` 把条目接到它上面。
+///
+/// 判据是"逐字符同名"，所以这一份同时钉住两半：**同名接得上**、**不同名接不上**
+/// （后者与 plan 0506 的行为逐字相同 —— 钥匙在 ssh-agent 里）。
+#[test]
+fn an_identity_file_links_to_a_pool_key_of_the_same_name() {
+    use akasha_store::pools::keys;
+
+    let (_dir, conn) = new_vault("import-key-link");
+    let mut pem =
+        keys::PrivateKey::new(b"-----BEGIN OPENSSH PRIVATE KEY-----\nlink\n".to_vec()).unwrap();
+    let key_id = keys::insert_key(
+        &conn,
+        &keys::NewKey {
+            name: "id_ed25519".to_owned(),
+            public_key: "ssh-ed25519 AAAA".to_owned(),
+            comment: None,
+        },
+        &mut pem,
+    )
+    .unwrap();
+
+    let imported = parse(
+        "\
+Host linked\n\
+\x20   HostName linked.internal\n\
+\x20   IdentityFile ~/.ssh/id_ed25519\n\
+Host unlinked\n\
+\x20   HostName unlinked.internal\n\
+\x20   IdentityFile ~/.ssh/other_key\n\
+Host bare\n\
+\x20   HostName bare.internal\n",
+        "me",
+    )
+    .unwrap();
+
+    let outcome = import_hosts(&conn, &imported.targets, false).unwrap();
+    let rows = rows(&conn);
+    assert_eq!(
+        find(&rows, "linked").key_id,
+        Some(key_id),
+        "basename 与池里的名字相同就该接上"
+    );
+    assert_eq!(
+        find(&rows, "unlinked").key_id,
+        None,
+        "不同名不许猜 —— 退回「钥匙在 agent 里」"
+    );
+    assert_eq!(
+        find(&rows, "bare").key_id,
+        None,
+        "没有 IdentityFile 的条目不受影响"
+    );
+    assert_eq!(
+        outcome.linked,
+        vec![("linked".to_owned(), "id_ed25519".to_owned())],
+        "报告里要说清接上了哪一条"
+    );
+}
+
 /// 成环的配置**连解析器都过不去**（那是解析器的判据）；这里手工造一批带环的条目，
 /// 盯的是**存储层自己那一道**：它必须拒绝，而且**一行都不能留下**。
 #[test]

@@ -107,6 +107,8 @@ pub enum BwErrorKind {
     InvalidServer,
     /// `bw` 说没有登录 —— 界面上该做的是"先登录"。
     NotLoggedIn,
+    /// `bw` 说这个 vault 锁着 —— 界面上该做的是"先解锁"（与上一条不同的一句话）。
+    Locked,
     /// `bw` 以非 0 退出而我们认不出类别（原话在 `message` 里）。
     CommandFailed,
     Parse,
@@ -130,6 +132,7 @@ impl From<BwError> for BwIpcError {
             BwError::InsecureUrl { .. } => BwErrorKind::InsecureUrl,
             BwError::InvalidServer { .. } => BwErrorKind::InvalidServer,
             BwError::NotLoggedIn => BwErrorKind::NotLoggedIn,
+            BwError::Locked => BwErrorKind::Locked,
             BwError::CommandFailed { .. } => BwErrorKind::CommandFailed,
             BwError::Parse { .. } => BwErrorKind::Parse,
             BwError::Archive { .. } => BwErrorKind::Archive,
@@ -589,6 +592,261 @@ pub fn bw_sync(bitwarden: TauriState<'_, Bitwarden>) -> Result<BwSnapshot, BwIpc
         let session = inner.session.as_mut().ok_or(BwError::NoSession)?;
         cli.sync(session)
     })
+}
+
+// ── 只读导入 SSH key 条目（plan 0903） ──────────────────────────────────────
+
+/// 导入报告（过 IPC 的形状）。
+///
+/// 它要回答三个问题，缺一个用户就没法相信这次导入 —— 与 `import_ssh_config` 的
+/// [`crate::pools::ImportReport`] 同一形状：
+///
+/// | 字段 | 回答 |
+/// |---|---|
+/// | [`Self::seen`] / [`Self::ssh_keys`] | **上游那边看到了什么**（全部条目数 / 其中 SSH key 数） |
+/// | [`Self::created`] / [`Self::replaced`] | **池里变了吗** |
+/// | [`Self::skipped`] | **哪几条没进来、为什么**（逐条给下一步动作） |
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BwImportReport {
+    /// 上游一共给了多少条（**全部类型**）。
+    pub seen: u32,
+    /// 其中 `type = 5`（SSH key）的。
+    pub ssh_keys: u32,
+    pub created: Vec<ImportedKey>,
+    pub replaced: Vec<ImportedKey>,
+    pub skipped: Vec<SkippedKey>,
+    /// 我们替用户补上的说明（目前只有一条：钥匙怎么才会接到主机上）。
+    pub notes: Vec<String>,
+}
+
+/// 池里新增 / 被替换的一把钥匙。
+///
+/// **不带行 id**：报告要回答的是"哪一把钥匙进来了"，而名字是池里的 `UNIQUE` 列；
+/// 行 id 是 `i64`，过 IPC 要另一套 checked 转换（同 `HostId` 的理由）—— 这里不需要它。
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedKey {
+    pub name: String,
+    /// 上游报的那串 `SHA256:…`（plan 0904 的离线自检拿它当参照）。
+    pub fingerprint: String,
+}
+
+/// 看见了、但**没动**的一条。
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedKey {
+    pub name: String,
+    pub reason: BwImportSkip,
+}
+
+/// 没动这一条的原因。**每个取值对应一个不同的下一步动作**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum BwImportSkip {
+    /// 池里已经有同名的行了。
+    Exists,
+    /// **这一批里**已经有同名的了（上游允许两个条目同名）。
+    DuplicateName,
+    /// 池里那一行已经归**另外一条**上游条目了。
+    Claimed,
+    /// 这一条只有公钥（上游允许），没有私钥可导。
+    NoPrivateKey,
+    /// 缺 id / 名字 / `revisionDate`：导进来会成为一条以后认不出来的记录。
+    NoProvenance,
+    /// 私钥超过受保护页（16 KiB），进不了库 —— 与 `keys::PrivateKey::new` 同一条上限。
+    TooLong,
+}
+
+impl From<akasha_store::pools::bw_items::Skip> for BwImportSkip {
+    fn from(skip: akasha_store::pools::bw_items::Skip) -> Self {
+        use akasha_store::pools::bw_items::Skip;
+        match skip {
+            Skip::Exists => Self::Exists,
+            Skip::DuplicateName => Self::DuplicateName,
+            Skip::Claimed => Self::Claimed,
+        }
+    }
+}
+
+/// 导入 SSH key 失败。变体按**用户的下一步动作**分（与 `ImportError` 同一原则）。
+#[derive(Debug, thiserror::Error, serde::Serialize, specta::Type)]
+#[serde(tag = "kind", content = "detail", rename_all = "camelCase")]
+pub enum BwImportError {
+    /// 库没解锁。导入要**写**进密钥池，所以解锁是硬前提（不像读快照那样只是读不到）。
+    #[error("库是锁着的：导入要把钥匙写进密钥池，先解锁")]
+    Locked,
+
+    /// `bw` 那一侧的失败。`kind` 与面板其余部分同一个域（前端按它分辨，不匹配消息字符串）。
+    #[error("{message}")]
+    Bw { kind: BwErrorKind, message: String },
+
+    /// 其余（数据目录未定、写库失败……）。
+    #[error("{message}")]
+    Failed { message: String },
+}
+
+impl From<BwError> for BwImportError {
+    fn from(err: BwError) -> Self {
+        let ipc = BwIpcError::from(err);
+        Self::Bw {
+            kind: ipc.kind,
+            message: ipc.message,
+        }
+    }
+}
+
+impl From<crate::vault::ConnError> for BwImportError {
+    fn from(err: crate::vault::ConnError) -> Self {
+        match err {
+            crate::vault::ConnError::Locked => Self::Locked,
+            other => Self::Failed {
+                message: other.to_string(),
+            },
+        }
+    }
+}
+
+/// 把 Bitwarden 里的 SSH key 条目**只读导入**本地密钥池（plan 0903）。
+///
+/// 两把锁**不同时持有**：先在 `bw` 那把锁里跑完 `list items` 并解析成我们自己的类型，
+/// 放锁之后才去动库。顺序反过来（持库锁去起进程）会让一次 `bw` 调用把整个库锁住几百毫秒。
+///
+/// 这一条**不返回快照**：导入不改三态，也不改两个轴 —— 面板上要刷新的东西由调用方自己再读一次。
+#[tauri::command]
+#[specta::specta]
+pub fn bw_import_keys(
+    bitwarden: TauriState<'_, Bitwarden>,
+    vault: TauriState<'_, crate::vault::Vault>,
+    overwrite: bool,
+) -> Result<BwImportReport, BwImportError> {
+    let akasha_bw::Inventory { total, ssh_keys } = list_ssh_keys(&bitwarden)?;
+
+    // 上游的条目 → 落库要的形状。三档"导不进来"在这里逐条记下来，**不是整批失败**：
+    // 一条只有公钥的条目不该让另外九条好的也进不来。
+    let mut incoming: Vec<akasha_store::pools::bw_items::Incoming> = Vec::new();
+    let mut skipped: Vec<SkippedKey> = Vec::new();
+    for key in ssh_keys {
+        if !key.has_private_key() {
+            skipped.push(SkippedKey {
+                name: key.name,
+                reason: BwImportSkip::NoPrivateKey,
+            });
+            continue;
+        }
+        if !key.is_recordable() {
+            skipped.push(SkippedKey {
+                name: key.name,
+                reason: BwImportSkip::NoProvenance,
+            });
+            continue;
+        }
+        // `into_bytes` 把那个 `String` 的缓冲**移**过来（没有第二份副本），
+        // 而 `PrivateKey::new` 成功时会把这块缓冲擦零。
+        let name = key.name;
+        let private = match akasha_store::pools::keys::PrivateKey::new(key.private_key.into_bytes())
+        {
+            Ok(private) => private,
+            // 另一档（空私钥）在上面就已经挡掉了 —— 这里只剩"超过一页"。
+            Err(_) => {
+                skipped.push(SkippedKey {
+                    name,
+                    reason: BwImportSkip::TooLong,
+                });
+                continue;
+            }
+        };
+        incoming.push(akasha_store::pools::bw_items::Incoming {
+            cipher_id: key.id,
+            name,
+            revision_date: key.revision_date,
+            fingerprint: key.fingerprint,
+            public_key: key.public_key,
+            private,
+        });
+    }
+
+    // 报告要按名字说清"进来的是哪一把"，而落库那边只回行 id + 名字 —— 指纹先留一份。
+    let fingerprints: std::collections::BTreeMap<String, String> = incoming
+        .iter()
+        .map(|item| (item.name.clone(), item.fingerprint.clone()))
+        .collect();
+
+    let outcome = vault
+        .with_conn(|conn| {
+            akasha_store::pools::bw_items::import_snapshot(conn, &mut incoming, overwrite)
+        })
+        .map_err(BwImportError::from)?;
+
+    tracing::info!(
+        seen = total,
+        ssh_keys = fingerprints.len(),
+        created = outcome.created.len(),
+        replaced = outcome.replaced.len(),
+        skipped = skipped.len() + outcome.skipped.len(),
+        "bitwarden ssh keys imported"
+    );
+
+    let named = |rows: Vec<akasha_store::pools::bw_items::Row>| -> Vec<ImportedKey> {
+        rows.into_iter()
+            .map(|row| ImportedKey {
+                fingerprint: fingerprints.get(&row.name).cloned().unwrap_or_default(),
+                name: row.name,
+            })
+            .collect()
+    };
+    let created = named(outcome.created);
+    let replaced = named(outcome.replaced);
+    let mut all_skipped = skipped;
+    all_skipped.extend(outcome.skipped.into_iter().map(|(name, skip)| SkippedKey {
+        name,
+        reason: BwImportSkip::from(skip),
+    }));
+
+    let mut notes = Vec::new();
+    if !created.is_empty() || !replaced.is_empty() {
+        // 这条 note 不是装饰：钥匙进了池不等于主机用得上它。主机引用钥匙的唯一方式是
+        // `~/.ssh/config` 导入时 `IdentityFile` 的 basename 与钥匙名**逐字符相同**。
+        notes.push(
+            "钥匙进池了，但主机还不会用它：再导入一次 `~/.ssh/config`，\
+             里面 `IdentityFile` 的**文件名**与这里的钥匙名相同时就会接上。"
+                .to_owned(),
+        );
+    }
+
+    Ok(BwImportReport {
+        seen: u32::try_from(total).unwrap_or(u32::MAX),
+        ssh_keys: u32::try_from(fingerprints.len()).unwrap_or(u32::MAX),
+        created,
+        replaced,
+        skipped: all_skipped,
+        notes,
+    })
+}
+
+/// 跑一次 `bw list items --raw` 并解析成 [`akasha_bw::Inventory`]（**不碰库**）。
+///
+/// 那段输出是整个 vault 的明文，它在这一趟里的生命期就是这一行：`Cli::items` 返回
+/// `Zeroizing`，[`akasha_bw::items::parse`] 读完，函数返回时缓冲区被擦零。
+fn list_ssh_keys(bitwarden: &Bitwarden) -> Result<akasha_bw::Inventory, BwImportError> {
+    let mut inner = bitwarden.lock();
+    let settings = inner.settings;
+    let Some(dir) = inner.dir.clone() else {
+        return Err(BwImportError::Failed {
+            message: "还没初始化（数据目录未定）".to_owned(),
+        });
+    };
+    let located = Paths::new(&dir)
+        .resolve(settings)
+        .map_err(BwImportError::from)?;
+    let cli = Cli::new(&located);
+    let session = inner.session.as_mut().ok_or_else(|| BwImportError::Bw {
+        kind: BwErrorKind::NotLoggedIn,
+        message: BwError::NoSession.to_string(),
+    })?;
+
+    let raw = cli.items(session).map_err(BwImportError::from)?;
+    akasha_bw::items::parse(&raw).map_err(BwImportError::from)
 }
 
 /// `bitwarden` probe：与 [`bw_cli_status`] 同一份读数（`AGENTS.md` §7：观察后端状态用 probe）。

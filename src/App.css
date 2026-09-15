@@ -1043,3 +1043,25 @@ body {
 .bw-license {
   color: #ffd479;
 }
+
+/* 导入那一块（plan 0903）：报告是**列表**（哪几条进来了、哪几条没进来），
+   所以它需要一点自己的排版 —— 后端给的字不在这里重排。 */
+.bw-import-what,
+.bw-note {
+  margin: 4px 0 0;
+  color: #8b97a8;
+  font-size: 12px;
+}
+
+.bw-import-report,
+[data-bw-import-report] {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+[data-bw-import-report] ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: #c8d2e0;
+  word-break: break-all;
+}

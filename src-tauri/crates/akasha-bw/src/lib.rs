@@ -18,6 +18,7 @@
 //! | [`acquire`] | 运行时下载：解析最新 `cli-v*` 版本 → 取资产 → 算 SHA-256 → 解包 → 落盘 |
 //! | [`cli`] | 一次命令调用的形状：参数、子进程环境、超时、输出捕获与失败分类 |
 //! | [`status`] | 把 `bw status --raw` 的 JSON 翻成本 crate 的类型 |
+//! | [`items`] | 把 `bw list items --raw` 的输出里**只**那几条 SSH key 条目挑出来（plan 0903） |
 //! | [`session`] | session key 的落点：**只在内存里，且住在受保护页**（ADR-0007 D7） |
 //!
 //! ## 这一版刻意不做的
@@ -30,6 +31,7 @@
 pub mod acquire;
 pub mod cli;
 pub mod error;
+pub mod items;
 pub mod location;
 pub mod session;
 pub mod status;
@@ -39,6 +41,7 @@ pub mod variant;
 pub use acquire::{Http, Installed, Sources};
 pub use cli::{Cli, Output, Timeouts};
 pub use error::BwError;
+pub use items::{Inventory, SshKeyItem};
 pub use location::{AppData, BinarySource, Located, Paths, Settings};
 pub use session::Session;
 pub use status::{State, Status};

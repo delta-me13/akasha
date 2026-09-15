@@ -12,10 +12,16 @@
 // ⚠️ session key **从来不过这一层**：它只在 Rust 进程的内存里（受保护页）。
 // 界面能看到的只有 `hasSession` 这个布尔值（ADR-0007 D7）。
 
-import { commands, type BwIpcError, type BwSnapshot } from "./bindings";
+import {
+  commands,
+  type BwImportError,
+  type BwImportReport,
+  type BwIpcError,
+  type BwSnapshot,
+} from "./bindings";
 
 /** 界面看得见的一份完整读数（CLI 那一块 + 三态 + 有没有 session）。 */
-export type { BwSnapshot, BwIpcError };
+export type { BwSnapshot, BwIpcError, BwImportReport };
 
 /** 两个轴的取值。**故意不用布尔**：`host` 与 `managed` 是两件不同的事，不是开关的两面。 */
 export type BinarySource = "host" | "managed";
@@ -46,34 +52,46 @@ export class BwUnavailable extends Error {
    * 换成我们编的一句只会把人带偏。
    */
   private static describe(detail: BwIpcError): string {
-    switch (detail.kind) {
+    return BwUnavailable.describeFor(detail.kind, detail.message);
+  }
+
+  /**
+   * `kind` + 原话 → 用户该做的那件事。
+   *
+   * 公开是因为**导入那条路**（[`BwImportUnavailable`]）也会拿到 `bw` 这一侧的失败：
+   * 同一个状态不该在界面上有两种说法。
+   */
+  static describeFor(kind: BwIpcError["kind"], message: string): string {
+    switch (kind) {
       case "missingBinary":
         return "这台机器上没有 bw：PATH 里找不到它（可以改用运行时下载的那一份）";
       case "notInstalled":
         return "还没下载过 bw：先把它下下来";
       case "notRunnable":
-        return `找到的那份 bw 跑不起来：${detail.message}`;
+        return `找到的那份 bw 跑不起来：${message}`;
       case "unsupportedTarget":
-        return `上游没有这个平台 / 架构的资产：${detail.message}`;
+        return `上游没有这个平台 / 架构的资产：${message}`;
       case "noRelease":
-        return `读不出上游的版本：${detail.message}`;
+        return `读不出上游的版本：${message}`;
       case "network":
-        return `网络失败：${detail.message}`;
+        return `网络失败：${message}`;
       case "tls":
-        return `TLS 信任失败：${detail.message}`;
+        return `TLS 信任失败：${message}`;
       case "insecureUrl":
-        return `服务器地址必须是 https：${detail.message}`;
+        return `服务器地址必须是 https：${message}`;
       case "invalidServer":
-        return `服务器地址不合法：${detail.message}`;
+        return `服务器地址不合法：${message}`;
       case "notLoggedIn":
         return "还没有登录这个 vault：先登录（登录过就先解锁）";
+      case "locked":
+        return "这个 vault 是锁着的：先解锁";
       case "timeout":
-        return `bw 没有在期限内结束：${detail.message}`;
+        return `bw 没有在期限内结束：${message}`;
       case "protectedPage":
-        return `session key 放不进受保护页：${detail.message}`;
+        return `session key 放不进受保护页：${message}`;
       default:
         // `commandFailed` / `parse` / `archive` / `io` / `internal`：**原话照抄**。
-        return detail.message;
+        return message;
     }
   }
 }
@@ -127,4 +145,42 @@ export async function bwLock(): Promise<BwSnapshot> {
 /** 登出：连登录态一起清掉。 */
 export async function bwLogout(): Promise<BwSnapshot> {
   return guard(await commands.bwLogout());
+}
+
+/**
+ * 一条**导入**失败。它的 `kind` 域与 [`BwUnavailable`] 不同（多一档"库锁着"），
+ * 所以单独一个错误类型 —— 复用 `BwUnavailable` 会让"先解锁库"被说成"先登录 vault"。
+ */
+export class BwImportUnavailable extends Error {
+  readonly detail: BwImportError;
+
+  constructor(detail: BwImportError) {
+    super(BwImportUnavailable.describe(detail));
+    this.name = "BwImportUnavailable";
+    this.detail = detail;
+  }
+
+  private static describe(detail: BwImportError): string {
+    switch (detail.kind) {
+      case "locked":
+        return "本地库是锁着的：导入要把钥匙写进密钥池，先在密码库那一栏解锁";
+      case "bw":
+        // `bw` 那一侧的失败回到同一个域去说（`notLoggedIn` 那句在这里同样成立）。
+        return BwUnavailable.describeFor(detail.detail.kind, detail.detail.message);
+      default:
+        return detail.detail.message;
+    }
+  }
+}
+
+/**
+ * 从 Bitwarden 只读导入 SSH key 条目（plan 0903）。
+ *
+ * `overwrite` = `false`（默认）：池里已有同名的行就**不动它**，只在报告里列出来。
+ * 报告里逐条写着"哪几条进来了、哪几条没进来以及为什么" —— 界面照抄它，不自己推断。
+ */
+export async function bwImportKeys(overwrite = false): Promise<BwImportReport> {
+  const result = await commands.bwImportKeys(overwrite);
+  if (result.status === "error") throw new BwImportUnavailable(result.error);
+  return result.data;
 }

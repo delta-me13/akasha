@@ -26,11 +26,14 @@
 //!
 //! ## 版本与迁移
 //!
-//! - **v1 = 四张池表**（plan 0403 起）；**v2 = v1 + `known_hosts`**（plan 0503）。
+//! - **v1 = 四张池表**（plan 0403 起）；**v2 = v1 + `known_hosts`**（plan 0503）；
+//!   **v3 = v2 + `bw_items`**（plan 0903，Bitwarden 导入池）。
 //! - [`DDL_V1`] 是 v1 的**冻结定义**：验证迁移要能造出一个**真 v1 库**，而"真 v1"只能有
 //!   一个定义处，所以它公开 —— 公开的是**历史格式的文本**，不是一条绕开池的写入路径。
 //! - 迁移的规则（本仓库第一次，以后照抄）：**一次事务**里加表并写 `user_version`，
 //!   失败整体回滚；由 [`crate::open`] 自动做（理由见 [`crate::upgrade`]）。
+//! - 每个**历史**版本的表清单都要留在 [`tables_of`] 里：迁移要先按库里写的版本确认形状
+//!   （[`crate::upgrade`] 的第一步），少了那一档，一个真 v2 库会被当成"不认识的版本"拒绝。
 
 use rusqlite::Connection;
 
@@ -42,11 +45,26 @@ use crate::StoreError;
 /// 那个库就不是本程序写的（或写到一半被打断），要明确拒绝而不是"开起来看着像空的"。
 pub const TABLES_V1: [&str; 4] = ["keys", "hosts", "serials", "forwards"];
 
-/// **当前**格式（v2）的表：v1 那四张 + known_hosts。
+/// v2 的表：v1 那四张 + `known_hosts`（plan 0503）。
+///
+/// 它是**历史**了（当前格式是 v3），但这一档必须留着：迁移要先按库里写的版本确认形状，
+/// 而一个真 v2 库缺表时那是"坏了"，不是"待迁移"。
+pub const TABLES_V2: [&str; 5] = ["keys", "hosts", "serials", "forwards", "known_hosts"];
+
+/// **当前**格式（v3）的表：v2 那五张 + `bw_items`。
 ///
 /// known_hosts 是**缓存**不是池：它没有名字、不从界面新建，装的也全是公开信息
 /// （主机密钥本来就是公开的）—— 所以它不进 `dump` 那份"四套池"清单。
-pub const TABLES: [&str; 5] = ["keys", "hosts", "serials", "forwards", "known_hosts"];
+/// `bw_items` 是 `scope.md` §7 的**导入池**：它是用户数据（那几行回答"这把钥匙从哪来"），
+/// 但不是第五套"可增删改查的池" —— 它的行由导入产生、随 `keys` 行一起消失。
+pub const TABLES: [&str; 6] = [
+    "keys",
+    "hosts",
+    "serials",
+    "forwards",
+    "known_hosts",
+    "bw_items",
+];
 
 /// v1 的建表语句，**冻结**：这是"v1 是什么"的定义（D7）。
 ///
@@ -110,7 +128,10 @@ CREATE TABLE forwards (
 /// - `UNIQUE (host, port, key_type)`：同一台主机的同一种密钥类型只认一把。
 ///   **不同类型各记一行**是照上游 `check_known_hosts_path` 的语义来的（类型不同不算不匹配），
 ///   免得服务端换掉算法时被误判成"密钥变了"。
-const DDL_V2: &str = "
+///
+/// 公开是因为迁移测试要按它造一个**真 v2 库**（同 [`DDL_V1`]，只不过这一份还没被冻结成
+/// "历史"——它仍是当前格式的一部分，v3 只是在它之上加表）。
+pub const DDL_V2: &str = "
 CREATE TABLE known_hosts (
     id          INTEGER PRIMARY KEY,
     host        TEXT    NOT NULL,
@@ -122,10 +143,36 @@ CREATE TABLE known_hosts (
 ) STRICT;
 ";
 
-/// 建当前格式（v2）的全部表。**只在空库上跑**（[`crate::create`] 的路径）。
+/// v3 相对 v2 **加**的东西（`user_version` 2 → 3）：`scope.md` §7 的**导入池**（plan 0903）。
+///
+/// 四列各有它必须回答的问题 —— 少一列，缓存就有一件事说不清：
+///
+/// - `cipher_id`：**上游那一条的 id**（UUID 文本）。刷新判据要按它去比对"上游还在不在、
+///   改过没有"；重名条目靠它分辨。它是主键：一个条目只可能有一次导入的来历。
+/// - `revision_date`：上游那一条的 `revisionDate`（ISO 8601 文本，**原样存**）。
+///   plan 0904 的"联网刷新"判据就是它变没变。**不解析成时间戳**：我们只需要比较相等，
+///   而解析会引入时区与时区格式的两种正确性问题。
+/// - `fingerprint`：上游报的那串 `SHA256:…`。plan 0904 的**离线自检**拿它比对
+///   （从库里的私钥重算一遍）。⚠️ 它是**完整性自检**、不是加密（ADR-0002 D10）。
+/// - `key_id`：这份快照落在 `keys` 的哪一行。`UNIQUE` 让"一把钥匙对应两条来历"不可能发生。
+///
+/// `ON DELETE CASCADE`：删掉池里那行钥匙，来历行**随之消失**。导入池没有"孤儿"这种状态 ——
+/// 一行来历唯一的作用就是解释某把钥匙，钥匙没了它就只是一条读不懂的记录。
+const DDL_V3: &str = "
+CREATE TABLE bw_items (
+    cipher_id     TEXT    PRIMARY KEY,
+    name          TEXT    NOT NULL,
+    revision_date TEXT    NOT NULL,
+    fingerprint   TEXT    NOT NULL,
+    key_id        INTEGER NOT NULL UNIQUE REFERENCES keys(id) ON DELETE CASCADE
+) STRICT;
+";
+
+/// 建当前格式（v3）的全部表。**只在空库上跑**（[`crate::create`] 的路径）。
 pub(crate) fn create(conn: &Connection) -> Result<(), StoreError> {
     conn.execute_batch(DDL_V1)?;
     conn.execute_batch(DDL_V2)?;
+    conn.execute_batch(DDL_V3)?;
     Ok(())
 }
 
@@ -154,6 +201,7 @@ pub(crate) fn check(conn: &Connection, version: i64) -> Result<(), StoreError> {
 fn tables_of(version: i64) -> Option<&'static [&'static str]> {
     match version {
         1 => Some(TABLES_V1.as_slice()),
+        2 => Some(TABLES_V2.as_slice()),
         v if v == crate::FORMAT_VERSION => Some(TABLES.as_slice()),
         _ => None,
     }
@@ -171,6 +219,10 @@ pub(crate) fn migrate_step(conn: &Connection, from: i64) -> Result<i64, StoreErr
         1 => {
             conn.execute_batch(DDL_V2)?;
             Ok(2)
+        }
+        2 => {
+            conn.execute_batch(DDL_V3)?;
+            Ok(3)
         }
         other => Err(StoreError::UnsupportedVersion { found: other }),
     }

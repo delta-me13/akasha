@@ -268,6 +268,15 @@ export const commands = {
 	bwLogout: () => typedError<BwSnapshot, BwIpcError>(__TAURI_INVOKE("bw_logout")),
 	/**  与上游对齐（纯 pull）。需要 session key。 */
 	bwSync: () => typedError<BwSnapshot, BwIpcError>(__TAURI_INVOKE("bw_sync")),
+	/**
+	 *  把 Bitwarden 里的 SSH key 条目**只读导入**本地密钥池（plan 0903）。
+	 * 
+	 *  两把锁**不同时持有**：先在 `bw` 那把锁里跑完 `list items` 并解析成我们自己的类型，
+	 *  放锁之后才去动库。顺序反过来（持库锁去起进程）会让一次 `bw` 调用把整个库锁住几百毫秒。
+	 * 
+	 *  这一条**不返回快照**：导入不改三态，也不改两个轴 —— 面板上要刷新的东西由调用方自己再读一次。
+	 */
+	bwImportKeys: (overwrite: boolean) => typedError<BwImportReport, BwImportError>(__TAURI_INVOKE("bw_import_keys", { overwrite })),
 };
 
 /** Events */
@@ -316,8 +325,63 @@ export type BwErrorKind =
 "notInstalled" | "notRunnable" | "unsupportedTarget" | "noRelease" | "network" | "tls" | "insecureUrl" | "invalidServer" | 
 /**  `bw` 说没有登录 —— 界面上该做的是"先登录"。 */
 "notLoggedIn" | 
+/**  `bw` 说这个 vault 锁着 —— 界面上该做的是"先解锁"（与上一条不同的一句话）。 */
+"locked" | 
 /**  `bw` 以非 0 退出而我们认不出类别（原话在 `message` 里）。 */
 "commandFailed" | "parse" | "archive" | "io" | "timeout" | "protectedPage" | "internal";
+
+/**  导入 SSH key 失败。变体按**用户的下一步动作**分（与 `ImportError` 同一原则）。 */
+export type BwImportError = 
+/**  库没解锁。导入要**写**进密钥池，所以解锁是硬前提（不像读快照那样只是读不到）。 */
+{ kind: "locked" } | 
+/**  `bw` 那一侧的失败。`kind` 与面板其余部分同一个域（前端按它分辨，不匹配消息字符串）。 */
+{ kind: "bw"; detail: {
+	kind: BwErrorKind,
+	message: string,
+} } | 
+/**  其余（数据目录未定、写库失败……）。 */
+{ kind: "failed"; detail: {
+	message: string,
+} };
+
+/**
+ *  导入报告（过 IPC 的形状）。
+ * 
+ *  它要回答三个问题，缺一个用户就没法相信这次导入 —— 与 `import_ssh_config` 的
+ *  [`crate::pools::ImportReport`] 同一形状：
+ * 
+ *  | 字段 | 回答 |
+ *  |---|---|
+ *  | [`Self::seen`] / [`Self::ssh_keys`] | **上游那边看到了什么**（全部条目数 / 其中 SSH key 数） |
+ *  | [`Self::created`] / [`Self::replaced`] | **池里变了吗** |
+ *  | [`Self::skipped`] | **哪几条没进来、为什么**（逐条给下一步动作） |
+ */
+export type BwImportReport = {
+	/**  上游一共给了多少条（**全部类型**）。 */
+	seen: number,
+	/**  其中 `type = 5`（SSH key）的。 */
+	sshKeys: number,
+	created: ImportedKey[],
+	replaced: ImportedKey[],
+	skipped: SkippedKey[],
+	/**  我们替用户补上的说明（目前只有一条：钥匙怎么才会接到主机上）。 */
+	notes: string[],
+};
+
+/**  没动这一条的原因。**每个取值对应一个不同的下一步动作**。 */
+export type BwImportSkip = 
+/**  池里已经有同名的行了。 */
+"exists" | 
+/**  **这一批里**已经有同名的了（上游允许两个条目同名）。 */
+"duplicateName" | 
+/**  池里那一行已经归**另外一条**上游条目了。 */
+"claimed" | 
+/**  这一条只有公钥（上游允许），没有私钥可导。 */
+"noPrivateKey" | 
+/**  缺 id / 名字 / `revisionDate`：导进来会成为一条以后认不出来的记录。 */
+"noProvenance" | 
+/**  私钥超过受保护页（16 KiB），进不了库 —— 与 `keys::PrivateKey::new` 同一条上限。 */
+"tooLong";
 
 /**  失败的形状。**界面按 `kind` 分辨**，不匹配消息字符串（同 `SshIpcError` 的口径）。 */
 export type BwIpcError = {
@@ -466,6 +530,18 @@ export type ImportReport = {
 export type ImportedHost = {
 	id: number,
 	name: string,
+};
+
+/**
+ *  池里新增 / 被替换的一把钥匙。
+ * 
+ *  **不带行 id**：报告要回答的是"哪一把钥匙进来了"，而名字是池里的 `UNIQUE` 列；
+ *  行 id 是 `i64`，过 IPC 要另一套 checked 转换（同 `HostId` 的理由）—— 这里不需要它。
+ */
+export type ImportedKey = {
+	name: string,
+	/**  上游报的那串 `SHA256:…`（plan 0904 的离线自检拿它当参照）。 */
+	fingerprint: string,
 };
 
 /**
@@ -921,6 +997,12 @@ export type SkipReason =
 export type SkippedHost = {
 	name: string,
 	reason: SkipReason,
+};
+
+/**  看见了、但**没动**的一条。 */
+export type SkippedKey = {
+	name: string,
+	reason: BwImportSkip,
 };
 
 /**

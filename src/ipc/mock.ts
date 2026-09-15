@@ -275,6 +275,7 @@ export function installDevBackend(): void {
       case "bw_lock":
       case "bw_logout":
       case "bw_sync":
+      case "bw_import_keys":
         throw {
           kind: "commandFailed",
           message: "dev-web 的模拟后端没有 Bitwarden CLI（用 just dev）",

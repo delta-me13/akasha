@@ -27,6 +27,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use zeroize::Zeroizing;
+
 use crate::error::BwError;
 use crate::location::Located;
 use crate::session::Session;
@@ -248,13 +250,28 @@ impl Cli {
 
     /// 把本地状态与上游对齐（纯 pull）。
     pub fn sync(&self, session: &mut Session) -> Result<(), BwError> {
-        let exposed = session.expose()?;
-        let key = std::str::from_utf8(&exposed).map_err(|_| BwError::Parse {
-            what: "session key".to_owned(),
-            message: "不是 UTF-8".to_owned(),
-        })?;
-        self.run_checked(&["sync"], &[(SESSION_ENV, key)], self.timeouts.network)?;
+        let key = session_key(session)?;
+        self.run_checked(&["sync"], &[(SESSION_ENV, &key)], self.timeouts.network)?;
         Ok(())
+    }
+
+    /// `bw list items --raw`：**整个 vault 的明文 JSON**（plan 0903）。
+    ///
+    /// 返回的类型是 [`Zeroizing<Vec<u8>>`] 而不是 `Vec<u8>`：这段字节里有每一处登录口令，
+    /// 而它只在"导入 SSH key"那一刻有用 —— 读它的函数返回之后就该消失，不是等着分配器
+    /// 回收。⚠️ 它**不是**受保护页（页大小是编译期常量，而这里可能几 MB）；
+    /// 受保护页留给真正长住的那两样（session key、私钥）。
+    ///
+    /// 读完那一段的**解析**是纯函数（[`crate::items::parse`]），所以这个函数只负责"跑命令、
+    /// 拿字节"，不解释形状。
+    pub fn items(&self, session: &mut Session) -> Result<Zeroizing<Vec<u8>>, BwError> {
+        let key = session_key(session)?;
+        let out = self.run_checked(
+            &["list", "items", "--raw", "--nointeraction"],
+            &[(SESSION_ENV, &key)],
+            self.timeouts.network,
+        )?;
+        Ok(Zeroizing::new(out.stdout))
     }
 
     /// "本来就没登录"也是成功（把 `NotLoggedIn` 咽掉）。
@@ -363,6 +380,20 @@ fn read_all(mut reader: impl std::io::Read) -> Vec<u8> {
     buffer
 }
 
+/// 把 session key 借成 `BW_SESSION` 的值。
+///
+/// 借的是守卫里的那个提权窗口（`AGENTS.md` §3.4 的 memsafe 口径）：调用方拿它当
+/// `&str` 用，用完即降权。**原样交给子进程**是这条路的既定暴露面（`cli.rs` 模块文档写了）。
+fn session_key(session: &mut Session) -> Result<String, BwError> {
+    let exposed = session.expose()?;
+    std::str::from_utf8(&exposed)
+        .map(str::to_owned)
+        .map_err(|_| BwError::Parse {
+            what: "session key".to_owned(),
+            message: "不是 UTF-8".to_owned(),
+        })
+}
+
 /// 按**已知信号**把一次失败的输出分类（`docs/bitwarden.md` §7.2 是实测原文）。
 ///
 /// 认不出来的走 [`BwError::CommandFailed`]，并把原文带上 —— 猜类别会把用户指向错的地方。
@@ -379,6 +410,11 @@ fn classify(output: &Output) -> BwError {
 
     if text.contains("You are not logged in.") {
         return BwError::NotLoggedIn;
+    }
+    // 上游的 `errorIfLocked`：已登录但没有用户密钥时就是这一句。排在"没登录"之后 ——
+    // 两句话不会同时出现，而这个顺序让"未登录"那一档永远是它自己。
+    if text.contains("Vault is locked.") {
+        return BwError::Locked;
     }
     if text.contains("Insecure URL not allowed") {
         return BwError::InsecureUrl { message: first() };
