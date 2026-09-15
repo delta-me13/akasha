@@ -150,7 +150,7 @@
 
 | 编号 | 标题 | 状态 | 前置 / 展开时机 | 文件 |
 |---|---|---|---|---|
-| 0801 | `src-tauri/crates/akasha-serial`：`libudev` 走 Linux-only feature | 未规划（骨架） | 展开时机：阶段 8 开工时 | [0801](./0801-serial-crate-libudev.md) |
+| 0801 | `src-tauri/crates/akasha-serial`：`libudev` 走 Linux-only feature | 已完成（2026-09-15：`Transport` 的串口实现落地；`just libudev-check` 按目标核对两侧依赖图且用两条负例验过；13 条单测 / PTY 往返全过；`just ready` 6/6。⚠️ Windows 目标的**原生编译**证据待问题 #149 修复） | plan 0105（`Transport` 已定形态） | [0801](./archive/0801-serial-crate-libudev.md) |
 | 0802 | 端口枚举与连接参数 | 未规划（骨架） | 展开时机：plan 0801 之后 | [0802](./0802-serial-enumeration-params.md) |
 
 ### 阶段 9 — Bitwarden 导入

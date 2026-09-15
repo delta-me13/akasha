@@ -218,9 +218,9 @@
 
 目标：串口能枚举、能按参数打开，且不把 libudev 带进别的平台。
 
-- [ ] `src-tauri/crates/akasha-serial`，`libudev` 走 **Linux-only cargo feature**
+- [x] `src-tauri/crates/akasha-serial`，`libudev` 走 **Linux-only cargo feature**
       验收：Windows / macOS 构建不链接 libudev
-      → [plan 0801](./docs/plans/0801-serial-crate-libudev.md)
+      → [plan 0801](./docs/plans/archive/0801-serial-crate-libudev.md)
 - [ ] 端口枚举与连接参数（波特率/数据位/停止位/校验/流控）
       验收：枚举在本机列出真实端口；参数错误时给出可读报错
       → [plan 0802](./docs/plans/0802-serial-enumeration-params.md)

@@ -30,7 +30,9 @@
   有 `limit` / `live` / `peak` 三个读数，**等空位可取消**）、临时名的占用从"先查存在、再创建"
   改成**一次**原子占用（本机 `create_new`、远端 `CREATE|EXCLUDE`）。
 
-下一步是 **阶段 8 plan 0801（`akasha-serial`：`libudev` 走 Linux-only feature）**。
+**阶段 8 的第一条（plan 0801）完成**：`akasha-serial` 落地 —— `Transport` 的串口实现
+（零 Tauri 依赖），`serialport` 的 `libudev` 走 Linux-only 的 target 段，读数口是
+`just libudev-check`。下一步是 **阶段 8 的第二条 plan 0802（端口枚举与连接参数）**。
 
 阶段 4 的八项（每项一句）：**SQLCipher 加密库可打开**（0401）、**口令只从一条路径进入且可真正验证**
 （0402 —— 拆分"打开"与"新建"；此前在文件不存在的路径上**任何口令都能打开**）、
@@ -191,6 +193,25 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 `scope.md` §4.1 原来的"带宽减半"按字面不成立，已按这个口径更正。
 ⚠️ **隧道那条链是独立的一条**（本机 → A → B），**不复用另一栏的连接对象**：另一栏换主机 /
 断开都不会带走这一栏 —— ADR-0006 D3 的"不复用同一条连接"因此仍然成立。
+
+### 阶段 8 的形状（plan 0801 的 crate 与 feature；0802 待做）
+
+| 事 | 落在哪 |
+|---|---|
+| crate | `src-tauri/crates/akasha-serial`：零 Tauri 依赖，对外只认 `akasha_pty::Transport`（与 `akasha-ssh` 同一条边界） |
+| 载体 | `transport.rs` 的 `SerialTransport::open(&SerialSettings)` + `Transport` 实现。**能力位是 `Capabilities::NONE`**（没有窗口尺寸、没有结局、没有本地进程）：`resize` 走 trait 的默认实现答 `Unsupported`，`exited()` 恒为 `Ok(None)`，`session_leader()` 是 `None`（串口没有本地进程，看门狗没有可回收的东西）。`shutdown` 幂等，做的是"立停止标志 + 尽力 flush" |
+| 参数 | `settings.rs` 的 `SerialSettings`（路径 / 波特率 / 数据位 / 停止位 / 校验 / 流控）。四个枚举的取值域与 serial 配置池的 `CHECK` 对齐（数据位 5..=8、停止位 1..=2），`serialport` 的类型只出现在 crate 内部；**池的行 ↔ 本类型的映射是 plan 0802** |
+| feature | `libudev = ["serialport/libudev"]` 且 `default = ["libudev"]`。**平台差异由上游的 target 段承担** —— 它把那个 optional 依赖声明在 `cfg(all(target_os = "linux", not(target_env = "musl")))` 里，于是 Windows / macOS 上打开这个 feature 激活的是一个**不存在的依赖**，什么都不编译 |
+| 判据的读数口 | **`just libudev-check`**：按目标核对 `akasha-serial` 的依赖图 —— Linux 上必须有 libudev，Windows / macOS 上必须没有；两条负例都验过（见「本轮完成」） |
+| libudev 缺失时的降级 | Linux 上关闭该 feature（`default-features = false`）**仍能枚举** —— 上游另有一支 sysfs 实现；运行期拿不到 `libudev::Context` 时它返回**空表**而不是错误。所以发行版缺 libudev 的开发包**不是硬失败** |
+
+⚠️ **手动指定路径不依赖枚举**：`SerialTransport::open` 收的就是一个设备路径
+（`/dev/ttyUSB0` / `COM3`），所以"端口列表为空"或"libudev 整个不在"都不影响打开一个已知端口。
+
+⚠️ **Windows / macOS 的"原生编译"证据还差一层**（问题 #149）：`akasha-pty` 用了
+`rustix::process` 而没有 `cfg` 守卫，Windows 目标一开始就编译不过。本 plan 的本地证据是依赖图
+与一次一次性探针（`serialport` 带 `libudev` feature 在三个目标上都编译通过）；原生证据要等
+CI 的 `checks-other`。
 
 ### 阶段 5 之前那些跨阶段的结论（还在生效）
 
@@ -505,9 +526,12 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 
 ## 进行中 / 下一步
 
-- [ ] **下一步 = 阶段 8 的第一条（`akasha-serial`）**：骨架已存在
-  （[`0801`](./plans/0801-serial-crate-libudev.md)，判据 = Windows / macOS 构建不链接
-  `libudev`）。阶段 7 的第四条（并发 in-flight）已完成，见「本轮完成」。
+- [ ] **下一步 = 阶段 8 的第二条（端口枚举与连接参数）**：[`0802`](./plans/0802-serial-enumeration-params.md)
+  仍是骨架（未规划），开工前要补齐可粘贴的验收命令 —— 判据 = 枚举在本机列出真实端口、
+  参数错误时给出可读报错。⚠️ 那份骨架把 `socat` 写成验证手段的候选，而**本机没有 socat**；
+  实际可用的是 plan 0801 已经建起来的那条路（`portable-pty` 造一对 PTY，把从端当串口打开）。
+- [ ] **Windows 目标的编译被 `akasha-pty` 挡住**（问题 #149）：修它是计划级的活
+  （Windows 上没有 POSIX 进程组语义），不混进 0802。
 - [ ] **并发分档曲线里"上限 2 与串行一样慢"那一段没有定位**（plan 0704）：12 个 1 KiB 文件
   在带时延链路上，上限 1 = 1.17 s、2 = 1.16 s、4 = 0.56 s、8 = 0.38 s、16 = 0.21 s；
   上限 2 时两条传输**几乎同时结束**（166 ms / 207 ms），而各自都比单独执行时（96 ms）慢一倍，
@@ -542,7 +566,31 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测，剩余 CI 三平台格子
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
 
-### 本轮完成（plan 0704：并发 in-flight 请求）
+### 本轮完成（plan 0801：`akasha-serial` 与 libudev feature）
+**判据（ROADMAP 原文）**：**Windows / macOS 构建不链接 libudev**。
+
+- [x] **crate 与 feature 结构**：`src-tauri/crates/akasha-serial`。它自己的 feature 表是
+  `default = ["libudev"]` + `libudev = ["serialport/libudev"]`，而 `serialport` 用
+  `default-features = false` 引入 —— 于是"链不链 libudev"是 manifest 上能一眼看见的事，
+  不是依赖树的默认值顺出来的。
+- [x] **载体与参数**：见上文「阶段 8 的形状」。
+- [x] **13 条用例全过**：9 条单测（读循环的四种判定：超时 / `Ok(0)` / `Interrupted` / 真错误，
+  外加能力位、空路径、缺失设备的报错里有路径）+ 4 条 PTY 往返（写出去 / 读回来 / 能力位 /
+  收尾让读端结束且幂等）。⚠️ PTY 那 4 条带 `--nocapture` 重新执行一次，确认它**没有走跳过分支** ——
+  一次"全部通过"区分不了"用例在工作"与"它在第一行就 return 了"。
+- [x] **判据的可重复形式**：新增 `just libudev-check`（按目标核对依赖图），并用**两条负例**验过：
+  把 `default` 改成 `[]` → Linux 那一行报 ❌；在 `[dependencies]` 里无条件加 `libudev = "0.3"` →
+  两个非 Linux 目标报 ❌；还原之后三条 ✅。
+  ⚠️ 这道自检不是形式：**探针第一次执行时假通过过一次** —— 那次 `cargo tree --target` 因 `~/.cargo`
+  只读而解析失败（问题 #105），而"没有 libudev"与"没有输出"在 `grep` 眼里一样。配方里那两条
+  "先看退出码"的注释就是这条教训。
+- [x] **一次性探针**：用一个临时 workspace 成员让 `serialport` 带 `libudev` feature 在三个目标上
+  各编译一次（Windows / macOS 都是 Finished），验完即删（`crates/` 下无残留、`Cargo.lock` 里也没有它的条目）。
+- [x] **`just ready` 六步全绿**（含 `deny-offline`：`serialport` 是 MPL-2.0，libudev 那一组
+  都在 `deny.toml` 的放行列表内）。
+- ⚠️ **`akasha-pty` 让 Windows 目标编译不过**（问题 #149），所以"原生编译"这半句的证据在 CI。
+
+### 上一轮完成（plan 0704：并发 in-flight 请求）
 **判据（ROADMAP 原文）**：**大量小文件的吞吐显著优于串行请求**。
 
 - [x] **上限是引擎的一个类型**（`akasha-ssh/src/in_flight.rs`）：`InFlight { limit, permits, live, peak }`
@@ -956,3 +1004,12 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
      时延要按"段各自计时"实现，写成"读一段、睡一段、写一段"的循环会让链路自己变成一个
      串行瓶颈，于是并发发出去的请求**在链路里排队**，"并发更快"在上限 2、4 上几乎量不出来。
     教训：**测量装置本身要先被怀疑一次** —— 判据给出反直觉的数字时，先问"这个数是不是装置造出来的"。
+149. **`akasha-pty` 用了 Windows 上不存在的 `rustix::process`，且没有 `cfg` 守卫**：
+     上游把 `rustix::process` 限定在 `#[cfg(not(windows))]`，而 `teardown.rs` / `watchdog.rs`
+     直接用它的 `Pid` / `Signal` / `kill_process` / `setsid` —— 于是 **Windows 目标编译不过**：
+     `cargo check --target x86_64-pc-windows-msvc` 在 `akasha-pty` 就红（3 个 E0432 / E0433）。
+     它长期没暴露的原因是 CI 的 Windows 那一格（`checks-other`）到现在还没有真正执行过
+     （状态见「待验证」里的 plan 0102）。修它不是补一个 `cfg` 那么简单：Windows 上"回收整个会话"
+     没有 POSIX 进程组语义（要走 Job Object），而 `watchdog`（ADR-0005）的管道 EOF 机制本身也是
+     Unix 形状 —— 这是计划级的活。⚠️ 因此"Windows / macOS 构建不链接 libudev"这条判据在本机只能用
+     依赖图核对（`just libudev-check`），原生编译证据要等这个问题修好。
