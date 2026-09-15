@@ -1,42 +1,7 @@
-# akasha CI —— **只维护 GitHub Actions 这一份，并且吃透 GitHub 专属能力**。
+# akasha 持续集成。
 #
-# 三个 job：
-#   ① `checks-linux`  —— 完整门禁，跑的**就是本地那一条 `just ready`**
-#   ② `checks-other`  —— Windows / macOS 只做类型检查
-#   ③ `e2e`           —— 三平台矩阵，跑的**就是本地那一条 `just test-e2e`**
-#
-# ## 刻意用上的 GitHub 专属能力（放弃双 forge 之后才腾得出手）
-#
-# - **`concurrency` + `cancel-in-progress`** —— 同一分支上来了新推送，就取消上一次
-#   还没跑完的运行（`main` 除外：合并后的结论不该被掐断）。
-#   这是**最直接的成本开关**：连推三次只跑完最后一次，而不是付三份 runner 时间。
-# - **`permissions: contents: read`** —— 工作流默认权限收紧到最小。
-# - **`taiki-e/install-action` 一次装齐 `just` / `cargo-nextest` / `cargo-deny`** ——
-#   从 GitHub Releases 取预编译产物，并**校验 SHA256 与 attestation**。
-#   它替掉的是原来那段手写的"`uname` 选资产 + curl + 追加 `GITHUB_PATH`"脚本 ——
-#   那段脚本是**兼容层的遗产**（当时的理由是"不能用 `${{ runner.arch }}`"），
-#   现在没有任何理由继续手写。
-# - **`${{ runner.* }}` 上下文、任意表达式函数（`format()` 等）、矩阵、`defaults`**
-#   都可以用：不必再把这些换成 `uname` / `GITHUB_*` 之类的等价物。
-#
-# ## 为什么完整门禁只在 Linux 跑一次
-#
-# fmt / clippy / docs-check 的结论与平台无关，放进矩阵只是把时间乘三（也就是成本乘三）。
-# 平台差异（PTY / serial / ssh 的 cfg 分支）由 ② 的 `just check` 拦住 ——
-# 目标是"挡 cfg 错误"，不是"三平台各跑一遍全套"。
-#
-# **出包不在本文件的目标内**：打包需要真实主机（WiX / NSIS / WebView2 bootstrapper 都不行），
-# 那是发布流程的事。
-#
-# ## 曾经的双 forge 兼容层（已放弃）
-#
-# 本文件一度要同时喂 Gitea Actions 与 GitHub Actions，代价是整份工作流被压在
-# 两边**共有的子集**里（无 `runner.*` 上下文、`runs-on` 只能简单形式、表达式只有
-# `always()`、只能有 Linux runner）。2026-09-11 评估后放弃，**理由与那份约束清单
-# 留在 [`docs/plans/0102`](../../docs/plans/0102-ci-platform-matrix.md) 的「放弃记录」**。
-# 所以：不要为了别的 forge 再加兼容层；若哪天真的要在别处跑，先读那段记录。
-# ⚠️ 兼容层的倾向是**留下"看起来更稳"的写法**（手写资产选择、`uname`、
-# `--prefix` 绕权限）—— 见到这类写法先问一句"它是为哪个 forge 写的"。
+# 门禁定义、矩阵分工与成本取舍以 AGENTS.md §12 为准；双 forge 兼容层的评估与放弃记录见
+# docs/plans/0102-ci-platform-matrix.md。
 
 name: CI
 
@@ -46,36 +11,31 @@ on:
   pull_request:
     branches: [main]
 
-# 同一分支只保留最新一次运行：main 不取消，其余（PR 分支、重复推送）都取消。
-# `format()` 这类表达式函数现在可以放心用了（兼容层的表达式限制已随之作废）。
+# 同一分支只保留最新一次运行；main 除外 —— 合并后的结论不应被取代。
 concurrency:
   group: ${{ format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# 最小权限：本工作流只读仓库内容。加权限要写理由。
+# 最小权限：本工作流只读取仓库内容；新增权限须写明理由。
 permissions:
   contents: read
 
-# 所有 `run:` 一律 bash：本地配方本身就用 bash 作 shell（见 justfile 的
-# `set shell := ["bash", "-uc"]`），统一之后 Windows 上不再需要逐步写 `shell: bash`。
+# 与本地配方使用同一个 shell（根 justfile 的 set shell），Windows 上的步骤因此无需各自声明 shell。
 defaults:
   run:
     shell: bash
 
 env:
   CARGO_TERM_COLOR: always
-  # 唯一一份系统依赖列表。Tauri 官方 Debian/Ubuntu 列表：
-  # https://v2.tauri.app/start/prerequisites/
-  # 注意是 libayatana-appindicator3-dev —— 旧名 libappindicator3-dev 在
-  # ubuntu-latest 上已经不存在（STATUS 问题 #10）。
+  # 系统依赖列表的唯一来源。Tauri 官方 Debian/Ubuntu 列表：https://v2.tauri.app/start/prerequisites/
+  # 名称须为 libayatana-appindicator3-dev；旧名 libappindicator3-dev 在 ubuntu-latest 上不存在（问题 #10）。
   APT_DEPS: >-
     libwebkit2gtk-4.1-dev build-essential curl wget file
     libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
 jobs:
-  # ── ① 静态门禁 ──────────────────────────────────────────────────────────────
-  # 跑的**就是本地那一条 `just ready`** —— 门禁只有一处定义，避免 CI 与本地漂移。
-  # 不要在这里另写 cargo 命令：那样两处必然分叉，而分叉的方向总是"CI 比本地松"。
+  # 完整门禁：执行的即本地那一条 just ready，不在本文件另写 cargo 命令（AGENTS.md §12）。
+  # 前端依赖与前端构建都不是它的前置：generate_context 只在非 dev 构建里读取 frontendDist。
   checks-linux:
     name: 检查（Linux）
     runs-on: ubuntu-latest
@@ -88,43 +48,40 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends $APT_DEPS
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-06)
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-03-27)
         with:
           toolchain: stable
           components: clippy, rustfmt
 
-      # 缓存 ~/.cargo 与 target。rust-cache 的键自动含操作系统与 rustc 版本，
-      # 所以平台之间天然分键，不需要手写 key。
+      # 缓存 ~/.cargo 与 target；缓存键由该 action 自动包含操作系统与 rustc 版本。
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
-      # 三个工具一次装齐（预编译 + 校验和）。just 版本写死，与本地对齐。
+      # 预编译产物 + SHA256 / attestation 校验；just 的版本与 mise.toml 对齐。
       - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
         with:
           tool: just@1.58.0,cargo-nextest,cargo-deny
 
-      # 结构护栏（ast-grep）用官方 npm 包，自带预编译二进制。
+      # ast-grep 不在该 action 的支持列表内，改用官方 npm 包（含预编译二进制）。
       - name: 安装 ast-grep
-        run: npm install -g @ast-grep/cli
+        run: npm install -g @ast-grep/cli@0.45.3
 
-      # 门禁只有这一处定义：fmt-check + lint(clippy + ast-grep) + test + deny-offline + docs-check
       - name: just ready
         run: just ready
 
-  # ── ② 其余平台 ──────────────────────────────────────────────────────────────
-  # 只做类型检查（含 tests / benches），走 crate 级 `check` 的转发配方，不另写 cargo 命令。
+  # 类型检查（含 tests / benches）：拦 cfg 分支错误，执行的即本地那一条 just check。
   checks-other:
     name: 检查（${{ matrix.os }}）
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
-      # 一个平台红了不必掐掉另一个：平台差异要一次看全，而不是修一个等一轮。
+      # 一个平台的失败不得取消另一个：平台差异需一次看全，避免逐个平台串行排查。
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-06)
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-03-27)
         with:
           toolchain: stable
 
@@ -137,26 +94,20 @@ jobs:
       - name: 类型检查（含 tests / benches）
         run: just check
 
-  # ── ③ E2E：需要真实运行的 app，三平台矩阵 ──────────────────────────────────
-  # 只依赖 ①：静态门禁不过就不必烧 CI 时间起 app。
-  # **不依赖 ②**：平台类型检查与 E2E 是**互相独立的信号**，串成一条链只会让
-  # "Windows 红了"顺带吃掉 E2E 的结论。
+  # E2E：三平台，执行的即本地那一条 just test-e2e（自包含：自行启动并回收 Vite 与 app）。
   #
-  # 三格跑的都是**本地那一条 `just test-e2e`** —— 它自包含：自己起 Vite + app、
-  # 等 discovery 出现、跑完全部 E2E 目标、再把自己起的那套收掉。workflow 里**不再**
-  # 另写一套"启动 app + 跑 cargo test"的脚本：入口只有一处定义，两处必然分叉，
-  # 而分叉的方向总是"CI 与本地测得不是同一样东西"（AGENTS.md §12）。
+  # needs 只有 checks-linux：平台类型检查与 E2E 是相互独立的信号，串成一条链会让某个平台的
+  # 类型检查失败掩盖 E2E 的结论。
   #
-  # Linux 那格套 `xvfb-run`：Victauri 的窗口截图要**原生窗口句柄**，纯 Wayland 会话
-  # 拿不到（本地就是这种情况，用例会显式跳过并写明原因）；xvfb 给的是 X11，
-  # 于是这条路径在 CI 上真的被跑到。macOS（AppKit）与 Windows（Win32）同理。
+  # Linux 格附加 xvfb-run：Victauri 需要原生窗口句柄，纯 Wayland 会话不可用
+  # （用例会显式跳过并写明原因）。
   e2e:
     name: E2E（${{ matrix.os }}）
     runs-on: ${{ matrix.os }}
     needs: checks-linux
     timeout-minutes: 60
     strategy:
-      # 一个平台红了不必掐掉另外两个：平台差异要一次看全，而不是修一个等一轮。
+      # 一个平台的失败不得取消另外两个：平台差异需一次看全，避免逐个平台串行排查。
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -169,7 +120,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends $APT_DEPS xvfb
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-06)
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-03-27)
         with:
           toolchain: stable
 
@@ -179,8 +130,8 @@ jobs:
         with:
           tool: just@1.58.0
 
-      # node / pnpm 的版本以 mise.toml 为唯一来源（AGENTS.md §10），这里跟它对齐：
-      # 前端产物与开发循环是同一套 Vite/React，版本漂移会让 CI 红得莫名其妙。
+      # node / pnpm 的版本以 mise.toml 为唯一来源（AGENTS.md §10），此处与之对齐，
+      # 避免前端产物与开发循环之间的版本差异。
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           version: 12.3.4
@@ -190,8 +141,8 @@ jobs:
           node-version: 26.8.2
           cache: pnpm
 
-      # `just test-e2e` 起的是 Vite **dev server**（终端探针只在 dev 构建里注册），
-      # 所以这里要装前端依赖；后端由配方自己 `cargo build`。
+      # just test-e2e 启动的是 Vite dev server（终端探针只在 dev 构建中注册），因此需要前端依赖；
+      # 后端由该配方自行构建。
       - name: 前端依赖
         run: pnpm install --frozen-lockfile
 
