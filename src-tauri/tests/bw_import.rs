@@ -34,7 +34,7 @@ use akasha_ssh::testing::{ServerOptions, start};
 use serde_json::{Value, json};
 use support::{
     CLOSE_TIMEOUT, PromptScript, USER, answer_prompts, click, connect_and_prepare, observed,
-    open_vault, payload, text_of, type_line, unlock, wait_connected, wait_js,
+    open_bitwarden_panel, open_vault, payload, text_of, type_line, unlock, wait_connected, wait_js,
 };
 use victauri_test::VictauriClient;
 
@@ -218,7 +218,10 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     assert_eq!(settings["cli"]["version"].as_str(), Some(FAKE_VERSION));
 
     // ── 3. 面板：还没登录就导入 → 说"先登录"，而且**一行都没写** ────────────
-    click(&mut client, ".tab-new-bw", "打开 Bitwarden 面板").await;
+    // ⚠️ 用 `support::open_bitwarden_panel` 而不是直接点：上一个目标（`bitwarden_login`）
+    //    很可能**把面板留在开着**，而那个按钮是开关 —— 直接点会把它关掉，症状是
+    //    "面板上有导入按钮"这条判据等到超时（全量跑时就是这么红的）。
+    open_bitwarden_panel(&mut client).await;
     wait_js(
         &mut client,
         "!!document.querySelector('[data-bw-import]')",
