@@ -50,12 +50,13 @@ CI 的 `checks-other` 执行的就是 `cargo check --workspace --all-targets`，
 不可能通过。已按平台门控（`rustix` 变成 unix 专属依赖），能本地核对的三个成员现在都是退出码 0。
 ⚠️ **可编译不等于有实现**：Windows 上「回收整个会话」仍然是空的 —— 那条缺口见「进行中 / 下一步」。
 
-**CI 的首次运行已读出结论：三个 job 全红于同一个原因 —— 镜像上没有 `sccache`**（plan 0102）。
-`.cargo/config.toml` 把它写成 rustc-wrapper，于是 cargo 连探测 rustc 都失败；其余步骤
-（checkout / 系统依赖 / 工具链 / 缓存 / install-action / ast-grep）**全部成功**，`e2e` 因
-`needs: checks-linux` 未启动。处置：CI 上清空 `RUSTC_WRAPPER`（空值即"没有包装"，本机实测），
-不引入一个在 CI 上不可能命中的缓存工具（rust-cache 只缓存 `~/.cargo` 与 `target/`）。
-⚠️ 推送之后本机已能读 Actions（`git credential fill` 可用），结论不再只能从网页看。
+**CI 的第二次运行把结论推进一步**（plan 0102）：首次三个 job 全红于同一个原因 —— 镜像上没有
+`sccache`（问题 #154）；清空 `RUSTC_WRAPPER` 之后 **macOS 那一格通过**（平台类型检查第一次有结论），
+而 Linux 与 Windows 各自暴露一个此前被它掩盖的问题：Linux 缺 `libudev-dev`（问题 #155），
+Windows 上 `openssl-src` 调用到的 `perl` 是 Git 自带的 msys 版本、缺模块（问题 #156）。
+三处处置已进 workflow（缓存键那一处见问题 #157）；`e2e` 两轮都因 `needs: checks-linux` 未启动 ——
+三平台 E2E 至今没有读数。⚠️ 推送之后本机已能读 Actions（`git credential fill` 可用），
+结论不再只能从网页看。
 
 **文档门禁改为非快速失败**（本会话）：`just docs-check` 原先把 `just docs-style` 作为独立一行调用，
 第一次失败即终止整个配方 —— 语体命中会把"命令未漂移 / ROADMAP 预算 / plan 预算"三类检查**全部掩盖**。
@@ -379,6 +380,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
+| ↑ **CI 第二次运行的实际读数**（run `34987984477` @ `9081ac9`） | **macOS 那一格通过**（全部步骤绿，平台类型检查第一次有结论）；Linux 红在 `just ready` → `lint` → `clippy`、Windows 红在 `just check`：报错分别是 `libudev-sys` 的构建脚本找不到 `libudev.pc`（问题 #155）与 `openssl-sys` 的 vendored OpenSSL 配置失败（问题 #156）；`e2e` 仍为 `skipped`。日志里 `env:` 段落显示 `RUSTC_WRAPPER` 为空，编译确实开始 —— 空值这条处置有效。三处修正见 plan 0102 的「两次运行」 |
 | ↑ **CI 首次运行的实际读数**（run `34972060468` @ `24d4f72`；清理后的 workflow 再次运行 `34986599520` @ `31a4d7c` 同因） | 三个 job **全部失败于同一步**：Linux 的 `just ready`（红在 `lint` → `clippy`）、Windows 与 macOS 的 `just check`。三处报错逐字相同：`could not execute process` + `sccache <rustc> -vV` + `(never executed)`，以及 `No such file or directory (os error 2)`。**其余步骤全部成功**：checkout、系统依赖、`rust-toolchain`、`rust-cache`（首次 `No cache found`）、`install-action`（`just 1.58.0` 校验通过）、`npm install -g @ast-grep/cli@0.45.3`。`e2e` 状态为 **`skipped`**（`needs: checks-linux`），三平台 E2E 至今没有读数 |
 | `just test` | **473 tests run: 473 passed**（`akasha` **98** + `akasha-bw` **56** + `akasha-core` 30 + `akasha-pty` **40** + `akasha-serial` **25** + `akasha-ssh` **88** + `akasha-store` 136）。⚠️ `akasha` 的 91 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回；目标与用例数见下面那条 `just test-e2e` 与 `src-tauri/justfile` 的 `E2E_TARGETS`） |
 | `cargo check -p akasha-core -p akasha-pty -p akasha-serial --target x86_64-pc-windows-msvc`（plan 0108） | 三条都**退出码 0** —— 改之前 `akasha-pty` 是 3 个错误（E0432 `rustix::process` + E0433 ×2）、`akasha-serial` 因依赖它同样红。负例：撤掉 `teardown.rs` 的 `#[cfg(unix)]` 立刻重新变红（`cannot find module or crate rustix`），恢复后又回到 0 |
@@ -770,10 +772,11 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       全部结束），它还能替掉伴生看门狗在那条平台上的路径。本机没有 Windows 主机 —— 连"现在的行为
       是什么样"（ConPTY 关闭时到底带走多少进程）都观测不到。展开时机是有 Windows 主机可执行 E2E 时；
       届时先写 ADR（进程模型，与 ADR-0005 同源）
-- [~] **plan 0102（CI 平台矩阵）**：本地部分完成；**Windows 那一格原先必红**（问题 #149），
-      编译面已由 plan 0108 处置。最终判据 = 三个 job 全部通过 —— 首次运行已由推送触发，结论待读
-      （本机没有可用的 GitHub 凭据）
-- [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测，剩余 CI 三平台格子
+- [~] **plan 0102（CI 平台矩阵）**：本地部分完成，Windows 那格的编译面已由 plan 0108 处置；
+      两次运行之后 **macOS 那一格通过**，Linux 与 Windows 各自的镜像缺件已修（问题 #155 / #156，
+      缓存键那处见 #157）。最终判据 = 三个 job 全部通过 —— 第三次运行的结论待读
+- [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测；CI 三平台格子仍无读数
+      （两轮都停在 `needs: checks-linux` 上，见 plan 0102 的「两次运行」）
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
 
 ### 各轮（已完成，plan 0603–1103）
@@ -1221,3 +1224,21 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
      `~/.cargo` 与 `./target`，**不含** sccache 自己的缓存目录 —— 那层包装在 CI 上不可能命中；
      且空值即"没有包装"（本机 cargo 1.98.1 实测：把文件里的包装器换成不存在的那个，只要
      `RUSTC_WRAPPER` 为空就照样通过，证明空值真的覆盖了配置）。
+155. **Tauri 的官方依赖列表里没有 `libudev-dev`，而 `serialport` 需要它**（CI 第二次运行）：
+     Linux 那一格红在 `just ready` → `lint` → `clippy`，报的是 `libudev-sys v0.1.4` 的构建脚本
+     panic —— `pkg-config --libs --cflags libudev` 答 `Package 'libudev' … not found`。
+     ⚠️ 缺这个**开发包**与"运行期没有 libudev"是两件事：后者降级成 sysfs 那套枚举（空表，不是
+     错误 —— 见阶段 8 那一行），前者是**编译不过**。处置：加进 `env.APT_DEPS`。
+156. **Windows 上 `perl` 解析到 Git 自带的 msys 版本，而 vendored OpenSSL 需要 Strawberry Perl**
+     （CI 第二次运行）：`openssl-sys` 的构建脚本执行 OpenSSL 的 `Configure`，报
+     `Can't locate Locale/Maketext/Simple.pm in @INC`，而 `@INC` 全是 `/usr/share/perl5/core_perl/...`
+     —— 那是 Git for Windows 的 perl；镜像另装了 Strawberry Perl（chocolatey 的 `strawberryperl`），
+     只是 PATH 里排在后面。处置：`OPENSSL_SRC_PERL` 指向 Strawberry 的 `perl.exe`
+     （`.github/actions/windows-perl`，`checks-other` 与 `e2e` 共用）。⚠️ 写进 `GITHUB_ENV` 之前
+     先探一次模块：失败因此停在**那一步**，而不是推迟到 cargo 的构建脚本里 —— 后者的报错读起来
+     像 OpenSSL 坏了，与真正的原因不是同一种。
+157. **`Swatinem/rust-cache` 默认在仓库根执行 `cargo metadata`，而本仓库的 workspace 在 `src-tauri/`**：
+     每个执行到它的 job 都会在缓存步骤里打一串 `Error: The process … cargo … failed with exit code 101`
+     与 `could not find Cargo.toml in …`（该步骤仍判**成功**，键也照常给出 —— 所以它不会挡住任何
+     东西，只会让缓存范围无法从日志判断）。它是 ADR-0004 的直接后果：该 action 的 `workspaces`
+     默认值是 `. -> target`。处置：三处都补 `workspaces: src-tauri`。

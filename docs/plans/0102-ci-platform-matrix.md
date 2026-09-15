@@ -169,31 +169,26 @@ macOS 需要用 `github.server_url == 'https://github.com'` 在 **job 级**排�
 `npm --prefix` 绕权限。它们的共同点是**看起来更"稳"，实际上只是在承担兼容层的成本** ——
 遇到这类写法，先确认它是为哪个 forge 写的。
 
-### 首次运行（2026-09-15）
+### 两次运行（2026-09-15）
 
-`origin` 已配置（私有仓库 `delta-me13/akasha`），`main` 已推送：本地与 `origin/main` 同为
-`24d4f72`，reflog 记 `update by push`，三个 job 的首次运行因此由那次推送触发。
+**第一次**（run `34972060468` @ `24d4f72`；清理后的 workflow 再次运行 `34986599520` @ `31a4d7c`
+同因）：**三个 job 全红于同一个原因 —— 镜像上没有 `sccache`** —— `.cargo/config.toml` 把它写成
+rustc-wrapper，cargo 连探测 rustc 都失败（`could not execute process` + `never executed`）；
+其余步骤全部成功，`e2e` 因 `needs: checks-linux` 为 `skipped`。处置：清空 `RUSTC_WRAPPER`，
+**不装 sccache**（两条理由见问题 #154；推送前在本机核对过六个 `uses:` 的固定点、
+`install-action` 那个提交的 `TOOLS.md`，以及 `just` / node / pnpm 的版本与 `mise.toml` 一致）。
 
-**结论：三个 job 全红，唯一原因是镜像上没有 `sccache`**（run `34972060468`；清理后的 workflow
-再次运行 `34986599520` 同因）。三个失败步骤报错逐字相同 —— `could not execute process` +
-`sccache <rustc> -vV` + `(never executed)` 与 `No such file or directory`：`.cargo/config.toml`
-把 sccache 写成 rustc-wrapper，而它不在镜像上。**其余步骤全部成功**（checkout / 系统依赖 /
-`rust-toolchain` / `rust-cache` / `install-action` / ast-grep），失败点只在编译那一步；`e2e` 因
-`needs: checks-linux` 状态为 `skipped`，三平台 E2E 至今没有读数。
+**第二次**（run `34987984477` @ `9081ac9`）：编译真的开始了（日志 `env:` 段落显示
+`RUSTC_WRAPPER` 为空），**macOS 那一格通过** —— 平台类型检查第一次有结论；Linux 与 Windows
+各自暴露一个此前被它掩盖的**镜像缺件**：前者红在 `just ready` → `lint` → `clippy`
+（`libudev-sys` 找不到 `libudev.pc`，问题 #155），后者红在 `just check`（`openssl-sys` 的
+vendored OpenSSL 配置失败，问题 #156）。`e2e` 仍为 `skipped`，三平台 E2E 至今没有读数。
 
-**处置**：workflow 里清空 `RUSTC_WRAPPER`（空值即「没有包装」，本机 cargo 1.98.1 实测：把文件里的
-包装器换成不存在的那个，只要该变量为空就照样通过），**不装 sccache** —— `Swatinem/rust-cache`
-v2.7.8 的 README 逐项列出它缓存的目录，只有 `~/.cargo` 与 `./target`，不含 sccache 自己的缓存目录，
-那层包装在 CI 上不可能命中。
+处置（三处，理由都在对应的问题号里）：`APT_DEPS` 补 `libudev-dev`；新增
+`.github/actions/windows-perl`，把 `OPENSSL_SRC_PERL` 指向镜像自带的 Strawberry Perl
+（`checks-other` 与 `e2e` 共用；写进 `GITHUB_ENV` 之前先用 `-MLocale::Maketext::Simple` 探一次，
+失败因此停在那一处，而不是推迟到 cargo 的构建脚本里）；三处 `rust-cache` 都补
+`workspaces: src-tauri`（问题 #157）。
 
-推送前在本机核对过的项：六个 `uses:` 的固定点均能解析；`install-action` 那个提交的 `TOOLS.md`
-收录 `just` / `cargo-nextest` / `cargo-deny`；`casey/just` 1.58.0、node 26.8.2、pnpm 12.3.4 与
-`mise.toml` 一致；YAML 的顶层键与 job 结构与「验收命令」一致（7 / 5 / 10 步）。
-
-仍只能在 runner 上验证的风险：
-
-1. 缓存是否如预期命中（首次运行 `No cache found`，第二次起才有效）；
-2. E2E 能否在 runner 上启动 webkit2gtk 与 xvfb 的窗口；
-3. Windows 上 Tauri 的构建脚本能否过 `just check`（不过就按步骤 10 单独决策）。
-
+仍只能在 runner 上读的：第三次运行的三格结论；缓存是否真的命中；E2E 能否在三平台启动 app。
 阶段 0 的「CI 通过」条目（`ROADMAP.md` 里标 `[~]`）依赖的是同一条结论。
