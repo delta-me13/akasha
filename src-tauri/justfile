@@ -67,8 +67,11 @@ test:
 # `tunnel_teardown` 盯的是"关闭之后没有任何东西偷偷把它连回来"（关完再等 1.5 秒读计数）——
 # 两者都只与自己那条隧道有关，排最后最省心。
 # `sftp_dual_pane` / `sftp_transfer_atomic` / `sftp_host_to_host`（阶段 7）同样自己起服务端、
-# 写同一个库、跑完收干净。最后那条（plan 0703）起**两台**（跳板 + 只在它网络里的目标），
+# 写同一个库、跑完收干净。倒数第二条（plan 0703）起**两台**（跳板 + 只在它网络里的目标），
 # 并且会在会话中途换主机、断开再连 —— 排在另两条之后：它不与它们共享任何主机行。
+# 最后一条（plan 0704）起**一台**服务端，但主机行指向它前面的**一条带时延的链路**
+# （`slow_link`，每段延后 10 ms）：它要量的是"并发比串行快多少"，而本机回环的往返太小，
+# 不放大就量不出差距。它同样不与前面的目标共享主机行。
 # `exit_residue` 会把 app 关掉 —— 所以它排在**另一段**的最后。
 #
 # ⚠️ **两段，两套配置**（plan 0302 + 0303）：关窗语义由数据目录里的 `config.json` 决定，
@@ -76,7 +79,7 @@ test:
 #   * 第一段（本清单）：没有配置文件 = 默认"收托盘" → `window_close` 有判据；
 #   * 第二段（`E2E_TARGETS_EXIT`）：写 `close_behavior=exit` 再起一次 app → `exit_residue`
 #     拿到的就是"关窗即退出"这条**可移植**的刺激（不需要托盘宿主，CI 上照样成立）。
-E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status vault_unlock ssh_session ssh_jump ssh_config_import tunnel_state tunnel_local_forward tunnel_dynamic_forward tunnel_remote_forward tunnel_reconnect tunnel_teardown sftp_dual_pane sftp_transfer_atomic sftp_host_to_host"
+E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status vault_unlock ssh_session ssh_jump ssh_config_import tunnel_state tunnel_local_forward tunnel_dynamic_forward tunnel_remote_forward tunnel_reconnect tunnel_teardown sftp_dual_pane sftp_transfer_atomic sftp_host_to_host sftp_pipelining"
 
 # 需要 `close_behavior=exit` 的目标：**只能**在第二段跑（见上）。
 E2E_TARGETS_EXIT := "exit_residue"
