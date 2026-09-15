@@ -96,6 +96,13 @@ GPL-3.0-only 对使用者没有用途限制，专有变体的 2.1（仅限内部
 不进事件载荷**。`bw lock` / `bw logout` / 进程退出即抹掉。它与库口令是两种机密：
 前者要能原样交给 `bw` 子进程，所以按 `Exposed` 提权窗口取用，用完即关。
 
+⚠️ **按 D13 的判据表重验过一遍**（`AGENTS.md` §3.4 对"新增一个用途"的硬要求 —— 不得只说
+"已使用 memsafe"）：`akasha-bw/tests/session_protection.rs`（Linux）在建 session 前后各读一次
+`/proc/self/status` 与 `smaps`，实测 **`VmLck` 0 → 4 kB**、多出来的那一段是 `---p` 且
+`VmFlags` 同时含 `dd` 与 `wf`（不进 core dump、不落 swap）、丢掉之后 **回到起点 0 kB**。
+D13 表里那两条**不成立**的边界照旧适用：Windows 上静止只读那一档没有、
+`/proc/self/mem` 仍读得到（它用 `FOLL_FORCE` 绕过页保护，问题 #79）。
+
 **D8 —— 主密码经 `--passwordenv` 传给子进程。**
 不用位置参数（argv 对同机进程可见，`ps` 就能读到），不用 `--passwordfile`（会把主密码落盘），
 也不走交互提问（inquirer 的逐字符回显会把口令写进管道，且 2FA 的往返不可控）。

@@ -352,7 +352,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
-| `just test` | **450 tests run: 450 passed**（`akasha` **96** + `akasha-bw` **46** + `akasha-core` 30 + `akasha-pty` **40** + `akasha-serial` **25** + `akasha-ssh` **86** + `akasha-store` 127）。⚠️ `akasha` 的 91 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回；目标与用例数见下面那条 `just test-e2e` 与 `src-tauri/justfile` 的 `E2E_TARGETS`） |
+| `just test` | **452 tests run: 452 passed**（`akasha` **97** + `akasha-bw` **47** + `akasha-core` 30 + `akasha-pty` **40** + `akasha-serial` **25** + `akasha-ssh` **86** + `akasha-store` 127）。⚠️ `akasha` 的 91 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回；目标与用例数见下面那条 `just test-e2e` 与 `src-tauri/justfile` 的 `E2E_TARGETS`） |
 | `just serial-check`（plan 0802） | 退出码 **0**：`akasha-serial` 的 **25 条**在两种 feature 配置下**各执行一遍**（默认走 libudev 的枚举实现，`--no-default-features` 走 sysfs 的），两次都是 **25 passed / 0 skipped** |
 | ↑ **判据：枚举在本机列出端口**（plan 0802） | ✅ `ports()` 在本机（libudev）返回 **32 条** `/dev/ttyS0`…`/dev/ttyS31`，**按路径排序、无重复、路径非空**，且每条在 `/sys/class/tty/<名字>` 里都有对应项（库内 `enumeration` 2 条）；关闭该 feature 后**同一套用例**返回 **0 条**且照常通过 —— "没有端口"与"枚举失败"因此是两种结果 |
 | ↑ **判据：参数错误给出可读报错**（plan 0802） | ✅ 越界取值报**字段与取值**（`data_bits = 9` / `stop_bits = 3` / `baud = 0`，库内 3 条）；打不开报**路径与 OS 原因**（不存在的设备与一个目录路径都实测过） |
@@ -422,7 +422,8 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | ↑ **一个把 IPC 占住 27 秒的问题（plan 0902 的实现期发现）** | ⚠️ 本机 `host` 轴上**确实有一个 `bw`**（发行版的 `bitwarden-cli` 把 `/usr/bin/bw` 指向 npm 包），而它在这个只读家目录里要 **13 秒**才报错。第一版每个快照都起三次进程（版本 / 帮助 / 状态），于是 `bw_cli_settings` 撞上 Victauri 的 30 秒 eval 上限。处置两条：**探测结果按"解析出来的程序路径"缓存**（版本与变体对一个给定的程序文件是不变的），并且**连 `--version` 都答不出来的那一份不再往下问状态**（那不是"状态读不出来"，是"这一份 `bw` 用不了"）。⇒ 正常机器上每个快照不再起进程；本机这个坏 `bw` 上每次切到它也只要一次 13 秒 |
 | ↑ **判据：登录 / 解锁 / 锁定在界面上跟着 CLI 走**（E2E `bitwarden_login`） | ✅ 假 `bw`（脚本，状态放在隔离目录里）：`host` 轴报"PATH 里找不到 bw"、`managed` 轴报"还没有下载过"（**两句话分得开**）→ 落点里放一份可执行文件之后报出它的版本与 `oss` 变体 → 面板显示同一串 → 填自托管地址 → 显示的**是读回来的那一串** → 口令错时面板上的话是 `bw` 自己的原话 → 口令对则"已解锁 + session key 在内存里"（且输入框里那份主密码被清掉）→ 点锁定变"已登录，未解锁 + 没有 session key" → 解锁回到已解锁 → **外部**删掉假 CLI 的解锁标记（等价于在别处执行了一次 `bw lock`）再点刷新 → 界面跟到 `locked` 且 `hasSession = false`（ADR-0007 D10）→ 登出回到未登录 |
 
-| `cargo nextest run --package akasha-bw`（plan 0902） | 退出码 **0**：**46 passed / 0 failed**（39 单测 + 7 条假 `bw` 的集成用例） |
+| `cargo nextest run --package akasha-bw`（plan 0902） | 退出码 **0**：**47 passed / 0 failed**（39 单测 + 7 条假 `bw` 的集成用例 + 1 条 session key 那一页的保护读数） |
+| ↑ **判据：session key 那一页真的被护住**（ADR-0002 D13 的判据表，按新用途重验） | ✅ `session_protection`（Linux，`--nocapture`）：`VmLck` **0 → 4 kB**；多出来的那一段是 `---p` 且 `VmFlags` 含 `dd` 与 `wf`（不进 core dump、不落 swap）；取值仍逐字节相同（读它要走一次提权窗口）；丢掉之后 `VmLck` **回到 0**。⚠️ D13 表里两条不成立的边界照旧：Windows 没有静止只读那一档，`/proc/self/mem` 仍读得到（问题 #79） |
 | ↑ **判据：两个轴各自可解析，且"没有 `bw`"与"还没下载"分得开** | ✅ `host` 轴上找不到 → `MissingBinary`；`managed` 轴上没有版本目录 → `NotInstalled`；解析时**不会**从一条轴静默滑到另一条（ADR-0007 D5，两种错误各有单测） |
 | ↑ **判据：变体判定** | ✅ 两份 `cli-v2026.8.0` 实测输出的命令表各判一次：有 `device-approval` → 专有、没有 → OSS。诱饵（`device-approval` 只出现在 `Examples:` 段）与"命令表为空"都判为 `unknown`（**不默认成 OSS**） |
 | ↑ **判据：主密码与 session key 都不进 argv**（ADR-0007 D7 / D8） | ✅ 假 `bw` 把收到的 argv 与 `$BW_PASSWORD` 各写一份：口令确实到了子进程（会话 key 就是它拼出来的），而 **argv 里搜不到它**，且带着 `--passwordenv` 与 `--nointeraction`；带 session 的命令只多一个环境变量、不多参数 |
