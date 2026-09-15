@@ -157,9 +157,12 @@ ready:
     done; \
     echo "✅ just ready 全绿（$ok/$total）"
 
+# 文档纪律（四部分，规则见 AGENTS.md §8 / §8.1 / §8.2，plan 规则见 docs/plans/README.md）。
+# 四部分**每轮全部执行**（非快速失败）：第一类失败不终止其余三类 —— 一轮给出全部待修项。
+#
 # A. 命令未漂移 —— 防止照着一份过期规则去用已不存在的旧命令
 #    * docs/just.md §2 是**权威清单**：必须覆盖**全部**配方（正向，且**只认 §2 表格内的记录**）
-#    * 顶层文档与 docs/**/*.md 可以只提一部分，但提到的每个命令必须真实存在（反向）
+#    * AGENTS.md / README.md / ROADMAP.md 与 docs/**/*.md 可以只提一部分，但提到的每个命令必须真实存在（反向）
 # B. 汇总类文档没长细节 —— ROADMAP 放"判据"，不放"手段"
 #    * 每条 ≤3 行、无代码块、反引号里不出现命令调用（--flag / {...}）
 #    * 只拦"细节泄漏"，**不拦能力条目本身的增长**：条目数该随能力涨，行数不该随细节涨
@@ -174,41 +177,47 @@ ready:
 #   2. 正向检查若不限定在 §2 表格内就形同虚设 —— 某条命令可能只在排错段落里被顺带提及，
 #      而表格里其实已经删掉了。所以用 awk 取出 §2 段落，只在那里面找。
 #   3. 含反引号的 grep 模式必须整体放进**单引号**里，否则会被 bash 当命令替换执行。
+#   4. 反向检查**不含 CLAUDE.md** —— 那个文件是 AGENTS.md 的指针 + Victauri 自动生成块，
+#      块内的英文散文会被裸词正则读成配方名（实测两条："just retry" / "just the"）。
 #
-# D. 文档语体 —— 口语、语气词、第二人称、比喻一律不许进文档（规范见 AGENTS.md §8.2）
-#    * 独立配方 docs-style 实现在上面，本配方第一步调用它
-#
-# 文档纪律（四部分，规则见 AGENTS.md §8 / §8.1 / §8.2，plan 规则见 docs/plans/README.md）。
-# 文档语体：剥离代码块与行内代码后匹配禁用语表。
-#   表在 docs/style.md 的 BANNED 标记之间（唯一数据源；加词步骤见该文件 §2），
-#   规则本体与术语对照见 AGENTS.md §8.2。片段拼成一条正则后逐份文档 grep -E。
+# D. 文档语体 —— 剥离代码块与行内代码后匹配禁用语表（规范见 AGENTS.md §8.2）
+#    * 表在 docs/style.md 的 BANNED 标记之间（唯一数据源；加词步骤见该文件 §2）；
+#      规则本体与术语对照见 AGENTS.md §8.2。片段拼成一条正则后逐份文档 grep -E。
+#    * **非快速失败**：逐份文档各查一遍，全部查完才汇总报错 —— 一轮修完全部命中，
+#      不必"改一份再执行一次"；单份文档命中超过 20 条时列出前 20 条并写明剩余条数。
+#    * 由 docs-check 调用时同样不终止它的其余三类检查（那是**调用方**的性质）。
 docs-style:
     @pat=$(awk '/<!-- BANNED:BEGIN -->/{f=1;next} /<!-- BANNED:END -->/{f=0} f' docs/style.md \
              | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
              | grep -vE '^(#|```|$)' | paste -sd'|'); \
     if [ -z "$pat" ]; then echo "❌ 读不到禁用语表 —— 检查 docs/style.md 的 BANNED 标记与内容"; exit 1; fi; \
-    bad=0; \
+    bad=0; hit_files=""; \
     for f in AGENTS.md CLAUDE.md README.md ROADMAP.md $(find docs -name '*.md' | sort); do \
       hits=$(awk 'BEGIN{n=0} /^[[:space:]]*```/{n=!n;next} n==0{print}' "$f" | sed -E 's/`[^`]*`//g' | grep -nE -e "$pat" || true); \
       if [ -n "$hits" ]; then \
+        bad=1; hit_files="$hit_files $f"; count=$(printf '%s\n' "$hits" | wc -l); \
         echo "❌ $f 命中禁用语（表见 docs/style.md，规则见 AGENTS.md §8.2）:"; \
-        printf '%s\n' "$hits" | head -n 20; \
-        bad=1; \
+        if [ "$count" -gt 20 ]; then \
+          printf '%s\n' "$hits" | head -n 20; \
+          echo "   …（本文件另有 $((count - 20)) 条命中未列出）"; \
+        else \
+          printf '%s\n' "$hits"; \
+        fi; \
       fi; \
     done; \
-    if [ "$bad" != "0" ]; then echo "→ 术语对照见 AGENTS.md §8.2；加词与收窄见 docs/style.md §2"; exit 1; fi; \
+    if [ "$bad" != "0" ]; then echo "❌ 文档语体未通过：下列文档命中禁用语"; printf '%s\n' $hit_files; echo "→ 术语对照见 AGENTS.md §8.2；加词与收窄见 docs/style.md §2"; exit 1; fi; \
     echo "✅ 文档语体通过（docs/style.md 的禁用语表无命中）"
 
 docs-check:
-    @just docs-style
     @miss=0; \
+    if ! just docs-style; then miss=1; fi; \
     recipes=$( { just --summary; just --justfile {{SRC}}/justfile --summary; } | tr ' ' '\n' | sort -u ); \
     sec2=$(awk '/^## 2\. /{f=1} /^## 3\. /{f=0} f' docs/just.md); \
     for r in $recipes; do \
       if [ "$r" = "default" ]; then continue; fi; \
       printf '%s\n' "$sec2" | grep -qE "just $r([^a-z0-9-]|$)" || { echo "❌ docs/just.md §2 表格未记录: just $r"; miss=1; }; \
     done; \
-    for f in AGENTS.md ROADMAP.md $(find docs -name '*.md'); do \
+    for f in AGENTS.md README.md ROADMAP.md $(find docs -name '*.md'); do \
       for m in $(grep -oE "just [a-z][a-z0-9-]*" $f | sed 's/^just //' | sort -u); do \
         printf '%s\n' "$recipes" | grep -qx "$m" || { echo "❌ $f 提到了不存在的配方: just $m"; miss=1; }; \
       done; \
@@ -231,5 +240,5 @@ docs-check:
     for id in $(grep -oE '^\| [0-9]{4} ' docs/plans/README.md | grep -oE '[0-9]{4}'); do \
       find docs/plans -name "$id-*.md" | grep -q . || { echo "❌ docs/plans/README.md 索引里的 plan 没有文件: $id"; miss=1; }; \
     done; \
-    if [ "$miss" = "1" ]; then echo "→ 命令类问题同步 docs/just.md §2；纪律类问题见 AGENTS.md §8.1；plan 类问题见 docs/plans/README.md"; exit 1; fi; \
+    if [ "$miss" = "1" ]; then echo "❌ 文档纪律未通过 —— 四部分均已执行完毕，上面列出的是本轮全部待修项"; echo "→ 命令类问题同步 docs/just.md §2；纪律类问题见 AGENTS.md §8.1；plan 类问题见 docs/plans/README.md"; exit 1; fi; \
     echo "✅ 文档纪律通过（语体符合 AGENTS.md §8.2；命令与 justfile 同步；ROADMAP $(grep -cE '^- \[[ x~!]\]' ROADMAP.md) 个条目均在 3 行内、无代码块与命令调用；plan $(printf '%s\n' "$plans" | grep -c . ) 份 ≤200 行且索引一致）"
