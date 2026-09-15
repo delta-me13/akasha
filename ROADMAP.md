@@ -206,9 +206,9 @@
 - [x] host ↔ host：**优先 B 档（`direct-tcpip`），失败回退 A 档（内存 relay）**
       验收：A 无法直连 B 时自动走 A 档；两档均不落盘
       → [plan 0703](./docs/plans/archive/0703-host-to-host-topology.md)
-- [ ] 并发 in-flight 请求（pipelining）
+- [x] 并发 in-flight 请求（pipelining）
       验收：大量小文件的吞吐显著优于串行请求
-      → [plan 0704](./docs/plans/0704-pipelining.md)
+      → [plan 0704](./docs/plans/archive/0704-pipelining.md)
 
 ---
 

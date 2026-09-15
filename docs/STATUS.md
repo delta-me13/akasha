@@ -22,7 +22,7 @@
 所以建链入口多了一个取消信号）。
 **ADR-0003（SSH 栈与资源模型）随阶段 6 收尾转为「已定案」** —— 落地它的 0501–0506 与 0601–0606
 全部归档；之后 SSH 这一层的改动只能由新的 ADR 取代，不再就地修订。
-**阶段 7「SFTP」3/4**：**0701 = 双栏骨架 + 两侧独立选来源**（每侧一条独立连接、
+**阶段 7「SFTP」4/4 完成**：**0701 = 双栏骨架 + 两侧独立选来源**（每侧一条独立连接、
 不需要先开终端）、**0702 = local ↔ host 双向传输**（临时名 + 原子重命名）与
 **0703 = host ↔ host 两档**（优先 B 档 = 在到源那一栏主机的连接上开 `direct-tcpip` 直通目标、
 SFTP 运行在隧道里；建不起来就回退 A 档 = 字节经本机内存中转）都已完成 ——
@@ -31,7 +31,11 @@ SFTP 运行在隧道里；建不起来就回退 A 档 = 字节经本机内存中
 **落盘不变量归目标端点**（本机用 `std::fs` 的 `rename`，远端用 SFTP 的 `rename`）。
 两栏之一可以是**本机文件系统**（`SftpOrigin`）；两栏都是主机时**档位在连接那一刻定**
 （目标是经另一栏那台直通来的 → 探针里的 `through`；回退到本机直连时 `throughFailure` 里留着原因）。
-下一步是 **阶段 7 plan 0704（并发 in-flight 请求）**。
+**0704 = 并发 in-flight 请求**：上限落成引擎的一个类型（`akasha_ssh::InFlight`，一个 SFTP 会话
+持一个，同时搬几个文件有上限、有默认值、有 `limit` / `live` / `peak` 三个读数；**等空位可取消**，
+于是关会话时排队中的传输一个端点都没碰过），临时名的占用从"先查存在、再创建"改成**一次**原子
+占用（本机 `create_new`、远端 `CREATE|EXCLUDE`）。
+下一步是 **阶段 8 plan 0801（`akasha-serial`：`libudev` 走 Linux-only feature）**。
 
 阶段 4 的八项（每项一句）：**SQLCipher 加密库可打开**（0401）、**口令只从一条路径进入且可真正验证**
 （0402 —— 拆分"打开"与"新建"；此前在文件不存在的路径上**任何口令都能打开**）、
@@ -142,7 +146,7 @@ SFTP 运行在隧道里；建不起来就回退 A 档 = 字节经本机内存中
 `0x05` 目标拒绝连接 / `0x07` 命令不支持），类别取自上游结构化的 `ChannelOpenFailure`
 （`SshError::Forward` 的 `class`），不从错误字符串里猜。
 
-### 阶段 7 的形状（plan 0701 的实体 + plan 0702 的传输引擎 + plan 0703 的两档）
+### 阶段 7 的形状（plan 0701 的实体 + 0702 的引擎 + 0703 的两档 + 0704 的并发上限）
 
 **形状先固化在 [ADR-0006](./adr/0006-sftp-stack-and-transfer-engine.md)（状态「实现中」）**：
 SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRead + AsyncWrite` 流**上，
@@ -156,11 +160,12 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | 连接 | `crate::ssh::connect_connection` —— 与终端、隧道**同一条**建链路径（含跳板链与主机密钥校验）；差别只在连上之后开的是 `sftp` 子系统。**本机那一档不建连接**（没有握手、没有认证，也就没有会失败的地方） |
 | 会话 | `akasha-ssh/src/sftp.rs` 的 `SftpClient`：`SshConnection::sftp()` 开子系统会话；`list(path)` 先 `canonicalize` 再 `read_dir`，条目**按名字排序**；plan 0702 起它同时是 [`Endpoint`]（`open_read` / `begin_write`） |
 | 传输引擎 | `akasha-ssh/src/transfer.rs`：`Endpoint` + `PendingWrite` + `Cancel` + `Progress` + `transfer()`。**两个端点**是唯一的输入，临时名与原子重命名在**目标端点**里 —— 于是本机 ↔ 主机、以及 host ↔ host 的两档共用同一个引擎 |
+| 并发上限 | `akasha-ssh/src/in_flight.rs`：`InFlight { limit, permits, live, peak }` + 有界入口 `transfer`（`select!` 带 `biased` 地等空位，取消那一支先看）。默认值在 `akasha_core::Transfer::in_flight`（8） |
 | 两档 | `src-tauri/src/ssh.rs` 的 `connect_connection_via`：`hops` = A 那一行自己的跳板链 ++ `[A]` ++ B 那一行自己的跳板链，终点是 B —— 交给**已有的** `connect_via_until`（plan 0505 的"只实现一次"）。`src-tauri/src/sftp.rs` 的 `sftp_connect` 在连 B 之前先看另一栏：它已连上一台**不同的**主机就试这条链（B 档），失败则本机直连（A 档） |
 | 本机端点 | `akasha-ssh/src/local.rs`：`LocalEndpoint`（**无字段**：没有连接要持有，路径每条命令带进来）。`.name.part` 同目录写完再 `rename`（POSIX 与 Windows 都原子） |
 | 传输的记账 | 实体的 `transfers`（新的在前）+ 每条一个 `Arc<Tracked>`：进度是 `AtomicU64`、状态与失败原因是短锁 —— **搬字节的任务不去抢会话表那把锁** |
 | 命令 | `sftp_open` · `sftp_connect(handle, side, origin)` · `sftp_list` · **`sftp_transfer` / `sftp_transfer_cancel` / `sftp_transfers`** · `sftp_sides` · `sftp_sessions` · `sftp_close` |
-| probe | `sftp` → `[{handle, sides:[{side, origin, name, state, failure, path, through, throughFailure}], transfers:[{id, from, fromPath, to, toPath, state, done, total, failure, via}]}]`（两侧永远两项、`left` 在前；传输新的在前） |
+| probe | `sftp` → `[{handle, sides:[{side, origin, name, state, failure, path, through, throughFailure}], transfers:[{id, from, fromPath, to, toPath, state, done, total, failure, via}], inFlight:{limit, live, peak}}]`（两侧永远两项、`left` 在前；传输新的在前） |
 | 失败分档 | `akasha-ssh` 新增 `SshError::Sftp`（"会话建不起来 / 用不了"，用户要看的是**对端有没有开 SFTP**）与 **`SshError::File { path, reason }`**（plan 0702：**端点上的一个文件操作**失败 —— 用户要去看的是**那个路径**，用会话那一档报一次重命名失败会把排查方向整个带偏）；app 侧 `SftpError`：`locked` / `noSuchHost` / `notAnSftp` / **`notConnected`（这一侧还没连）** / **`noSuchTransfer`** / `failed {kind,message}` / `internal`（plan 0703 删掉了 `unsupported`：host ↔ host 不再是"还没做"） |
 
 ⚠️ **"两侧独立"有可断言的形式**：两侧各持各的连接，失败只落在**那一侧**
@@ -180,10 +185,19 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 ⚠️ **取消只有一条路径**（ADR-0006 D4）：用户点「取消」与关闭 `Session` 推的是**同一个**
 `Cancel`，清理由目标端点的 `abort` 完成。于是 `sftp_close` 的顺序不能换 ——
 **先中止、等清理落地，再断连接**（临时文件是用那条连接删的）。
-⚠️ **临时名的取名规则在引擎那一层，挑一个没被占用的由端点做**（`.name.part`，
-被占用时退到 `.name.N.part`，最多试 16 个）：D6 的唯一性因此落在**接口**上。
-⚠️ **一次一个文件**：并发 in-flight 是 plan 0704，占用探测与创建之间不是原子的
-（见 ADR-0006 §4）。
+⚠️ **临时名的取名规则在引擎那一层，抢占由端点做**（`.name.part`，被占时退到 `.name.N.part`，
+最多试 16 个）。plan 0704 起抢占是**一次**调用（本机 `create_new` = `O_EXCL`，远端
+`WRITE|CREATE|EXCLUDE`）—— "先查存在、再创建"那道缝正是两个同名文件并发传输会踩进去、
+双双写同一个临时文件的地方。
+⚠️ **远端分不清"名字被占"与别的通用失败**：SFTP v3 的状态码只有 8 个取值，没有"已存在"这一档
+（那是 v4 才补的）。所以只有通用的 `Failure` 换下一个候选，权限 / 超时 / 断连当场报出去 ——
+后者换 16 个候选只是把同一次失败问 16 遍。
+⚠️ **上限约束的是整个会话**（ADR-0006 D6）：一个 SFTP 会话持一个 `InFlight`，"每一条传输一条
+命令"的形状因此不会各自为政。排队中的传输在传输记录里与"正在搬"长得一样（状态只有"还没结束"
+这一档），分辨它们靠 `live` 比"还没结束的条数"少。
+⚠️ **上限的默认值不按"饱和点"取**：分档实测里 16 仍在明显更快，取 8 是占用与吞吐的折中
+（上限同时是对端打开句柄数与本机缓冲数的上界）。分档曲线里**上限 2 与串行一样慢**那一段
+还没有定位 —— 见待验证与 plan 0704 的实施记录。
 ⚠️ **档位在"连接那一刻"定，定的是目标那一栏的端点**（ADR-0006 D5）：那条链建链尝试的
 **任何**失败都算"B 不可用" —— 不分类（对"要不要回退"这个问题它们没有区别），但**必须留下证据**：
 `through`（经哪台直通）/ `throughFailure`（回退原因）/ 传输的 `via`。于是"这次传输走的是哪一档"
@@ -250,7 +264,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
-| `just test` | **353 tests run: 353 passed**（`akasha` **79** + `akasha-core` 30 + `akasha-pty` 39 + `akasha-ssh` **78** + `akasha-store` 127）。⚠️ `akasha` 的 79 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回 —— 其中 `portable` 3 条、`ssh_session` / `ssh_jump` / `ssh_config_import` / `tunnel_state` / `tunnel_local_forward` / **`tunnel_dynamic_forward` / `tunnel_remote_forward` / `tunnel_reconnect` / `tunnel_teardown` / `sftp_dual_pane` / `sftp_transfer_atomic` / `sftp_host_to_host` 各 1 条**） |
+| `just test` | **362 tests run: 362 passed**（`akasha` **80** + `akasha-core` 30 + `akasha-pty` 39 + `akasha-ssh` **86** + `akasha-store` 127）。⚠️ `akasha` 的 80 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回 —— 其中 `portable` 3 条、`ssh_session` / `ssh_jump` / `ssh_config_import` / `tunnel_state` / `tunnel_local_forward` / **`tunnel_dynamic_forward` / `tunnel_remote_forward` / `tunnel_reconnect` / `tunnel_teardown` / `sftp_dual_pane` / `sftp_transfer_atomic` / `sftp_host_to_host` / `sftp_pipelining` 各 1 条**） |
 | ↑ **判据：转发端口可访问远端服务**（plan 0602） | ✅ `tunnel_local_forward` E2E（真实 app + **测试进程内**一台 SSH 服务端与一个回声服务端，**1.05 s**）：界面打开池里那条规则 → 主机密钥与口令各答一轮 → probe 报 `bind = 127.0.0.1:<规则端口>` → 从测试进程连该端口**写一行、读回同一行**（回声服务答的） |
 | ↑ **走的是 `direct-tcpip`，且每条入站连接各开一条通道**（plan 0602） | ✅ **对端记到恰好 1 条 `direct-tcpip` 请求**（`host` = `akasha-local-forward.invalid`、`port` = 回声服务端口，**本机解析不出这个名字** —— 用例自行解析一次并断言失败）、中继字节数 `> 0`；同一端口再连一次 → 请求数变 **2** |
 | ↑ **端口被占用的报错可读**（plan 0602） | ✅ 规则指向一个被本进程占着的端口：界面显示「本地监听 127.0.0.1:38725 绑定失败：地址已在使用 (os error 98)」，且 probe 里**没有**它（**没登记成** —— 重试也不会好，用户要动的是端口） |
@@ -308,6 +322,9 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | ↑ **判据：A 无法直连 B 时自动走 A 档；两档均不落盘**（plan 0703） | ✅ `sftp_host_to_host` E2E（真实 app + **测试进程内两台**服务端，**5.29 s** —— 同一条用例在不同轮次实测过 5.3～11.5 s，耗时取决于几次握手与面板刷新，不是断言）：左栏连跳板、右栏连那台 `host` 是 `akasha-e2e-sftp.invalid:22` 的主机（**本机解析不出这个名字** —— 用例自己解析一次并断言失败）→ 右栏显示"经 … 直通"、探针 `through` = 跳板那一行 → **跳板收到恰好 1 条 `direct-tcpip → akasha-e2e-sftp.invalid:22`，中继搬了 55776 字节** → 目标盘上 `alpha.bin` 的字节与源逐字节相同、目录里没有临时名、**源那一台一个条目都没多**（`不落盘` 的两档口径见「待验证」） |
 | ↑ **回退可观测，且回退之后传输仍然走通**（plan 0703） | ✅ 同一个 E2E：右栏换成本机能直达的地址 → 跳板**拒转发**（探针里的原因原文是 `AdministrativelyProhibited`）→ `through` 为空、`throughFailure` 非空且界面上也写着那句 → **第二个文件照样落到目标盘上**，而传输记录里的 `via` 为空（本机内存中转）；服务端侧证据：跳板收到 **2 条** `direct-tcpip`（第二次那条没被认下） |
 | ↑ **两档共用同一个引擎，且 B 档只消费 0505 那条流**（plan 0703，crate 层 3 条） | ✅ `akasha-ssh` 新增 `host_to_host` 3 条：B 档（`connect_via([跳板], 目标)` → 两条 SFTP 会话 → 一个 `transfer()`；跳板恰好 1 条 `direct-tcpip`、中继搬过字节、目标真盘上字节相同且没有临时名）+ **负控两半**（不经跳板直连那个名字报 `Connect` / 跳板没有那条映射时报 `SshError::Forward`，且 `relayed_bytes = 0`）+ A 档（本机分别连两台，`direct_tcpip` 为空） |
+| ↑ **判据：大量小文件的吞吐显著优于串行请求**（plan 0704） | ✅ `sftp_pipelining` E2E（真实 app + 测试进程内一台服务端，主机行指向一条**每方向延后 10 ms** 的链路，**5.07 s**）：左栏本机、右栏那台主机 → **串行**（12 个文件逐个发、逐个等结束）**1.509 s**、探针 `peak = 1` → **并发**（一口气发完）**389 ms**、`limit = 8`、`live = 0`、`peak = 8`（= 上限）—— **3.9×**；两批之后对端**真盘**上 12 个文件的字节逐一相同、目录里没有临时名，链路共搬了 206 段 |
+| ↑ **上限真的在，且排队与取消都在并发下正确**（plan 0704，crate 层 6 条） | ✅ `akasha-ssh` 新增 `pipelining` 6 条：7 个文件 / 上限 3 时目标端点**同时**只见到 3 个 `begin_write`（第 4 个连闸门都进不去）、放行后 7 个都落地而 `peak` 停在 3 / 排队中被取消的那条**一个端点都没碰过**（它的路径从未被 `open`）、进去的那条走收尾、目标目录空 / 5 个文件中间那个写失败 → 另外 4 个字节正确落地 / 两条并发传输写**同一个最终名**时目标目录里是**两个**不同的临时名（放行后最终名的字节等于两条源之一）/ 上传一个文件：服务端记到的 `open` 恰好一次（`/.probe.bin.part`）且临时名没出现在 `stat` 里（"由对端保证的唯一性"在协议层就是少一次往返） |
+| ↑ **分档数字**（plan 0704，crate 层） | 12 个 1 KiB 文件在带时延链路上：上限 1 = **1.168 s**、2 = 1.159 s、4 = 563 ms、8 = 377 ms、16 = 211 ms（每个文件 97.3 → 17.6 ms）。⚠️ **上限 2 与串行一样慢**，那一段没有定位（见「进行中 / 下一步」）；默认值因此不按饱和点取 |
 | ↑ **`just test-e2e` 全部通过** | 退出码 **0**：**30 个用例 / 23 个目标**（本轮新增 `sftp_host_to_host`，**5.29 s**；`sftp_transfer_atomic` 6.08 s、`sftp_dual_pane` 7.31 s）。 |
 | ↑ **判据：主机密钥变化即拒绝，未见过的询问一次**（plan 0503） | ✅ `akasha-ssh` 的 7 条：未知且无人可问 → `HostKeyUnknown`（携带用于核对的指纹，且**认证尚未开始**）；确认 → 写入缓存，**第二个连接 0 次询问**；记录不匹配 → `HostKeyChanged`（**两个指纹都在**）且**不发起询问**；用户拒绝 → 拒绝连接且**不记录**；用户文件中已认可 → 连通且文件**逐字节未变** |
 | ↑ **本仓库首次格式迁移**（plan 0503） | ✅ `akasha-store` 的 6 条：`DDL_V1` 构造出**真实 v1 库** → `open` 之后 `user_version = 2`、五张表存在、**该 host 行仍在**；再次打开当前格式的库**不写入任何字节**；缺表的 v1 **不迁移**；加密导出与明文导出两条还原路径均**升级副本、来源逐字节不变** |
@@ -315,7 +332,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | ↑ **认证顺序由协议交互验证**（plan 0502） | ✅ 服务端记录的序列：`publickey → password`、`publickey → keyboard-interactive`；agent 不可用时序列中**没有** `publickey` |
 | ↑ **`nodelay` 实际生效**（plan 0505 修正） | ✅ `tcp_stream` 自建 TCP 时显式 `set_nodelay(true)`（问题 #120：上游仅在 `client::connect` 中读取 `Config::nodelay`，而两条路都使用 `connect_stream`） |
 | ↑ **`Cargo.lock` 增量仅一行**（plan 0504 / 0505） | ✅ 新增 `akasha → akasha-ssh` 这条边**只增加一行**；0505 **未增加任何行**（无新依赖，`rand` 早已是 `akasha-ssh` 的真依赖） |
-| `pnpm build`（tsc + vite build） | 退出码 0；产物 **869.46 kB / gzip 239.29 kB**（**+0.49 kB / +0.19 kB**：plan 0703 的直通标记与回退原因那两行） |
+| `pnpm build`（tsc + vite build） | 退出码 0；产物 **869.79 kB / gzip 239.48 kB**（**+0.33 kB / +0.19 kB**：plan 0704 的并发读数那一行与按栏分开的 `busy`） |
 | `just docs-check` | 全部通过（ROADMAP 59 个条目 ≤3 行且无代码块 / 50 份 plan ≤200 行且索引一致） |
 | `ast-grep scan` + `ast-grep test` | 均退出 **0**（本轮未新增 / 修改规则） |
 | **三条 unsafe 注释 lint**（clippy，位于 `just lint`） | 退出码 **0**；三条各以一个探针验证其**确实会失败**（探针用后即撤） |
@@ -335,12 +352,15 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   的 sftp 子系统互操作**；`limits@openssh.com` / `fsync@openssh.com` 这类扩展缺失时的降级路径
   因此也没有对照物（测试服务端**一个扩展都不声明**，所以降级那一侧每次都被走到 ——
   但"与真实 `sshd` 对上"仍是空白）。
-- **SFTP 的读写路径没有吞吐数字**（plan 0702）：路径已经实测通了（4 MiB 在回环上 2.5 秒，
-  那是测试服务端每块 20 ms 的**人为**延迟），但"多快"这件事没有基线 —— 它要在 plan 0704
-  有并发 in-flight 之后才是个有意义的数（ADR-0006 §4 已记这一条）。
-- **临时名的占用探测不是原子的**（plan 0702）：先问"这个名字在不在"、再创建，
-  两批并发传输理论上可以撞上（多试几个候选名只是变窄）。0704 做并发时要换成由对端保证的
-  唯一性（`CREATE|EXCLUDE`）或者把临时名带上一个进程内唯一的部分。
+- **吞吐数字只在一条人为带时延的链路上量过**（plan 0704）：本机回环的一次往返在微秒级，
+  所以判据的口径是"给会话接一条每方向延后 10 ms 的链路"（`akasha_ssh::testing::slow_link`）。
+  真实网络上的往返是**分布**的（抖动、丢包、拥塞窗口），而这里是一个定值 —— 它证明的是
+  "并发把往返折叠起来了"，不是"在真实链路上快多少"。同一批的分档曲线里**上限 2 与串行
+  一样慢**那一段也还没有定位（见「进行中 / 下一步」）。
+- **临时名的原子占用只在自建的测试服务端上验过**（plan 0704）：本机那一侧是内核的 `O_EXCL`
+  （`create_new`），远端那一侧靠对端实现 `CREATE|EXCLUDE` —— 与真实 `sshd` 的
+  `sftp-server` 未对照。⚠️ 更值得记的是：**测试脚手架原先把 `EXCLUDE` 当成了 `CREATE`**，
+  于是"抢占临时名"这条判据在库内看起来成立、实际没有（见问题 #147）。
 - **传输的失败路径只覆盖到"写失败"**（plan 0702，crate 层有 1 条）：读源失败、重命名失败
   这两条退出路径没有**专门的**用例（它们与写失败共用同一段收尾代码，但"共用"是阅读结论，
   不是实测结论）。
@@ -468,8 +488,8 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` / `akasha-store` / `akasha-ssh` |
 | 二进制落点 | `src-tauri/target/debug/akasha`（另有代码生成工具 `gen-types`，故必须 `default-run`，问题 #29） |
 | 后端模块 | `bindings` / `session` / `tray` / `config` / `lifecycle` / `single_instance` / `vault` / `watchdog` / `ssh`（长住状态 + 那条命令 + 跳板链 + 库内 known_hosts 适配器） / `prompt`（提问往返） / `pools`（池的读取 + **导入** + **转发规则**） / **`tunnel`（隧道实体 + 三条命令 + `tunnel_state` 事件 + `tunnels` probe）** / **`sftp`（SFTP 实体 + 两侧 + 九条命令 + `sftp` 探针）** |
-| **命令清单** | `greet` · `vault_status` / `vault_unlock` / `vault_lock` · `vault_hosts` · **`vault_forwards`** · `import_ssh_config` · `open_session` · `open_ssh_session` · `write_session` / `resize_session` / `close_session` · `ssh_prompt_credential` / `ssh_prompt_host_key` / `ssh_prompt_cancel` · **`tunnel_open` / `tunnel_retry` / `tunnel_stop`** · **`sftp_open` / `sftp_connect` / `sftp_list` / `sftp_transfer` / `sftp_transfer_cancel` / `sftp_transfers` / `sftp_sides` / `sftp_sessions` / `sftp_close`**（事件：`session_ended` · `ssh_prompt` / `ssh_prompt_dismissed` · **`tunnel_state`**）。**plan 0601 新增四条命令**（三条驱动隧道 + 一条只读规则池）；`tunnel_open` / `tunnel_retry` 是 **async**（命令体里有一次会阻塞几秒的握手）。⚠️ **plan 0602 / 0603 / 0604 / 0605 都没有新增命令与事件**（三条转发走的是同样那三条命令 + 同一份事件 + 同一份 probe），只改了它们的内部与失败分档；plan 0605 新增的是一份配置（`Config::reconnect`）与一条 `tray` probe；**plan 0606 同样没有新增命令与事件**，只加了一条只读探针 `residue`（见下）。⚠️ **plan 0701 新增六条命令、零个事件**（`sftp_*` 四条驱动 + 两条只读）：SFTP 的连接结果由**命令返回**（失败落在那一侧），诊断走 `sftp` 探针 —— 不给它加事件是因为"两侧各自的状态"本来就只在用户按下连接之后才变。⚠️ **plan 0702 又加三条**（一条起传输 + 一条取消 + 一条只读），**仍然零个事件**：传输的进度与结局由 `sftp_transfers` 与探针读（`sftp_transfer` 同步：它排完任务就返回）。`sftp_close` 因此变成 **async**（它要等清理落地）；`sftp_connect` 的第二个参数由 `hostId` 变成 `origin`。⚠️ **plan 0703 一条命令、一个事件都没加**：两档是"同一对端点命令、目标那个端点怎么来的"，所以变的只有三个字段（`through` / `throughFailure` / `via`）与删掉一档错误 |
-| **probe** | `lifecycle` → `{close_behavior, tray_ready, close_action}`（没登记时 `{"initialized":false}`，问题 #93）；`single_instance` → `{registered, activations}`；`sessions` → `{live, registered}`（SSH 与隧道都没有本地进程，"零残留"只能看注册表）；**`tunnels` → `[{handle, ruleId, name, state, attempt, bind}]`**（与托盘菜单同一份数据；`bind` = 实际监听地址 —— plan 0604 起对 `remote` 规则它说的是**服务端**那一侧的地址，`port = 0` 时是服务端挑的那个）；**`tray` → `{ready, tunnels:[…]}`**（plan 0605：`tunnels` 是**托盘菜单上那几行文字**，与菜单共用 `tunnel_labels`；`ready` = 这台机器上托盘建成没有）；**`residue` → `{sshConnections, watchTasks}`**（plan 0606：`SshConnection` 的存活计数与看护任务的存活计数，判据"两个计数都归零"的读数口 —— 数的是**资源本身**，不是注册表里的实体）；**`sftp` → `[{handle, sides:[{side, origin, name, state, failure, path, through, throughFailure}], transfers:[{id, from, fromPath, to, toPath, state, done, total, failure, via}]}]`**（plan 0701：一个 SFTP 会话一条记录，两侧的状态、失败原因与当前目录都在里面；plan 0702 起每条还带上**这个会话发起过的传输**与它们的进度 / 结局；plan 0703 起两侧还带上**到达方式**（`through` = 经哪台直通、`throughFailure` = 回退原因），传输带上 `via` —— 判据"两侧各自列目录成功"、"中断之后没有半成品"与"这次走的是哪一档"的读数口）。**库没有 probe**：状态本身就是命令（`vault_status`） |
+| **命令清单** | `greet` · `vault_status` / `vault_unlock` / `vault_lock` · `vault_hosts` · **`vault_forwards`** · `import_ssh_config` · `open_session` · `open_ssh_session` · `write_session` / `resize_session` / `close_session` · `ssh_prompt_credential` / `ssh_prompt_host_key` / `ssh_prompt_cancel` · **`tunnel_open` / `tunnel_retry` / `tunnel_stop`** · **`sftp_open` / `sftp_connect` / `sftp_list` / `sftp_transfer` / `sftp_transfer_cancel` / `sftp_transfers` / `sftp_sides` / `sftp_sessions` / `sftp_close`**（事件：`session_ended` · `ssh_prompt` / `ssh_prompt_dismissed` · **`tunnel_state`**）。**plan 0601 新增四条命令**（三条驱动隧道 + 一条只读规则池）；`tunnel_open` / `tunnel_retry` 是 **async**（命令体里有一次会阻塞几秒的握手）。⚠️ **plan 0602 / 0603 / 0604 / 0605 都没有新增命令与事件**（三条转发走的是同样那三条命令 + 同一份事件 + 同一份 probe），只改了它们的内部与失败分档；plan 0605 新增的是一份配置（`Config::reconnect`）与一条 `tray` probe；**plan 0606 同样没有新增命令与事件**，只加了一条只读探针 `residue`（见下）。⚠️ **plan 0701 新增六条命令、零个事件**（`sftp_*` 四条驱动 + 两条只读）：SFTP 的连接结果由**命令返回**（失败落在那一侧），诊断走 `sftp` 探针 —— 不给它加事件是因为"两侧各自的状态"本来就只在用户按下连接之后才变。⚠️ **plan 0702 又加三条**（一条起传输 + 一条取消 + 一条只读），**仍然零个事件**：传输的进度与结局由 `sftp_transfers` 与探针读（`sftp_transfer` 同步：它排完任务就返回）。`sftp_close` 因此变成 **async**（它要等清理落地）；`sftp_connect` 的第二个参数由 `hostId` 变成 `origin`。⚠️ **plan 0703 一条命令、一个事件都没加**：两档是"同一对端点命令、目标那个端点怎么来的"，所以变的只有三个字段（`through` / `throughFailure` / `via`）与删掉一档错误。⚠️ **plan 0704 同样一条命令、一个事件都没加**：并发上限是引擎内部的策略，契约只多了 `SftpSummary.inFlight.{limit, live, peak}` 这一组读数（`sftp_open` 多收一个 `AppHandle`，签名不变） |
+| **probe** | `lifecycle` → `{close_behavior, tray_ready, close_action}`（没登记时 `{"initialized":false}`，问题 #93）；`single_instance` → `{registered, activations}`；`sessions` → `{live, registered}`（SSH 与隧道都没有本地进程，"零残留"只能看注册表）；**`tunnels` → `[{handle, ruleId, name, state, attempt, bind}]`**（与托盘菜单同一份数据；`bind` = 实际监听地址 —— plan 0604 起对 `remote` 规则它说的是**服务端**那一侧的地址，`port = 0` 时是服务端挑的那个）；**`tray` → `{ready, tunnels:[…]}`**（plan 0605：`tunnels` 是**托盘菜单上那几行文字**，与菜单共用 `tunnel_labels`；`ready` = 这台机器上托盘建成没有）；**`residue` → `{sshConnections, watchTasks}`**（plan 0606：`SshConnection` 的存活计数与看护任务的存活计数，判据"两个计数都归零"的读数口 —— 数的是**资源本身**，不是注册表里的实体）；**`sftp` → `[{handle, sides:[{side, origin, name, state, failure, path, through, throughFailure}], transfers:[{id, from, fromPath, to, toPath, state, done, total, failure, via}]}]`**（plan 0701：一个 SFTP 会话一条记录，两侧的状态、失败原因与当前目录都在里面；plan 0702 起每条还带上**这个会话发起过的传输**与它们的进度 / 结局；plan 0703 起两侧还带上**到达方式**（`through` = 经哪台直通、`throughFailure` = 回退原因），传输带上 `via`；plan 0704 起每个会话还带一组并发读数 `inFlight:{limit, live, peak}` —— 判据"两侧各自列目录成功"、"中断之后没有半成品"、"这次走的是哪一档"与"上限真的在起作用"的读数口）。⚠️ **排队中的传输在传输记录里与"正在搬"长得一样**（状态只有"还没结束"这一档），分辨它们靠 `live` 比"还没结束的条数"少。**库没有 probe**：状态本身就是命令（`vault_status`） |
 | 出字节路径 | PTY / SSH read → 合批（64 KiB / 16 ms）→ `Channel<InvokeResponseBody>` **raw** → JS `ArrayBuffer` → `term.write`。**两条载体共用同一段输出路径的后半段**（`session::open_terminal`） |
 | **隧道实体**（plan 0601 / 0602 / 0603 / 0604 / 0606） | `src-tauri/src/tunnel.rs`：`Tunnel { id, rule_id, rule_name, host_id, state, attempts, forward: Option<ActiveForward>, stop: TunnelStop }`，登记进 `Sessions` 的**同一张注册表**（`Inner.tunnels`，与 `live` 同一把锁；`len()` = 两者之和，与 `registered()` 相等）。`forward` 是**那条转发**（它持有连接；`None` = 还没连上 / 已经断开），`stop` 是**这条隧道的停止信号**（plan 0606：实体一登记就有，在途的尝试与看护循环各订一份接收端 —— 0605 那个可替换的 `oneshot` 会在替换时误唤醒 `select!`，见问题 #143）—— 两者分开正是因为"转发结束了"这件事归看护任务等，而转发本体归实体表（停止与 probe 要它）。`Rule::prepare()` 把方向翻成 `Prepared::Local`（`-L` 的 `Ingress::Fixed` / `-D` 的 `Ingress::Socks5`，**本机端口已经绑好**）/ `Prepared::Remote`（`-R`：服务端的绑定地址 + 本机目标）。`tunnel_open` 失败分两种：**没登记成**（`Err`：库锁着 / 规则不在池里 / 规则那一行坏 / **本机端口没拿到** / **地址不许绑**）与**登记了但连不上**（`Ok(TunnelAttempt { handle, failure })` —— 那条仍在册、可重试；`-R` 的**远端**端口没拿到属于这一种，因为那时连接已经建起来了）。`tunnel_stop` 先发 `已停止` 再注销注册，**幂等**；收尾只有一条路 —— `Tunnel::reclaim()`（停信号 → 丢转发），`tunnel_stop` 与 `shutdown_all` 都走它（plan 0606 之前 `shutdown_all` 靠丢掉实体、让字段各自在 drop 时收尾） |
 | **`direct-tcpip` 原语**（plan 0505，ADR-0003 **D9**） | `akasha-ssh/src/forward.rs`：`SshStream`（自己实现 `AsyncRead + AsyncWrite`，**不把 `russh::ChannelStream` 漏进公开签名**）+ `SshConnection`（已认证、**没有通道**的连接，持有 `Handle` **与它自己的跳板链** `under`）+ `SshConnection::direct_tcpip(host, port)`。三处消费者（跳板 / 转发 / SFTP B 档）使用的都是**这条流**，三处**都接上了**（B 档见 plan 0703：`src-tauri/src/ssh.rs` 的 `connect_connection_via` 把"[A 的跳板链] ++ [A] ++ [B 的跳板链]"交给 `connect_via_until`，原语本身一行未改）。plan 0601 给它加了同步门面 `connect_via`，并把"逐跳搭链"抽成 `hops_chain`（**建链只有一份实现**，`SshTransport` 与它共用）。⚠️ `SshConnection::over` **不持有**承载它的那条连接（它只造下一跳）—— 链的存活归调用方，`chain` / `connect_via` 会把整条链放进 `under` |
@@ -479,7 +499,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | **提问往返**（plan 0504，ADR-0003 **D16**） | `src-tauri/src/prompt.rs`：`Prompts`（`Arc` + 待答表 + 可注入的发布口）；事件 `ssh_prompt`（判别式：`hostKey` / `credential`）+ `ssh_prompt_dismissed`；三条回答命令；编号从 1 起、只增不减；**超时 120 s → 拒绝 + 撤回**；答过 / 超时的 id → `PromptError::Gone`；**主机密钥那一问只认"接受 / 拒绝"**，超时 / 取消 / 答错类型一律 `Err(HostKeyUnknown)`（= 拒绝连接）。⚠️ 跳板链上**每一跳各产生一轮**（密钥 + 口令），E2E 实测四问按序 |
 | **库内主机密钥缓存**（plan 0504 接线） | `VaultHostKeys`：`Vault` 可 `Arc` 克隆，`with_conn` **短借**连接；库处于锁定状态 → `SshError::HostKeyCache` → **拒绝连接**（不视为未知）。⚠️ **不得在持锁期间连接**：`remember` 会在连接中途回锁库（跳板链因此先**一次读完整条链**再开始连接） |
 | **库的解锁状态** | `Vault { inner: Arc<Mutex<Option<Unlocked>>> }`（`Clone`）；`Unlocked { conn, passphrase }` 同生共死。借库的失败分两种（`ConnError`：`Locked` / `Store`）—— 因为 SSH 那条路要单独认出 `NoSuchRow`（"所选主机不存在"） |
-| **`akasha-ssh` 的形状** | 十七个模块：`target` / `credential` / `keys` / **`ending`（plan 0605：一次转发怎么结束的 —— `ForwardEnd` + `ForwardEnding`，转发本体与它的结束通知**分两半**交出去）** / `handshake`（`handshake<S>` = 一跳的握手 + 认证，**底层流由调用方提供**） / `known_hosts` / **`forward`（D9 原语 + `SshConnection` + `hops_chain` + 同步门面 `connect_via` / `connect_via_until`（带取消信号，plan 0606）+ `is_closed` + 连接存活计数 `live_connections`）** / **`relay`（`-L` 与 `-D`：`LocalListener` + `LocalForward` + `ForwardTarget` + `Ingress`）** / **`socks5`（动态转发的协议本体：无认证的 `CONNECT` + `Reply` + 回环限制）** / **`remote`（`-R`：`RemoteForward` + 入站路由 `Inbound`）** / **`sftp`（plan 0701 / 0702：`SftpClient` —— 一条流上的 SFTP 会话，`list()` 先 `canonicalize` 再 `read_dir`，并实现 `Endpoint` 的读写路径）** / **`local`（plan 0702：`LocalEndpoint` —— 本机文件系统作为另一个端点，无字段、`default_dir()` 三层兜底）** / **`transfer`（plan 0702：引擎与它的词汇 —— `Endpoint` / `PendingWrite` / `Cancel` / `Progress` / `Entry` / `Listing` / `temp_candidates`）** / `transport` / `testing`（进程内测试服务端，**仅用于测试**；支持 `direct-tcpip` 的中继与拒绝两条分支、`tcpip-forward` / `cancel-tcpip-forward` / `forwarded-tcpip`、**`sftp` 子系统**（plan 0701：`ServerOptions.sftp` 给出根目录的条目），并记**连接级**的断开数 `connections_closed` 与**子系统认下数** `sftp_subsystems`；plan 0605 起还能**切断已建立的连接**（`cut_connections` / `shutdown`），远端监听**按连接持有**、随连接消失） / `auth` / `error` |
+| **`akasha-ssh` 的形状** | 十八个模块：`target` / `credential` / `keys` / **`ending`（plan 0605：一次转发怎么结束的 —— `ForwardEnd` + `ForwardEnding`，转发本体与它的结束通知**分两半**交出去）** / `handshake`（`handshake<S>` = 一跳的握手 + 认证，**底层流由调用方提供**） / `known_hosts` / **`forward`（D9 原语 + `SshConnection` + `hops_chain` + 同步门面 `connect_via` / `connect_via_until`（带取消信号，plan 0606）+ `is_closed` + 连接存活计数 `live_connections`）** / **`relay`（`-L` 与 `-D`：`LocalListener` + `LocalForward` + `ForwardTarget` + `Ingress`）** / **`socks5`（动态转发的协议本体：无认证的 `CONNECT` + `Reply` + 回环限制）** / **`remote`（`-R`：`RemoteForward` + 入站路由 `Inbound`）** / **`sftp`（plan 0701 / 0702：`SftpClient` —— 一条流上的 SFTP 会话，`list()` 先 `canonicalize` 再 `read_dir`，并实现 `Endpoint` 的读写路径）** / **`local`（plan 0702：`LocalEndpoint` —— 本机文件系统作为另一个端点，无字段、`default_dir()` 三层兜底）** / **`in_flight`（plan 0704：并发上限 —— `InFlight` + 它的读数 + 有界入口）** / **`transfer`（plan 0702：引擎与它的词汇 —— `Endpoint` / `PendingWrite` / `Cancel` / `Progress` / `Entry` / `Listing` / `temp_candidates`）** / `transport` / `testing`（进程内测试服务端，**仅用于测试**；支持 `direct-tcpip` 的中继与拒绝两条分支、`tcpip-forward` / `cancel-tcpip-forward` / `forwarded-tcpip`、**`sftp` 子系统**（plan 0701：`ServerOptions.sftp` 给出根目录的条目），并记**连接级**的断开数 `connections_closed`、**子系统认下数** `sftp_subsystems` 与 plan 0704 起的两件事（客户端 `open` 过的路径、`stat` 过的路径 —— 「临时名不再靠探测」这条判据的读数口）；plan 0704 还多了一个 `slow_link`（到某个地址的**带时延链路**：每段字节各延后一段固定的时间，用来把一次往返放大到可量的量级）；plan 0605 起还能**切断已建立的连接**（`cut_connections` / `shutdown`），远端监听**按连接持有**、随连接消失） / `auth` / `error` |
 | **错误分域** | `akasha-ssh`：`HostKeyCache`（库那一侧无法读取缓存）、**`Forward { host, port, reason, class }`**（跳板拒绝 / 目标不可达 —— 与"无法连接跳板机"分开；`class` 是 `ForwardFailure`，取自上游结构化的 `ChannelOpenFailure`，plan 0603 起供 SOCKS5 的 `REP` 分类用）、**`Listen { address, reason }`**（本机端口没拿到，plan 0602 —— 与"对端连不上"分开）、**`Sftp { target, reason }`**（SFTP 会话建不起来 / 用不了，plan 0701 —— 与"这条 shell 通道开不出来"分开：用户要看的是**对端有没有开 SFTP**）、**`File { path, reason }`**（plan 0702：**端点上的一个文件操作**失败 —— 与 `Sftp` 分开是因为它要引到**那个路径**上，本机与远端共用这一档）、**`RemoteListen { address, reason }`**（服务端那个端口没拿到，plan 0604 —— 与"本机端口没拿到"分开：用户要动的地方在服务端）、**`NotLoopback { address }`**（SOCKS5 绑了非回环地址，plan 0603 —— 与"端口没拿到"分开：换端口没有用）、**`Cancelled`**（建链被取消信号中止，plan 0606 —— 这不是失败，见 `connect_via_until`）。app 侧 `SshIpcError`：`Locked` / `NoSuchHost` / `Failed { kind, message }`（`kind` = `hostKeyChanged` / `hostKeyRejected` / `hostKeyUnknown` / `hostKeyCache` / `auth` / `connect` / **`jump`** / `other`）/ `Internal` —— **前端按 `kind` 分辨**，不匹配消息字符串。**隧道另有 `TunnelError`**（`locked` / `noSuchForward` / `noSuchHost` / `notATunnel` / **`bind`（本机端口没拿到）** / **`remoteBind`（服务端那个端口没拿到）** / **`notLoopback`（地址不许绑）** / `failed {kind,message}` / `transition` / `internal`），连接失败那一档复用同一个 `SshFailureKind` |
 | **前端结构** | `src/ipc/`（`session.ts` / `prompts.ts` / `hosts.ts` / **`tunnels.ts`** / **`sftp.ts`** —— 唯一允许碰后端的目录）、`src/tabs/`、`src/terminal/`、`src/ssh/`（主机选择器 + 导入面板 + 提示面板）、**`src/tunnels/`（隧道面板）**、**`src/sftp/`（SFTP 双栏面板：一栏可以选本机，带传输列表与取消）**、`src/App.tsx`。标签页 `kind`：`terminal` / `ssh`（**都有关闭按钮**，规则写成 `CLOSABLE` 清单）—— **隧道与 SFTP 都不是标签页**：它们是应用级浮层，关面板不停任何会话 |
 | **前端的一个 dev-only 陷阱** | React StrictMode（仅开发模式）会把 effect 执行两遍，SSH 会话因此被建立两次。处置：SSH 那条连接**无条件推迟一个微任务**再发起（本地 PTY 不受影响；问题 #118） |
@@ -500,12 +520,17 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 
 ## 进行中 / 下一步
 
-- [ ] **下一步 = 阶段 7 的第四条（并发 in-flight）**：骨架已存在
-  （[`0704`](./plans/0704-pipelining.md)，判据 = 大量小文件的吞吐显著优于串行请求）。
-  0702 把唯一性放在了**接口**上（临时名的取名规则归引擎、挑一个没被占用的归端点），
-  0703 又确认了两档共用同一个引擎，所以 0704 要动的只有引擎内部：并发上限、
-  以及**占用探测与创建之间不是原子的**那一点（ADR-0006 §4；并发下要换成由对端保证的
-  唯一性，或让临时名带一个进程内唯一的部分）。
+- [ ] **下一步 = 阶段 8 的第一条（`akasha-serial`）**：骨架已存在
+  （[`0801`](./plans/0801-serial-crate-libudev.md)，判据 = Windows / macOS 构建不链接
+  `libudev`）。阶段 7 的第四条（并发 in-flight）已完成，见「本轮完成」。
+- [ ] **并发分档曲线里"上限 2 与串行一样慢"那一段没有定位**（plan 0704）：12 个 1 KiB 文件
+  在带时延链路上，上限 1 = 1.17 s、2 = 1.16 s、4 = 0.56 s、8 = 0.38 s、16 = 0.21 s；
+  上限 2 时两条传输**几乎同时结束**（166 ms / 207 ms），而各自都比单独执行时（96 ms）慢一倍，
+  同时服务端记到的两次 `open` 只差 0.08 ms（请求确实是并发发出去的）。判据不受影响
+  （并发确实显著更快），但"往返折叠"在低并发下没有按预期发生。默认值因此不按饱和点取。
+- [ ] **并发上限也只在自建的测试服务端上量过**（plan 0704）：真实 `sshd` 的 `MaxSessions`、
+  打开句柄上限与 `limits@openssh.com` 声明的 `write_len` 都会改变"一条连接能同时扛几个文件"。
+  上限还没有文件形态 —— `config.json` 仍只认 `close_behavior`，默认值之外没有别的取值方式。
 - [ ] **host ↔ host 的两档都没有与真实 `sshd` 对照过**（plan 0703）：B 档（`direct_tcpip` +
   隧道里的 SFTP）与 A 档都只在**自建的测试服务端**上验过。真实的 `AllowTcpForwarding no`、
   `PermitOpen` 白名单与转发的缓冲特性都还没有对照物 —— 它们改变的是**失败长什么样**，
@@ -539,7 +564,40 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 > 理由：信任策略属于**接口形状**（先行），而原语的消费者都需要先有一条**从 app 建立起来的**
 > SSH 会话才能验证。编号与执行顺序现已一致，索引中有一段重排说明。
 
-### 本轮完成（plan 0703：host ↔ host 两档，B 档优先、失败回退 A 档）
+### 本轮完成（plan 0704：并发 in-flight 请求）
+**判据（ROADMAP 原文）**：**大量小文件的吞吐显著优于串行请求**。
+
+- [x] **上限是引擎的一个类型**（`akasha-ssh/src/in_flight.rs`）：`InFlight { limit, permits, live, peak }`
+  —— `limit` 是参数（配置模型来的默认值 8，`0` 当 `1` 用），`live` / `peak` 是"上限真的在起作用"
+  的读数（探针 `sftp` 的 `inFlight` 与面板表头那一句）。有界入口是它唯一的方法（`select!` 带
+  `biased` 地等空位，取消那一支先看），`transfer()` 本身仍无上限。
+- [x] **空位属于会话**：一个 SFTP 会话持一个 `Arc<InFlight>` —— 上限约束的是这个会话的**全部**
+  传输，不区分它们来自几条命令（app 的形状是"一个文件一条命令、一个独立任务"，所以并发不需要
+  新的编排层，`sftp_transfer` 只是改调有界入口）。
+- [x] **排队中被取消不碰目标**：关会话与用户取消推的是同一个信号（ADR-0006 D4），排队中的传输
+  因此在 `open` 之前退出 —— 库内那条用例断言"它的路径**从未**被 `open` 过"。
+- [x] **临时名改成一次原子占用**：本机 `create_new`（`O_EXCL`）、远端 `WRITE|CREATE|EXCLUDE`；
+  只有通用的 `Failure` 换下一个候选（v3 没有"已存在"这一档），`pick_temp` 两处整份删除。
+  ⚠️ 这一条修的是一个**会静默出错的**形状：老实现"先查存在、再创建"的缝里，两个同名文件的
+  并发传输会交错写同一个临时文件，而两条都报成功。
+- [x] **库内验收**（`akasha-ssh/tests/pipelining.rs`，6 条）：上限真的在（7 个文件 / 上限 3，
+  目标端点同时只见到 3 个 `begin_write`，第 4 个连闸门都进不去）· 排队中被取消不碰目标 ·
+  失败不扩散 · 分档吞吐（12 个 1 KiB 文件：1.168 s → 211 ms）· 同名不撞临时名 ·
+  临时名不再靠探测（服务端记到的 `open` 恰好一次、`stat` 里没有它）。
+- [x] **端到端验收**（`sftp_pipelining`，加进 `E2E_TARGETS`）：真实 app 上左栏本机、右栏那台主机
+  （主机行指向一条每方向延后 10 ms 的链路）—— 串行 1.509 s（`peak 1`）vs 并发 389 ms
+  （`limit 8`、`peak 8`）；对端真盘上 12 个文件字节逐一相同、没有临时名。
+- [x] **门禁**：`just ready` **6/6**；`just test` **362 passed**；`just test-e2e` **退出码 0**
+  （23 个目标 / **31 个用例** / 0 失败）；`pnpm build` 退出码 0（869.79 kB / gzip 239.48 kB）。
+- [x] **顺带修掉一处竞态**（plan 0703 留下来的）：面板原先用一个共享的 `busy` 判断"有命令在途"，
+  于是左栏还在收尾时右栏的「连接」按钮**是禁用的**，而用例的完成条件读的是**探针**
+  （plan 0703 的教训）—— `sftp_host_to_host` 的 E2E 因此红过一次。处置：`busy` **按栏分开**。
+- [x] **文档同步**：plan 0704 置「已完成」并移入 `archive/`（索引与 ROADMAP 指针同步）；
+  ADR-0006 的 D6 补上"上限/空位/可取消/原子占用"四样、§4 换掉"占用探测不是原子的"与
+  "吞吐没有数字"、D7 的探针补 `inFlight.{limit,live,peak}`、§6 记一行；
+  `scope.md` §4.1 的并发条目补上"有上限"。
+
+### 上一轮完成（plan 0703：host ↔ host 两档，B 档优先、失败回退 A 档）
 **判据（ROADMAP 原文）**：**A 无法直连 B 时自动走 A 档；两档均不落盘**。
 
 - [x] **两档都是"端点选择"，引擎一行都没改**（[ADR-0006](./adr/0006-sftp-stack-and-transfer-engine.md)
@@ -774,29 +832,6 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   `0.0.0.0` 那条在界面上被拒且未登记 / 停止后端口释放且连接断开
 - [x] **文档同步**：plan 0603 归档（指针同步）；ADR-0003 D9 补"三处消费者的进度" +
   §14 记一行。细节见 [`archive/0603`](./plans/archive/0603-dynamic-forward-socks5.md)
-
-### 更早几轮（plan 0602 / 0601 / 0506 / 0505）
-
-- [x] **0602**（本地转发 `-L`，判据 = 转发端口**可访问远端服务**）：`akasha-ssh::relay` 的
-  `LocalListener::bind`（**先绑**）+ `LocalForward`（接受循环 + 每条入站连接一条 `direct_tcpip`
-  通道 + `copy_bidirectional`）；`tunnel_open` 因此**先绑定、后连接**（端口没拿到 = **没登记成**）。
-  细节见 [`archive/0602`](./plans/archive/0602-local-forward.md)
-- [x] **0601**（隧道实体 + 状态机，判据 = 五态**可观测**、状态变化**发事件**）：五态与转移表在
-  `akasha-core::TunnelState`（纯逻辑）；实体与注册表**复用同一份**（D6）；三条命令 + 只读规则池；
-  事件 `tunnel_state` + probe `tunnels` + 托盘子菜单「名称 · 状态」。
-  细节见 [`archive/0601`](./plans/archive/0601-tunnel-entity-state-machine.md)
-- [x] **0506**（`~/.ssh/config` 受限子集导入，ADR-0003 **D14**）：三档边界（六条导入 /
-  可识别的局部指令**逐条警告**并继续 / 其余**整份报错**，判据取"是否连到别的机器、是否改变信任的密钥"）；
-  求值语义按 `ssh -G` 实测（每个参数**首次取到的值生效**）；解析器是**纯函数**（29 条用例固化语义）；
-  落库是第一次"一次插入多行、行间互相引用"（单个事务 + 复用 `update_host` 的成环检查）；
-  **私钥不导入**。判据实测：含 `Match` 的整份报错且一行不写 / 导入得到的条目**经跳板真实连通**。
-  细节见 [`archive/0506`](./plans/archive/0506-ssh-config-subset-import.md)
-- [x] **0505**（`direct-tcpip` 原语 + 跳板，ADR-0003 **D9**）：原语 = **一条 `AsyncRead + AsyncWrite`
-  的流**（`SshStream` + `SshConnection`）；跳板链整条一起生灭（carriers move 进 `pump` task，
-  收尾**最内层先断**）；`SshError::Forward` 让"目标不可达"与"我连不上跳板机"分开；
-  `hosts::jump_chain` 在**读路径**上同样拦环与深度。判据实测：四条提示按序答完 / 跳板记到
-  **恰好 1 条** `direct-tcpip` / 字节到达一个**只对跳板机可见**的名字。
-  细节见 [`archive/0505`](./plans/archive/0505-direct-tcpip-primitive.md)
 
 ## 结构现状（容易找错地方）
 
@@ -1151,3 +1186,15 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
      单独用 `over` 建一跳看起来像一条能独立存在的连接，而它的"网络"随时会随承载者消失。
      app 那条路走的是 `connect_via_until`，所以不受影响；这条写下来是因为它是**接口上的一处陷阱**：
      名字相同、语义相邻的两个入口，活着的条件不一样。
+147. **测试替身没实现的协议标志，会让判据静默失去对象**（plan 0704）：`testing.rs` 的 SFTP
+     服务端把 `OpenFlags::EXCLUDE` 与 `CREATE` 合在一个分支里 `create(true)` —— 于是**它不拒绝**
+     第二个同名文件，"两个同名文件不能撞在同一个临时名上"这条判据在库内看起来成立、实际没有
+     （两条并发传输会交错写同一个临时文件，而用例全绿）。修法照上游：`EXCLUDE` 走 `create_new`
+     （`O_EXCL`）。教训：**替身要不要实现某个标志，是"这条判据还算不算数"的问题，不是脚手架细节**；
+     凡是判据依赖的协议语义，替身必须实现它，否则用例测的是替身而不是被测代码。
+148. **带时延链路的两个方向接反，报出来的是"握手坏了"**（plan 0704）：把"客户端读"接到
+     "客户端写"上，客户端收到的就是自己刚发出去的字节，`russh` 报 `Key exchange init failed`
+     —— 那读起来像 KEX 实现有问题，实际上是测试脚手架接错了两根线。同一处还有第二条：
+     时延要按"段各自计时"实现，写成"读一段、睡一段、写一段"的循环会让链路自己变成一个
+     串行瓶颈，于是并发发出去的请求**在链路里排队**，"并发更快"在上限 2、4 上几乎量不出来。
+    教训：**测量装置本身要先被怀疑一次** —— 判据给出反直觉的数字时，先问"这个数是不是装置造出来的"。
