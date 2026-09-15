@@ -293,6 +293,10 @@ export class SerialInvokeError extends Error {
         return `串口参数不合法：${detail.detail.field} = ${detail.detail.value}`;
       case "open":
         return `串口打不开：${detail.detail.path}（${detail.detail.message}）`;
+      case "enumerate":
+        // 这一档出不来：开一个设备不枚举（枚举是 `serial_ports` 那条只读命令的事）。
+        // 但错误类型是**一张共用的表**，漏了这一支就是"契约加了一档、这里悄悄少一个分支"。
+        return `列不出本机串口端口：${detail.detail.message}`;
       case "internal":
         return `内部状态不可用：${detail.detail.message}`;
     }

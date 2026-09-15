@@ -5,7 +5,8 @@
 //!
 //! | 判据 | 断言在哪 |
 //! |---|---|
-//! | 从界面打开 | 点 `.tab-new-serial` → 选池里那一行 → 标签页出现且状态"已连接" |
+//! | 从界面打开（**池行取值 → 表单 → 打开**） | 点 `.tab-new-serial` → 点池里那一行（表单的路径栏随之被填上）
+//!   → 点「打开」→ 标签页出现且状态"已连接" |
 //! | **设备 → 界面** | 往 PTY 主端写一串 → 屏幕文本里出现它 |
 //! | **界面 → 设备** | 往标签页里敲一行 → 本进程从主端**读到同一串** |
 //! | 关闭标签页即回收 | 标签页数回到打开前；`sessions` probe 的 `live` / `registered` 回到打开前的读数 |
@@ -13,8 +14,9 @@
 //! ## 设备从哪来
 //!
 //! 本机 `/dev` 下没有任何串口设备（问题 #150），所以用例自己造一对 PTY，把**从端的路径**
-//! 当设备交给 app —— 与 plan 0801 的单测同一条路。两串文本**故意不同**（`from-device-1101`
-//! 与 `to-device-1101`），于是"主端读到的那一串只可能来自 app"这件事不依赖行规程的行为：
+//! 当设备交给 app —— 造它的是 [`support::FakeSerialDevice`]（plan 1102 起与
+//! `serial_ports_ui` 共用一份）。两串文本**故意不同**（`from-device-1101` 与
+//! `to-device-1101`），于是"主端读到的那一串只可能来自 app"这件事不依赖行规程的行为：
 //! ECHO（若还在）只会把主端自己写的那一串回给主端。
 //!
 //! ## "归零"的口径
@@ -27,16 +29,13 @@
 
 mod support;
 
-use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use akasha_store::pools::serial;
 use serde_json::{Value, json};
 use support::{
-    CLOSE_TIMEOUT, click, connect_and_prepare, open_vault, text, type_line, unlock, wait_connected,
-    wait_js,
+    CLOSE_TIMEOUT, FakeSerialDevice, click, connect_and_prepare, open_serial_panel, open_vault,
+    text, type_line, unlock, wait_connected, wait_js,
 };
 use victauri_test::VictauriClient;
 
@@ -90,6 +89,18 @@ async fn tab_count(client: &mut VictauriClient) -> u64 {
     .expect("标签页数不是数字")
 }
 
+/// 表单里某一栏的取值（读的是**界面上的那一栏**，不是我们发出去的参数）。
+async fn field(client: &mut VictauriClient, name: &str) -> String {
+    text(
+        &client
+            .eval_js(&format!(
+                "document.querySelector('.serial-input[data-serial-field=\"{name}\"]')?.value ?? ''"
+            ))
+            .await
+            .unwrap(),
+    )
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
     if support::skip_unless_e2e() {
@@ -97,40 +108,7 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
     }
 
     // ── 1. 设备（在**本进程**里）：一对 PTY，从端的路径当串口 ───────────────────
-    // `pair` 必须活到用例结束：主端一关，从端那个设备节点就没了（plan 0801 实测过的同一条）。
-    let pair = portable_pty::native_pty_system()
-        .openpty(portable_pty::PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .expect("造一对 PTY 失败");
-    let device = pair
-        .master
-        .tty_name()
-        .expect("拿不到 PTY 从端的设备名")
-        .to_string_lossy()
-        .into_owned();
-    eprintln!("设备：{device}（本进程持有主端）");
-
-    let mut to_device = pair.master.take_writer().expect("取主端写端失败");
-    let mut from_device = pair.master.try_clone_reader().expect("取主端读端失败");
-    // 主端读到的东西由一条线程收进缓冲：断言侧只读它，不阻塞在 `read` 上
-    // （阻塞的 `Read` 与"按时间断言"在机制上冲突，问题 #26）。
-    let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
-    {
-        let seen = Arc::clone(&seen);
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 1024];
-            while let Ok(n) = from_device.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                seen.lock().unwrap().extend_from_slice(&buf[..n]);
-            }
-        });
-    }
+    let mut device = FakeSerialDevice::new();
 
     // ── 2. 库在哪、现在是什么状态、必要时先锁上 ──────────────────────────────
     let Some((mut client, _fixture, path)) = connect_and_prepare().await else {
@@ -138,7 +116,7 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
     };
 
     // ── 3. 种子数据 + 解锁（**只有"列出池里有哪些"这一步需要解锁**）────────────
-    seed(&path, &device);
+    seed(&path, device.path());
     unlock(&mut client).await;
 
     let listed = client
@@ -157,28 +135,34 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
         .expect("SerialEntry 里必须有 id");
     assert_eq!(
         ours[0].pointer("/port").and_then(Value::as_str),
-        Some(device.as_str()),
+        Some(device.path()),
         "列出来的设备路径必须就是这一对 PTY 的从端"
     );
     eprintln!("串口池：{listed}");
 
-    // ── 4. 界面：点"串口" → 选池里那一行 ────────────────────────────────────
+    // ── 4. 界面：点"串口" → 点池里那一行（填表单）→ 点「打开」────────────────
     let tabs_before = tab_count(&mut client).await;
     let sessions_before = sessions_probe(&mut client).await;
-    click(&mut client, ".tab-new-serial", "打开串口选择器").await;
+    open_serial_panel(&mut client).await;
     wait_js(
         &mut client,
         &format!("!!document.querySelector('.serial-picker-item[data-serial-id=\"{serial_id}\"]')"),
         10_000,
-        "串口选择器列出了池里那一行",
+        "串口面板列出了池里那一行",
     )
     .await;
     click(
         &mut client,
         &format!(".serial-picker-item[data-serial-id=\"{serial_id}\"]"),
-        "选这条串口配置",
+        "用这条串口配置填表单",
     )
     .await;
+    // 池行 → 表单：**六个字段都要真的到那一栏**（plan 1102 的"池行取值"）。
+    assert_eq!(field(&mut client, "port").await, device.path());
+    assert_eq!(field(&mut client, "baud").await, "115200");
+    assert_eq!(field(&mut client, "dataBits").await, "8");
+    assert_eq!(field(&mut client, "stopBits").await, "1");
+    click(&mut client, "[data-serial-open]", "打开这个串口会话").await;
     wait_connected(&mut client, (tabs_before + 1) as usize, "串口会话").await;
 
     let title = text(
@@ -187,14 +171,14 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
             .await
             .unwrap(),
     );
-    assert_eq!(title, SERIAL_NAME, "标签页标题该是池里那条配置的名字");
+    assert_eq!(
+        title, SERIAL_NAME,
+        "这一行是照池里那条配置填的、一个字没改，标题该是那条配置的名字"
+    );
     eprintln!("界面：串口标签页已连接（打开前 {tabs_before} 个标签页）");
 
     // ── 5. 设备 → 界面 ─────────────────────────────────────────────────────
-    to_device
-        .write_all(format!("{FROM_DEVICE}\n").as_bytes())
-        .expect("往主端写失败");
-    to_device.flush().expect("flush 主端失败");
+    device.send(&format!("{FROM_DEVICE}\n"));
     wait_js(
         &mut client,
         &format!("window.__akashaTerminal.screenText(400).includes('{FROM_DEVICE}')"),
@@ -206,19 +190,8 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
 
     // ── 6. 界面 → 设备（另一组字节，所以主端读到的那一串只可能来自 app）────────
     type_line(&mut client, &format!("{TO_DEVICE}\n")).await;
-    let deadline = Instant::now() + CLOSE_TIMEOUT;
-    loop {
-        let got = String::from_utf8_lossy(&seen.lock().unwrap()).to_string();
-        if got.contains(TO_DEVICE) {
-            eprintln!("界面 → 设备：主端读到了 {got:?}");
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "主端没读到 app 写出去的字节（读到 {got:?}）"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let got = device.wait_received(TO_DEVICE).await;
+    eprintln!("界面 → 设备：主端读到了 {got:?}");
 
     // ── 7. 关标签页 = 立刻丢弃这个 Session（只丢它自己）────────────────────────
     click(&mut client, ".tab.is-active .tab-close", "关闭串口标签页").await;
@@ -230,17 +203,17 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
     )
     .await;
 
-    let deadline = Instant::now() + CLOSE_TIMEOUT;
+    let deadline = std::time::Instant::now() + CLOSE_TIMEOUT;
     let sessions = loop {
         let now = sessions_probe(&mut client).await;
         if now == sessions_before {
             break now;
         }
         assert!(
-            Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "关掉标签页之后后端还登记着会话：{now}（打开前是 {sessions_before}）"
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     };
     assert_eq!(
         sessions.pointer("/live"),

@@ -16,7 +16,9 @@
 #![allow(clippy::unwrap_used)] // 测试里的 unwrap 是断言手段（root Cargo.toml 的 lints 约定）
 
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use akasha_ssh::testing::{Observed, Running};
@@ -616,4 +618,125 @@ pub async fn wait_text_contains(client: &mut VictauriClient, selector: &str, nee
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+// ── 串口（plan 1101 起，plan 1102 把假设备提出来，两个目标共用）────────────────
+
+/// 一台**假串口设备**：一对 PTY，**从端的路径**当设备名。
+///
+/// 为什么需要它：本机 `/dev` 下没有任何串口设备（问题 #150），而"设备 → 界面 → 设备"
+/// 这条判据要的是**真的有一个在搬字节的对端**。
+///
+/// ⚠️ 两个用例**各造一对，不共用**：设备是独占打开的（`serialport` 默认 `TIOCEXCL`
+/// 加独占 `flock`，见 plan 1101 的实施记录），共用一个会在上一个用例还没关掉它时收到
+/// `Device or resource busy` —— 那种失败与本次改动无关。
+///
+/// ⚠️ `_pair` 必须活到用例结束：主端一关，从端那个设备节点就没了（plan 0801 实测）。
+pub struct FakeSerialDevice {
+    path: String,
+    /// 主端的写端：用例往这里写 = "设备发出来的东西"。
+    writer: Box<dyn Write + Send>,
+    /// 主端读到的东西（一条线程收进来：断言侧只读缓冲，**不阻塞在 `read` 上** —— 问题 #26）。
+    seen: Arc<Mutex<Vec<u8>>>,
+    _pair: portable_pty::PtyPair,
+}
+
+impl FakeSerialDevice {
+    /// 造一对 PTY。尺寸随便填：串口没有窗口尺寸这回事（`Capabilities::NONE`）。
+    pub fn new() -> Self {
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("造一对 PTY 失败");
+        let path = pair
+            .master
+            .tty_name()
+            .expect("拿不到 PTY 从端的设备名")
+            .to_string_lossy()
+            .into_owned();
+        let writer = pair.master.take_writer().expect("取主端写端失败");
+        let mut reader = pair.master.try_clone_reader().expect("取主端读端失败");
+        let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
+        {
+            let seen = Arc::clone(&seen);
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = reader.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    seen.lock().unwrap().extend_from_slice(&buf[..n]);
+                }
+            });
+        }
+        eprintln!("假串口设备：{path}（本进程持有主端）");
+        Self {
+            path,
+            writer,
+            seen,
+            _pair: pair,
+        }
+    }
+
+    /// 机器上的那一串设备名 —— 交给 app、种进池里的都是它。
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// **设备 → 界面**：往主端写一串（就当作设备发出来的）。
+    pub fn send(&mut self, text: &str) {
+        self.writer
+            .write_all(text.as_bytes())
+            .expect("往主端写失败");
+        self.writer.flush().expect("flush 主端失败");
+    }
+
+    /// 主端此刻收到的字节（`lossy`：断言的是"这一串在不在"，不是编码）。
+    pub fn received(&self) -> String {
+        String::from_utf8_lossy(&self.seen.lock().unwrap()).to_string()
+    }
+
+    /// **界面 → 设备**：等主端收到某一段（有截止时间的轮询，不是 sleep 猜）。
+    /// 返回读到的那一串 —— 失败时它就在断言信息里。
+    pub async fn wait_received(&self, needle: &str) -> String {
+        let deadline = Instant::now() + CLOSE_TIMEOUT;
+        loop {
+            let got = self.received();
+            if got.contains(needle) {
+                return got;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "主端没读到 {needle:?}（读到 {got:?}）"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+/// 打开串口面板，并保证它**重新读一遍**两份列表。
+///
+/// 两件事都在这一处解决（与 [`open_tunnel_panel`] 同一条理由）：`.tab-new-serial` 是
+/// **切换**，而各个 E2E 目标共用一个 app；面板的两份列表都是挂载时读一次的。
+pub async fn open_serial_panel(client: &mut VictauriClient) {
+    if !text_of(client, ".serial-picker").await.is_empty() {
+        click(
+            client,
+            ".serial-picker-close",
+            "关掉串口面板（好让它重新读一次列表）",
+        )
+        .await;
+    }
+    click(client, ".tab-new-serial", "打开串口面板").await;
+    wait_js(
+        client,
+        "!!document.querySelector('.serial-picker')",
+        10_000,
+        "串口面板打开了",
+    )
+    .await;
 }

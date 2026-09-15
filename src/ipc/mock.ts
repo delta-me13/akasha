@@ -230,6 +230,13 @@ export function installDevBackend(): void {
       // 混成一件事（同上面两条的理由）。
       case "vault_serials":
         throw { kind: "locked" };
+      case "serial_ports":
+        // 枚举这一档单独报：它是"系统那次调用失败了"，不是"本机没有端口"（空表才是后者）——
+        // 模拟后端两条都不该假装，于是报前一条，并让界面顺带说出"手输路径仍然可用"。
+        throw {
+          kind: "enumerate",
+          detail: { message: "dev-web 的模拟后端没有串口枚举（用 just dev）" },
+        };
       case "open_serial_session":
         throw {
           kind: "open",

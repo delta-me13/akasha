@@ -5,10 +5,11 @@
 //! | 事 | 在哪 | 为什么在这里 |
 //! |---|---|---|
 //! | 池行的过 IPC 表示 | [`SerialEntry`] + [`vault_serials`] | 界面要**看得见**池里有哪些配置才能挑一条 |
-//! | 取值域两侧的映射 | [`SerialParity`] / [`SerialFlow`] | 存储 crate 不依赖 specta，串口 crate 不带 serde（各自只认自己的类型） |
+//! | 枚举结果的过 IPC 表示 | [`SerialPort`] + [`serial_ports`] | 同上：界面要看得见本机有哪些端口，才谈得上挑一条或手输一条 |
+//! | 取值域两侧的映射 | [`SerialParity`] / [`SerialFlow`] / [`SerialPortKind`] | 存储 crate 不依赖 specta，串口 crate 不带 serde（各自只认自己的类型） |
 //! | 一条会话命令 | [`open_serial_session`] | `Sessions::register` 已经是 `<T: Transport>`，串口只是第三种载体 |
 //!
-//! ## 三条形状
+//! ## 四条形状
 //!
 //! 1. **参数显式，不是池行 id**。SSH 那条命令收的是 `hostId`，因为认证材料在库里；
 //!    而打开一个串口**不碰库**（没有秘密），收下六个字段即可 —— 于是它没有 `locked` 这一档，
@@ -19,9 +20,14 @@
 //! 3. **与 local / SSH 共用同一条尾巴**（[`crate::session::open_terminal`]）：注册 → 频道 →
 //!    收尾线程。串口没有窗口尺寸、没有退出结局、没有本地进程（`Capabilities::NONE`），
 //!    这三条都由载体自己声明，这里一行特例都不写。
+//! 4. **枚举只是一条只读命令**（plan 1102）：它不登记状态、不碰库、不试着打开设备 ——
+//!    于是"照枚举的列表打开"、"手输一个路径打开"、"照池里的一行打开"是**并列**的三条输入，
+//!    谁都不挡谁。⚠️ 列出来的端口**不保证打得开**（问题 #150）：udev 报 devnode 时
+//!    **不检查**它在 `/dev` 下是否存在（实测：本机列出 32 条 `/dev/ttyS*`，`/dev` 下一条都没有）。
 
 use akasha_serial::{
-    DataBits, Flow, Parity, SerialError, SerialSettings, SerialTransport, StopBits,
+    DataBits, Flow, Parity, PortInfo, PortKind, SerialError, SerialSettings, SerialTransport,
+    StopBits,
 };
 use akasha_store::pools::serial as pool;
 use serde::{Deserialize, Serialize};
@@ -151,6 +157,93 @@ pub fn vault_serials(vault: State<'_, Vault>) -> Result<Vec<SerialEntry>, VaultE
         .collect()
 }
 
+/// 一条端口的**过 IPC 表示**。
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialPort {
+    /// 设备路径（Unix 上是 `/dev/ttyUSB0` 一类，Windows 上是 `COM3`）。
+    pub path: String,
+    /// 这条路径由什么硬件暴露。
+    pub kind: SerialPortKind,
+}
+
+/// 端口的硬件类别过 IPC 的形状。理由同 [`SerialParity`]：`akasha-serial` 不带 serde / specta，
+/// 两侧各认自己的类型，映射写成穷尽 `match`。
+///
+/// `Usb` 的五项**都可能缺**（设备自己没报、udev 的硬件库也没有）：缺了就是 `None`，
+/// 不填假值（`AGENTS.md` §3.4 的"字段值不得虚构"）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SerialPortKind {
+    /// USB 转串口。
+    Usb {
+        /// 厂商号。
+        vid: u16,
+        /// 产品号。
+        pid: u16,
+        /// 设备自报的序列号。
+        serial: Option<String>,
+        /// 厂商名。
+        manufacturer: Option<String>,
+        /// 产品名。
+        product: Option<String>,
+    },
+    /// 主板上的 PCI 串口。
+    Pci,
+    /// 蓝牙串口（`rfcomm`）。
+    Bluetooth,
+    /// 判定不出来。
+    Unknown,
+}
+
+impl From<PortKind> for SerialPortKind {
+    fn from(kind: PortKind) -> Self {
+        match kind {
+            PortKind::Usb {
+                vid,
+                pid,
+                serial,
+                manufacturer,
+                product,
+            } => Self::Usb {
+                vid,
+                pid,
+                serial,
+                manufacturer,
+                product,
+            },
+            PortKind::Pci => Self::Pci,
+            PortKind::Bluetooth => Self::Bluetooth,
+            PortKind::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<PortInfo> for SerialPort {
+    fn from(port: PortInfo) -> Self {
+        Self {
+            path: port.path,
+            kind: port.kind.into(),
+        }
+    }
+}
+
+/// 本机枚举到的串口，**按路径排序**、同一路径只出现一次（顺序与去重由 `akasha-serial` 的
+/// `normalize` 定）。
+///
+/// ⚠️ **列在这里不等于打得开**（问题 #150）：Linux 那边按 udev 设备给 devnode，**不检查**它在
+/// `/dev` 下是否存在。所以这条命令回答的是"系统认为有哪些端口"，而"能不能开"只有
+/// [`open_serial_session`] 知道 —— 界面因此**不得**据这张表挡掉手输路径。
+///
+/// 空表是正常结果（本机没有串口，或者运行期拿不到 `libudev` 上下文）；只有系统调用失败才是
+/// [`SerialIpcError::Enumerate`] —— "没有端口"与"列不出来"是两件事。
+#[tauri::command]
+#[specta::specta]
+pub fn serial_ports() -> Result<Vec<SerialPort>, SerialIpcError> {
+    let found = akasha_serial::ports().map_err(SerialIpcError::from)?;
+    Ok(found.into_iter().map(SerialPort::from).collect())
+}
+
 /// IPC 边界的串口错误。变体按**用户的下一步动作**分（同 `VaultError` / `SshIpcError` 的原则）。
 #[derive(Debug, thiserror::Error, Serialize, specta::Type)]
 #[serde(tag = "kind", content = "detail", rename_all = "camelCase")]
@@ -164,6 +257,12 @@ pub enum SerialIpcError {
     /// （与 `akasha-serial` 的 `SerialError::Open` / `Handle` 同一条口径）。
     #[error("串口打不开：{path}（{message}）")]
     Open { path: String, message: String },
+
+    /// 列不出本机端口（系统调用失败）。**用户的下一步动作是手输一条路径** ——
+    /// 界面在这一档旁边留着那条输入即可，不该把它读成"本机没有串口"
+    /// （空表才是那个意思，见 [`serial_ports`]）。
+    #[error("列不出本机串口端口：{message}")]
+    Enumerate { message: String },
 
     /// 内部状态不可用（会话表中毒、收尾线程起不来、频道句柄无效）。
     #[error("内部状态不可用：{message}")]
@@ -194,8 +293,10 @@ impl From<SerialError> for SerialIpcError {
                 path,
                 message: format!("句柄不可用（{source}）"),
             },
-            SerialError::Enumerate { source } => Self::Internal {
-                message: format!("串口枚举失败（{source}）"),
+            // 枚举失败**不挂 `Internal`**：那一档说的是"我们自己的状态坏了"，
+            // 而这里坏的是系统里的那一次调用，用户能做的也不是重启 app 而是手输路径。
+            SerialError::Enumerate { source } => Self::Enumerate {
+                message: source.to_string(),
             },
         }
     }
@@ -403,5 +504,78 @@ mod tests {
             "错误里没有路径：{rendered}"
         );
         assert!(matches!(err, SerialIpcError::Open { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn every_port_kind_maps_to_an_ipc_kind() {
+        // 四档都要有去处，`Usb` 的五项一个不丢（装反了就是 vid / pid 互换）。
+        let usb = PortInfo {
+            path: "/dev/ttyUSB0".to_owned(),
+            kind: PortKind::Usb {
+                vid: 0x1a86,
+                pid: 0x7523,
+                serial: Some("SERIAL".to_owned()),
+                manufacturer: Some("MANUFACTURER".to_owned()),
+                product: Some("PRODUCT".to_owned()),
+            },
+        };
+        let mapped = SerialPort::from(usb);
+        assert_eq!(mapped.path, "/dev/ttyUSB0");
+        match mapped.kind {
+            SerialPortKind::Usb {
+                vid,
+                pid,
+                serial,
+                manufacturer,
+                product,
+            } => {
+                assert_eq!((vid, pid), (0x1a86, 0x7523), "vid / pid 装反了");
+                assert_eq!(serial.as_deref(), Some("SERIAL"));
+                assert_eq!(manufacturer.as_deref(), Some("MANUFACTURER"));
+                assert_eq!(product.as_deref(), Some("PRODUCT"));
+            }
+            other => panic!("USB 端口映射成了别的一档：{other:?}"),
+        }
+
+        for (kind, expected) in [
+            (PortKind::Pci, SerialPortKind::Pci),
+            (PortKind::Bluetooth, SerialPortKind::Bluetooth),
+            (PortKind::Unknown, SerialPortKind::Unknown),
+        ] {
+            let mapped = SerialPort::from(PortInfo {
+                path: "/dev/x".to_owned(),
+                kind,
+            });
+            assert_eq!(mapped.kind, expected);
+        }
+    }
+
+    #[test]
+    fn a_usb_port_without_descriptions_keeps_them_empty() {
+        // 五项都可能缺（设备自己没报、udev 的硬件库也没有）：缺了就是 `None`，
+        // 不填 0 / unknown 顶替 —— 界面据此少显示一行，而不是显示一句假话。
+        let mapped = SerialPort::from(PortInfo {
+            path: "/dev/ttyUSB1".to_owned(),
+            kind: PortKind::Usb {
+                vid: 0,
+                pid: 0,
+                serial: None,
+                manufacturer: None,
+                product: None,
+            },
+        });
+        match mapped.kind {
+            SerialPortKind::Usb {
+                serial,
+                manufacturer,
+                product,
+                ..
+            } => {
+                assert_eq!(serial, None);
+                assert_eq!(manufacturer, None);
+                assert_eq!(product, None);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

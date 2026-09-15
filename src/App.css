@@ -279,6 +279,120 @@ body {
   justify-content: flex-end;
 }
 
+/* 串口面板的三块（plan 1102）：枚举到的端口 / 表单 / 库里的配置。
+ * 同上面那一条要求：**能被 E2E 驱动** —— 类名与 `data-*` 稳定、没有依赖布局时序的东西。 */
+
+.serial-ports,
+.serial-pool {
+  margin: 0 0 10px;
+}
+
+.serial-ports-title,
+.serial-pool-title {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: #8d99a8;
+}
+
+.serial-ports-list {
+  max-height: 120px;
+  margin: 0 0 4px;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.serial-port-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #d8dee9;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.serial-port-item:hover {
+  border-color: #3f4d66;
+  background: #1e242e;
+}
+
+.serial-port-kind {
+  color: #7b8794;
+}
+
+.serial-ports-note,
+.serial-ports-empty {
+  margin: 0;
+  font-size: 11px;
+  color: #7b8794;
+}
+
+.serial-ports-problem,
+.serial-pool-problem {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: #ffb4b4;
+}
+
+.serial-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 8px;
+  margin: 0 0 10px;
+}
+
+.serial-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: #8d99a8;
+}
+
+.serial-field-port {
+  grid-column: 1 / -1;
+}
+
+.serial-input {
+  padding: 3px 6px;
+  background: #10141a;
+  border: 1px solid #2b3444;
+  border-radius: 4px;
+  color: #d8dee9;
+  font: inherit;
+  font-size: 12px;
+}
+
+.serial-picker-open {
+  margin-left: 6px;
+  padding: 4px 12px;
+  background: #21324a;
+  border: 1px solid #3f4d66;
+  border-radius: 6px;
+  color: #d8dee9;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.serial-picker-close {
+  padding: 4px 12px;
+  background: transparent;
+  border: 1px solid #2b3444;
+  border-radius: 6px;
+  color: #8d99a8;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
 .ssh-prompts {
   position: absolute;
   top: 56px;

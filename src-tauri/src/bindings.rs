@@ -35,6 +35,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::pools::vault_forwards,
             // 串口配置池的只读读取（plan 1101）：界面据此列出"有哪些串口可以打开"。
             crate::serial::vault_serials,
+            // 本机端口的枚举（plan 1102）。**同步**：一次系统调用，与 `open_serial_session` 同档。
+            // ⚠️ 它列出来的端口不保证打得开（问题 #150）—— 它只是一份"系统认为有哪些"的清单。
+            crate::serial::serial_ports,
             // 串口会话（plan 1101）。**同步**：打开一个本地设备没有握手，而参数在碰设备
             // 之前就校验完了 —— 与 `open_session`（本地 PTY）同档，不是与 `open_ssh_session` 同档。
             crate::serial::open_serial_session,

@@ -72,9 +72,11 @@ test:
 # 最后一条（plan 0704）起**一台**服务端，但主机行指向它前面的**一条带时延的链路**
 # （`slow_link`，每段延后 10 ms）：它要量的是"并发比串行快多少"，而本机回环的往返太小，
 # 不放大就量不出差距。它同样不与前面的目标共享主机行。
-# `serial_session`（plan 1101）**不在端口上做任何事**：它自己造一对 PTY、把**从端的路径**
-# 当设备种进 serial 配置池（本机没有串口硬件 —— 问题 #150）。因此它既不占端口、
-# 也不与前面任何目标共享行，排在末尾。
+# `serial_session`（plan 1101）与 `serial_ports_ui`（plan 1102）**都只在串口上做事**：各自造
+# 一对 PTY、把**从端的路径**当设备（本机没有串口硬件 —— 问题 #150）。因此它们既不占端口、
+# 也不与前面任何目标共享行。⚠️ 两者**不共用那一对 PTY**：设备是独占打开的，共用会在上一个
+# 目标还没关掉它时收到 `Device or resource busy`（详见 `tests/support/` 的 `FakeSerialDevice`）。
+# 它们排在末尾；`serial_ports_ui` 紧跟 `serial_session`（同一份脚手架，读日志时挨着看）。
 # `exit_residue` 会把 app 关掉 —— 所以它排在**另一段**的最后。
 #
 # ⚠️ **两段，两套配置**（plan 0302 + 0303）：关窗语义由数据目录里的 `config.json` 决定，
@@ -82,7 +84,7 @@ test:
 #   * 第一段（本清单）：没有配置文件 = 默认"收托盘" → `window_close` 有判据；
 #   * 第二段（`E2E_TARGETS_EXIT`）：写 `close_behavior=exit` 再起一次 app → `exit_residue`
 #     拿到的就是"关窗即退出"这条**可移植**的刺激（不需要托盘宿主，CI 上照样成立）。
-E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status vault_unlock ssh_session ssh_jump ssh_config_import tunnel_state tunnel_local_forward tunnel_dynamic_forward tunnel_remote_forward tunnel_reconnect tunnel_teardown sftp_dual_pane sftp_transfer_atomic sftp_host_to_host sftp_pipelining serial_session"
+E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status vault_unlock ssh_session ssh_jump ssh_config_import tunnel_state tunnel_local_forward tunnel_dynamic_forward tunnel_remote_forward tunnel_reconnect tunnel_teardown sftp_dual_pane sftp_transfer_atomic sftp_host_to_host sftp_pipelining serial_session serial_ports_ui"
 
 # 需要 `close_behavior=exit` 的目标：**只能**在第二段跑（见上）。
 E2E_TARGETS_EXIT := "exit_residue"

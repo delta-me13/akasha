@@ -72,6 +72,18 @@ export const commands = {
 	 */
 	vaultSerials: () => typedError<SerialEntry[], VaultError>(__TAURI_INVOKE("vault_serials")),
 	/**
+	 *  本机枚举到的串口，**按路径排序**、同一路径只出现一次（顺序与去重由 `akasha-serial` 的
+	 *  `normalize` 定）。
+	 * 
+	 *  ⚠️ **列在这里不等于打得开**（问题 #150）：Linux 那边按 udev 设备给 devnode，**不检查**它在
+	 *  `/dev` 下是否存在。所以这条命令回答的是"系统认为有哪些端口"，而"能不能开"只有
+	 *  [`open_serial_session`] 知道 —— 界面因此**不得**据这张表挡掉手输路径。
+	 * 
+	 *  空表是正常结果（本机没有串口，或者运行期拿不到 `libudev` 上下文）；只有系统调用失败才是
+	 *  [`SerialIpcError::Enumerate`] —— "没有端口"与"列不出来"是两件事。
+	 */
+	serialPorts: () => typedError<SerialPort[], SerialIpcError>(__TAURI_INVOKE("serial_ports")),
+	/**
 	 *  打开一个串口会话，输出经 `channel` 以 **raw 字节**送出。
 	 * 
 	 *  与 [`crate::session::open_session`] 的关系：**同一条尾巴**（注册 → 频道 → 收尾线程），
@@ -530,6 +542,14 @@ export type SerialIpcError =
 	path: string,
 	message: string,
 } } | 
+/**
+ *  列不出本机端口（系统调用失败）。**用户的下一步动作是手输一条路径** ——
+ *  界面在这一档旁边留着那条输入即可，不该把它读成"本机没有串口"
+ *  （空表才是那个意思，见 [`serial_ports`]）。
+ */
+{ kind: "enumerate"; detail: {
+	message: string,
+} } | 
 /**  内部状态不可用（会话表中毒、收尾线程起不来、频道句柄无效）。 */
 { kind: "internal"; detail: {
 	message: string,
@@ -560,6 +580,42 @@ export type SerialParams = {
  *  于是任一侧加一种取值时**这里编译不过** —— 而不是悄悄少一个分支。
  */
 export type SerialParity = "none" | "even" | "odd";
+
+/**  一条端口的**过 IPC 表示**。 */
+export type SerialPort = {
+	/**  设备路径（Unix 上是 `/dev/ttyUSB0` 一类，Windows 上是 `COM3`）。 */
+	path: string,
+	/**  这条路径由什么硬件暴露。 */
+	kind: SerialPortKind,
+};
+
+/**
+ *  端口的硬件类别过 IPC 的形状。理由同 [`SerialParity`]：`akasha-serial` 不带 serde / specta，
+ *  两侧各认自己的类型，映射写成穷尽 `match`。
+ * 
+ *  `Usb` 的五项**都可能缺**（设备自己没报、udev 的硬件库也没有）：缺了就是 `None`，
+ *  不填假值（`AGENTS.md` §3.4 的"字段值不得虚构"）。
+ */
+export type SerialPortKind = 
+/**  USB 转串口。 */
+{ usb: {
+	/**  厂商号。 */
+	vid: number,
+	/**  产品号。 */
+	pid: number,
+	/**  设备自报的序列号。 */
+	serial: string | null,
+	/**  厂商名。 */
+	manufacturer: string | null,
+	/**  产品名。 */
+	product: string | null,
+} } | 
+/**  主板上的 PCI 串口。 */
+"pci" | 
+/**  蓝牙串口（`rfcomm`）。 */
+"bluetooth" | 
+/**  判定不出来。 */
+"unknown";
 
 /**
  *  一个会话**自己**结束了：载体（PTY 里的 shell）退出 —— 用户敲了 `exit`、shell 崩了、

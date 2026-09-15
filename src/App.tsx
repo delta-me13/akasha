@@ -1,8 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import "./App.css";
 import type { HostEntry } from "./ipc/hosts";
-import type { SessionTarget } from "./ipc/session";
-import type { SerialEntry } from "./ipc/serials";
+import type { SerialParams, SessionTarget } from "./ipc/session";
 import { SerialPicker } from "./serial/SerialPicker";
 import { SftpPanel } from "./sftp/SftpPanel";
 import { HostPicker } from "./ssh/HostPicker";
@@ -85,34 +84,19 @@ function App() {
   }, []);
 
   /**
-   * 选好一条串口配置 → 开一个串口标签页（plan 1101）。
+   * 收到一张填好的表单 → 开一个串口标签页（plan 1101 起，plan 1102 改成收参数而不是池行）。
    *
-   * 与 SSH 那条同形：这里只做"开一个面"，**打开设备是那个面自己发起的**（`attachTerminal`）。
+   * 与 SSH 那条同形：这里只做"开一个面"，**打开设备是那个面自己发起的**（`attachTerminal`）——
+   * 于是参数不合法（数据位 9）时那句"字段与取值"由那个面的报错行说出来，而不是由这里弹一句。
    * 差别只有一处：串口**不碰库**（没有秘密），所以它不需要先解锁 —— 只有"列出池里有哪些"
    * 那一步需要（`SerialPicker` 自己会说清那一句）。
    */
-  const openSerialTab = useCallback((serial: SerialEntry) => {
+  const openSerialTab = useCallback((params: SerialParams, title: string) => {
     const key = nextKey.current;
     nextKey.current += 1;
     setTabs((current) => [
       ...current,
-      {
-        key,
-        kind: "serial",
-        target: {
-          kind: "serial",
-          // 池行 → 参数：**原样搬运**，不在这里做任何校验或默认值（越界取值由后端报字段与取值）。
-          params: {
-            port: serial.port,
-            baud: serial.baud,
-            dataBits: serial.dataBits,
-            stopBits: serial.stopBits,
-            parity: serial.parity,
-            flow: serial.flow,
-          },
-        },
-        title: serial.name,
-      },
+      { key, kind: "serial", target: { kind: "serial", params }, title },
     ]);
     setActive(key);
     setPickingSerial(false);
@@ -163,7 +147,7 @@ function App() {
         onNewSftp={() => setSftpOpen((open) => !open)}
       />
       {picking && <HostPicker onConnect={openSshTab} onClose={() => setPicking(false)} />}
-      {/* 串口选择器与主机选择器同类（plan 1101）：应用级浮层，选一条配置就开一个标签页。 */}
+      {/* 串口面板与主机选择器同类（plan 1101，plan 1102 起是一张三输入的表单）：应用级浮层。 */}
       {pickingSerial && (
         <SerialPicker onConnect={openSerialTab} onClose={() => setPickingSerial(false)} />
       )}
