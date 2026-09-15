@@ -79,6 +79,10 @@ test-e2e:
 portable:
     just --justfile {{SRC}}/justfile portable
 
+# serial 的 libudev 只在 Linux 上（plan 0801 的判据）：按目标核对依赖图
+libudev-check:
+    just --justfile {{SRC}}/justfile libudev-check
+
 # 吞吐基线（criterion）。**不是门禁** —— 它是用于改动前后对比的基线
 bench:
     just --justfile {{SRC}}/justfile bench
