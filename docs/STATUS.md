@@ -30,13 +30,10 @@
   有 `limit` / `live` / `peak` 三个读数，**等空位可取消**）、临时名的占用从"先查存在、再创建"
   改成**一次**原子占用（本机 `create_new`、远端 `CREATE|EXCLUDE`）。
 
-**阶段 8 的两条都完成（plan 0801 / 0802）**：`akasha-serial` 落地 —— `Transport` 的串口实现 +
-`ports()` 枚举 + 参数校验，零 Tauri 依赖、`libudev` 只在 Linux；判据与读数口见下文
-「阶段 8 的形状」。串口接入 app **不在阶段 8 内**，已立为 **阶段 11** ——
-它的**三条全部已完成**（plan 1101 / 1102 / 1103）：一条串口 `Session` 能从界面打开、字节双向流动、
-关标签页即回收；界面上三条输入并列（枚举到的端口 / 手输路径 / 池行取值），取值越界时
-当场看到字段与取值；设备被拔掉时那条会话自己结束、标签页随之关闭，界面上留下那句
-「串口设备已断开：<设备路径>（Broken pipe）」。形状见下文「阶段 11 的形状」。
+**阶段 8 的两条都完成（plan 0801 / 0802）、阶段 11 的三条也已完成（plan 1101 / 1102 / 1103）**：
+`akasha-serial` 落地（`Transport` 的串口实现 + `ports()` 枚举 + 参数校验，零 Tauri 依赖、
+`libudev` 只在 Linux），一条串口 `Session` 接着接进 app —— 从界面打开、字节双向流动、关标签页即回收、
+取值越界当场看到字段与取值、设备被拔掉时以可读原因结束并关闭标签页。判据与读数见下文「串口的形状」。
 
 阶段 4 的八项（每项一句）：**SQLCipher 加密库可打开**（0401）、**口令只从一条路径进入且可真正验证**
 （0402 —— 拆分"打开"与"新建"；此前在文件不存在的路径上**任何口令都能打开**）、
@@ -198,18 +195,30 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 ⚠️ **隧道那条链是独立的一条**（本机 → A → B），**不复用另一栏的连接对象**：另一栏换主机 /
 断开都不会带走这一栏 —— ADR-0006 D3 的"不复用同一条连接"因此仍然成立。
 
-### 阶段 8 的形状（plan 0801 的 crate 与 feature + plan 0802 的枚举与参数）
+### 串口的形状（阶段 8 的 crate 与 feature + 阶段 11 的接线与结束原因）
+
+**串口与 local / SSH 是同一种东西**：一条 `Transport` 装进 `Sessions` 的 `live` 表 ——
+没有第四张表、没有新的会话模型、没有新的收尾路径。变的只有"载体从哪来"。
 
 | 事 | 落在哪 |
 |---|---|
 | crate | `src-tauri/crates/akasha-serial`：零 Tauri 依赖，对外只认 `akasha_pty::Transport`（与 `akasha-ssh` 同一条边界） |
-| 载体 | `transport.rs` 的 `SerialTransport::open(&SerialSettings)` + `Transport` 实现。**能力位是 `Capabilities::NONE`**（没有窗口尺寸、没有结局、没有本地进程）：`resize` 答 `Unsupported`、`exited()` 恒为 `Ok(None)`、`session_leader()` 是 `None`；`shutdown` 幂等（立停止标志 + 尽力 flush） |
+| 载体 | `transport.rs` 的 `SerialTransport::open(&SerialSettings)` + `Transport` 实现。**能力位是 `Capabilities::NONE`**：`resize` 答 `Unsupported`、`exited()` 恒为 `Ok(None)`、`session_leader()` 是 `None`（没有窗口尺寸、没有结局、没有本地进程）；`shutdown` 幂等（立停止标志 + 尽力 flush） |
 | 参数 | `settings.rs` 的 `SerialSettings`：六个字段（路径 + 波特率 / 数据位 / 停止位 / 校验 / 流控），取值域与 serial 池的 `CHECK` 对齐（数据位 5..=8、停止位 1..=2），`serialport` 的类型只出现在 crate 内部；`DataBits::try_from` / `StopBits::try_from` 越界报出字段与取值，`validate()` 查空路径与 `baud == 0` |
 | 枚举（plan 0802） | `enumerate.rs` 的 `ports()`：上游四种类别映射成 `PortKind`（USB 带 vid / pid / 序列号 / 厂商 / 产品名五项），输出**按路径排序、同一路径只留信息量最大的一档**。**空表是正常结果**；⚠️ **列出来的端口不保证能打开**（问题 #150） |
-| 错误分域（plan 0802） | `error.rs` 把三组失败分开：`Enumerate`（列不出来）/ `Settings` · `NoPath`（参数不合法，报**字段与取值**）/ `Open` · `Handle`（这一个设备打不开，报**路径**） |
+| 错误分域 | `error.rs` 把四组失败分开：`Enumerate`（列不出来）/ `Settings` · `NoPath`（参数不合法，报**字段与取值**）/ `Open` · `Handle`（这一个设备打不开，报**路径**）/ `DeviceGone`（设备消失，报**路径与 OS 原因**） |
 | feature | `libudev = ["serialport/libudev"]`、`default = ["libudev"]`，且 `serialport` 以 `default-features = false` 引入 —— 链不链 libudev 是 manifest 上看得见的事。**平台差异由上游的 target 段承担**：那个 optional 依赖只在 `cfg(all(target_os = "linux", not(target_env = "musl")))` 下存在，Windows / macOS 上打开这个 feature 什么都不编译 |
-| 判据的读数口 | `just libudev-check`（按目标核对依赖图，两条负例验过）与 `just serial-check`（两条枚举实现各执行一遍，负例验过）—— 数字见「已验证为通过」与「各轮」 |
+| 读数口（crate 层） | `just libudev-check`（按目标核对依赖图，两条负例验过）与 `just serial-check`（两条枚举实现各执行一遍，负例验过）—— 数字见「已验证为通过」与「各轮」 |
 | libudev 缺失时的降级 | Linux 上关闭该 feature（`default-features = false`）**仍能枚举** —— 上游另有一支 sysfs 实现；运行期拿不到 `libudev::Context` 时它返回**空表**而不是错误。发行版缺 libudev 的开发包**不是硬失败** |
+| app 侧接线（plan 1101 / 1102） | `src-tauri/src/serial.rs`：三条命令 = `vault_serials`（列池里的行）· `serial_ports`（列本机端口）· `open_serial_session(channel, params)`（**同步**）；形状 = `SerialEntry` / `SerialPort` / `SerialPortKind` / `SerialParams`（六个字段）与 `SerialIpcError`（`settings{field,value}` / `open{path,message}` / `enumerate{message}` / `internal`，**没有 `locked`**） |
+| 取值域两侧的映射 | `SerialParity` / `SerialFlow` 两个 IPC 枚举 → `akasha_store::pools::serial` 与 `akasha_serial` **各一个穷尽 `match`**；`data_bits` / `stop_bits` 保持库里的原始数值，越界由 crate 的 `TryFrom` 报字段与取值 |
+| 载体从哪来 | **参数显式，不是池行 id**：打开一个设备不碰库（没有秘密），所以这条路径**不需要解锁**；`locked` 只挡"列出池里有哪些"。于是 plan 1102 的"手输路径 + 参数可编辑"复用**同一条**命令 |
+| 三条并列的输入 | 枚举到的端口 / 手输的设备路径 / 池里的一行 —— **谁都不挡谁**：枚举那一块读不出来（`enumerate`）时只有它自己显示那句，手输照常；库锁着时只有池那一块说"先解锁"。点一条枚举结果**只是把路径填进表单**（不试开、不标可用） |
+| 表单与报错 | `src/serial/SerialPicker.tsx`：六个字段（数值三栏是**文本框** —— 越界取值要能从界面产生）、`data-serial-field` 与 `[data-serial-open]`。⚠️ **范围那一档仍归后端**（`settings{field,value}`）：前端只拦"寄不出去"（空串 / 非数字 / 超出 `u32`·`u8` 的宽度），那一条是 JSON 边界的必答项，不是第二份取值域 |
+| 前端 | `SessionTarget` 的 `serial` 变体、`TabKind` 加 `"serial"` 并进 `CLOSABLE`、`src/ipc/serials.ts`（两个只读入口：池 + 端口） |
+| 读数口（会话侧） | `app_state { probe: "sessions" }`（串口**没有本地进程**，"关闭零残留"只能看注册表 —— 同 ADR-0003 D4）；E2E `tests/serial_session.rs` / `serial_ports_ui.rs` / `serial_device_gone.rs` 各自造一对 PTY（脚手架 `tests/support/` 的 `FakeSerialDevice`），把**从端的路径**当设备 |
+| 结束原因从哪来（plan 1103） | `akasha-pty` 的 `Transport::stream_error`（默认 `None`）：`shutdown()` 报"结局是什么"（退出码 / 信号），这一条报"输出流为什么不是正常结束"。串口读端遇到**真实**读错误时把它渲染成 `SerialError::DeviceGone`（带设备路径）记在同读端共享的那一格里；会话层在收尾**之后**读它，算"结局优先、原因次之"进 `SessionEnded.status`（`PTY` / `SSH` 照旧报结局） |
+| 那句话怎么到界面 | `session_ended` 的 `status` 逐层交到 `App.tsx`（此前整个被丢掉），由它先写进应用级通知行 `[data-session-notice]` 再关闭标签页 —— 说出这句话的那个面随即被卸载，所以那句话只能留在壳层。顺带补上一条：本地终端的"退出码 N"从此也看得见 |
 
 ⚠️ **手动指定路径不依赖枚举**：`SerialTransport::open` 收的就是一个设备路径
 （`/dev/ttyUSB0` / `COM3`），"端口列表为空"或"libudev 整个不在"都不影响打开一个已知端口。
@@ -217,29 +226,11 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 ⚠️ **两种枚举实现给出不同的结果**：默认配置（libudev）列出 32 条 `/dev/ttyS*`，
 `--no-default-features`（sysfs）列出 0 条（它要求 `/dev/<名字>` 存在）—— 读数与教训见问题 #150。
 
+⚠️ **枚举结果不代表可用**（plan 1102 的呈现纪律）：udev 报 devnode 时不检查它在 `/dev` 下是否存在，
+所以那一块不标"可用 / 不可用"、也不禁用别的输入 —— 能不能开只有点「打开」之后才知道。
+
 ⚠️ **Windows / macOS 的原生编译证据还差一层**（问题 #149）：`akasha-pty` 里的
 `rustix::process` 挡住那个目标，本地证据是依赖图与一次一次性探针。
-
-⚠️ **阶段 8 到 crate 层为止**：串口接入 app（命令 / 界面 / 设备消失时的表现）是**阶段 11**，
-不是阶段 8 的第五条。
-
-### 阶段 11 的形状（plan 1101 的接线 + plan 1102 的三条输入 + plan 1103 的可读原因）
-
-**串口与 local / SSH 是同一种东西**：一条 `Transport` 装进 `Sessions` 的 `live` 表 ——
-没有第四张表、没有新的会话模型、没有新的收尾路径。变的只有"载体从哪来"。
-
-| 事 | 落在哪 |
-|---|---|
-| app 侧接线 | `src-tauri/src/serial.rs`：`SerialEntry` + `vault_serials`（列池里的行）、`SerialPort` / `SerialPortKind` + `serial_ports`（列本机端口，plan 1102）、`SerialParams`（六个字段的 IPC 形状）、`open_serial_session`（**同步**）、`SerialIpcError`（`settings{field,value}` / `open{path,message}` / `enumerate{message}` / `internal`，**没有 `locked`**） |
-| 取值域两侧的映射 | `SerialParity` / `SerialFlow` 两个 IPC 枚举 → `akasha_store::pools::serial` 与 `akasha_serial` **各一个穷尽 `match`**；`data_bits` / `stop_bits` 保持库里的原始数值，越界由 crate 的 `TryFrom` 报字段与取值 |
-| 命令 | `vault_serials` · `serial_ports`（plan 1102，**同步**）· `open_serial_session(channel, params)` |
-| 载体从哪来 | **参数显式，不是池行 id**：打开一个设备不碰库（没有秘密），所以这条路径**不需要解锁**；`locked` 只挡"列出池里有哪些"。于是 plan 1102 的"手输路径 + 参数可编辑"复用**同一条**命令 |
-| 三条并列的输入 | 枚举到的端口 / 手输的设备路径 / 池里的一行 —— **谁都不挡谁**：枚举那一块读不出来（`enumerate`）时只有它自己显示那句，手输照常；库锁着时只有池那一块说"先解锁"。点一条枚举结果**只是把路径填进表单**（不试开、不标可用） |
-| 表单与报错 | `src/serial/SerialPicker.tsx`：六个字段（数值三栏是**文本框** —— 越界取值要能从界面产生）、`data-serial-field` 与 `[data-serial-open]`。⚠️ **范围那一档仍归后端**（`settings{field,value}`）：前端只拦"寄不出去"（空串 / 非数字 / 超出 `u32`·`u8` 的宽度），那一条是 JSON 边界的必答项，不是第二份取值域 |
-| 前端 | `SessionTarget` 的 `serial` 变体、`TabKind` 加 `"serial"` 并进 `CLOSABLE`、`src/ipc/serials.ts`（两个只读入口：池 + 端口） |
-| 判据的读数口 | `app_state { probe: "sessions" }`（串口**没有本地进程**，"关闭零残留"只能看注册表 —— 同 ADR-0003 D4）；E2E `tests/serial_session.rs` / `serial_ports_ui.rs` / `serial_device_gone.rs` 各自造一对 PTY（脚手架 `tests/support/` 的 `FakeSerialDevice`），把**从端的路径**当设备 |
-| 结束原因从哪来（plan 1103） | `akasha-pty` 的 `Transport::stream_error`（默认 `None`）：`shutdown()` 报"结局是什么"（退出码 / 信号），这一条报"输出流为什么不是正常结束"。串口读端遇到**真实**读错误时把它渲染成 `SerialError::DeviceGone`（带设备路径）记在同读端共享的那一格里；会话层在收尾**之后**读它，算"结局优先、原因次之"进 `SessionEnded.status`（`PTY` / `SSH` 照旧报结局） |
-| 那句话怎么到界面 | `session_ended` 的 `status` 逐层交到 `App.tsx`（此前整个被丢掉），由它先写进应用级通知行 `[data-session-notice]` 再关闭标签页 —— 说出这句话的那个面随即被卸载，所以那句话只能留在壳层。顺带补上一条：本地终端的"退出码 N"从此也看得见 |
 
 ⚠️ **`resize` 的 `Unsupported` 不是失败**（plan 1101）：`Sessions::resize` 现在**先看能力位**
 （`Transport::resize` 的契约本来就要求调用方这么做）。不改的话串口标签页一打开就是红的 ——
@@ -263,13 +254,11 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 （`App.tsx` 只负责开一个面，见 `attachTerminal`），所以参数不合法（数据位 9）时**面已经开出来
 了**、它当场是出错态，报错行里是 `data_bits = 9` —— 与 SSH 连不上同一条路。面板自己显示的
 只有"读列表失败"与"参数填不出来"这两档（后者**不开面**）。
-⚠️ **枚举结果不代表可用**（问题 #150，plan 1102 的呈现纪律）：udev 报 devnode 时不检查它在
-`/dev` 下是否存在（本机列出 32 条 `/dev/ttyS*`，`/dev` 下一条都没有），所以那一块不标
-"可用 / 不可用"、也不禁用别的输入 —— 能不能开只有点「打开」之后才知道。
+
+### 阶段 5 之前那些跨阶段的结论（还在生效）
 
 **关闭窗口的语义由配置与托盘可用性共同决定**（0302 + 0303）：
 
-### 阶段 5 之前那些跨阶段的结论（还在生效）
 | `close_behavior` | 托盘是否可用 | 点击关闭按钮之后 |
 |---|---|---|
 | `tray`（默认） | 是 | **窗口隐藏、进程保留** —— 会话与终端缓冲原样存活 |
@@ -323,8 +312,8 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
-| `just test` | **386 tests run: 386 passed**（`akasha` **80** + `akasha-core` 30 + `akasha-pty` 39 + `akasha-serial` **24** + `akasha-ssh` **86** + `akasha-store` 127）。⚠️ `akasha` 的 80 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回 —— 其中 `portable` 3 条、`ssh_session` / `ssh_jump` / `ssh_config_import` / `tunnel_state` / `tunnel_local_forward` / **`tunnel_dynamic_forward` / `tunnel_remote_forward` / `tunnel_reconnect` / `tunnel_teardown` / `sftp_dual_pane` / `sftp_transfer_atomic` / `sftp_host_to_host` / `sftp_pipelining` 各 1 条**） |
-| `just serial-check`（plan 0802） | 退出码 **0**：`akasha-serial` 的 **24 条**在两种 feature 配置下**各执行一遍**（默认走 libudev 的枚举实现，`--no-default-features` 走 sysfs 的），两次都是 **24 passed / 0 skipped** |
+| `just test` | **399 tests run: 399 passed**（`akasha` **91** + `akasha-core` 30 + `akasha-pty` **40** + `akasha-serial` **25** + `akasha-ssh` **86** + `akasha-store` 127）。⚠️ `akasha` 的 91 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回；目标与用例数见下面那条 `just test-e2e` 与 `src-tauri/justfile` 的 `E2E_TARGETS`） |
+| `just serial-check`（plan 0802） | 退出码 **0**：`akasha-serial` 的 **25 条**在两种 feature 配置下**各执行一遍**（默认走 libudev 的枚举实现，`--no-default-features` 走 sysfs 的），两次都是 **25 passed / 0 skipped** |
 | ↑ **判据：枚举在本机列出端口**（plan 0802） | ✅ `ports()` 在本机（libudev）返回 **32 条** `/dev/ttyS0`…`/dev/ttyS31`，**按路径排序、无重复、路径非空**，且每条在 `/sys/class/tty/<名字>` 里都有对应项（库内 `enumeration` 2 条）；关闭该 feature 后**同一套用例**返回 **0 条**且照常通过 —— "没有端口"与"枚举失败"因此是两种结果 |
 | ↑ **判据：参数错误给出可读报错**（plan 0802） | ✅ 越界取值报**字段与取值**（`data_bits = 9` / `stop_bits = 3` / `baud = 0`，库内 3 条）；打不开报**路径与 OS 原因**（不存在的设备与一个目录路径都实测过） |
 | ↑ **参数在真 tty 上回读**（plan 0802） | ✅ 请求 `115200 / 7 数据位 / 2 停止位 / 偶校验 / 软件流控` → 回读 `115200` / `Two` / `Software` **等于请求值**；⚠️ 数据位与校验位被 PTY 归一化（回读 `Eight` / `None`），那两项只到"映射是全的" —— 见「待验证」 |
@@ -389,13 +378,11 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | ↑ **上限真的在，且排队与取消都在并发下正确**（plan 0704，crate 层 6 条） | ✅ `akasha-ssh` 新增 `pipelining` 6 条：7 个文件 / 上限 3 时目标端点**同时**只见到 3 个 `begin_write`（第 4 个连闸门都进不去）、放行后 7 个都落地而 `peak` 停在 3 / 排队中被取消的那条**一个端点都没碰过**（它的路径从未被 `open`）、进去的那条走收尾、目标目录空 / 5 个文件中间那个写失败 → 另外 4 个字节正确落地 / 两条并发传输写**同一个最终名**时目标目录里是**两个**不同的临时名（放行后最终名的字节等于两条源之一）/ 上传一个文件：服务端记到的 `open` 恰好一次（`/.probe.bin.part`）且临时名没出现在 `stat` 里（"由对端保证的唯一性"在协议层就是少一次往返） |
 | ↑ **分档数字**（plan 0704，crate 层） | 12 个 1 KiB 文件在带时延链路上：上限 1 = **1.168 s**、2 = 1.159 s、4 = 563 ms、8 = 377 ms、16 = 211 ms（每个文件 97.3 → 17.6 ms）。⚠️ **上限 2 与串行一样慢**，那一段没有定位（见「进行中 / 下一步」）；默认值因此不按饱和点取 |
 | ↑ **`just test-e2e` 全部通过** | 退出码 **0**：第一段（默认收托盘）**25 个目标 / 30 个用例** + 第二段 `exit_residue` **1 个用例** = **26 个目标 / 31 个用例**、0 失败；第三段（可搬迁性）`portable` **3 passed**。⚠️ `E2E_NO_APP` 的 `session_watchdog` 不在第一段的目标清单里（另有入口），`E2E_SELF_APP` 的 `portable` 由第三段执行、不计在上面那个数里 |
-| ↑ **判据：串口会话能打开并双向传字节、关标签页即回收**（plan 1101） | ✅ `serial_session` E2E（真实 app + **测试进程自己造的一对 PTY**（从端的路径当设备），**1.00 s**）：界面点"串口" → 选池里那一行 → 标签页出现且"已连接" → **设备 → 界面**（往主端写 `from-device-1101`，屏幕文本里出现它）→ **界面 → 设备**（在标签页里敲 `to-device-1101`，主端读到同一串）→ 关标签页后 `sessions` probe 回到打开前的 `{"live":1,"registered":1}`（**两数相等**） |
-| ↑ **池行 → 参数这条搬运**（plan 1101，crate 层 5 条） | ✅ `akasha --lib serial` **5 passed**：两个 IPC 枚举的全量映射 / 六个字段的搬运 / **越界取值报字段与取值**（`data_bits` 与 `stop_bits` 各三个取值）/ **空路径报出用户给的那一串** / 不存在的设备报出它试过的路径 |
-| ↑ **判据：界面上看到本机枚举结果并据此（或手输路径）打开；取值越界时显示字段与取值**（plan 1102） | ✅ `serial_ports_ui` E2E（真实 app + 测试进程自己造的一对 PTY，**1.46 s**）：后端枚举 **32 条** → 面板上那个计数与它**相等**（库**故意不解锁**：池那一块显示"先解锁"、端口照常列出 → 三条输入并列）→ 点第一条枚举结果 `/dev/ttyS0` → **"设备路径"那一栏变成它** → 手输 PTY 从端的路径 → 「打开」→ 标签页"已连接"、`from-device-1102` 到了界面、`to-device-1102` 回到设备 → 关标签页后 `sessions` 回到 `{"live":1,"registered":1}`；数据位填 **9** → 「打开」→ 那个面的报错行里是 **`data_bits = 9`**、关闭之后 probe 同样回到打开前（**没有登记**）；数据位填 `abc` → **不开面**，`[data-picker-problem]` 说清是哪一栏 |
-| ↑ **端口映射与"契约加一档"的编译期代价**（plan 1102，crate 层 2 条） | ✅ `akasha --lib serial` **7 passed**：新增"四档 `PortKind` 各有去处（`Usb` 五项一个不丢）"与"五项都缺时保持 `None`（不填假值）"。⚠️ `SerialIpcError` 加 `enumerate` 之后，前端两处 `switch`（`SerialInvokeError` / `SerialPortsUnavailable`）当场**编译不过**（TS2366）——"契约加了一档、前端少一个分支"在编译期就现形 |
-| ↑ **判据：设备消失时会话结束、没有残留注册（且原因可读）**（plan 1103） | ✅ `serial_device_gone` E2E（真实 app + 测试进程自己造的一对 PTY，**0.36 s**）：手输从端路径打开 → 标签页"已连接" →（**关闭唯一一份主端 = 拔掉设备**）→ 标签页自己关闭、`[data-session-notice]` 里是 **`「/dev/pts/0」已结束：串口设备已断开：/dev/pts/0（Broken pipe）`**、`sessions` probe 回到打开前的 `{"live":1,"registered":1}`。⚠️ 这条用例**先断言那句话此刻不在界面上**（正反例成对：否则"拔掉之后它出现了"会被上一次留下的通知顶过去） |
-| ↑ **读端失败的形态与"自己收尾不留原因"**（plan 1103，crate 层） | ✅ `akasha-serial` **25 passed**：新增"关闭 PTY 主端 → 读端报错（**不是** `Ok(0)`），且 `stream_error` 说得清是哪台设备（含路径与`已断开`，问几次都是同一句）"；配套断言"设备安静（超时 / 零字节）与**我们自己收尾**都不留原因"。`akasha-pty` **40 passed**（新增"`stream_error` 的默认值是 `None`"） |
-| ↑ **原因出得了载体**（plan 1103，app 层） | ✅ `akasha --lib session` **18 passed**：假载体报一句原因 → `retire` 把它**原样**交出（会话层不拼那句话）；**反例**：不报原因的载体拿到 `None`（只断言前者分不清"字段在工作"与"它永远是同一个值"） |
+| ↑ **判据：串口会话能打开并双向传字节、关标签页即回收**（plan 1101） | ✅ `serial_session` E2E（真实 app + 测试进程自己造的一对 PTY，从端的路径当设备，**1.00 s**）：界面点"串口" → 选池里那一行 → 标签页出现且"已连接" → **设备 → 界面**（往主端写 `from-device-1101`，屏幕文本里出现它）→ **界面 → 设备**（在标签页里敲 `to-device-1101`，主端读到同一串）→ 关标签页后 `sessions` probe 回到打开前的 `{"live":1,"registered":1}`（**两数相等**） |
+| ↑ **判据：界面上看到本机枚举结果并据此（或手输路径）打开；取值越界时显示字段与取值**（plan 1102） | ✅ `serial_ports_ui` E2E **1.46 s**（设备同上）：后端枚举 **32 条** → 面板上那个计数与它**相等**（库**故意不解锁**：池那一块显示"先解锁"、端口照常列出 → 三条输入并列）→ 点第一条枚举结果 `/dev/ttyS0` → **"设备路径"那一栏变成它** → 手输 PTY 从端的路径 → 「打开」→ 标签页"已连接"、`from-device-1102` 到了界面、`to-device-1102` 回到设备 → 关标签页后 `sessions` 回到 `{"live":1,"registered":1}`；数据位填 **9** → 「打开」→ 那个面的报错行里是 **`data_bits = 9`**、关闭之后 probe 同样回到打开前（**没有登记**）；数据位填 `abc` → **不开面**，`[data-picker-problem]` 说清是哪一栏 |
+| ↑ **池行 → 参数这条搬运，以及端口映射与"契约加一档"的编译期代价**（plan 1101 / 1102，crate 层） | ✅ `akasha --lib serial` **7 passed**（1101 的 5 条 + 1102 的 2 条）：两个 IPC 枚举的全量映射 / 六个字段的搬运 / **越界取值报字段与取值**（`data_bits` 与 `stop_bits` 各三个取值）/ **空路径报出用户给的那一串** / 不存在的设备报出它试过的路径 / 四档 `PortKind` 各有去处（`Usb` 五项一个不丢）/ 五项都缺时保持 `None`。⚠️ `SerialIpcError` 加 `enumerate` 之后，前端两处 `switch`（`SerialInvokeError` / `SerialPortsUnavailable`）当场**编译不过**（TS2366） |
+| ↑ **判据：设备消失时会话结束、没有残留注册（且原因可读）**（plan 1103） | ✅ `serial_device_gone` E2E **0.36 s**（设备同上）：手输从端路径打开 → 标签页"已连接" →（**关闭唯一一份主端 = 拔掉设备**）→ 标签页自己关闭、`[data-session-notice]` 里是 **`「/dev/pts/0」已结束：串口设备已断开：/dev/pts/0（Broken pipe）`**、`sessions` probe 回到打开前的 `{"live":1,"registered":1}`。⚠️ 这条用例**先断言那句话此刻不在界面上**（正反例成对：否则"拔掉之后它出现了"会被上一次留下的通知顶过去） |
+| ↑ **读端失败的形态、原因出得了载体、"我们自己收尾"不留原因**（plan 1103，crate + app 层） | ✅ `akasha-serial` **25 passed**：关闭 PTY 主端 → 读端报错（**不是** `Ok(0)`），且 `stream_error` 说得清是哪台设备（含路径与`已断开`，问几次都是同一句）；设备安静（超时 / 零字节）与**我们自己收尾**都不留原因。`akasha-pty` **40 passed**（`stream_error` 的默认值是 `None`）。`akasha --lib session` **18 passed**：假载体报一句原因 → `retire` 把它**原样**交出（会话层不拼那句话）；**反例**：不报原因的载体拿到 `None` |
 | ↑ **判据：主机密钥变化即拒绝，未见过的询问一次**（plan 0503） | ✅ `akasha-ssh` 的 7 条：未知且无人可问 → `HostKeyUnknown`（携带用于核对的指纹，且**认证尚未开始**）；确认 → 写入缓存，**第二个连接 0 次询问**；记录不匹配 → `HostKeyChanged`（**两个指纹都在**）且**不发起询问**；用户拒绝 → 拒绝连接且**不记录**；用户文件中已认可 → 连通且文件**逐字节未变** |
 | ↑ **本仓库首次格式迁移**（plan 0503） | ✅ `akasha-store` 的 6 条：`DDL_V1` 构造出**真实 v1 库** → `open` 之后 `user_version = 2`、五张表存在、**该 host 行仍在**；再次打开当前格式的库**不写入任何字节**；缺表的 v1 **不迁移**；加密导出与明文导出两条还原路径均**升级副本、来源逐字节不变** |
 | ↑ **判据：同主机三个连接仅询问一次凭据**（plan 0502） | ✅ `three_sessions_ask_for_one_credential`：`provider.calls() == 1`、缓存 `len() == 1`、服务端三次均收到**同一口令** |
@@ -409,7 +396,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | ↑ **解锁 / 锁定 / 内存回收**（0407） | ✅ 真实 app 上 `VmLck` **0 → 176～192 → 0 kB**；进程内存扫描（带正对照）：口令 `1 → 2 → 2 → 1` 处、派生密钥 `3 → 1` 处 |
 | ↑ **导出与还原**（0404） · **目录迁移**（0405） · **退出零残留**（0204/0205） | ✅ 三项判据仍然全部通过（`just portable` **3 passed**；`app 已退出` + `零残留`） |
 | ↑ **终端 / 会话判据（未退化）** | `renderer = webgl`；写入 8 MB 数据后仍可交互；raw 通道 10.73 MB / 172 批；收尾帧 1 个、console 零异常 |
-| ↑ **§7 的 registry 一条：当前不可满足**（问题 #82） | `get_registry` 返回 **`[]`**（命令均未标 `#[inspectable]`）。**替代证据**为真实路径上的 `invoke_command` 成功 —— plan 0704 的新命令均以此验证 |
+| ↑ **§7 的 registry 一条：当前不可满足**（问题 #82） | `get_registry` 返回 **`[]`**（命令均未标 `#[inspectable]`）。**替代证据**为真实路径上的 `invoke_command` 成功 —— plan 0704 与 1101–1103 的新命令均以此验证 |
 | `cargo tree -p akasha-core \| grep -c tauri` | **0**（分层成立） |
 | `just bench`（criterion） | 52.7 GiB/s / 14.1 ns 每批 / 9.64 GiB/s（**0201 的数据，0704 未重新运行**） |
 
@@ -417,31 +404,24 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 
 ## 待验证（本地或沙箱环境无法执行）
 
-- **串口的真实硬件一次都没有被碰过**（plan 0801 / 0802）：本机 `/dev` 下没有任何串口设备节点
-  （libudev 那套枚举仍列出 32 条 `/dev/ttyS*`，它们**全部打不开** —— 见问题 #150），
-  所以"枚举出**可用**的端口"与"与真实设备互操作"这两条都没有本地证据。同一处还有一半：
-  **数据位与校验位在 PTY 上被内核归一化**（实测请求 7 数据位回读 8 位、请求偶校验回读不校验），
-  所以那两项的证据只到"映射是全的"（纯函数用例），"在真设备上生效"未实测。
-  ⚠️ 这条同时说明反向的一件事：**PTY 不是串口参数的忠实回读装置**，把它当成全部五个参数的
-  证据会得到一份看起来完整、实际只覆盖三项的读数。
-  ⚠️ **plan 1101 的端到端判据也建立在这同一条替代口径上**：`serial_session` 的两串字节
-  确实经过内核的 PTY 走了一个来回（两个方向各是独立的证据），但"与一台**真实串口设备**
-  互操作"仍然没有证据 —— 真设备上有 USB 串口芯片、模数转换、流控引脚，PTY 一样都没有。
-  ⚠️ **plan 1102 有一半判据只在有端口的机器上才执行**：`serial_ports_ui` 里"界面上那个计数 ==
-  后端枚举的条数"在本机（32 条）与 CI 上都成立，而"点一条枚举结果 → 路径栏被填上"在枚举为空的
-  机器上会**显式跳过并写明原因**（CI 的 runner 就是这一类）。那一半的"据此打开"因此没有
-  跨机器的证据 —— 它在每一台机器上要么被验过、要么被说过。
-  ⚠️ **plan 1103 也建立在这同一条替代口径上**：本机实测的"设备消失"是**关闭 PTY 主端**
-  （`POLLHUP` → `BrokenPipe`）。真 USB 转串口设备被拔掉时内核报的是 EIO（上游 `wait_fd` 的
-  另一支，走 `Other(EIO)`）—— 两条都进 `Err`，所以那条路不会静默，但 **EIO 那一支没有实测**。
-  ⚠️ 还有一条只在本机成立的前提：`portable-pty` 造出来的从端**不会**被别的进程按独占打开，
-  而真实设备上 `serialport` 的 `TIOCEXCL` 会让**第二个**会话拿到 `EBUSY`。
-  ⚠️ **`AGENTS.md` §7 里 `introspect { action: "processes" }` 那一条对串口没有对象**：
-  串口没有本地进程（`session_leader()` 是 `None`，crate 也不 spawn 进程）——
-  所以"真正退出之后零残留"在这条路上只剩注册表（`live` / `registered` 回到打开前的读数，
-  实测 `1/1`）。这两件事**不是同一件**：注册表归零说的是"没有留下可管理的会话"，
-  而"没有任何进程/线程留下"这一句在这里由**结构**保证（设备句柄 + 合批线程随流结束而退出），
-  没有单独的读数口 —— `residue` 探针报的是 SSH 连接与隧道看护任务。
+- **串口的真实硬件一次都没有被碰过**（plan 0801 / 0802 / 1101 / 1102 / 1103）：本机 `/dev` 下
+  没有任何串口设备节点（libudev 那套枚举仍列出 32 条 `/dev/ttyS*`，它们**全部打不开** ——
+  问题 #150），所以"枚举出**可用**的端口"与"与真实设备互操作"都没有本地证据：三条 E2E 的设备都是
+  测试进程自己造的 PTY 从端，字节确实经内核走了一个来回（两个方向各是独立证据），但真设备上的
+  USB 串口芯片、模数转换与流控引脚 PTY 一样都没有。⚠️ 与这条替代口径有关的四条边界：
+  **数据位与校验位被内核归一化**（请求 7 位 / 偶校验 → 回读 8 位 / 不校验），那两项只到"映射是全的"；
+  `serial_ports_ui` 里"点一条枚举结果 → 路径栏被填上"在枚举为空的机器上**显式跳过并写明原因**
+  （CI 的 runner 就是这一类），"据此打开"因此没有跨机器的证据；实测的"设备消失"是**关闭 PTY 主端**
+  （`POLLHUP` → `BrokenPipe`），真 USB 转串口被拔掉时内核报 EIO（`wait_fd` 的另一支）——
+  两条都进 `Err`、不会静默，但 **EIO 那一支没有实测**；`portable-pty` 的从端不会被别的进程
+  按独占打开，而真设备上 `serialport` 的 `TIOCEXCL` 会让**第二个**会话拿到 `EBUSY`。
+  ⚠️ 反向的一条：**PTY 不是串口参数的忠实回读装置**，把它当成全部五个参数的证据会得到一份
+  看起来完整、实际只覆盖三项的读数。
+  ⚠️ **`AGENTS.md` §7 里 `introspect { action: "processes" }` 那一条对串口没有对象**
+  （`session_leader()` 是 `None`，crate 也不 spawn 进程）："真正退出之后零残留"在这条路上只剩
+  注册表（`live` / `registered` 回到打开前的读数，实测 `1/1`）—— 它与"没有任何进程/线程留下"
+  **不是同一件**：后者由**结构**保证（设备句柄 + 合批线程随流结束而退出），没有单独的读数口
+  （`residue` 探针报的是 SSH 连接与隧道看护任务）。
 - **SFTP 只与自建的测试服务端对接过**（plan 0701 / 0702）：客户端这两条链（子系统请求、
   `realpath`、`readdir`；以及 `open` / `read` / `write` / `rename` / `remove`）**未与真实 `sshd`
   的 sftp 子系统互操作**；`limits@openssh.com` / `fsync@openssh.com` 这类扩展缺失时的降级路径
@@ -615,10 +595,6 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 
 ## 进行中 / 下一步
 
-- [x] **阶段 11 的三条全部完成**（plan 1101 / 1102 / 1103，2026-09-15）：串口能从界面打开、
-  字节双向流动、界面上三条输入并列、取值越界当场可见；设备消失时以可读原因结束、
-  标签页随之关闭、没有残留注册。ROADMAP 的「阶段 11」下面没有别的条目 —— 这一阶段到此收口。
-  ⚠️ 判据里"没有残留注册"的读数口是 `app_state { probe: "sessions" }`（串口没有本地进程）。
 - [ ] **下一步 = 阶段 9 的第一条**（`bw` 对 `sshKey` 条目的非交互行为实测）：
   [`0901`](./plans/0901-bw-noninteractive-probe.md) 仍是骨架，但它**不依赖任何代码** ——
   骨架里写的"需要真实 vault"是它唯一的门槛。
@@ -658,16 +634,16 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测，剩余 CI 三平台格子
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
 
-### 各轮（已完成，plan 0603–0802）
+### 各轮（已完成，plan 0603–1103）
 
 逐轮的步骤与实施记录随各自的 plan 归档（索引见 [`plans/README.md`](./plans/README.md)），
 **本节只留之后会被引用的事实**：各轮的判据与实测。
 
 | plan | 判据（ROADMAP 原文） | 实测 |
 |---|---|---|
-| 1103 | 把测试用的 PTY 主端关闭（等价于拔掉设备）时会话结束、没有残留注册 | `serial_device_gone` E2E **0.36 s**：拔掉设备（关闭唯一一份主端）→ 从端那一路的 `read` 报 `BrokenPipe`（**不是** `Ok(0)`）→ 会话自己结束、标签页跟着关；通知行里是 `「/dev/pts/0」已结束：串口设备已断开：/dev/pts/0（Broken pipe）`；`sessions` 回到 `{"live":1,"registered":1}`。原因经 `Transport::stream_error` → `SessionEnded.status` 进界面（契约形状未变），crate 层 1 条 + app 层 1 条 + `akasha-pty` 1 条。⚠️ 真设备被拔掉时走的是 EIO 那一支，未实测。见「阶段 11 的形状」 |
-| 1102 | 界面上看到本机枚举结果并据此（或手输路径）打开；取值越界时显示字段与取值 | `serial_ports_ui` E2E **1.46 s**：后端枚举 32 条 / 界面上那个计数与它相等；点第一条把路径填进那一栏；手输 PTY 从端的路径打开并双向传字节；数据位填 9 → 那个面的报错行里是 `data_bits = 9`（面已开出来、当场是出错态）而关闭之后注册表回到打开前；填 `abc` → 面板自己拦下、**不开面**。⚠️ "点一条枚举结果"在枚举为空的机器上**显式跳过**（CI 的 runner 就是这一类）。见「阶段 11 的形状」 |
-| 1101 | 真实 app 上打开一个串口会话并双向传字节；关闭标签页后 `live` / `registered` 归零 | `serial_session` E2E **1.00 s**：设备是测试进程自己造的一对 PTY 的从端；界面点"串口"→ 选池里那一行 → 标签页"已连接"；**两个方向各一条独立证据**（主端写的 `from-device-1101` 出现在屏幕上 / 标签页里敲的 `to-device-1101` 被主端读到）；关闭标签页后 `sessions` 回到 `{"live":1,"registered":1}`。⚠️ 实测发现一处问题：`serialport` 默认**独占**打开，而 StrictMode 的两次挂载让被丢弃的那次真的占了设备（第二遍收到 `EBUSY`）—— 处置是把"推迟一个微任务再开"从 SSH 扩到串口。见「阶段 11 的形状」 |
+| 1103 | 把测试用的 PTY 主端关闭（等价于拔掉设备）时会话结束、没有残留注册 | `serial_device_gone` E2E **0.36 s**：拔掉设备（关闭唯一一份主端）→ 从端那一路的 `read` 报 `BrokenPipe`（**不是** `Ok(0)`）→ 会话自己结束、标签页跟着关；原因经 `Transport::stream_error` 进 `SessionEnded.status`（契约形状未变），crate 层 1 条 + app 层 1 条 + `akasha-pty` 1 条。⚠️ 真设备被拔掉时走的是 EIO 那一支，未实测 |
+| 1102 | 界面上看到本机枚举结果并据此（或手输路径）打开；取值越界时显示字段与取值 | `serial_ports_ui` E2E **1.46 s**：界面上的计数与后端枚举（32 条）相等；点第一条把路径填进那一栏；手输 PTY 从端打开并双向传字节；数据位填 9 → 那个面的报错行里是 `data_bits = 9`（面已开出来、当场是出错态）；填 `abc` → 面板自己拦下、**不开面**。⚠️ "点一条枚举结果"在枚举为空的机器上**显式跳过**（CI 的 runner 就是这一类） |
+| 1101 | 真实 app 上打开一个串口会话并双向传字节；关闭标签页后 `live` / `registered` 归零 | `serial_session` E2E **1.00 s**：设备是测试进程自己造的一对 PTY 的从端；**两个方向各一条独立证据**（`from-device-1101` 出现在屏幕上 / `to-device-1101` 被主端读到）；关标签页后注册表回到打开前的读数（"归零"的口径见 plan 1101 归档）。⚠️ 实测发现 `serialport` 默认**独占**打开与 StrictMode 的两次挂载相撞（第二遍 `EBUSY`）—— 处置是把"推迟一个微任务再开"从 SSH 扩到串口 |
 | 0802 | 枚举在本机列出真实端口；参数错误时给出可读报错 | `ports()` 在本机（libudev）列 **32 条**且顺序稳定无重复、路径非空；同一套用例在 sysfs 那套实现下返回 **0 条**且照常通过（"没有端口"与"枚举失败"因此是两种结果）；真 tty 上回读参数、越界取值报字段与取值。⚠️ 负例自检：去掉排序只红了手造输入的三条单测 —— **只在真实机器上执行的断言可能是永真的** |
 | 0801 | Windows / macOS 构建不链接 libudev | 依赖图核对（`just libudev-check`，两条负例验过）+ 一次性探针让 `serialport` 带该 feature 在三个目标上各编译一次；13 条用例全过（PTY 那 4 条带 `--nocapture` 重新执行过，确认没走跳过分支）。⚠️ 原生编译待问题 #149 |
 | 0704 | 大量小文件的吞吐显著优于串行请求 | 上限归**会话持有的** `InFlight`（`limit` / `live` / `peak`；等空位可取消），临时名改成**一次**原子占用（本机 `create_new`、远端 `CREATE|EXCLUDE`）；库内 6 条（7 个文件 / 上限 3 → 目标端点同时只见 3 个 `begin_write`）+ `sftp_pipelining` E2E：12 个 1 KiB 文件在每方向延后 10 ms 的链路上 **1.509 s → 389 ms**（`peak 8`） |
@@ -732,18 +708,15 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   `akasha-ssh/src/socks5.rs`（`-D` 的协议本体：无认证的 `CONNECT` 与 `REP` 分类）→
   `akasha-ssh/src/remote.rs`（`-R`：请服务端监听 + 服务端发起的通道；⚠️ **不复用** D9 的原语）。
   状态名与事件名是**契约**（ADR-0003 §10 第 4 条）：改名要同时改 `bindings.ts`、前端与托盘。
-- **改 serial 之前先看**：`akasha-serial/src/enumerate.rs`（枚举；⚠️ 空表是正常结果、列出来的端口
+- **改 serial 之前先看**：`akasha-serial/src/enumerate.rs`（⚠️ 空表是正常结果、列出来的端口
   **不保证能打开** —— 问题 #150）→ `transport.rs`（打开、读循环、**设备消失时那句话**）→
   `settings.rs` / `error.rs`（取值域与四组失败）→ **app 侧的接线** `src-tauri/src/serial.rs`
-  （`vault_serials` / `serial_ports` / `open_serial_session` 三条命令 + 三个 IPC 枚举的映射 +
-  `SerialIpcError` 的四档）→ `src/serial/SerialPicker.tsx`（三条并列的输入：枚举结果 / 手输路径 / 池行）。
+  （三条命令 + 三个 IPC 枚举的映射 + `SerialIpcError` 的四档）→ `src/serial/SerialPicker.tsx`。
   读数口：`just serial-check`（两种 feature 配置各执行一遍）与 `just libudev-check`；
   会话侧只有 `app_state { probe: "sessions" }`（串口没有本地进程）。
-  排查"串口标签页为何消失"：日志里 `session retired` 带 `err=串口设备已断开…`
-  （没有退出码的载体走这一支；有结局的载体报 `exit_code` / `signal`），界面上那句话在
-  `[data-session-notice]`。
-  ⚠️ 打开是**独占**的（`TIOCEXCL`）：第二个会话会得到 `EBUSY`——两个进程抢一个串口本来就不该成功，
-  不得为了绕开它去关独占（plan 1101 的实施记录）。
+  排查"串口标签页为何消失"：日志里 `session retired` 带 `err=串口设备已断开…`（没有退出码的载体
+  走这一支；有结局的载体报 `exit_code` / `signal`），界面上那句话在 `[data-session-notice]`。
+  ⚠️ 打开是**独占**的（`TIOCEXCL`）：第二个会话会得到 `EBUSY` —— 不得为了绕开它去关独占。
 - **新增 command / event 的三处**：`src-tauri/src/bindings.rs` 登记、`just gen-types` 重新生成、
   `just gen-types-check` 比对（`AGENTS.md` §5）；事件还必须在 `.setup()` 里 `mount_events`。
 - **排查"隧道为何没连上 / 为何转发不通"**：日志里 `ssh connection opening`（带 `hops` = 跳数）与
@@ -1084,7 +1057,6 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
      因为它要求 `/dev/<名字>` 存在。教训：**"列出"不等于"能用"** —— 判据写成"枚举到的端口都能
      打开"会得到一条与真机相反的断言（本机恒假、接上设备恒真）；正确的位置是"枚举只负责列，
      打开失败带路径与原因"（`SerialError::Open`），而界面不要把列表当成"可用端口"。
-151. **串口接入 app 在 ROADMAP 里没有条目**（plan 0802 收尾时发现）：阶段 8 的两条都在 crate 层 ——
-     枚举与参数可用，但没有任何命令、事件或界面把它们接到 app 上，`scope.md` §2 的"三大终端之一
-     （serial）"因此没有用户可见的形态。处置（2026-09-15 已落地）：立为**阶段 11**（plan 1101–1103）。
-     ⚠️ 编号不复用，教训留给它：**一个阶段的判据全在 crate 层时，产品形态的那一半要有自己的条目**。
+151. **串口接入 app 在 ROADMAP 里没有条目**（plan 0802 收尾时发现，2026-09-15 由**阶段 11** 处置）：
+     阶段 8 的两条都在 crate 层，`scope.md` §2 的"三大终端之一（serial）"当时没有用户可见的形态。
+     编号不复用；教训：**一个阶段的判据全在 crate 层时，产品形态的那一半要有自己的条目**。
