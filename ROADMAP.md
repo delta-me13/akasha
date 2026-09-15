@@ -203,9 +203,9 @@
 - [x] local ↔ host 双向；**临时名 + 原子重命名**落盘
       验收：中断传输后目标目录里**没有**看似完整的文件
       → [plan 0702](./docs/plans/archive/0702-transfer-atomic-rename.md)
-- [ ] host ↔ host：**优先 B 档（`direct-tcpip`），失败回退 A 档（内存 relay）**
+- [x] host ↔ host：**优先 B 档（`direct-tcpip`），失败回退 A 档（内存 relay）**
       验收：A 无法直连 B 时自动走 A 档；两档均不落盘
-      → [plan 0703](./docs/plans/0703-host-to-host-topology.md)
+      → [plan 0703](./docs/plans/archive/0703-host-to-host-topology.md)
 - [ ] 并发 in-flight 请求（pipelining）
       验收：大量小文件的吞吐显著优于串行请求
       → [plan 0704](./docs/plans/0704-pipelining.md)
