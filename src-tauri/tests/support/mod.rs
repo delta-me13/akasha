@@ -46,6 +46,24 @@ pub fn skip_unless_e2e() -> bool {
     false
 }
 
+/// 这台**假串口设备**在当前平台能不能当串口用；不能就给出理由，由用例**显式跳过**。
+///
+/// 判据是平台，不是探测：`serialport` 打开从端要走串口专属的 termios / ioctl，而 PTY
+/// 不是串口设备 —— macOS 上实测报 `Not a typewriter`（本机 Linux 上可用）。Windows 更早一步：
+/// ConPTY 没有设备节点，连设备名都问不出来（见 `slave_device_name`）。
+///
+/// ⚠️ 跳过必须发生在**开标签页之前**：用例中途失败会把标签页留在 app 上，而 `is_connected`
+/// 数的是**全部**标签页 —— 后面的目标会因此必红（问题 #158）。
+pub fn fake_serial_skip_reason() -> Option<&'static str> {
+    if cfg!(all(unix, not(target_os = "macos"))) {
+        None
+    } else if cfg!(target_os = "macos") {
+        Some("macOS 上打开 PTY 从端会得到 Not a typewriter（PTY 不是串口设备）")
+    } else {
+        Some("这个平台没有设备节点（Windows 的 ConPTY），造不出假串口设备")
+    }
+}
+
 /// 自己造的库：**析构时删掉**（断言失败也走得到 —— 测试里 panic 是 unwind）。
 pub struct Fixture {
     path: PathBuf,
@@ -622,6 +640,22 @@ pub async fn wait_text_contains(client: &mut VictauriClient, selector: &str, nee
 
 // ── 串口（plan 1101 起，plan 1102 把假设备提出来，两个目标共用）────────────────
 
+/// 从端的设备名 —— 只有 Unix 的 `MasterPty` 有这个问法。
+#[cfg(unix)]
+fn slave_device_name(pair: &portable_pty::PtyPair) -> String {
+    pair.master
+        .tty_name()
+        .expect("拿不到 PTY 从端的设备名")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Windows 的 ConPTY 没有设备节点，问不出这个名字：调用方按 `fake_serial_skip_reason` 跳过。
+#[cfg(not(unix))]
+fn slave_device_name(_pair: &portable_pty::PtyPair) -> String {
+    unreachable!("Windows 的 ConPTY 没有设备节点")
+}
+
 /// 一台**假串口设备**：一对 PTY，**从端的路径**当设备名。
 ///
 /// 为什么需要它：本机 `/dev` 下没有任何串口设备（问题 #150），而"设备 → 界面 → 设备"
@@ -679,12 +713,7 @@ impl FakeSerialDevice {
                 pixel_height: 0,
             })
             .expect("造一对 PTY 失败");
-        let path = pair
-            .master
-            .tty_name()
-            .expect("拿不到 PTY 从端的设备名")
-            .to_string_lossy()
-            .into_owned();
+        let path = slave_device_name(&pair);
         let (writer, seen) = if reads_master {
             let writer = pair.master.take_writer().expect("取主端写端失败");
             let mut reader = pair.master.try_clone_reader().expect("取主端读端失败");

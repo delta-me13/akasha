@@ -106,6 +106,10 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
     if support::skip_unless_e2e() {
         return;
     }
+    if let Some(reason) = support::fake_serial_skip_reason() {
+        eprintln!("跳过 serial_session：{reason}");
+        return;
+    }
 
     // ── 1. 设备（在**本进程**里）：一对 PTY，从端的路径当串口 ───────────────────
     let mut device = FakeSerialDevice::new();

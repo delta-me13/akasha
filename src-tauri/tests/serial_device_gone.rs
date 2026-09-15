@@ -79,6 +79,10 @@ async fn unplugging_the_device_ends_the_session_with_a_readable_reason() {
     if support::skip_unless_e2e() {
         return;
     }
+    if let Some(reason) = support::fake_serial_skip_reason() {
+        eprintln!("跳过 serial_device_gone：{reason}");
+        return;
+    }
 
     let mut device = FakeSerialDevice::unpluggable();
     let Some((mut client, _fixture, _path)) = connect_and_prepare().await else {

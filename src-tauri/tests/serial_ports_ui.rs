@@ -104,6 +104,10 @@ async fn the_panel_lists_the_ports_and_opens_what_the_form_says() {
     if support::skip_unless_e2e() {
         return;
     }
+    if let Some(reason) = support::fake_serial_skip_reason() {
+        eprintln!("跳过 serial_ports_ui：{reason}");
+        return;
+    }
 
     let mut device = FakeSerialDevice::new();
     let Some((mut client, _fixture, _path)) = connect_and_prepare().await else {
