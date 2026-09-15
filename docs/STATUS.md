@@ -30,10 +30,12 @@
   有 `limit` / `live` / `peak` 三个读数，**等空位可取消**）、临时名的占用从"先查存在、再创建"
   改成**一次**原子占用（本机 `create_new`、远端 `CREATE|EXCLUDE`）。
 
-**阶段 9 的前两条已完成**（plan 0902 获取与前置检查、plan 0905 登录 / 解锁 / 锁定接进前端，
-两条都已归档）：口径由 [ADR-0007](./adr/0007-bitwarden-cli-acquisition.md) 定 ——
-两个轴默认都取宿主机那一档、运行时下载只取 OSS 变体、session key 只在内存；
-剩下的三条（0901 的三项实测 / 0903 只读导入 / 0904 离线缓存）都卡在同一件事上：**一个真实 vault**。
+**阶段 9 的前三条已完成**（plan 0902 获取与前置检查、plan 0905 登录 / 解锁 / 锁定接进前端、
+plan 0903 只读导入，三条都已归档）：口径由 [ADR-0007](./adr/0007-bitwarden-cli-acquisition.md) 定
+—— 两个轴默认都取宿主机那一档、运行时下载只取 OSS 变体、session key 只在内存；
+**导入**这一条把 SSH key 条目只读搬进密钥池，并额外记一行**来历**（上游条目 id / `revisionDate`
+/ `fingerprint`）—— 那行来历就是 plan 0904 要用的缓存。库格式因此到 **v3**（`bw_items`，
+v2 → v3 只加表）。剩下的两条：**0901 那三项真实输出**（需要一个真实 vault）与 **0904 离线缓存**。
 形状与判据见下文「阶段 9 的形状」。
 
 **阶段 8 的两条都完成（plan 0801 / 0802）、阶段 11 的三条也已完成（plan 1101 / 1102 / 1103）**：
@@ -261,7 +263,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 了**、它当场是出错态，报错行里是 `data_bits = 9` —— 与 SSH 连不上同一条路。面板自己显示的
 只有"读列表失败"与"参数填不出来"这两档（后者**不开面**）。
 
-### 阶段 9 的形状（plan 0902 的两个轴 + 运行时下载 + 登录会话）
+### 阶段 9 的形状（plan 0902 的两个轴 + 运行时下载 + 登录会话 + plan 0903 的导入）
 
 **形状先固化在 [ADR-0007](./adr/0007-bitwarden-cli-acquisition.md)（状态「实现中」）**：
 `scope.md` §7 原来那条"用户自备系统前置"的口径被取代 —— CLI 可以由本程序在用户机器上
@@ -269,17 +271,21 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 
 | 事 | 落在哪 |
 |---|---|
-| crate | `src-tauri/crates/akasha-bw`（零 Tauri 依赖）：`location` / `variant` / `status` / `cli` / `session` / `acquire` / `testing` |
+| crate | `src-tauri/crates/akasha-bw`（零 Tauri 依赖）：`location` / `variant` / `status` / `cli` / `session` / `acquire` / `items` / `testing` |
 | 两个轴 | `BinarySource`（`host` / `managed`）× `AppData`（`host` / `managed`）—— **各自独立、默认都取 `host`**；选择记在 `config.json` 的 `bitwarden` 对象里 |
 | 落点 | 二进制 `<数据目录>/bitwarden/bw-<版本>/bw`；隔离状态目录 `<数据目录>/bitwarden/appdata/` |
 | 下载 | 运行时解析最新 `cli-v*` → `bw-oss-<os>[-<arch>]-<版本>.zip` → SHA-256 → 解包 → 落盘 → 清掉旧版本 |
 | 变体判定 | 读 `bw --help` 的命令表里有没有 `device-approval`（专有变体独有）；判不出来时报 `unknown`，**不默认成 OSS** |
 | 机密 | 主密码经 `--passwordenv`（不进 argv）；session key 经 `BW_SESSION`（不进 argv），且住在 `akasha_store::protected` 的受保护页里，**只在内存** |
 | 状态同步 | 三态的唯一真相是 `bw status --raw`；每次动作之后重读一次，`status` 说不是 `unlocked` 就丢掉手上的 key（D10） |
-| app 侧 | `src-tauri/src/bitwarden.rs`：同一时刻只放一个 `bw` 进程的那把锁 + 十条命令 + `bitwarden` probe |
-| 命令 | `bw_cli_status` · `bw_cli_settings` · `bw_cli_install`（**async**，约 45 MB）· `bw_status` · `bw_server_set` · `bw_login` · `bw_unlock` · `bw_lock` · `bw_logout` · `bw_sync`（**零个事件**） |
+| 导入（0903） | 一次 `bw list items --raw` → **只留 `type = 5`** → 私钥进 `keys`（受保护页）→ 来历进 `bw_items`（cipher_id / name / revision_date / fingerprint / key_id，`ON DELETE CASCADE`）。同名默认不动，`overwrite` 才替换 |
+| 导入的钥匙怎么被用上 | `~/.ssh/config` 导入时 `IdentityFile` 的 **basename** 与池里钥匙的 `name` **逐字符相同** → 把 `hosts.key_id` 接上并在报告里说明；不同名时行为与 plan 0506 完全一致 |
+| 明文面 | `list items --raw` 交出**整个 vault 的解密后内容**（上游没有按类型过滤的开关）：只有上面那几个字段会进我们的类型，那段 stdout 包在 `zeroize::Zeroizing` 里读完即擦零，错误消息不带原文 |
+| 库格式 | **v3**：v2 + `bw_items`（只加表；`TABLES_V2` 留在 `tables_of` 里，否则真 v2 库会被当成"不认识的版本"） |
+| app 侧 | `src-tauri/src/bitwarden.rs`：同一时刻只放一个 `bw` 进程的那把锁 + 十一条命令 + `bitwarden` probe |
+| 命令 | `bw_cli_status` · `bw_cli_settings` · `bw_cli_install`（**async**，约 45 MB）· `bw_status` · `bw_server_set` · `bw_login` · `bw_unlock` · `bw_lock` · `bw_logout` · `bw_sync` · `bw_import_keys`（**零个事件**） |
 | probe | `bitwarden` → 同一份快照（两个轴、可执行文件、版本、变体、许可证提示、三态、`hasSession`）；**不起进程** |
-| 前端 | `src/ipc/bitwarden.ts` + `src/bitwarden/BwPanel.tsx`（应用级浮层，关闭面板不改任何后端状态）；选择器 `[data-bw-*]` |
+| 前端 | `src/ipc/bitwarden.ts` + `src/bitwarden/BwPanel.tsx`（应用级浮层，关闭面板不改任何后端状态）；选择器 `[data-bw-*]`（导入那一块是 `[data-bw-import*]`） |
 
 ⚠️ **`bw` 自己不是并发安全的**：它在 `data.json` 上没有任何互斥，所以 app 侧的全部动作都在
 一把 `Mutex` 上排队 —— 那把锁不是"为了并发安全"，而是因为被调用的那个程序不并发安全。
@@ -352,7 +358,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | 命令 / 检查 | 结果 |
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
-| `just test` | **452 tests run: 452 passed**（`akasha` **97** + `akasha-bw` **47** + `akasha-core` 30 + `akasha-pty` **40** + `akasha-serial` **25** + `akasha-ssh` **86** + `akasha-store` 127）。⚠️ `akasha` 的 91 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回；目标与用例数见下面那条 `just test-e2e` 与 `src-tauri/justfile` 的 `E2E_TARGETS`） |
+| `just test` | **471 tests run: 471 passed**（`akasha` **98** + `akasha-bw` **56** + `akasha-core` 30 + `akasha-pty` **40** + `akasha-serial` **25** + `akasha-ssh` **86** + `akasha-store` 136）。⚠️ `akasha` 的 91 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回；目标与用例数见下面那条 `just test-e2e` 与 `src-tauri/justfile` 的 `E2E_TARGETS`） |
 | `just serial-check`（plan 0802） | 退出码 **0**：`akasha-serial` 的 **25 条**在两种 feature 配置下**各执行一遍**（默认走 libudev 的枚举实现，`--no-default-features` 走 sysfs 的），两次都是 **25 passed / 0 skipped** |
 | ↑ **判据：枚举在本机列出端口**（plan 0802） | ✅ `ports()` 在本机（libudev）返回 **32 条** `/dev/ttyS0`…`/dev/ttyS31`，**按路径排序、无重复、路径非空**，且每条在 `/sys/class/tty/<名字>` 里都有对应项（库内 `enumeration` 2 条）；关闭该 feature 后**同一套用例**返回 **0 条**且照常通过 —— "没有端口"与"枚举失败"因此是两种结果 |
 | ↑ **判据：参数错误给出可读报错**（plan 0802） | ✅ 越界取值报**字段与取值**（`data_bits = 9` / `stop_bits = 3` / `baud = 0`，库内 3 条）；打不开报**路径与 OS 原因**（不存在的设备与一个目录路径都实测过） |
@@ -417,9 +423,10 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | ↑ **判据：大量小文件的吞吐显著优于串行请求**（plan 0704） | ✅ `sftp_pipelining` E2E（真实 app + 测试进程内一台服务端，主机行指向一条**每方向延后 10 ms** 的链路，**5.39 s**）：左栏本机、右栏那台主机 → **串行**（12 个文件逐个发、逐个等结束）**1.553 s**、探针 `peak = 1` → **并发**（一口气发完）**561 ms**、`limit = 8`、`live = 0`、`peak = 5` —— **2.8×**；两批之后对端**真盘**上 12 个文件的字节逐一相同、目录里没有临时名，链路共搬了 208 段。⚠️ 耗时与 `peak` 每次不同（另一轮实测串行 1.509 s / 并发 389 ms / `peak 8`），断言只有"并发明显更快"这一条 |
 | ↑ **上限真的在，且排队与取消都在并发下正确**（plan 0704，crate 层 6 条） | ✅ `akasha-ssh` 新增 `pipelining` 6 条：7 个文件 / 上限 3 时目标端点**同时**只见到 3 个 `begin_write`（第 4 个连闸门都进不去）、放行后 7 个都落地而 `peak` 停在 3 / 排队中被取消的那条**一个端点都没碰过**（它的路径从未被 `open`）、进去的那条走收尾、目标目录空 / 5 个文件中间那个写失败 → 另外 4 个字节正确落地 / 两条并发传输写**同一个最终名**时目标目录里是**两个**不同的临时名（放行后最终名的字节等于两条源之一）/ 上传一个文件：服务端记到的 `open` 恰好一次（`/.probe.bin.part`）且临时名没出现在 `stat` 里（"由对端保证的唯一性"在协议层就是少一次往返） |
 | ↑ **分档数字**（plan 0704，crate 层） | 12 个 1 KiB 文件在带时延链路上：上限 1 = **1.168 s**、2 = 1.159 s、4 = 563 ms、8 = 377 ms、16 = 211 ms（每个文件 97.3 → 17.6 ms）。⚠️ **上限 2 与串行一样慢**，那一段没有定位（见「进行中 / 下一步」）；默认值因此不按饱和点取 |
-| ↑ **`just test-e2e` 全部通过** | 退出码 **0**：第一段（默认收托盘）**26 个目标 / 31 个用例**（新增 `bitwarden_login`，**27.13 s** —— 见下面那条：本机 `host` 轴上的 `bw` 是发行版的 npm 包，报一次错要 13 秒）+ 第二段 `exit_residue` **1 个用例** = **27 个目标 / 32 个用例**、0 失败；第三段（可搬迁性）`portable` **3 passed**。⚠️ `E2E_NO_APP` 的 `session_watchdog` 不在第一段的目标清单里（另有入口），`E2E_SELF_APP` 的 `portable` 由第三段执行、不计在上面那个数里 |
+| ↑ **`just test-e2e` 全部通过** | 退出码 **0**：第一段（默认收托盘）**27 个目标 / 32 个用例**（`bitwarden_login` **27.13 s**、`bw_import` **29.88 s** —— 见下面那条：本机 `host` 轴上的 `bw` 是发行版的 npm 包，报一次错要 13 秒）+ 第二段 `exit_residue` **1 个用例** = **27 个目标 / 32 个用例**、0 失败；第三段（可搬迁性）`portable` **3 passed**。⚠️ `E2E_NO_APP` 的 `session_watchdog` 不在第一段的目标清单里（另有入口），`E2E_SELF_APP` 的 `portable` 由第三段执行、不计在上面那个数里 |
 | ↑ **判据：对着真实上游下载一次**（一次性探针，plan 0902；读完数即删） | ✅ `cargo test -p akasha-bw --test probe_real_upstream -- --nocapture`（**24.63 s**）：解析到上游最新 `cli-v2026.8.0` → 真的从 GitHub 拉下资产 → 落在 `<数据目录>/bitwarden/bw-2026.8.0/bw`、**141819984 字节** → crate 报的 SHA-256 是 `d8bbc213…b1b1704`，与 `sha256sum` 直接算那个 zip 的**逐字符相同** → `Cli::version()` 报 `2026.8.0`、`Cli::variant()` 报 `Oss`、`Cli::status()` 报 `Unauthenticated`。⚠️ 探针里那次**直接执行**（不设 `BITWARDENCLI_APPDATA_DIR`）输出为空：这个沙箱的家目录只读，`bw` 建不出它自己的 `data.json` —— 这正是"`managed` 那一轴有必要"的一个旁证 |
 | ↑ **一个把 IPC 占住 27 秒的问题（plan 0902 的实现期发现）** | ⚠️ 本机 `host` 轴上**确实有一个 `bw`**（发行版的 `bitwarden-cli` 把 `/usr/bin/bw` 指向 npm 包），而它在这个只读家目录里要 **13 秒**才报错。第一版每个快照都起三次进程（版本 / 帮助 / 状态），于是 `bw_cli_settings` 撞上 Victauri 的 30 秒 eval 上限。处置两条：**探测结果按"解析出来的程序路径"缓存**（版本与变体对一个给定的程序文件是不变的），并且**连 `--version` 都答不出来的那一份不再往下问状态**（那不是"状态读不出来"，是"这一份 `bw` 用不了"）。⇒ 正常机器上每个快照不再起进程；本机这个坏 `bw` 上每次切到它也只要一次 13 秒 |
+| ↑ **判据：导入后可用该密钥建立 SSH 连接**（E2E `bw_import`，plan 0903） | ✅ 假 `bw` 的 `list items --raw` 交出一份**真的** ed25519 私钥 + 一条登录条目 → 面板导入报告说"上游给了 2 条，其中 SSH 密钥 1 条；新增 1 条"并带名字与上游给的指纹（登录条目一个字都没进）→ `~/.ssh/config` 里 `IdentityFile` 的 basename 与钥匙名相同 → `vault_hosts` 那一行 `keyId` 指向它 → 开会话连上，**服务端 `offered_keys` 里的指纹与导入时存下的逐字符相同**（"连上了"与"用的是这把钥匙"是两件事）→ 字节能双向流。另一步：没登录时导入只报一句话、池里一行都没多 |
 | ↑ **判据：登录 / 解锁 / 锁定在界面上跟着 CLI 走**（E2E `bitwarden_login`） | ✅ 假 `bw`（脚本，状态放在隔离目录里）：`host` 轴报"PATH 里找不到 bw"、`managed` 轴报"还没有下载过"（**两句话分得开**）→ 落点里放一份可执行文件之后报出它的版本与 `oss` 变体 → 面板显示同一串 → 填自托管地址 → 显示的**是读回来的那一串** → 口令错时面板上的话是 `bw` 自己的原话 → 口令对则"已解锁 + session key 在内存里"（且输入框里那份主密码被清掉）→ 点锁定变"已登录，未解锁 + 没有 session key" → 解锁回到已解锁 → **外部**删掉假 CLI 的解锁标记（等价于在别处执行了一次 `bw lock`）再点刷新 → 界面跟到 `locked` 且 `hasSession = false`（ADR-0007 D10）→ 登出回到未登录 |
 
 | `cargo nextest run --package akasha-bw`（plan 0902） | 退出码 **0**：**47 passed / 0 failed**（39 单测 + 7 条假 `bw` 的集成用例 + 1 条 session key 那一页的保护读数） |
@@ -630,6 +637,19 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 - **`config.json` 的写路径是这一条新加的**（plan 0902）：`bitwarden` 那段由本程序写，
   而 `close_behavior` 仍只读；既有文件坏掉时**拒绝写**（免得把用户写的值一起抹掉）——
   这条判据有单测，但"真机上写一次再重启"还没有走过。
+- **导入的形状来自上游实现，不是来自一次真实输出**（plan 0903）：`bw list items --raw` 的字段
+  形状、`type = 5`、以及"空私钥的三字段缺一即抛"都读自本机那份 `@bitwarden/cli` 2026.2.0 的
+  构建产物（`docs/bitwarden.md` §4.1 逐条写了出处），并**没有**在真实 vault 上看到过一次输出。
+  两者在真实 vault 上执行一遍要看什么，见 plan 0901；**"实现里这么写"不许说成"实测"**。
+- **`Vault is locked.` 只有上游实现可依**（plan 0903）：本机没有可解锁的 vault，
+  所以那一档（`BwError::Locked`）的判据是"上游 `errorIfLocked` 会给这句 + 它写 stderr"
+  两件事分开记；`bw list items --raw` 的"未登录"那一档则是**实测**（退出码 1、stderr）。
+  ⚠️ 本轮**没能**在运行时下载的那一份（`cli-v2026.8.0`）上复核：下载在本沙箱里超时，
+  所以这条证据明确限定在本机 npm 那份 2026.2.0 上。
+- **导入的钥匙"接到主机上"只有一条规则**（plan 0903）：`IdentityFile` 的 basename 与池里的
+  钥匙名**逐字符相同**。因此下面两种情形仍然没有路，如实记着：上游条目名与配置文件里的
+  文件名不同名（用户得自己改名）、以及没有 `~/.ssh/config` 条目可依时（参数要一格一格填的
+  主机编辑界面还没做，见「主机池的增删改查仍无界面」）。
 
 ## 当前基线（2026-09-15 实测，workspace root = `src-tauri/`）
 
@@ -637,8 +657,8 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 |---|---|
 | workspace root | `/home/lycurgus/akasha/src-tauri`；成员 = `akasha` / `akasha-core` / `akasha-pty` / `akasha-store` / `akasha-ssh` |
 | 二进制落点 | `src-tauri/target/debug/akasha`（另有代码生成工具 `gen-types`，故必须 `default-run`，问题 #29） |
-| 后端模块 | **`bitwarden`（两个轴 + 十条命令 + `bitwarden` probe）** / `bindings` / `session` / `tray` / `config` / `lifecycle` / `single_instance` / `vault` / `watchdog` / `ssh`（长住状态 + 那条命令 + 跳板链 + 库内 known_hosts 适配器） / `prompt`（提问往返） / `pools`（池的读取 + **导入** + **转发规则**） / **`tunnel`（隧道实体 + 三条命令 + `tunnel_state` 事件 + `tunnels` probe）** / **`sftp`（SFTP 实体 + 两侧 + 九条命令 + `sftp` 探针）** |
-| **命令清单** | `greet` · `vault_status` / `vault_unlock` / `vault_lock` · `vault_hosts` · **`vault_forwards`** · `import_ssh_config` · `open_session` · `open_ssh_session` · `write_session` / `resize_session` / `close_session` · `ssh_prompt_credential` / `ssh_prompt_host_key` / `ssh_prompt_cancel` · **`tunnel_open` / `tunnel_retry` / `tunnel_stop`** · **`sftp_open` / `sftp_connect` / `sftp_list` / `sftp_transfer` / `sftp_transfer_cancel` / `sftp_transfers` / `sftp_sides` / `sftp_sessions` / `sftp_close`** · **`bw_cli_status` / `bw_cli_settings` / `bw_cli_install` / `bw_status` / `bw_server_set` / `bw_login` / `bw_unlock` / `bw_lock` / `bw_logout` / `bw_sync`（plan 0902 / 0905，零个事件；只有 `bw_cli_install` 是 async）**（事件：`session_ended` · `ssh_prompt` / `ssh_prompt_dismissed` · **`tunnel_state`**）。**plan 0601 新增四条命令**（三条驱动隧道 + 一条只读规则池）；`tunnel_open` / `tunnel_retry` 是 **async**（命令体里有一次会阻塞几秒的握手）。⚠️ **plan 0602 / 0603 / 0604 / 0605 都没有新增命令与事件**（三条转发走的是同样那三条命令 + 同一份事件 + 同一份 probe），只改了它们的内部与失败分档；plan 0605 新增的是一份配置（`Config::reconnect`）与一条 `tray` probe；**plan 0606 同样没有新增命令与事件**，只加了一条只读探针 `residue`（见下）。⚠️ **plan 0701 新增六条命令、零个事件**（`sftp_*` 四条驱动 + 两条只读）：SFTP 的连接结果由**命令返回**（失败落在那一侧），诊断走 `sftp` 探针 —— 不给它加事件是因为"两侧各自的状态"本来就只在用户按下连接之后才变。⚠️ **plan 0702 又加三条**（一条起传输 + 一条取消 + 一条只读），**仍然零个事件**：传输的进度与结局由 `sftp_transfers` 与探针读（`sftp_transfer` 同步：它排完任务就返回）。`sftp_close` 因此变成 **async**（它要等清理落地）；`sftp_connect` 的第二个参数由 `hostId` 变成 `origin`。⚠️ **plan 0703 一条命令、一个事件都没加**：两档是"同一对端点命令、目标那个端点怎么来的"，所以变的只有三个字段（`through` / `throughFailure` / `via`）与删掉一档错误。⚠️ **plan 0704 同样一条命令、一个事件都没加**：并发上限是引擎内部的策略，契约只多了 `SftpSummary.inFlight.{limit, live, peak}` 这一组读数（`sftp_open` 多收一个 `AppHandle`，签名不变） |
+| 后端模块 | **`bitwarden`（两个轴 + **十一条命令** + `bitwarden` probe + **导入**）** / `bindings` / `session` / `tray` / `config` / `lifecycle` / `single_instance` / `vault` / `watchdog` / `ssh`（长住状态 + 那条命令 + 跳板链 + 库内 known_hosts 适配器） / `prompt`（提问往返） / `pools`（池的读取 + **导入** + **转发规则**） / **`tunnel`（隧道实体 + 三条命令 + `tunnel_state` 事件 + `tunnels` probe）** / **`sftp`（SFTP 实体 + 两侧 + 九条命令 + `sftp` 探针）** |
+| **命令清单** | `greet` · `vault_status` / `vault_unlock` / `vault_lock` · `vault_hosts` · **`vault_forwards`** · `import_ssh_config` · `open_session` · `open_ssh_session` · `write_session` / `resize_session` / `close_session` · `ssh_prompt_credential` / `ssh_prompt_host_key` / `ssh_prompt_cancel` · **`tunnel_open` / `tunnel_retry` / `tunnel_stop`** · **`sftp_open` / `sftp_connect` / `sftp_list` / `sftp_transfer` / `sftp_transfer_cancel` / `sftp_transfers` / `sftp_sides` / `sftp_sessions` / `sftp_close`** · **`bw_cli_status` / `bw_cli_settings` / `bw_cli_install` / `bw_status` / `bw_server_set` / `bw_login` / `bw_unlock` / `bw_lock` / `bw_logout` / `bw_sync` / **`bw_import_keys`**（plan 0902 / 0905 / 0903，零个事件；只有 `bw_cli_install` 是 async）**（事件：`session_ended` · `ssh_prompt` / `ssh_prompt_dismissed` · **`tunnel_state`**）。**plan 0601 新增四条命令**（三条驱动隧道 + 一条只读规则池）；`tunnel_open` / `tunnel_retry` 是 **async**（命令体里有一次会阻塞几秒的握手）。⚠️ **plan 0602 / 0603 / 0604 / 0605 都没有新增命令与事件**（三条转发走的是同样那三条命令 + 同一份事件 + 同一份 probe），只改了它们的内部与失败分档；plan 0605 新增的是一份配置（`Config::reconnect`）与一条 `tray` probe；**plan 0606 同样没有新增命令与事件**，只加了一条只读探针 `residue`（见下）。⚠️ **plan 0701 新增六条命令、零个事件**（`sftp_*` 四条驱动 + 两条只读）：SFTP 的连接结果由**命令返回**（失败落在那一侧），诊断走 `sftp` 探针 —— 不给它加事件是因为"两侧各自的状态"本来就只在用户按下连接之后才变。⚠️ **plan 0702 又加三条**（一条起传输 + 一条取消 + 一条只读），**仍然零个事件**：传输的进度与结局由 `sftp_transfers` 与探针读（`sftp_transfer` 同步：它排完任务就返回）。`sftp_close` 因此变成 **async**（它要等清理落地）；`sftp_connect` 的第二个参数由 `hostId` 变成 `origin`。⚠️ **plan 0703 一条命令、一个事件都没加**：两档是"同一对端点命令、目标那个端点怎么来的"，所以变的只有三个字段（`through` / `throughFailure` / `via`）与删掉一档错误。⚠️ **plan 0704 同样一条命令、一个事件都没加**：并发上限是引擎内部的策略，契约只多了 `SftpSummary.inFlight.{limit, live, peak}` 这一组读数（`sftp_open` 多收一个 `AppHandle`，签名不变） |
 | **probe** | `lifecycle` → `{close_behavior, tray_ready, close_action}`（没登记时 `{"initialized":false}`，问题 #93）；`single_instance` → `{registered, activations}`；`sessions` → `{live, registered}`（SSH 与隧道都没有本地进程，"零残留"只能看注册表）；**`tunnels` → `[{handle, ruleId, name, state, attempt, bind}]`**（与托盘菜单同一份数据；`bind` = 实际监听地址 —— plan 0604 起对 `remote` 规则它说的是**服务端**那一侧的地址，`port = 0` 时是服务端挑的那个）；**`tray` → `{ready, tunnels:[…]}`**（plan 0605：`tunnels` 是**托盘菜单上那几行文字**，与菜单共用 `tunnel_labels`；`ready` = 这台机器上托盘建成没有）；**`residue` → `{sshConnections, watchTasks}`**（plan 0606：`SshConnection` 的存活计数与看护任务的存活计数，判据"两个计数都归零"的读数口 —— 数的是**资源本身**，不是注册表里的实体）；**`bitwarden` → `{cli:{binary, appdata, program, version, variant, licenseNotice, problem}, status, hasSession, problem}`**（plan 0902：两个轴解析出来是什么、CLI 自报的版本与变体、三态、**我们手里有没有 session key** —— 它**不起进程**，报的是上一次动作留下的读数）· **`sftp` → `[{handle, sides:[{side, origin, name, state, failure, path, through, throughFailure}], transfers:[{id, from, fromPath, to, toPath, state, done, total, failure, via}]}]`**[{side, origin, name, state, failure, path, through, throughFailure}], transfers:[{id, from, fromPath, to, toPath, state, done, total, failure, via}]}]`**（plan 0701：一个 SFTP 会话一条记录，两侧的状态、失败原因与当前目录都在里面；plan 0702 起每条还带上**这个会话发起过的传输**与它们的进度 / 结局；plan 0703 起两侧还带上**到达方式**（`through` = 经哪台直通、`throughFailure` = 回退原因），传输带上 `via`；plan 0704 起每个会话还带一组并发读数 `inFlight:{limit, live, peak}` —— 判据"两侧各自列目录成功"、"中断之后没有半成品"、"这次走的是哪一档"与"上限真的在起作用"的读数口）。⚠️ **排队中的传输在传输记录里与"正在搬"长得一样**（状态只有"还没结束"这一档），分辨它们靠 `live` 比"还没结束的条数"少。**库没有 probe**：状态本身就是命令（`vault_status`） |
 | 出字节路径 | PTY / SSH read → 合批（64 KiB / 16 ms）→ `Channel<InvokeResponseBody>` **raw** → JS `ArrayBuffer` → `term.write`。**两条载体共用同一段输出路径的后半段**（`session::open_terminal`） |
 | **隧道实体**（plan 0601 / 0602 / 0603 / 0604 / 0606） | `src-tauri/src/tunnel.rs`：`Tunnel { id, rule_id, rule_name, host_id, state, attempts, forward: Option<ActiveForward>, stop: TunnelStop }`，登记进 `Sessions` 的**同一张注册表**（`Inner.tunnels`，与 `live` 同一把锁；`len()` = 两者之和，与 `registered()` 相等）。`forward` 是**那条转发**（它持有连接；`None` = 还没连上 / 已经断开），`stop` 是**这条隧道的停止信号**（plan 0606：实体一登记就有，在途的尝试与看护循环各订一份接收端 —— 0605 那个可替换的 `oneshot` 会在替换时误唤醒 `select!`，见问题 #143）—— 两者分开正是因为"转发结束了"这件事归看护任务等，而转发本体归实体表（停止与 probe 要它）。`Rule::prepare()` 把方向翻成 `Prepared::Local`（`-L` 的 `Ingress::Fixed` / `-D` 的 `Ingress::Socks5`，**本机端口已经绑好**）/ `Prepared::Remote`（`-R`：服务端的绑定地址 + 本机目标）。`tunnel_open` 失败分两种：**没登记成**（`Err`：库锁着 / 规则不在池里 / 规则那一行坏 / **本机端口没拿到** / **地址不许绑**）与**登记了但连不上**（`Ok(TunnelAttempt { handle, failure })` —— 那条仍在册、可重试；`-R` 的**远端**端口没拿到属于这一种，因为那时连接已经建起来了）。`tunnel_stop` 先发 `已停止` 再注销注册，**幂等**；收尾只有一条路 —— `Tunnel::reclaim()`（停信号 → 丢转发），`tunnel_stop` 与 `shutdown_all` 都走它（plan 0606 之前 `shutdown_all` 靠丢掉实体、让字段各自在 drop 时收尾） |
@@ -651,7 +671,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | **库的解锁状态** | `Vault { inner: Arc<Mutex<Option<Unlocked>>> }`（`Clone`）；`Unlocked { conn, passphrase }` 同生共死。借库的失败分两种（`ConnError`：`Locked` / `Store`）—— 因为 SSH 那条路要单独认出 `NoSuchRow`（"所选主机不存在"） |
 | **`akasha-ssh` 的形状** | 十八个模块：`target` / `credential` / `keys` / **`ending`（plan 0605：一次转发怎么结束的 —— `ForwardEnd` + `ForwardEnding`，转发本体与它的结束通知**分两半**交出去）** / `handshake`（`handshake<S>` = 一跳的握手 + 认证，**底层流由调用方提供**） / `known_hosts` / **`forward`（D9 原语 + `SshConnection` + `hops_chain` + 同步门面 `connect_via` / `connect_via_until`（带取消信号，plan 0606）+ `is_closed` + 连接存活计数 `live_connections`）** / **`relay`（`-L` 与 `-D`：`LocalListener` + `LocalForward` + `ForwardTarget` + `Ingress`）** / **`socks5`（动态转发的协议本体：无认证的 `CONNECT` + `Reply` + 回环限制）** / **`remote`（`-R`：`RemoteForward` + 入站路由 `Inbound`）** / **`sftp`（plan 0701 / 0702：`SftpClient` —— 一条流上的 SFTP 会话，`list()` 先 `canonicalize` 再 `read_dir`，并实现 `Endpoint` 的读写路径）** / **`local`（plan 0702：`LocalEndpoint` —— 本机文件系统作为另一个端点，无字段、`default_dir()` 三层兜底）** / **`in_flight`（plan 0704：并发上限 —— `InFlight` + 它的读数 + 有界入口）** / **`transfer`（plan 0702：引擎与它的词汇 —— `Endpoint` / `PendingWrite` / `Cancel` / `Progress` / `Entry` / `Listing` / `temp_candidates`）** / `transport` / `testing`（进程内测试服务端，**仅用于测试**；支持 `direct-tcpip` 的中继与拒绝两条分支、`tcpip-forward` / `cancel-tcpip-forward` / `forwarded-tcpip`、**`sftp` 子系统**（plan 0701：`ServerOptions.sftp` 给出根目录的条目），并记**连接级**的断开数 `connections_closed`、**子系统认下数** `sftp_subsystems` 与 plan 0704 起的两件事（客户端 `open` 过的路径、`stat` 过的路径 —— 「临时名不再靠探测」这条判据的读数口）；plan 0704 还多了一个 `slow_link`（到某个地址的**带时延链路**：每段字节各延后一段固定的时间，用来把一次往返放大到可量的量级）；plan 0605 起还能**切断已建立的连接**（`cut_connections` / `shutdown`），远端监听**按连接持有**、随连接消失） / `auth` / `error` |
 | **错误分域** | `akasha-ssh`：`HostKeyCache`（库那一侧无法读取缓存）、**`Forward { host, port, reason, class }`**（跳板拒绝 / 目标不可达 —— 与"无法连接跳板机"分开；`class` 是 `ForwardFailure`，取自上游结构化的 `ChannelOpenFailure`，plan 0603 起供 SOCKS5 的 `REP` 分类用）、**`Listen { address, reason }`**（本机端口没拿到，plan 0602 —— 与"对端连不上"分开）、**`Sftp { target, reason }`**（SFTP 会话建不起来 / 用不了，plan 0701 —— 与"这条 shell 通道开不出来"分开：用户要看的是**对端有没有开 SFTP**）、**`File { path, reason }`**（plan 0702：**端点上的一个文件操作**失败 —— 与 `Sftp` 分开是因为它要引到**那个路径**上，本机与远端共用这一档）、**`RemoteListen { address, reason }`**（服务端那个端口没拿到，plan 0604 —— 与"本机端口没拿到"分开：用户要动的地方在服务端）、**`NotLoopback { address }`**（SOCKS5 绑了非回环地址，plan 0603 —— 与"端口没拿到"分开：换端口没有用）、**`Cancelled`**（建链被取消信号中止，plan 0606 —— 这不是失败，见 `connect_via_until`）。app 侧 `SshIpcError`：`Locked` / `NoSuchHost` / `Failed { kind, message }`（`kind` = `hostKeyChanged` / `hostKeyRejected` / `hostKeyUnknown` / `hostKeyCache` / `auth` / `connect` / **`jump`** / `other`）/ `Internal` —— **前端按 `kind` 分辨**，不匹配消息字符串。**隧道另有 `TunnelError`**（`locked` / `noSuchForward` / `noSuchHost` / `notATunnel` / **`bind`（本机端口没拿到）** / **`remoteBind`（服务端那个端口没拿到）** / **`notLoopback`（地址不许绑）** / `failed {kind,message}` / `transition` / `internal`），连接失败那一档复用同一个 `SshFailureKind` |
-| **前端结构** | `src/ipc/`（`session.ts` / `prompts.ts` / `hosts.ts` / **`tunnels.ts`** / **`sftp.ts`** —— 唯一允许碰后端的目录）、`src/tabs/`、`src/terminal/`、`src/ssh/`（主机选择器 + 导入面板 + 提示面板）、**`src/tunnels/`（隧道面板）**、**`src/sftp/`（SFTP 双栏面板：一栏可以选本机，带传输列表与取消）**、**`src/bitwarden/`（Bitwarden 面板：两个轴 + 服务器 + 登录 / 解锁 / 锁定）**、`src/App.tsx`。标签页 `kind`：`terminal` / `ssh`（**都有关闭按钮**，规则写成 `CLOSABLE` 清单）—— **隧道与 SFTP 都不是标签页**：它们是应用级浮层，关面板不停任何会话 |
+| **前端结构** | `src/ipc/`（`session.ts` / `prompts.ts` / `hosts.ts` / **`tunnels.ts`** / **`sftp.ts`** —— 唯一允许碰后端的目录）、`src/tabs/`、`src/terminal/`、`src/ssh/`（主机选择器 + 导入面板 + 提示面板）、**`src/tunnels/`（隧道面板）**、**`src/sftp/`（SFTP 双栏面板：一栏可以选本机，带传输列表与取消）**、**`src/bitwarden/`（Bitwarden 面板：两个轴 + 服务器 + 登录 / 解锁 / 锁定 + 只读导入）**、`src/App.tsx`。标签页 `kind`：`terminal` / `ssh`（**都有关闭按钮**，规则写成 `CLOSABLE` 清单）—— **隧道与 SFTP 都不是标签页**：它们是应用级浮层，关面板不停任何会话 |
 | **前端的一个 dev-only 陷阱** | React StrictMode（仅开发模式）会把 effect 执行两遍，SSH 会话因此被建立两次。处置：SSH 那条连接**无条件推迟一个微任务**再发起（本地 PTY 不受影响；问题 #118） |
 | **SSH 栈**（ADR-0003） | `russh = "=0.63.3"`、features `["ring","rsa"]`；`akasha-ssh` 只收 `tokio::runtime::Handle`；对外是同步 `Transport` 门面 + 两条**有界** mpsc（满 → `TransportError::Busy`）；capability = `resize + exit_status`、`session_leader() = None` |
 | **连接取值**（D15 + 0505 的修正） | `connect_timeout = 10s`；`keepalive_interval = Some(30s)`、`keepalive_max = 3`；**Nagle 关闭**（`tcp_stream` 里显式 `set_nodelay(true)`，问题 #120）。⚠️ 那三个数是**有理由的默认值**，不是实测出来的 |
@@ -670,10 +690,10 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 
 ## 进行中 / 下一步
 
-- [ ] **下一步 = 阶段 9 剩下的三项实测**（`bw` 对 `sshKey` 条目的非交互行为）：
-  [`0901`](./plans/0901-bw-noninteractive-probe.md) 仍是骨架，门槛只有一个：**需要一个真实 vault**
-  （变体判定那一项已完成，见 `bitwarden.md` §2.2）。⛔ 它同时压着 plan 0903（只读导入）——
-  条目 JSON 的形状只能在那里看到。
+- [ ] **下一步 = 阶段 9 剩下的两条**：先做 `0904` 离线缓存（[`0904`](./plans/0904-bw-offline-cache.md)），
+  再做 [`0901`](./plans/0901-bw-noninteractive-probe.md) 的**真实输出**（门槛只有一个：**需要一个真实 vault**；
+  变体判定与"未登录时的报错"两项已完成，见 `bitwarden.md` §2.2 / §7.2，条目形状读自上游实现见 §4.1）。
+  ⚠️ 它不再压着 plan 0903 —— 只读导入已完成并归档。
 - [ ] **自签证书那一栏还没接进界面**：crate 的 `with_extra_ca`（`NODE_EXTRA_CA_CERTS`）已就位、
   也在本地桩上实测有效，但设置里没有"CA 证书路径"这一项，所以自托管的服务器目前只能靠
   系统信任库。这是计划级的活（要连配置文件格式一起定）。

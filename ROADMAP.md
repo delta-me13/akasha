@@ -240,9 +240,9 @@
 - [ ] **实测 `bw` 对 `sshKey` 条目的非交互行为**（需要真实 vault，可提前做）
       验收：登录之后的 `bw status` 形状、未解锁时的报错、条目的 JSON 形状与离线可见性各有结论，写回 [`docs/bitwarden.md`](./docs/bitwarden.md)
       → [plan 0901](./docs/plans/0901-bw-noninteractive-probe.md)
-- [ ] 只读导入 SSH key 条目（`sshKey.privateKey`）
-      验收：导入后可用该密钥建立 SSH 连接
-      → [plan 0903](./docs/plans/0903-bw-readonly-import.md)
+- [x] 只读导入 SSH key 条目（`sshKey.privateKey`）：导入落进密钥池并记一行来历（上游 id / `revisionDate` / `fingerprint`）
+      验收：导入后可用该密钥建立 SSH 连接（`IdentityFile` 的文件名与钥匙名相同时接上那一行）
+      → [plan 0903](./docs/plans/archive/0903-bw-readonly-import.md)
 - [ ] 离线缓存：**私钥离线自检用 `fingerprint`**，联网刷新用 `revisionDate`
       验收：断网时能校验缓存完整性；联网且 `revisionDate` 变化时提示刷新
       → [plan 0904](./docs/plans/0904-bw-offline-cache.md)

@@ -127,6 +127,52 @@ pub struct SshKey {
 （[clients#16681](https://github.com/bitwarden/clients/issues/16681)），
 那是**签名哈希**，与指纹是两个不同的概念。
 
+### 4.1 `bw list items --raw` 交出来的形状（读上游实现得到）
+
+那一份 JSON 是**条目数组**，每一条的字段由 CLI 自己的导出模型决定。本集成真正读的只有
+下面这几个（其余字段我们**不进内存**，见 §4.2）：
+
+```jsonc
+[
+  {
+    "id": "22222222-2222-2222-2222-222222222222",
+    "type": 5,                        // CipherType.SshKey
+    "name": "id_ed25519",
+    "revisionDate": "2026-09-02T03:04:05.000Z",
+    "sshKey": {
+      "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\n…",
+      "publicKey": "ssh-ed25519 AAAA… me",
+      "fingerprint": "SHA256:…"       // ⚠️ 见下：上游两处写法不一致
+    }
+  }
+]
+```
+
+四条从**上游实现**（本机 `@bitwarden/cli` 2026.2.0 的构建产物，路径带 `bw.js` 里的
+`CipherExport` / `SshKeyExport` / `CipherType`）读出来的事实：
+
+| 事实 | 出处（上游实现里的位置） |
+|---|---|
+| `type` 的 SSH key 取值是 **5**（1 登录 / 2 安全笔记 / 3 卡 / 4 身份） | `CipherType` |
+| 条目模板里 `sshKey` 默认是 `null`。**`type = 5` 而 `sshKey: null` 是合法形状**，不是坏输出 | `CipherExport.template()` |
+| 指纹字段名**两处不一致**：导出模型（`bw get template` / 导入导出那一路）叫 `keyFingerprint`，SDK 与官方文档叫 `fingerprint`（视图层做的正是 `view.keyFingerprint = obj.fingerprint`） | `SshKeyExport.template()` 与 `SshKeyView.fromSdkSshKeyView()` |
+| 三个字段**缺一即抛**：`SshKeyExport.toView` 对空 `privateKey` / `publicKey` / `keyFingerprint` 直接抛错 | `SshKeyExport.toView()` |
+
+⚠️ 因此解析**两版字段名都认**（`fingerprint` + `keyFingerprint`），并允许 `sshKey` 缺失
+或字段为空 —— 那种条目**跳过并逐条说明**，不能让一条只有公钥的条目把整批导入掀掉。
+
+### 4.2 为什么解析这一步要特别小心（明文面）
+
+上游的接口里**没有**"只列 SSH key"这条路：`bw list items --help` 的筛选项只有
+folder / collection / organization / search / trash / archived，没有按类型过滤。
+于是每一处登录口令都会从这次调用的 stdout 里经过一趟。本集成的处置：
+
+- 只反序列化上面那几个字段，其余（`login.password` 之类）**不落进任何类型**；
+- 那段 stdout 包在 `zeroize::Zeroizing` 里，读完即擦零；**不落盘、不进日志、不进事件载荷**；
+- 解析失败时错误消息只带 serde 的位置信息，**不带原文**；
+- 报告与界面上只出现条目名与上游给的指纹，**私钥一个字符都不出现**。
+
+
 ---
 
 ## 5. `revisionDate` 与 `fingerprint`：两个字段、两个职责
@@ -198,7 +244,7 @@ pub struct SshKey {
 | 锁定 | `bw lock` | 使 session key 失效 |
 | 登出 | `bw logout` | 同上，并清掉登录态 |
 | 同步 | `bw sync` | 只做 pull；`--last` 只回上次同步的时间戳（ISO 8601） |
-| 列条目 | `bw list items --raw --session <key>` | 只读导入的入口（plan 0903） |
+| 列条目 | `bw list items --raw --nointeraction`（session key 走 `BW_SESSION` 环境变量） | 只读导入的入口（plan 0903）；形状见 §4.1。⚠️ 它交出的是**整个 vault 的解密后明文** |
 
 ### 7.1 `bw status --raw` 的形状
 
@@ -225,16 +271,25 @@ pub struct SshKey {
 
 ### 7.2 失败长什么样（实测）
 
-| 场景 | 输出 | 退出码 |
-|---|---|---|
-| 未登录就查数据（`bw list items` / `bw unlock`） | `You are not logged in.` | **1** |
-| `bw status` | 正常 JSON（未登录也是一种状态） | **0** |
-| 服务器用明文 HTTP | `InsecureUrlNotAllowedError: Insecure URL not allowed. All URLs must use HTTPS.` | 1 |
-| 服务器连不上 | `Unable to fetch ServerConfig from <url>/api FetchError: ... errno: 'ETIMEDOUT'` | 1 |
-| 自签证书未被信任 | `... reason: self-signed certificate` | 1 |
+| 场景 | 输出 | 退出码 | 写到哪条流 |
+|---|---|---|---|
+| 未登录就查数据（`bw list items --raw` / `bw unlock`） | `You are not logged in.`（上游 `exitIfNotAuthed`） | **1** | **stderr** |
+| 已登录但没解锁 | `Vault is locked.`（上游 `errorIfLocked`） | 1 | **stderr**（同一段代码） |
+| `bw status` | 正常 JSON（未登录也是一种状态） | **0** | stdout |
+| 服务器用明文 HTTP | `InsecureUrlNotAllowedError: Insecure URL not allowed. All URLs must use HTTPS.` | 1 | stderr |
+| 服务器连不上 | `Unable to fetch ServerConfig from <url>/api FetchError: ... errno: 'ETIMEDOUT'` | 1 | stderr |
+| 自签证书未被信任 | `... reason: self-signed certificate` | 1 | stderr |
 
-**因此"命令成功"不能只看退出码为 0 这一件事**：`bw status` 在未登录时也返回 0，
-而查询类命令在未登录时返回 1 并把那句话写在 **stdout**（不是 stderr）。
+**因此"命令成功"不能只看退出码为 0 这一件事**：`bw status` 在未登录时也返回 0。
+
+> **更正（2026-09-15，plan 0903）**：本节此前写的是"查询类命令把错误写在 **stdout**"，
+> 那个说法**没有留下可复现的记录**。本轮在本机 `@bitwarden/cli` 2026.2.0（发行版的
+> `/usr/bin/bw`）上逐条量了一遍，两条错误都在 **stderr**（`2>/dev/null` 时一个字都不剩，
+> `1>/dev/null` 时原话还在）。`Vault is locked.` 那一句只有上游实现可依（本机没有可解锁的
+> vault），它与前一条共用上游同一个 `errorIfLocked` 出口。
+>
+> **行为不受影响**：`akasha-bw` 的失败分类**两条流都读**（stdout 非空时优先，否则用 stderr），
+> 所以"写在哪一条"这一版差异不会让任何一档认错。这也是当初两边都读的理由。
 
 ### 7.3 自签证书（自托管常见）
 
@@ -242,19 +297,41 @@ pub struct SshKey {
 **实测有效**：指向自签证书之后，`bw login` 真的向本地桩发出了
 `GET /api/config` 与 `POST /identity/accounts/prelogin/password`。
 
+### 7.4 导入：只读、快照、怎么被用上（plan 0903）
+
+- **只读**：一次 `bw list items --raw`，别的什么都不做。v1 **没有任何** `bw create` / `edit`。
+- **快照**：私钥进本地密钥池（受保护页那一条路），另外记一行**来历**（上游条目 id、
+  `revisionDate`、上游给的 `fingerprint`）。来历表就是 `scope.md` §7 的"导入池"，
+  也是"离线自检 / 联网刷新"的落点（§5.3）。**没有任何自动回流**：再导一次是一次用户动作。
+- **同名**：池里已有同名行时默认**不动它**，显式选择覆盖才替换（与 `~/.ssh/config` 导入同一口径）。
+- **怎么被用上**：主机引用钥匙的唯一方式是 `hosts.key_id`，而 `~/.ssh/config` 导入**不导入私钥**
+  （plan 0506）。桥是一条**逐字符相同**的规则：`IdentityFile` 的 **basename** 与池里某把钥匙的
+  `name` 完全相同时，导入把 `key_id` 接上并在报告里出一条说明；不相同则行为与 0506 完全一致
+  （`key_id` 留空 = 走 ssh-agent）。**不匹配、不做模糊比较** —— 猜错会把条目连到另一把钥匙上，
+  而那个结果在界面上看不出来。
+
+
 ---
 
 ## 8. 实现前必须实测的四项：结论
 
-| # | 问题 | 结论 | 状态 |
-|---|---|---|---|
-| 1 | 未解锁 / 未登录时的报错形态 | 未登录 = `You are not logged in.` + **退出码 1**；`bw status` 恒 0；**未解锁**（已登录但无 session key）下 `bw list items` 的原文**仍未实测** —— 需要一个真实 vault | ⚠️ 部分 |
-| 2 | `bw list items --raw` 的 JSON 形状（`sshKey` 的嵌套） | **未实测**（需要一个真实 vault） | ❌ |
-| 3 | 条目是否**稳定可见**（离线 / 未同步时） | **未实测** | ❌ |
-| 4 | 如何分辨专有变体与 OSS 变体 | **已定判据**：读 `bw --help` 的命令表里有没有 `device-approval`（§2.2）。⚠️ 它是启发式（上游改命令表即失效），且读不出来时要报"判不出" | ✅ |
+⚠️ **"实测"与"读上游实现"是两种不同强度的证据**，下表把两者分开写 ——
+真实输出需要一个真实 vault，而这一版**没有**（桩服务器要造出登录态就得自己实现
+Bitwarden 的密钥派生与加密，那是 `scope.md` §10 的非目标）。
 
-> #1 / #2 / #3 的共同门槛是**一个真实 vault**：登录之后 `bw status` 的形状、错误措辞与
-> `sshKey` 条目的嵌套都只能在那里看到。本机无法用桩服务器造出来 ——
-> `bw login` 的 session key 来自对上游返回的**加密用户密钥**解密，桩服务器要造出这个
-> 就得自己实现 Bitwarden 的密钥派生与加密，而那正是 `scope.md` §10 的非目标。
-> 这三项因此排在 plan 0903（只读导入）的展开时机上，见 [`STATUS.md`](./STATUS.md)。
+| # | 问题 | 结论 | 证据强度 | 状态 |
+|---|---|---|---|---|
+| 1 | 未登录时的报错形态 | `You are not logged in.` + **退出码 1**，写 **stderr**（§7.2） | **实测**（本机 `@bitwarden/cli` 2026.2.0） | ✅ |
+| 1b | **未解锁**（已登录但无 session key）时的报错形态 | 上游 `errorIfLocked` 给的是 `Vault is locked.`，与上一条**同一个出口**；本集成据此单开一档（`BwError::Locked`），界面说的是"先解锁"而不是"先登录" | 上游实现（本机 `bw.js` 里那段 `errorIfLocked` 与字面量） | ⚠️ 无真实输出 |
+| 2 | `bw list items --raw` 的 JSON 形状（`sshKey` 的嵌套） | 见 §4.1：条目数组、`type = 5`、`sshKey` 三个字段、两版指纹字段名 | 上游实现（同一份构建产物里的 `CipherExport` / `SshKeyExport` / `CipherType`）+ 官方公开的导出结构（§4 开头那段 SDK 类型） | ⚠️ 无真实输出 |
+| 3 | 条目是否**稳定可见**（离线 / 未同步时） | `bw list items` 走的是 `getAllDecrypted(userId)` —— 读**本地**已解密的那一份，不是每次去问服务器；因此"登录 + 同步过之后离线也看得到"在下游成立。反面照实记：一个企业策略（restricted item types）会把某些类型的条目从列举结果里过滤掉 | 上游实现 | ❌ 仍需真实 vault 复核 |
+| 4 | 如何分辨专有变体与 OSS 变体 | **已定判据**：读 `bw --help` 的命令表里有没有 `device-approval`（§2.2）。⚠️ 它是启发式（上游改命令表即失效），且读不出来时要报"判不出" | **实测**（两份 `cli-v2026.8.0` 资产对比） | ✅ |
+
+> #1b / #2 / #3 剩下的缺口是同一件事：**把它们在真实 vault 上执行一遍、把原文抄回来**。
+> 现在每一档都有一条可依据的实现事实（上游那份构建产物就在本机，`bw.js` 里读得到），
+> 于是代码不必等 vault；但"上游实现是这么写的"与"我看到了它这样输出"仍是两句话，
+> 不许混着说。真机那一次要执行什么见 plan 0901。
+>
+> ⚠️ 本轮**没能**在运行时下载的那一份（`cli-v2026.8.0`）上复核 #1：下载在本沙箱里超时了
+> （此前那次 24.63 s 完成），所以上表 #1 的证据明确限定在本机 npm 那份 2026.2.0 上。
+
