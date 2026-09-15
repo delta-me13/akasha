@@ -38,7 +38,7 @@
 | 命令面 | `login [email] [password] --method <m> --code <c>` / `login --apikey` / `login --sso`；`unlock [password]`（另有 `--passwordenv` / `--passwordfile`）；`lock`；`logout`；`status`；`sync`；`config server [url]` | 官方文档 |
 | 全局选项 | `--raw`（只输出裸值）、`--nointeraction`（禁止交互提问）、`--session <key>`、`--quiet` | 官方文档 + `bw --help` 实测 |
 | 两个变体 | 每个 bundle 都有 OSS（`bw-oss-*`）与非 OSS（`bw-*`）两版；**非 OSS 是各分发平台的默认包**，多出 device approval 一类非 OSS 许可的功能 | 官方文档原文 |
-| 变体的可执行判据 | 两版的 `bw --version` **都**输出 `2026.8.0`；`bw --help` 的命令表里**只有非 OSS** 那一份有 `device-approval` 行 | 实测（两份 `cli-v2026.8.0` 资产各跑一次） |
+| 变体的可执行判据 | 两版的 `bw --version` **都**输出 `2026.8.0`；`bw --help` 的命令表里**只有非 OSS** 那一份有 `device-approval` 行 | 实测（两份 `cli-v2026.8.0` 资产各执行一次） |
 | 下载落点 | GitHub release `cli-v<版本>` 下的 `bw-oss-<os>[-<arch>]-<版本>.zip`；zip 内是单个可执行文件 `bw` | 实测（release 资产表 + 解包） |
 | 校验文件 | `bw-*-sha256-<版本>.txt` 在 `cli-v2024.12.0` / `cli-v2025.1.0` 存在，在 `cli-v2025.6.0` 与 `cli-v2026.8.0` **不存在** | 实测（release 资产表逐个核对） |
 | `bw status --raw` | 未登录 = `{"serverUrl":null,"lastSync":null,"status":"unauthenticated"}`；文档给出的完整形状多 `userEmail` / `userId` 两个键；`status` 三取值 `unlocked` / `locked` / `unauthenticated` | 实测 + 官方文档 |
@@ -133,7 +133,7 @@ GPL-3.0-only 对使用者没有用途限制，专有变体的 2.1（仅限内部
   这是"不打包"结论能继续成立的原因；若将来改成随产物分发，D1 与 `scope.md` §10 必须重开。
 - **`host` 轴上可能是专有变体**：提示由界面承担（D5），不给"我确定"的旁路。
 - **状态目录取 `host` 时，状态不在便携目录里**：整体迁移之后，登录态**不会**跟着走
-  （需要重新登录）。这一条与 `docs/portable.md` 的"搬走文件夹数据仍在"不冲突 ——
+  （需要重新登录）。这一条与 `docs/portable.md` 的"整个文件夹迁移之后数据仍在"不冲突 ——
   它说的是本项目自己的数据四类池与库；CLI 的 access token 是上游的状态。
 - **主密码的内存副本**：本进程内它在受保护页里；交出去的那一份在子进程环境里（D8）。
 - **`bw status --raw` 的完整形状只在文档里见过**：`userEmail` / `userId` 两个键在

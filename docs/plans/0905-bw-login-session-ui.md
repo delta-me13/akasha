@@ -43,7 +43,7 @@
 5. **E2E**（`tests/bitwarden_login.rs`）：假上游（`akasha_bw::testing`）下载 → 面板显示版本与
    变体 → 设自托管地址 → 登录（对着假上游必然失败，断言**错误分类**与界面上那句话）→
    手工把状态摆成"已登录"（`bw` 的状态文件由用例自己写）→ 面板显示 `locked` →
-   跑 `bw lock` 之后界面仍说 `locked`，且 session 那一路为空。登记进 `src-tauri/justfile`
+   执行 `bw lock` 之后界面仍说 `locked`，且 session 那一路为空。登记进 `src-tauri/justfile`
    的 `E2E_TARGETS`。
 
 ## 验收命令

@@ -45,7 +45,7 @@
    两条都**不进 argv**（ADR-0007 D7 / D8）。`stdin` 接 `null` 且一律带 `--nointeraction`，
    否则缺凭据时子进程会走交互提问并一直等下去（而它手里攥着 app 的那把锁）。
 3. **app 接线**（`src-tauri/src/bitwarden.rs`）：`Paths::new(data_dir)` + 两个轴 →
-   `Located` → `Cli`；一条长驻的 `Mutex` 保证**一次只跑一个 `bw`**（CLI 自己在 `data.json`
+   `Located` → `Cli`；一条长驻的 `Mutex` 保证**同一时刻只有一个 `bw` 进程**（CLI 自己在 `data.json`
    上没有任何互斥）。
 4. **配置持久化**：`config.json` 增一个可选对象 `bitwarden: {binary, appdata}`（取值
    `host` / `managed`），默认两个 `host`；**第一次写**才创建文件（`config.rs` 此前只读，
@@ -93,7 +93,7 @@ just ready
 2. **SHA-256 是记录，不是校验结论**：上游不发布校验文件（实测），拿到的是"这次下载的那些
    字节的哈希"，进日志与界面供事后核对；**不拿上一次的哈希去拦这一次** —— 那会把一次上游
    更新变成一次"校验失败"。
-3. **变体判据读 `--help` 的命令表**，且**判不出来时报"判不出"**：默认当 OSS 等于把许可证
-   提示悄悄关掉。诱饵用例（`device-approval` 只出现在其它段落）与"命令表为空"两态都钉住。
+3. **变体判据读 `--help` 的命令表**，且**判不出来时报"判不出"**：默认当 OSS 等于让许可证
+   提示静默消失。诱饵用例（`device-approval` 只出现在其它段落）与"命令表为空"两态都钉住。
 4. **`bw` 的启动慢**（约 140 MB 的 Node SEA）：纯本地命令也给 20 秒，`login` / `unlock`
    给 120 秒；超时路径**杀 + 收**（`kill` 之后 `wait`），不留僵尸。
