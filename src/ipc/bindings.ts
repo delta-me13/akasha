@@ -147,6 +147,11 @@ export const commands = {
 	/**
 	 *  让某一侧连上本机文件系统，或者池里的那一台主机。
 	 * 
+	 *  目标是主机时**先试 B 档**（plan 0703）：另一栏已经连上一台不同的主机 A 的话，先建
+	 *  "本机 → A → 这一台"这条链；建不起来就回退本机直连（A 档），原因记在这一侧
+	 *  （[`SftpSideInfo::through_failure`]）。哪一档成不成是**这一栏连接的结果**，
+	 *  于是"这次传输走的是哪一档"由端点怎么来的决定 —— 传输那个引擎一行都不用改（ADR-0006 D5）。
+	 * 
 	 *  ⚠️ **async**：命令体里有两次会阻塞几秒的等待（握手 + 开子系统），而同步命令跑在
 	 *  处理 IPC 请求的那条线程上 —— 挡住它就等于挡住全部 IPC，包括用户回答问题要用的那三条
 	 *  （同 `open_ssh_session` 的理由）。本机那一档没有等待，走同一条命令只是为了
@@ -156,13 +161,14 @@ export const commands = {
 	/**  列某一侧某个目录。 */
 	sftpList: (handle: number, side: SftpSide, path: string) => typedError<SftpListing, SftpError>(__TAURI_INVOKE("sftp_list", { handle, side, path })),
 	/**
-	 *  把某一侧的一个文件搬到另一侧的某个路径上（plan 0702）。
+	 *  把某一侧的一个文件搬到另一侧的某个路径上（plan 0702 / 0703）。
 	 * 
 	 *  返回一个**编号**而不是结果：搬运是后台任务（`scope.md` §4.1 要求 progress 可见，
 	 *  而一条几十秒的命令会把 IPC 堵住）。进度与结局走 [`sftp_transfers`] 与 `sftp` 探针读。
 	 * 
-	 *  ⚠️ **两栏都是主机**时明确拒绝：那是 host ↔ host（plan 0703），本阶段不做 ——
-	 *  让一条更慢的路径悄悄顶上会让人以为 0703 已经完成了。
+	 *  两栏都是主机时走哪一档不在这里决定：那是**目标那一栏的端点怎么来的**（B 档 = 那条连接
+	 *  是经源那一栏的主机直通来的，见 [`sftp_connect`]），这里只把结果抄进这次传输的记录
+	 *  （[`SftpTransfer::via`]）。于是两档共用同一个引擎（ADR-0006 D5）。
 	 */
 	sftpTransfer: (handle: number, from: SftpSide, fromPath: string, to: SftpSide, toPath: string) => typedError<number, SftpError>(__TAURI_INVOKE("sftp_transfer", { handle, from, fromPath, to, toPath })),
 	/**
@@ -500,13 +506,6 @@ export type SftpError =
 { kind: "notConnected"; detail: {
 	side: string,
 } } | 
-/**
- *  这一步还没做。目前只有一处：**两栏都是主机**时的传输 ——
- *  那是 host ↔ host（plan 0703），本阶段明确拒绝，而不是让某一条更慢的路径悄悄顶上。
- */
-{ kind: "unsupported"; detail: {
-	message: string,
-} } | 
 /**  没有这个编号的传输（已经结束并从表里清掉了，或者编号本来就错）。 */
 { kind: "noSuchTransfer"; detail: {
 	id: number,
@@ -562,6 +561,19 @@ export type SftpSideInfo = {
 	failure: string | null,
 	/**  当前目录（连上之后才有）。 */
 	path: string | null,
+	/**
+	 *  这一侧的连接是**经哪台直通**到达的（plan 0703 的 B 档）。`None` = 本机直接连过去。
+	 * 
+	 *  **字段值不虚构**：不是直通就不写它，不填一个"0"或空串顶替（`docs/logging.md` 的口径）。
+	 */
+	through: number | null,
+	/**
+	 *  试过直通、没成时那条链的失败原因（改了直连并成功的证据）。
+	 * 
+	 *  与 [`Self::failure`] 分开：那是"这一栏连不上"，这是"原本想走的那条路没走成"。
+	 *  两者同时为空是常态；两条都不成时**两个都会有**（各说各的那一次尝试）。
+	 */
+	throughFailure: string | null,
 };
 
 /**
@@ -611,6 +623,13 @@ export type SftpTransfer = {
 	total: number | null,
 	/**  失败原因（`state = failed` 时才有）。**字段值不虚构**（同 [`SftpSideInfo::failure`]）。 */
 	failure: string | null,
+	/**
+	 *  目标那一栏是**经哪台直通**到达的（plan 0703 的 B 档）；`None` = 本机内存中转。
+	 * 
+	 *  记在这次传输上，而不是让读的人去看那一栏的现状：传输是历史记录，而一侧的连接事后
+	 *  可能被换掉（换主机 / 重连）—— "这次走的是哪一档"不该跟着变。
+	 */
+	via: number | null,
 };
 
 /**  一次传输的状态。 */

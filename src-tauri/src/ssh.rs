@@ -456,6 +456,43 @@ pub(crate) async fn connect_connection(
     .map_err(SshIpcError::from_ssh)
 }
 
+/// 建立一条**经 `via` 直通**到 `host_id` 的连接（plan 0703 的 B 档）。
+///
+/// 与 [`connect_connection`] 只差最外层：不直接连 `host_id`，而是**先连 `via`**，在它上面开一条
+/// `direct-tcpip` 通道直通目标 —— 本机因此只需要够得着 `via` 一台（`scope.md` §4.1：本机 → A → B）。
+///
+/// 两行**各自的跳板链都保留**：`via` 自己可能就是经跳板才够得着的，目标那行也可能配了跳板，
+/// 于是这条链是"本机 → … → via → … → 目标"。拼法只是把两段材料首尾相接；逐跳搭链、通道复用
+/// 与收尾顺序全在 `akasha-ssh` 那一处（plan 0505 的"只实现一次"）。
+pub(crate) async fn connect_connection_via(
+    ssh: &Ssh,
+    vault: &Vault,
+    via: HostId,
+    host_id: HostId,
+    cancel: impl Future<Output = ()> + Send + 'static,
+) -> Result<SshConnection, SshIpcError> {
+    let handle = ssh.handle()?;
+    let (via_hops, via_target) = connect_plan(ssh, vault, via)?;
+    let (mut hops, options) = connect_plan(ssh, vault, host_id)?;
+    let mut chain = via_hops;
+    chain.push(via_target);
+    chain.append(&mut hops);
+    let target = options.target.clone();
+    tracing::info!(
+        host = target.host(),
+        port = target.port(),
+        user = target.user(),
+        via,
+        hops = chain.len(),
+        "ssh connection opening through host"
+    );
+    spawn_sync("akasha-ssh-connection", move || {
+        SshConnection::connect_via_until(&handle, chain, options, cancel)
+    })
+    .await?
+    .map_err(SshIpcError::from_ssh)
+}
+
 /// 打开一个 SSH 终端会话，输出经 `channel` 以 **raw 字节**送出。
 ///
 /// 与 [`crate::session::open_session`] 的关系：**同一条尾巴**（注册 → 频道 → 收尾线程），

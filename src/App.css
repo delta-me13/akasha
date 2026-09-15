@@ -613,6 +613,25 @@ body {
   color: #ffb4b4;
 }
 
+/* B 档（plan 0703）：这一栏是经另一栏那台主机直通到达的。 */
+.sftp-route {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #88c0d0;
+}
+
+/* 回退的证据：原本想走直通、没走成。它不是失败 —— 这一栏可能已经连上了。 */
+.sftp-detour {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #ebcb8b;
+}
+
+.sftp-transfer-via {
+  font-size: 12px;
+  color: #88c0d0;
+}
+
 .sftp-empty {
   margin: 0;
   font-size: 12px;

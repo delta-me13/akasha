@@ -53,7 +53,14 @@ function idleSide(side: SftpSide): SftpSideInfo {
     state: "disconnected",
     failure: null,
     path: null,
+    through: null,
+    throughFailure: null,
   };
+}
+
+/** 主机行 id → 界面上的名字。找不到就报 id：B 档与回退原因里都要有个能对上的东西。 */
+function hostName(hosts: readonly HostEntry[] | null, id: number): string {
+  return hosts?.find((host) => host.id === id)?.name ?? `#${id}`;
 }
 
 /** 后端四个取值的中文文案。少一个键这里编译不过（`Record` 是穷尽的）。 */
@@ -305,19 +312,24 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
           {SIDES.map((side) => {
             const info = sides.find((candidate) => candidate.side === side) ?? idleSide(side);
             const listing = listings[side];
+            // 这一栏正在连的时候，后端的状态**就是** `connecting`：`prepare_connect` 在任何
+            // I/O 之前把它置上，直到这次命令返回才变成最终状态。所以这里照实显示它，
+            // 而不是留着上一次那个"已连接" —— 否则一栏在重新连接期间看起来仍然可用
+            // （`data-sftp-state` 也就不能当"后端现在是什么状态"来读）。
+            const state: SftpSideInfo["state"] = busy === side ? "connecting" : info.state;
             return (
               <section
                 key={side}
                 className="sftp-pane"
                 data-side={side}
-                data-sftp-state={info.state}
+                data-sftp-state={state}
                 data-sftp-origin={originChoice(info.origin)}
               >
                 <header className="sftp-pane-head">
                   <span className="sftp-pane-name">
                     {SIDE_LABEL[side]} · {info.name === "" ? "未选择" : info.name}
                   </span>
-                  <span className="sftp-pane-state">{STATE_LABEL[info.state]}</span>
+                  <span className="sftp-pane-state">{STATE_LABEL[state]}</span>
                 </header>
 
                 <div className="sftp-pane-controls">
@@ -380,6 +392,19 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
 
                 {info.failure !== null && <p className="sftp-failure">{info.failure}</p>}
 
+                {/* B 档（plan 0703）：这一栏是经另一栏那台主机直通到达的。 */}
+                {info.through !== null && (
+                  <p className="sftp-route" data-sftp-through={info.through}>
+                    经 {hostName(hosts, info.through)} 直通
+                  </p>
+                )}
+                {/* 回退的证据：原本想走直通，没走成（改走本机直连）。 */}
+                {info.throughFailure !== null && (
+                  <p className="sftp-detour" data-sftp-detour={info.throughFailure}>
+                    经另一栏直通没成：{info.throughFailure}
+                  </p>
+                )}
+
                 <p className="sftp-path" data-sftp-path={listing?.path ?? ""}>
                   {listing?.path ?? (info.path ?? "（尚未列目录）")}
                 </p>
@@ -437,10 +462,16 @@ export function SftpPanel({ onClose }: { readonly onClose: () => void }) {
                   data-transfer-state={transfer.state}
                   data-transfer-done={transfer.done}
                   data-transfer-total={transfer.total}
+                  data-transfer-via={transfer.via ?? ""}
                 >
                   <span className="sftp-transfer-route">
                     {SIDE_LABEL[transfer.from]} {transfer.fromPath} → {SIDE_LABEL[transfer.to]}{" "}
                     {transfer.toPath}
+                  </span>
+                  <span className="sftp-transfer-via">
+                    {transfer.via === null
+                      ? "本机中转"
+                      : `经 ${hostName(hosts, transfer.via)} 直通`}
                   </span>
                   <span className="sftp-transfer-state">{TRANSFER_LABEL[transfer.state]}</span>
                   <span className="sftp-transfer-bytes">

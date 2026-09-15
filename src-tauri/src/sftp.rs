@@ -71,6 +71,14 @@ impl SftpSide {
         }
     }
 
+    /// 对侧。B 档要看"另一栏连的是哪台"（plan 0703 的 [`via_host`]）。
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+
     /// 两侧都要走一遍的地方用它。
     pub const ALL: [SftpSide; 2] = [SftpSide::Left, SftpSide::Right];
 }
@@ -120,6 +128,15 @@ pub struct SftpSideInfo {
     pub failure: Option<String>,
     /// 当前目录（连上之后才有）。
     pub path: Option<String>,
+    /// 这一侧的连接是**经哪台直通**到达的（plan 0703 的 B 档）。`None` = 本机直接连过去。
+    ///
+    /// **字段值不虚构**：不是直通就不写它，不填一个"0"或空串顶替（`docs/logging.md` 的口径）。
+    pub through: Option<HostId>,
+    /// 试过直通、没成时那条链的失败原因（改了直连并成功的证据）。
+    ///
+    /// 与 [`Self::failure`] 分开：那是"这一栏连不上"，这是"原本想走的那条路没走成"。
+    /// 两者同时为空是常态；两条都不成时**两个都会有**（各说各的那一次尝试）。
+    pub through_failure: Option<String>,
 }
 
 /// 一次传输的编号（后端分配，进程内唯一）。
@@ -166,6 +183,11 @@ pub struct SftpTransfer {
     pub total: f64,
     /// 失败原因（`state = failed` 时才有）。**字段值不虚构**（同 [`SftpSideInfo::failure`]）。
     pub failure: Option<String>,
+    /// 目标那一栏是**经哪台直通**到达的（plan 0703 的 B 档）；`None` = 本机内存中转。
+    ///
+    /// 记在这次传输上，而不是让读的人去看那一栏的现状：传输是历史记录，而一侧的连接事后
+    /// 可能被换掉（换主机 / 重连）—— "这次走的是哪一档"不该跟着变。
+    pub via: Option<HostId>,
 }
 
 /// 一个 SFTP 会话的**过 IPC 表示**（只读命令与探针共用）。
@@ -254,11 +276,6 @@ pub enum SftpError {
     /// 这一侧还没有连接。**与失败分开**：那是"连过但没连上"，这是"还没连"。
     #[error("SFTP 的 {side} 这一侧还没有连接（先连接，再列目录或传输）")]
     NotConnected { side: String },
-
-    /// 这一步还没做。目前只有一处：**两栏都是主机**时的传输 ——
-    /// 那是 host ↔ host（plan 0703），本阶段明确拒绝，而不是让某一条更慢的路径悄悄顶上。
-    #[error("{message}")]
-    Unsupported { message: String },
 
     /// 没有这个编号的传输（已经结束并从表里清掉了，或者编号本来就错）。
     #[error("没有编号为 {id} 的传输")]
@@ -363,6 +380,10 @@ struct Side {
     state: SftpSideState,
     failure: Option<String>,
     path: Option<String>,
+    /// 这一侧的连接实际是经哪台直通到达的（plan 0703 的 B 档）。
+    through: Option<HostId>,
+    /// 试过直通但没成的原因（回退到本机直连的证据，plan 0703）。
+    through_failure: Option<String>,
     link: Option<SftpLink>,
 }
 
@@ -374,6 +395,8 @@ impl Default for Side {
             state: SftpSideState::Disconnected,
             failure: None,
             path: None,
+            through: None,
+            through_failure: None,
             link: None,
         }
     }
@@ -388,6 +411,8 @@ impl Side {
             state: self.state,
             failure: self.failure.clone(),
             path: self.path.clone(),
+            through: self.through,
+            through_failure: self.through_failure.clone(),
         }
     }
 }
@@ -402,6 +427,10 @@ pub(crate) struct Tracked {
     from_path: String,
     to: SftpSide,
     to_path: String,
+    /// 这次传输的目标端点是经哪台直通到达的（`None` = 本机内存中转，plan 0703）。
+    ///
+    /// 登记那一刻从目标那一栏抄下来，此后**不再变**：它是这次传输的属性，不是那一栏的现状。
+    via: Option<HostId>,
     /// 引擎写、探针读（`AtomicU64` × 2）。
     progress: Progress,
     /// 状态与失败原因。锁只在读写它时持有，里面没有 `await`。
@@ -417,12 +446,19 @@ struct TrackedOutcome {
 }
 
 impl Tracked {
-    fn new(from: SftpSide, from_path: String, to: SftpSide, to_path: String) -> Self {
+    fn new(
+        from: SftpSide,
+        from_path: String,
+        to: SftpSide,
+        to_path: String,
+        via: Option<HostId>,
+    ) -> Self {
         Self {
             from,
             from_path,
             to,
             to_path,
+            via,
             progress: Progress::default(),
             outcome: Mutex::new(TrackedOutcome::default()),
             cancel: Cancel::new(),
@@ -484,6 +520,7 @@ impl Transfer {
             done: self.tracked.progress.done() as f64,
             total: self.tracked.progress.total() as f64,
             failure,
+            via: self.tracked.via,
         }
     }
 }
@@ -541,21 +578,30 @@ impl Sftp {
         slot.state = SftpSideState::Connecting;
         slot.failure = None;
         slot.path = None;
+        // 直通那一档是**上一次**的事实：这一栏现在还没连上任何地方。
+        // `through_failure` 一起清掉 —— 它说的是"这一次尝试想走直通、没走成"。
+        slot.through = None;
+        slot.through_failure = None;
         previous
     }
 
-    /// 这一侧连上了（一台主机）：把名字与连接挂上。
+    /// 这一侧连上了（一台主机）：把名字、连接与**它实际是怎么到达的**挂上。
+    ///
+    /// `through` 是 B 档的落点（plan 0703）：`Some(A)` = 这条连接是"本机 → A → 这一台"，
+    /// `None` = 本机直接连过去。
     pub(crate) fn attach(
         &mut self,
         side: SftpSide,
         name: String,
         connection: SshConnection,
         client: SftpClient,
+        through: Option<HostId>,
     ) {
         let slot = &mut self.sides[side.index()];
         slot.name = name;
         slot.state = SftpSideState::Connected;
         slot.failure = None;
+        slot.through = through;
         slot.link = Some(SftpLink { connection, client });
     }
 
@@ -567,6 +613,15 @@ impl Sftp {
         slot.failure = None;
         slot.link = None;
         slot.path = Some(path);
+        slot.through = None;
+    }
+
+    /// 试过直通、没成：把那一次的原因记下来（plan 0703 的回退证据）。
+    ///
+    /// 只动 `through_failure`：这一侧接下来还要走本机直连，成功或失败由 [`Self::attach`] /
+    /// [`Self::fail`] 说了算。
+    pub(crate) fn note_through_failure(&mut self, side: SftpSide, reason: String) {
+        self.sides[side.index()].through_failure = Some(reason);
     }
 
     /// 这一侧失败了。**只落这一侧** —— 另一侧照样可用（ADR-0006 D3）。
@@ -575,6 +630,9 @@ impl Sftp {
         slot.state = SftpSideState::Failed;
         slot.failure = Some(reason);
         slot.link = None;
+        // 没有连接就没有"经谁直通"这件事；而 `through_failure` 留着 —— 两条路都不成时，
+        // 用户要能看到**两次尝试各说了什么**。
+        slot.through = None;
     }
 
     /// 这一侧的**端点**（引擎眼里的那一端，ADR-0006 D4）。
@@ -601,9 +659,9 @@ impl Sftp {
         self.sides[side.index()].path = Some(path);
     }
 
-    /// 这一侧连的是什么（host ↔ host 的拒绝判据要看它）。
-    pub(crate) fn origin(&self, side: SftpSide) -> Option<SftpOrigin> {
-        self.sides[side.index()].origin
+    /// 这一侧的连接是**经哪台直通**到达的（plan 0703 的 B 档）；`None` = 本机直连。
+    pub(crate) fn through(&self, side: SftpSide) -> Option<HostId> {
+        self.sides[side.index()].through
     }
 
     /// 登记一次传输，返回它的编号。
@@ -685,6 +743,11 @@ pub fn sftp_open(sessions: State<'_, Sessions>) -> Result<SessionHandle, SftpErr
 
 /// 让某一侧连上本机文件系统，或者池里的那一台主机。
 ///
+/// 目标是主机时**先试 B 档**（plan 0703）：另一栏已经连上一台不同的主机 A 的话，先建
+/// "本机 → A → 这一台"这条链；建不起来就回退本机直连（A 档），原因记在这一侧
+/// （[`SftpSideInfo::through_failure`]）。哪一档成不成是**这一栏连接的结果**，
+/// 于是"这次传输走的是哪一档"由端点怎么来的决定 —— 传输那个引擎一行都不用改（ADR-0006 D5）。
+///
 /// ⚠️ **async**：命令体里有两次会阻塞几秒的等待（握手 + 开子系统），而同步命令跑在
 /// 处理 IPC 请求的那条线程上 —— 挡住它就等于挡住全部 IPC，包括用户回答问题要用的那三条
 /// （同 `open_ssh_session` 的理由）。本机那一档没有等待，走同一条命令只是为了
@@ -717,9 +780,35 @@ pub async fn sftp_connect(
         SftpOrigin::Host { id } => {
             let ssh = app.state::<Ssh>();
             let vault = app.state::<Vault>();
-            match connect_side(&ssh, &vault, id).await {
-                Ok((name, connection, client)) => {
-                    sessions.sftp_attach(handle, side, name, connection, client)?;
+            // 这一栏这次要经哪台直通（另一栏连上的那台），或者不试直通。
+            let via = via_host(&sessions, handle, side, id);
+            let attempt = match via {
+                Some(route) => match connect_side_via(&ssh, &vault, route, id).await {
+                    Ok(link) => Ok(link),
+                    Err(err) => {
+                        // 回退是**正常路径**（对端不认这条转发是常见配置），所以是 warn 而不是
+                        // error —— 但它必须留下证据：用户要看出"原本想走直通、没走成"。
+                        tracing::warn!(
+                            via = route,
+                            host = id,
+                            reason = %err,
+                            "sftp tunnel connect failed"
+                        );
+                        let _ = sessions.sftp_note_through_failure(handle, side, err.to_string());
+                        connect_side(&ssh, &vault, id).await
+                    }
+                },
+                None => connect_side(&ssh, &vault, id).await,
+            };
+            match attempt {
+                Ok(link) => {
+                    let SideLink {
+                        name,
+                        connection,
+                        client,
+                        through,
+                    } = link;
+                    sessions.sftp_attach(handle, side, name, connection, client, through)?;
                 }
                 Err(err) => {
                     // 失败**落在这一侧**：探针与界面因此都答得出"是左边还是右边没连上"。
@@ -757,13 +846,14 @@ pub async fn sftp_list(
     Ok(listing.into())
 }
 
-/// 把某一侧的一个文件搬到另一侧的某个路径上（plan 0702）。
+/// 把某一侧的一个文件搬到另一侧的某个路径上（plan 0702 / 0703）。
 ///
 /// 返回一个**编号**而不是结果：搬运是后台任务（`scope.md` §4.1 要求 progress 可见，
 /// 而一条几十秒的命令会把 IPC 堵住）。进度与结局走 [`sftp_transfers`] 与 `sftp` 探针读。
 ///
-/// ⚠️ **两栏都是主机**时明确拒绝：那是 host ↔ host（plan 0703），本阶段不做 ——
-/// 让一条更慢的路径悄悄顶上会让人以为 0703 已经完成了。
+/// 两栏都是主机时走哪一档不在这里决定：那是**目标那一栏的端点怎么来的**（B 档 = 那条连接
+/// 是经源那一栏的主机直通来的，见 [`sftp_connect`]），这里只把结果抄进这次传输的记录
+/// （[`SftpTransfer::via`]）。于是两档共用同一个引擎（ADR-0006 D5）。
 #[tauri::command]
 #[specta::specta]
 pub fn sftp_transfer(
@@ -775,12 +865,12 @@ pub fn sftp_transfer(
     to: SftpSide,
     to_path: String,
 ) -> Result<TransferId, SftpError> {
-    reject_host_to_host(&sessions, handle, from, to)?;
-
     let source = endpoint_of(&sessions, handle, from)?;
     let target = endpoint_of(&sessions, handle, to)?;
+    // 目标那一栏是经哪台直通到达的 —— `None` = 本机直连，也就是本机内存中转那一档。
+    let via = sessions.sftp_through(handle, to);
 
-    let tracked = Arc::new(Tracked::new(from, from_path, to, to_path));
+    let tracked = Arc::new(Tracked::new(from, from_path, to, to_path, via));
     let runtime = app
         .state::<Ssh>()
         .runtime_handle()
@@ -894,24 +984,80 @@ pub async fn sftp_close(
     Ok(())
 }
 
-/// 照池里的行建立一条连接，并在它上面开一个 SFTP 会话。
+/// 连接这一条路的结果：那一台的名字、连接本体、会话句柄，以及**它实际是怎么到达的**。
 ///
-/// 返回三样：那一台的名字（界面上那一栏的标题）、连接本体、会话句柄。
+/// 它比元组多出来的正是 plan 0703 要看的那一件事：`through` 不是"想经哪台"，
+/// 而是**真的经了哪台**（回退到本机直连时是 `None`）。
+struct SideLink {
+    name: String,
+    connection: SshConnection,
+    client: SftpClient,
+    through: Option<HostId>,
+}
+
+/// 照池里的行建立一条连接，并在它上面开一个 SFTP 会话（本机直连这一档）。
 ///
 /// ⚠️ 建连接走的是**与终端、隧道同一条路**（`connect_connection`，含跳板链与主机密钥校验）——
 /// 三条路的差别只在连上之后开什么通道，而"照池里的行连过去要准备什么材料"只有一份实现。
-async fn connect_side(
-    ssh: &Ssh,
-    vault: &Vault,
-    host_id: HostId,
-) -> Result<(String, SshConnection, SftpClient), SftpError> {
+async fn connect_side(ssh: &Ssh, vault: &Vault, host_id: HostId) -> Result<SideLink, SftpError> {
     let name = host_name(vault, host_id)?;
     // 取消信号传 `pending`：SFTP 的连接没有"被中途叫停"的动作（那是隧道关闭才需要的，
     // plan 0606）。用户要中止只能关掉这个会话 —— 那时命令已经返回了。
     let connection =
         crate::ssh::connect_connection(ssh, vault, host_id, std::future::pending()).await?;
     let client = connection.sftp().await.map_err(SftpError::from)?;
-    Ok((name, connection, client))
+    Ok(SideLink {
+        name,
+        connection,
+        client,
+        through: None,
+    })
+}
+
+/// 同上，但经 `via` 直通（plan 0703 的 B 档：本机 → `via` → `host_id`）。
+///
+/// 与 [`connect_side`] 只差建链那一步 —— 会话怎么开、失败怎么分类完全相同，
+/// 因为那条链在外面看就是"一条到目标的连接"（`connect_connection_via` 的文档）。
+async fn connect_side_via(
+    ssh: &Ssh,
+    vault: &Vault,
+    via: HostId,
+    host_id: HostId,
+) -> Result<SideLink, SftpError> {
+    let name = host_name(vault, host_id)?;
+    let connection =
+        crate::ssh::connect_connection_via(ssh, vault, via, host_id, std::future::pending())
+            .await?;
+    let client = connection.sftp().await.map_err(SftpError::from)?;
+    Ok(SideLink {
+        name,
+        connection,
+        client,
+        through: Some(via),
+    })
+}
+
+/// 这一栏这次要经哪台直通 —— `None` 就是不试直通。
+///
+/// 判据只有一条：**另一栏已经连上一台不同的主机**。为什么不看"另一栏在下拉框里选了什么"：
+/// 那个选择要到 `sftp_connect` 才进后端，而"经那台直通"这句话成立的前提是那台**真的够得着**
+/// —— "它已经连上了"就是现成的证据，不必另证一次。
+///
+/// 同一台主机不算：那条链是"连它、再从它连它"，白白多一跳。
+fn via_host(
+    sessions: &Sessions,
+    handle: SessionHandle,
+    side: SftpSide,
+    id: HostId,
+) -> Option<HostId> {
+    let other = sessions.sftp_side(handle, side.other())?;
+    if other.state != SftpSideState::Connected {
+        return None;
+    }
+    match other.origin {
+        Some(SftpOrigin::Host { id: other_id }) if other_id != id => Some(other_id),
+        _ => None,
+    }
 }
 
 /// 池里那一行的名字。
@@ -945,32 +1091,6 @@ fn endpoint_of(
         .ok_or(SftpError::NotConnected {
             side: side.as_str().to_owned(),
         })
-}
-
-/// 两栏都是主机时拒绝（host ↔ host 是 plan 0703）。
-///
-/// ⚠️ 它存在的理由不是"懒得做"，而是**不做而装作做了**最容易发生在这里：
-/// 两栏各连一条连接、字节经本机内存转一圈，代码上是通的 —— 但那条路既不是 B 档
-/// （不省带宽、也不解除"本机必须直达 B"的限制），也没有 0703 的判据守着。
-/// 明确拒绝让人一眼看出这一步还没做。
-fn reject_host_to_host(
-    sessions: &Sessions,
-    handle: SessionHandle,
-    from: SftpSide,
-    to: SftpSide,
-) -> Result<(), SftpError> {
-    let remote = |side: SftpSide| {
-        matches!(
-            sessions.sftp_origin(handle, side),
-            Some(SftpOrigin::Host { .. })
-        )
-    };
-    if remote(from) && remote(to) {
-        return Err(SftpError::Unsupported {
-            message: "两栏都是主机时的传输（host ↔ host）属于 plan 0703，本阶段还没做".to_owned(),
-        });
-    }
-    Ok(())
 }
 
 /// 只读探针 `sftp`：全部 SFTP 会话、它们两侧的状态，以及各自发起过的传输

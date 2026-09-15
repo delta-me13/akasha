@@ -69,8 +69,6 @@ export class SftpFailed extends Error {
         return `会话 ${detail.detail.handle} 不是一个 SFTP 会话（已关闭或未打开）`;
       case "notConnected":
         return `SFTP 的 ${detail.detail.side} 这一侧还没有连接（先连接，再列目录）`;
-      case "unsupported":
-        return detail.detail.message;
       case "noSuchTransfer":
         return `没有编号为 ${detail.detail.id} 的传输（它可能已经结束了）`;
       case "failed":

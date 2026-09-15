@@ -25,6 +25,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 
+use crate::pools::HostId;
 use crate::tunnel::ActiveForward;
 use akasha_core::{SessionEvent, SessionId, SessionKind, SessionRegistry, TunnelState};
 use akasha_pty::watchdog::SessionWatchdog;
@@ -667,7 +668,9 @@ impl Sessions {
         Ok(sftp.prepare_connect(side, origin))
     }
 
-    /// 这一侧连上了：把名字、连接与会话句柄挂上去。
+    /// 这一侧连上了：把名字、连接、会话句柄与**它实际是怎么到达的**挂上去。
+    ///
+    /// `through` 是 plan 0703 的 B 档：`Some(A)` = 这条连接是经 A 直通来的，`None` = 本机直连。
     pub fn sftp_attach(
         &self,
         handle: SessionHandle,
@@ -675,13 +678,30 @@ impl Sessions {
         name: String,
         connection: SshConnection,
         client: SftpClient,
+        through: Option<HostId>,
     ) -> Result<(), IpcError> {
         let mut inner = self.lock()?;
         let sftp = inner
             .sftps
             .get_mut(&handle)
             .ok_or(IpcError::NotFound { handle })?;
-        sftp.attach(side, name, connection, client);
+        sftp.attach(side, name, connection, client, through);
+        Ok(())
+    }
+
+    /// 试过经另一栏直通、没成：把那条链的原因记在这一侧（plan 0703 的回退证据）。
+    pub fn sftp_note_through_failure(
+        &self,
+        handle: SessionHandle,
+        side: SftpSide,
+        reason: String,
+    ) -> Result<(), IpcError> {
+        let mut inner = self.lock()?;
+        let sftp = inner
+            .sftps
+            .get_mut(&handle)
+            .ok_or(IpcError::NotFound { handle })?;
+        sftp.note_through_failure(side, reason);
         Ok(())
     }
 
@@ -738,10 +758,10 @@ impl Sessions {
         Ok(sftp.endpoint(side))
     }
 
-    /// 这一侧连的是什么（host ↔ host 的拒绝判据要看它，plan 0702）。
-    pub fn sftp_origin(&self, handle: SessionHandle, side: SftpSide) -> Option<SftpOrigin> {
+    /// 这一侧的连接是**经哪台直通**到达的（plan 0703 的 B 档）；`None` = 本机直连。
+    pub fn sftp_through(&self, handle: SessionHandle, side: SftpSide) -> Option<HostId> {
         let inner = self.lock().ok()?;
-        inner.sftps.get(&handle)?.origin(side)
+        inner.sftps.get(&handle)?.through(side)
     }
 
     /// 登记一次传输（任务已经起好了），返回它的编号。
