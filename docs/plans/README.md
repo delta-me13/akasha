@@ -70,6 +70,7 @@
 | 0104 | 迁移后复测开发循环 | 已完成（监听范围曾失效，已修） | plan 0103（要有 `src-tauri/crates/` 成员才测得了） | [0104](./archive/0104-dev-loop-retest.md) |
 | 0105 | `src-tauri/crates/akasha-pty`：通用 `Transport` trait | 已完成 | plan 0103（命名与规则先立） | [0105](./archive/0105-pty-transport-trait.md) |
 | 0107 | E2E 入口（`just test-e2e` 自包含） | 进行中（本地已实测；CI 三平台待实际运行） | plan 0202 / 0203 | [0107](./0107-e2e-entry.md) |
+| 0108 | Windows 目标的类型检查真的通过（问题 #149 的编译面） | 进行中 | plan 0801（平台边界）/ plan 0102（CI 矩阵要它才绿） | [0108](./0108-windows-type-check.md) |
 
 ### 阶段 2 — 端到端最小终端
 

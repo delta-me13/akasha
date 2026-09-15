@@ -44,6 +44,12 @@ v2 → v3 只加表）。**离线缓存**那一条把 plan 0903 记下的 `finge
 `libudev` 只在 Linux），一条串口 `Session` 接着接进 app —— 从界面打开、字节双向流动、关标签页即回收、
 取值越界当场看到字段与取值、设备被拔掉时以可读原因结束并关闭标签页。判据与读数见下文「串口的形状」。
 
+**阶段 1 补了一条：Windows 目标的类型检查**（plan 0108）。`akasha-pty` 里的 `rustix::process`
+（收会话用的 SIGKILL 封装）原本没有 `cfg` 守卫，于是 Windows 目标编译不过（问题 #149）——
+CI 的 `checks-other` 执行的就是 `cargo check --workspace --all-targets`，那两个平台因此至今
+不可能通过。已按平台门控（`rustix` 变成 unix 专属依赖），能本地核对的三个成员现在都是退出码 0。
+⚠️ **可编译不等于有实现**：Windows 上「回收整个会话」仍然是空的 —— 那条缺口见「进行中 / 下一步」。
+
 阶段 4 的八项（每项一句）：**SQLCipher 加密库可打开**（0401）、**口令只从一条路径进入且可真正验证**
 （0402 —— 拆分"打开"与"新建"；此前在文件不存在的路径上**任何口令都能打开**）、
 **口令在内存中同样受保护**（0406）、**四类池可增删改查**（0403）、**库中数据可导出也可还原**
@@ -361,6 +367,8 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
 | `just test` | **473 tests run: 473 passed**（`akasha` **98** + `akasha-bw` **56** + `akasha-core` 30 + `akasha-pty` **40** + `akasha-serial` **25** + `akasha-ssh` **88** + `akasha-store` 136）。⚠️ `akasha` 的 91 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回；目标与用例数见下面那条 `just test-e2e` 与 `src-tauri/justfile` 的 `E2E_TARGETS`） |
+| `cargo check -p akasha-core -p akasha-pty -p akasha-serial --target x86_64-pc-windows-msvc`（plan 0108） | 三条都**退出码 0** —— 改之前 `akasha-pty` 是 3 个错误（E0432 `rustix::process` + E0433 ×2）、`akasha-serial` 因依赖它同样红。负例：撤掉 `teardown.rs` 的 `#[cfg(unix)]` 立刻重新变红（`cannot find module or crate rustix`），恢复后又回到 0 |
+| ↑ **同一命令带 `--all-targets` 在本机过不去** | `criterion`（dev-dependency，只有 bench 用它）拉进 `alloca v0.4.0`，它的 C 构建脚本要 MSVC 的 `lib.exe` —— 本机没有 MSVC 工具链。**与本次改动无关**；CI 的 Windows 格子上有那个工具链 |
 | `just serial-check`（plan 0802） | 退出码 **0**：`akasha-serial` 的 **25 条**在两种 feature 配置下**各执行一遍**（默认走 libudev 的枚举实现，`--no-default-features` 走 sysfs 的），两次都是 **25 passed / 0 skipped** |
 | ↑ **判据：枚举在本机列出端口**（plan 0802） | ✅ `ports()` 在本机（libudev）返回 **32 条** `/dev/ttyS0`…`/dev/ttyS31`，**按路径排序、无重复、路径非空**，且每条在 `/sys/class/tty/<名字>` 里都有对应项（库内 `enumeration` 2 条）；关闭该 feature 后**同一套用例**返回 **0 条**且照常通过 —— "没有端口"与"枚举失败"因此是两种结果 |
 | ↑ **判据：参数错误给出可读报错**（plan 0802） | ✅ 越界取值报**字段与取值**（`data_bits = 9` / `stop_bits = 3` / `baud = 0`，库内 3 条）；打不开报**路径与 OS 原因**（不存在的设备与一个目录路径都实测过） |
@@ -616,6 +624,10 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   未验证；用户文件中无法解析的行的处置（`warn` + 视为未知）没有用例守护。
 - **解锁 / 导出 / 口令经 IPC 的边界**（同既往）：tauri 自身的两份口令副本无法触及（ADR-0002 §7.5）；
   `mlock` 失败路径只有单测；内存扫描仅在 Linux、仅扫描匿名段。
+- **Windows 目标的类型检查只覆盖到三个成员**（plan 0108）：`akasha-core` / `akasha-pty` /
+  `akasha-serial` 在非 Windows 主机上能核对；`akasha-store` / `akasha-ssh` / `akasha-bw` /
+  `akasha` 因为 vendored OpenSSL 与 `ring` 的 C 构建脚本在 check 阶段就失败（本机没有 MSVC 工具链），
+  这四个成员只能由 CI 的 Windows 格子给出结论 —— 而 CI 至今没有运行过。
 - **权限位、单实例、托盘在非 Linux 平台未验证**：CI 的类型检查无法覆盖运行期差异；CI 三个 job
   至今未运行（仓库没有 remote）。
 - **前端类型检查不在任何门禁内**：`just ready` 只覆盖 Rust 与文档，`pnpm build`（tsc）需手动运行。
@@ -736,7 +748,16 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   给一个嵌套对象定文件格式要连界面一起设计（plan 0605 / 0704 的非目标）。
   ⚠️ 现状下"把退避改小"或"把并发上限调大"只能改代码。
 - [ ] **降级路径未实测**：v2 库在旧版本程序中会以 `UnsupportedVersion { found: 2 }` 被拒绝（有意为之）。
-- [~] **plan 0102（CI 平台矩阵）**：本地部分完成，最终判据 = 推送后三个 job 全部通过，当前阻塞于仓库无 remote
+- [x] **plan 0108（Windows 目标的类型检查）**：`akasha-pty` 的 `rustix::process` 已按平台门控，
+      三个能本地核对的成员在 Windows 目标上退出码 0 —— 判据与读数见该 plan。
+      ⚠️ 它只解决**编译**这一面
+- [ ] **Windows 上的会话回收仍是空的**（plan 0108 留下的缺口）：POSIX 的会话 / 进程组在 Windows 上
+      不存在，等价物是 Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`：句柄一关，作业里的进程
+      全部结束），它还能替掉伴生看门狗在那条平台上的路径。本机没有 Windows 主机 —— 连"现在的行为
+      是什么样"（ConPTY 关闭时到底带走多少进程）都观测不到。展开时机是有 Windows 主机可执行 E2E 时；
+      届时先写 ADR（进程模型，与 ADR-0005 同源）
+- [~] **plan 0102（CI 平台矩阵）**：本地部分完成；**Windows 那一格原先必红**（问题 #149），
+      编译面已由 plan 0108 处置。最终判据 = 推送后三个 job 全部通过，仍阻塞于仓库无 remote
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：本地已实测，剩余 CI 三平台格子
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
 
@@ -1146,15 +1167,16 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
      时延要按"段各自计时"实现，写成"读一段、睡一段、写一段"的循环会让链路自己变成一个
      串行瓶颈，于是并发发出去的请求**在链路里排队**，"并发更快"在上限 2、4 上几乎量不出来。
     教训：**测量装置本身要先被怀疑一次** —— 判据给出反直觉的数字时，先问"这个数是不是装置造出来的"。
-149. **`akasha-pty` 用了 Windows 上不存在的 `rustix::process`，且没有 `cfg` 守卫**：
-     上游把 `rustix::process` 限定在 `#[cfg(not(windows))]`，而 `teardown.rs` / `watchdog.rs`
-     直接用它的 `Pid` / `Signal` / `kill_process` / `setsid` —— 于是 **Windows 目标编译不过**：
-     `cargo check --target x86_64-pc-windows-msvc` 在 `akasha-pty` 就红（3 个 E0432 / E0433）。
-     它长期没暴露的原因是 CI 的 Windows 那一格（`checks-other`）到现在还没有真正执行过
-     （状态见「待验证」里的 plan 0102）。修它不是补一个 `cfg` 那么简单：Windows 上"回收整个会话"
-     没有 POSIX 进程组语义（要走 Job Object），而 `watchdog`（ADR-0005）的管道 EOF 机制本身也是
-     Unix 形状 —— 这是计划级的活。⚠️ 因此阶段 8 那条判据在本机只能用依赖图核对，
-     原生编译证据要等这个问题修好。
+149. **`akasha-pty` 曾用 Windows 上不存在的 `rustix::process`，且没有 `cfg` 守卫**
+     （**编译面已处置**，plan 0108，2026-09-15）：上游把 `rustix::process` 限定在
+     `#[cfg(not(windows))]`，而 `teardown.rs` / `watchdog.rs` 直接用它的 `Pid` / `Signal` /
+     `kill_process` / `setsid` —— 于是 Windows 目标编译不过（`cargo check --target
+     x86_64-pc-windows-msvc` 在 `akasha-pty` 就红，3 个 E0432 / E0433）。它长期没暴露的原因是
+     CI 的 Windows 那一格（`checks-other`）到现在还没有真正执行过（状态见「待验证」里的 plan 0102）。
+     **现在的边界**：编译不再是障碍，但 Windows 上"回收整个会话"**仍然是空的**（`kill_session`
+     返回 0，`Child::kill()` 只收得走 shell 自身）—— 等价物是 Job Object，它要一台 Windows 主机
+     才能验收，那条缺口记在「进行中 / 下一步」。⚠️ 阶段 8 那条判据（Windows / macOS 的原生编译）
+     在本机仍然只有依赖图核对与不带 C 构建脚本的成员，完整证据在 CI 的 Windows 格子。
 150. **枚举出来的端口不保证能打开**（plan 0802 实测）：本机（libudev 那套）列出 32 条
      `/dev/ttyS0`…`/dev/ttyS31`，而 `/dev` 下**一个都没有** —— 上游按 udev 设备给 devnode，
      不检查那个节点在 `/dev` 下是否存在；它那句"打不开就跳过"的过滤

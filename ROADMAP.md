@@ -49,6 +49,9 @@
 - [~] **E2E 入口可实际运行**：`just test-e2e` 自包含（启动 app → 运行全部 E2E 目标 → 收尾）
       验收：没有 app 在运行时它也退出码 0；新增的 E2E 目标不接入即失败；CI 三平台待实际运行
       → [plan 0107](./docs/plans/0107-e2e-entry.md)
+- [ ] **Windows 目标的类型检查真的通过**（修问题 #149：`akasha-pty` 用了 Windows 上没有的 `rustix::process`）
+      验收：Windows 目标上的类型检查退出码 0（本地只能核对不依赖 C 工具链的三个成员，其余交给 CI）
+      → [plan 0108](./docs/plans/0108-windows-type-check.md)
 - [x] `src-tauri/crates/akasha-core` 骨架：**`Session` 模型**（**必须先于任何后端**）
       验收：单测覆盖 `SessionId` 分配、关闭一个 `Session` 不影响另一个
       → [plan 0103](./docs/plans/archive/0103-core-session-model.md)

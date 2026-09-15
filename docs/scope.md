@@ -590,7 +590,7 @@ OSS 变体**。许可证结论**不变**（专有变体仍然不打包、也不�
 | 平台 | v1 | 备注 |
 |---|---|---|
 | Linux | ✅ | 开发主机；托盘需 `libayatana-appindicator3` |
-| Windows | ✅ | 需验证 ConPTY 与托盘 |
+| Windows | ✅ | 需验证 ConPTY 与托盘；类型检查能在本机核对到哪一层，见下面的「交叉编译现实」 |
 | macOS | ✅ | 交叉编译**不可能**，只能 macOS runner / 真机；数据目录在 `.app` **旁边** |
 | Android | `later` | 只留 trait 边界，见 §2。托盘与端口转发的形态未评估 |
 
@@ -602,14 +602,14 @@ PTY/serial/ssh 的平台差异是**主体工作量**，把它留到最后等于�
 | 目标 | Linux 上 `cargo check --target` | Linux 上出包 | 手段 |
 |---|---|---|---|
 | Linux | ✅ 原生 | ✅ | — |
-| Windows | ✅（`check` 不链接，只需 `rustup target add`） | ❌ | CI `windows-latest` |
+| Windows | **部分**：不带 C 构建脚本的成员（core / pty / serial）本机就能核对；带 vendored OpenSSL 与 `ring` 的四个成员在 check 阶段就失败 | ❌ | CI `windows-latest` |
 | macOS | ✅ | ❌ | CI `macos-latest`（需 macOS SDK + 许可） |
 | Android | ✅ | ✅ | `cargo-ndk` + NDK + `tauri android` |
 
-> 因此 **`cargo-xwin` 不是当前需要的工具**：`cargo check --target` 已覆盖"挡 cfg 错误"
-> 这个 90% 的诉求。只有当某个依赖的 C build script 在 check 阶段就失败时才引入它
-> （它解决的是**链接**问题，救不了 Tauri 的 Windows 打包——WiX/NSIS/WebView2 bootstrapper
-> 都要求 Windows 主机）。
+> **`cargo-xwin` 仍不引入**（2026-09-15 由 plan 0108 复核过这个判据）：它要下载一套 MSVC
+> 头文件与库，而 core / pty / serial 三个成员的 `check` 本机就能做。四个带 C 构建脚本的成员
+> 留给 CI 的 `windows-latest` —— 本机核对它们不是当前的瓶颈。
+> ⚠️ 出包（WiX / NSIS / WebView2 bootstrapper）无论用不用 `cargo-xwin` 都要求 Windows 主机。
 
 ---
 
