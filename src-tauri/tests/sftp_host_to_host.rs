@@ -288,6 +288,16 @@ async fn two_hosts_go_through_the_tunnel_and_fall_back_to_the_relay() {
         !failure.is_empty(),
         "回退必须留下原因（否则用户看不出原本想走直通）：{right}"
     );
+    // 界面要跟上来再读：上面那句判据读的是**后端**（探针），而面板是在命令返回之后
+    // 才刷新两侧状态的 —— 直接读会读到还没渲染的那一帧（这一条实测偶发红过一次）。
+    wait_js(
+        &mut client,
+        "(() => { const el = document.querySelector('.sftp-pane[data-side=\"right\"] .sftp-detour'); \
+         return !!el && el.dataset.sftpDetour !== ''; })()",
+        10_000,
+        "界面上出现回退原因",
+    )
+    .await;
     let shown = text_of(&mut client, ".sftp-pane[data-side=\"right\"] .sftp-detour").await;
     assert!(
         shown.contains(&failure),
