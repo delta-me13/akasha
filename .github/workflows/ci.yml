@@ -10,8 +10,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # 手动触发：重新验证某一次提交，或者在一次运行被取消之后重来（不必为触发它而加一个空提交）。
+  workflow_dispatch:
 
 # 同一分支只保留最新一次运行；main 除外 —— 合并后的结论不应被取代。
+#
+# ⚠️ 因此 main 上的新运行是**排队**等待，不是立刻开始：前一次还没结束，它的状态就一直是
+# `pending`（看起来像卡住）。一个组里最多留一个排队中的运行；取消正在跑的那次时，紧随其后的
+# 排队运行会一起消失（实测两次运行同时变成 `cancelled`）。
+# 各 job 的典型耗时（冷缓存）见 `docs/just.md` §8 —— 最慢的是 Windows 的 E2E（先做一次
+# 十几分钟的全量构建，再逐个跑目标）。
 concurrency:
   group: ${{ format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
