@@ -189,7 +189,10 @@ test-e2e:
         sleep 1; \
       done; \
       if [ -z "$app_pid" ]; then \
-        echo "❌ app 没起来（日志：$1）"; tail -n 20 "$1"; exit 1; \
+        echo "❌ app 没起来（日志：$1）"; \
+        if [ -s "$1" ]; then tail -n 20 "$1"; else echo "（日志是空的：那个进程一个字节都没写就结束了 —— Windows 上第一次读到的就是这个形状，见问题 #162）"; fi; \
+        pid_alive "$cargo_pid" && echo "（cargo 进程还在：app 只是没有登记到 discovery 目录）"; \
+        exit 1; \
       fi; \
     }; \
     stop_app() { \
