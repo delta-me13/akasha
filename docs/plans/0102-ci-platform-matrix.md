@@ -184,5 +184,10 @@ Strawberry Perl（`checks-other` 与 `e2e` 共用，写进 `GITHUB_ENV` 之前�
 按 `cfg(unix)` 分两条实现（#160）、三条串口 E2E 在非 Linux 平台上按 `fake_serial_skip_reason`
 **显式跳过**（#158）、justfile 里 `$变量` 紧邻全角标点的 7 处改成花括号形式（#159）。
 
-仍只能在 runner 上读的：第四次运行的三格结论；缓存是否真的命中；E2E 在三平台各自能否走完。
+**第三次之后的两件事**（都不在三个 job 的"通过"判据里，但决定了这条链好不好用）：Windows 的
+E2E 格子没能把 app 起来（那格的日志一个字节都没有，问题 #162）；`main` 上的新运行是**排队**，
+前一次不结束就一直 `pending`（问题 #161，处置是 `workflow_dispatch` 与 `docs/just.md` §8 的
+耗时表）。
+
+仍只能在 runner 上读的：下一次运行的三格结论；缓存是否真的命中；E2E 在三平台各自能否走完。
 阶段 0 的「CI 通过」条目（`ROADMAP.md` 里标 `[~]`）依赖的是同一条结论。

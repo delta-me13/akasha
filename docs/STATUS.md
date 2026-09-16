@@ -55,6 +55,11 @@ CI 的 `checks-other` 执行的就是 `cargo check --workspace --all-targets`，
 `cfg` 错误**（测试脚手架用了 `portable-pty` 的 Unix 专有 `tty_name`，问题 #160），macOS 的 E2E 红在
 三条串口目标（PTY 从端在 macOS 上打不开）以及它的两处连带效应（问题 #158 / #159）。前两轮的红因
 （#154 sccache、#155 `libudev-dev`、#156 msys perl、#157 缓存工作区）都已处置并在这次运行里验证。
+
+**"看起来像卡住"是两件事，都不是缺陷**（本会话实测）：第三次运行里 Windows 的 E2E 格子执行了
+**32 分钟**（前 14 分钟是全量构建）且 app 没能起来 —— 它确实是一个待查的问题（#162），
+而紧随其后的那次运行一直停在 `pending`，那是 `main` 上的**排队**语义（#161），不是卡住。
+两条的判据与处置（`workflow_dispatch`、配方里"日志是空的"会明说、典型耗时表）分别是 #161 / #162。
 ⚠️ 推送之后本机已能读 Actions（`git credential fill` 可用），结论不再只能从网页看。
 
 **文档门禁改为非快速失败**（本会话）：`just docs-check` 原先把 `just docs-style` 作为独立一行调用，
@@ -380,6 +385,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 |---|---|
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
 | ↑ **CI 第三次运行的实际读数**（run `34989700283` @ `b7f6a62`） | **Linux 的 `just ready` 通过**（门禁六步全绿）、**E2E（ubuntu-latest）通过**、**检查（macos-latest）通过**；`检查（windows-latest）` 红在类型检查：`error[E0599]: no method named tty_name`（`tests/support/mod.rs`，问题 #160）；`E2E（macos-latest）` 红在三条串口目标（`串口打不开：/dev/ttys000（Not a typewriter）`）与连带的 `bw_import`，收尾时 bash 报 `unbound variable` 把退出码换成 **127**（问题 #158 / #159）；第五个 job（`E2E（windows-latest）`）在本机读到时仍在运行。⚠️ 这次运行里 `RUSTC_WRAPPER` 为空、编译真的开始 —— #154 的处置得到验证 |
+| ↑ **第三次运行验证了其中三处处置** | `RUSTC_WRAPPER` 为空且编译真的开始（#154）；Windows 走到了编译测试目标这一步、`openssl-sys` 的 vendored OpenSSL 已构建完（#156）；Linux 日志里 `could not find Cargo.toml` 的计数为 **0**、缓存键由 workspace 元数据给出（#157）。**E2E（ubuntu-latest）**：28 个目标全部执行完，`test result: ok` **29 条**、失败 **0 条**（唯一一处跳过是运行器不提供 `WEBGL_lose_context`，用例自己写明了原因）—— CI 上的 E2E 第一次完整执行 |
 | ↑ **CI 第二次运行的实际读数**（run `34987984477` @ `9081ac9`） | **macOS 那一格通过**（全部步骤绿，平台类型检查第一次有结论）；Linux 红在 `just ready` → `lint` → `clippy`、Windows 红在 `just check`：报错分别是 `libudev-sys` 的构建脚本找不到 `libudev.pc`（问题 #155）与 `openssl-sys` 的 vendored OpenSSL 配置失败（问题 #156）；`e2e` 仍为 `skipped`。日志里 `env:` 段落显示 `RUSTC_WRAPPER` 为空，编译确实开始 —— 空值这条处置有效。三处修正见 plan 0102 的「两次运行」 |
 | ↑ **CI 首次运行的实际读数**（run `34972060468` @ `24d4f72`；清理后的 workflow 再次运行 `34986599520` @ `31a4d7c` 同因） | 三个 job **全部失败于同一步**：Linux 的 `just ready`（红在 `lint` → `clippy`）、Windows 与 macOS 的 `just check`。三处报错逐字相同：`could not execute process` + `sccache <rustc> -vV` + `(never executed)`，以及 `No such file or directory (os error 2)`。**其余步骤全部成功**：checkout、系统依赖、`rust-toolchain`、`rust-cache`（首次 `No cache found`）、`install-action`（`just 1.58.0` 校验通过）、`npm install -g @ast-grep/cli@0.45.3`。`e2e` 状态为 **`skipped`**（`needs: checks-linux`），三平台 E2E 至今没有读数 |
 | `just test` | **473 tests run: 473 passed**（`akasha` **98** + `akasha-bw` **56** + `akasha-core` 30 + `akasha-pty` **40** + `akasha-serial` **25** + `akasha-ssh` **88** + `akasha-store` 136）。⚠️ `akasha` 的 91 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回；目标与用例数见下面那条 `just test-e2e` 与 `src-tauri/justfile` 的 `E2E_TARGETS`） |
@@ -778,10 +784,11 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       届时先写 ADR（进程模型，与 ADR-0005 同源）
 - [~] **plan 0102（CI 平台矩阵）**：三次运行把红灯逐层换成了真实缺陷（#154 → #155 / #156 / #157
       → #158 / #159 / #160），每一处都已处置。现状：**Linux 的完整门禁与 Linux 的 E2E 通过**，
-      macOS 的类型检查通过；Windows 的类型检查与 macOS 的 E2E 待下一次运行验证
+      macOS 的类型检查通过；Windows 的类型检查与 macOS 的 E2E 待下一次运行验证，
+      Windows 的 E2E 另有一个待查的问题（#162：app 起不来）
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：CI 上三个平台都真的执行起来了 ——
-      ubuntu 格通过（xvfb 下的原生窗口句柄路径第一次走通），macOS 格与 Windows 格的结论见
-      plan 0102 的「三次运行」
+      ubuntu 格**通过**（28 个目标全部执行完，xvfb 下的原生窗口句柄路径第一次走通），macOS 格的三处
+      修正待验证，Windows 格卡在"app 起不来"（#162）
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
 
 ### 各轮（已完成，plan 0603–1103）
@@ -1265,3 +1272,18 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
      它与问题 #149 同类（平台专有 API 漏了 `cfg`），只是这一处落在**测试**里，而 `akasha` 带 C 依赖、
      本机无法为 Windows 目标构建 ⇒ 只有 CI 的 Windows 格子能给出读数。处置：`slave_device_name`
      按 `cfg(unix)` 分两条实现，三条串口 E2E 在非 Linux 平台上按 `fake_serial_skip_reason` 显式跳过。
+161. **`main` 上的运行是排队等待，看起来像"卡住"**（本会话实测）：`concurrency` 的规则是
+     "同一分支只保留最新一次运行，`main` 除外" —— 于是前一次还没结束时，后一次的状态**一直是**
+     `pending`；一个分组里最多留一个排队中的运行，**取消正在执行的那次会把排在它后面的那次一起
+     结束**（实测两次运行同时变成 `cancelled`）。教训：先分清"等待"与"卡住" —— 判据是
+     `pending` 且前一次仍在 `in_progress`、以及各 job 的典型耗时，而不是运行时长本身。
+     处置：workflow 补 `workflow_dispatch`（重新验证某次提交不必加空提交）、排队语义与耗时表
+     写进 `docs/just.md` §8。
+162. **Windows 上 `just test-e2e` 起不来 app，而那份 app 日志是空的**（CI 第三次运行，第一次读数）：
+     那格在 **13 分 38 秒**的构建之后执行到"起 app"，120 秒内没有任何 app 登记进 discovery 目录，
+     配方于是报 `❌ app 没起来`，而它 `tail` 的那份日志**一个字节都没有**；随后那一次运行被手动
+     停止（收尾处的退出码记成 `0xC000013A`，那是控制台被中断的形状，不是 app 自己的退出码）。
+     ⚠️ **没有定位**：本机没有 Windows 主机，"进程有没有起来、走到哪里才没有的"都观测不到。
+     下一轮要抓的三样证据已经写进配方（日志为空时会明说、cargo 进程还在时会明说）：`cargo run`
+     自己的退出码、`tasklist` 里有没有 `akasha.exe`、discovery 目录有没有出现过。
+     在那之前 Windows 的 E2E 格子仍然是红的。
