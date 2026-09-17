@@ -47,6 +47,52 @@ dev:
 dev-web:
     pnpm dev
 
+# ── AGENT 执行器（沙箱受限时的唯一出口；见 docs/agent-runner.md）──────────────
+#
+# workspace-write 沙箱禁写 pty 设备（/dev/ptmx）与 ~/.cargo，于是 just dev / just test
+# 只会拿到 openpty 的权限错误。下列配方把命令交给一个**能力表由工作区外文件决定**的执行器：
+# 动作表只来自 policy.json（工作区与 /tmp 之外，两处都受沙箱可写，放进去等于把能力表交给
+# 被约束方），请求只能携带动作名，不经过 /bin/sh，脚本哈希与 policy 登记值不符即拒绝启动。
+# 生成样板：just runner-policy（复制到 ~/.akasha-agent-runner/policy.json）。
+# 驱动分两种：runner-run 阻塞到结束；runner-submit 立刻拿到 id，再用 runner-wait 阻塞等待
+# （等待由内核唤醒，不是轮询文件系统）或用 runner-result 看一眼。
+
+# 生成 policy 样板（含当前脚本哈希），并刷新 docs 下的样板
+runner-policy:
+    @/usr/bin/python3 scripts/agent-runner.py --print-policy --out docs/agent-runner.policy.json
+
+# 状态与授权清单（校验 policy 与脚本哈希；不需要提权）
+runner-status:
+    @/usr/bin/python3 scripts/agent-runner.py --status
+
+# 常驻启动：整套机制里**唯一**的提权点（沙箱内会失败于 openpty，即为提权依据）
+runner-start:
+    /usr/bin/python3 scripts/agent-runner.py --serve
+
+# 停止执行器并回收它名下的全部进程组（缩权，不需要提权）
+runner-stop:
+    @/usr/bin/python3 scripts/agent-runner.py --stop
+
+# 只回收 dev（app），保留执行器
+runner-stop-dev:
+    @/usr/bin/python3 scripts/agent-runner.py --stop-dev
+
+# 提交动作并阻塞到结束；退出码 = 动作退出码（默认最多等 540s，低于 DSH 前台调用上限 600s）
+runner-run action timeout="540":
+    @/usr/bin/python3 scripts/agent-runner.py --run "{{action}}" --timeout "{{timeout}}"
+
+# 只提交动作，立刻打印 request=<id>（先做别的，回头再等）
+runner-submit action:
+    @/usr/bin/python3 scripts/agent-runner.py --submit "{{action}}"
+
+# 阻塞等待某请求结束（已结束则立即返回；可重复等待，结果不会丢）
+runner-wait id timeout="540":
+    @/usr/bin/python3 scripts/agent-runner.py --wait "{{id}}" --timeout "{{timeout}}"
+
+# 非阻塞读某请求的结果（未结束打印 running，退出码 4）
+runner-result id:
+    @/usr/bin/python3 scripts/agent-runner.py --result "{{id}}"
+
 # ── crate 级命令（转发到 src-tauri/justfile）─────────────────────────────────
 
 # 类型检查（含 tests / benches）

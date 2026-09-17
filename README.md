@@ -17,6 +17,7 @@ SSH 端口转发（本地 / 远程 / 动态）、凭据池与系统托盘（窗�
 | 某项决定的依据 | [`docs/adr/`](./docs/adr/) |
 | 某个工作项怎么做 | [`docs/plans/`](./docs/plans/) |
 | 命令清单、工作流与排错 | [`docs/just.md`](./docs/just.md) |
+| 受限沙箱下的构建与运行 | [`docs/agent-runner.md`](./docs/agent-runner.md) |
 | 文档索引与文档纪律 | [`docs/README.md`](./docs/README.md) |
 
 ## 技术栈
@@ -34,6 +35,7 @@ SSH 端口转发（本地 / 远程 / 动态）、凭据池与系统托盘（窗�
 | `src/` | 前端源码（React 19 + Vite） |
 | `src-tauri/` | Rust workspace 根（`src-tauri/Cargo.toml`）：命令、事件与状态注入 |
 | `src-tauri/crates/` | 不依赖 Tauri 的 crate：`akasha-pty` / `akasha-core` / `akasha-ssh` / `akasha-store` / `akasha-serial` / `akasha-bw` |
+| `scripts/` | 开发脚本与结构护栏：`agent-runner.py`、ast-grep 规则与测例 |
 | `docs/` | 规范、决策（ADR）、计划与状态 |
 | `.github/workflows/ci.yml` | 唯一的 CI 工作流 |
 
@@ -47,6 +49,7 @@ crate 级命令经 `just` 执行，两个 justfile 的分工见 [`docs/just.md`]
 | 系统库 | webkit2gtk-4.1 等；`just syscheck` 校验 |
 | 全局 CLI 工具 | 版本固定在 [`mise.toml`](./mise.toml)，`just tools` 一次装齐 |
 | Rust 工具链 | rustup 的 `stable` |
+| Agent 协作（可选） | 沙箱禁止 pty 设备与 `~/.cargo` 的写，`just dev` / `just test` 会失败；先按 [`docs/agent-runner.md`](./docs/agent-runner.md) 配置 policy 文件 |
 
 ## 常用命令
 
@@ -57,5 +60,6 @@ crate 级命令经 `just` 执行，两个 justfile 的分工见 [`docs/just.md`]
 | `just check` / `just test` | 类型检查 / 单元测试（workspace 全成员） |
 | `just watch` | bacon 秒级反馈循环，不启动 app |
 | `just doctor` | 校验 Victauri 连接的是本应用，而非其它实例 |
+| `just runner-status` / `just runner-start` | 沙箱受限时的出口：前者看授权清单，后者常驻启动（先配置 policy） |
 
 全部配方的权威清单见 [`docs/just.md`](./docs/just.md) §2。

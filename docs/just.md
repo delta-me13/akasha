@@ -54,6 +54,16 @@
 | `just docs-style` | 文档语体：剥离代码块与行内代码后匹配禁用语表（第二人称、语气词、口语虚词、比喻与纯口语动词）。表在 [`style.md`](./style.md)，由 `just docs-check` 第一步调用（规则见 `AGENTS.md` §8.2）。**非快速失败**：逐份文档各查一遍，全部查完才汇总报错 —— 单份文档命中超过 20 条时列出前 20 条并写明剩余条数 | 根 |
 | `just docs-check` | 文档纪律：① 文档语体（调用 `just docs-style`）② 命令未漂移 ③ ROADMAP 没长细节（每条 ≤3 行、无代码块、无命令调用）④ plan 预算（≤200 行）+ 索引一致 + 骨架不许开工。四部分**每轮全部执行**：第一类失败不终止其余三类，一轮给出全部待修项 | 根 |
 
+| `just runner-policy` | 生成 Agent 执行器的 policy 样板（含当前脚本哈希），并刷新 `docs/agent-runner.policy.json` | 根 |
+| `just runner-status` | 执行器的授权清单、在飞请求与 dev 状态（校验 policy 与脚本哈希，不需要提权） | 根 |
+| `just runner-start` | 常驻启动执行器：沙箱受限时的**唯一提权点**（沙箱内失败于 openpty 即为提权依据，见 [`agent-runner.md`](./agent-runner.md)） | 根 |
+| `just runner-stop` | 停止执行器并回收它名下的全部进程组（缩权，不需要提权） | 根 |
+| `just runner-stop-dev` | 只回收 dev（app），保留执行器 | 根 |
+| `just runner-run` | 提交动作并**阻塞**到结束；退出码 = 动作退出码（默认最多等 540s，低于 DSH 前台调用上限 600s）—— AI 的默认入口 | 根 |
+| `just runner-submit` | 只提交动作，立刻打印 `request=<id>`：异步路径的第一步 | 根 |
+| `just runner-wait` | **阻塞**等待某个 `request=<id>` 结束；已结束则立即返回，可重复等待。等待由 FIFO + `select` 唤醒，不是轮询 | 根 |
+| `just runner-result` | 非阻塞读某个 `request=<id>` 的结果（未结束退出码 4；已结束的退出码与 `runner-wait` 一致） | 根 |
+
 > 裸 `just`（不带配方名）命中的是 `default`：它只输出 `just --list`，因此**不上表**，
 > `docs-check` 的正向检查也据此跳过它。除它以外，**每个配方都必须有上面这一行**。
 
