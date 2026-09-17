@@ -8,8 +8,16 @@
 //! ⚠️ 只覆盖 Unix：Windows 上没有"把一个 tty 设备名当串口打开"的等价物
 //! （`portable-pty` 在 Windows 上走 ConPTY，没有设备名）。那条路交给 CI 的三平台
 //! `just check`（类型检查）与真机。
+//!
+//! ⚠️ **Linux only，macOS 排除在外**：macOS 上 `open` 这一步就失败 ——
+//! `Open { path: "/dev/ttys003", source: "Not a typewriter" }`。原因是上游 `serialport`
+//! 在 Apple 目标上用 `IOSSIOSPEED` 设波特率，而它对 pty 返回 `ENOTTY`
+//! （`serialport-4.10.1/src/posix/termios.rs` 自己写着这一条）。于是"把 PTY 从端当串口"
+//! 这套脚手架在 macOS 上不成立 —— 被验的代码没有机会执行，留一条永远红的用例没有意义。
+//! 真串口设备不受影响（它们接受这个 ioctl）；参数映射在 macOS 上仍由 `settings.rs`
+//! 的映射单测守着。
 
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 use std::io::{Read, Write};
 use std::sync::mpsc;

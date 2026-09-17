@@ -377,7 +377,11 @@ mod tests {
     /// 于是这条会话永远不结束。上游为什么是 `Err`：`serialport` 的 POSIX 读端先 `poll`，
     /// 见到 `POLLHUP` / `POLLNVAL` 报 `BrokenPipe`，否则报 `Other(EIO)` —— 真设备被拔掉
     /// （EIO 那一支）与这里走的是同一个判定。
-    #[cfg(unix)]
+    ///
+    /// ⚠️ **只在 Linux 上**：这条脚手架把 PTY 从端当串口打开，而 macOS 走不到断言 ——
+    /// `open` 就报 `Not a typewriter`（上游对 pty 设波特率用 `IOSSIOSPEED`，返回 `ENOTTY`，
+    /// 见同文件里 `a_pseudo_terminal_…` 的说明）。真设备不受影响。
+    #[cfg(target_os = "linux")]
     #[test]
     fn an_unplugged_device_says_why_the_stream_ended() {
         let pair = portable_pty::native_pty_system()
@@ -463,7 +467,14 @@ mod tests {
     }
 
     /// 真 tty 上的回读：内核留得住的那几项必须等于请求值。
-    #[cfg(unix)]
+    ///
+    /// ⚠️ **只在 Linux 上**：macOS 上根本走不到断言 —— `open` 就失败（`Not a typewriter`）。
+    /// 原因是上游 `serialport` 在 Apple 目标上**用 `IOSSIOSPEED` 设波特率**，而它对 pty 返回
+    /// `ENOTTY`（`serialport-4.10.1/src/posix/termios.rs` 自己写着这一条：attempting to set the
+    /// baud rate on a pseudo terminal via this ioctl call will fail with the ENOTTY error），
+    /// 于是"把 PTY 从端当串口"这条脚手架在 macOS 上不成立。真串口设备不受影响（它们接受这个
+    /// ioctl）。可移植的判据仍由映射的全量单测（`settings.rs` 的 `TryFrom`）守着。
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_pseudo_terminal_reports_the_parameters_it_can_hold() {
         // ⚠️ 这里**只**断言波特率 / 停止位 / 流控。数据位与校验位在 PTY 上会被归一化
