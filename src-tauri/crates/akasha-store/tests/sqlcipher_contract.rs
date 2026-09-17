@@ -345,8 +345,9 @@ fn open_restricts_file_to_owner() {
     let dir = fixture_dir("permissions");
 
     // 先看 SQLite **自己**建出来是什么权限（不经 `open`）：这决定了 0600 是不是白做的。
-    // 实测 644（umask 022）—— 也就是说"库里是私钥、文件却世界可读"是默认行为，
-    // D12 那条不是装饰。⚠️ 这里必须用**另一个文件**：拿明文库去喂 `open` 只会得到 NotADatabase。
+    // Linux 实测 644（umask 022）—— 也就是说"库里是私钥、文件却世界可读"是默认行为，
+    // D12 那条不是装饰；macOS 实测 600（默认就已经是收紧的，见下面的 cfg）。
+    // ⚠️ 这里必须用**另一个文件**：拿明文库去喂 `open` 只会得到 NotADatabase。
     let unhardened = dir.join("sqlite-default.db");
     let raw = Connection::open(&unhardened).unwrap();
     raw.execute_batch("CREATE TABLE t(x);").unwrap();
@@ -359,6 +360,10 @@ fn open_restricts_file_to_owner() {
     let hardened = fs::metadata(&db).unwrap().permissions().mode() & 0o777;
     println!("经 create() 之后的权限 = {hardened:o}");
     assert_eq!(hardened, 0o600, "D12：库文件应当是 0600");
+    // ⚠️ "SQLite 自己建出来的不是 0600"这条**只在 Linux 上成立**：macOS 上 SQLite 建库
+    // 就是 0600（本机实测，两个读数都是 600），那里没有"前后对比"可用 —— 判据退化成上面
+    // 那条直接断言。Linux 上这条对比必须保住：它证明 0600 是**我们**做的，不是 SQLite 的默认。
+    #[cfg(target_os = "linux")]
     assert_ne!(
         default_mode, 0o600,
         "若 SQLite 本来就给 0600，这条断言就失去意义 —— 该重新论证 D12"
