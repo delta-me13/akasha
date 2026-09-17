@@ -189,6 +189,29 @@ fn kill_group(leader: u32) -> usize {
     usize::from(rustix::process::kill_process_group(pid, Signal::KILL).is_ok())
 }
 
+/// 解析器那一层的用例**不跟 `unix` 门控** —— 它是纯函数，哪个平台都跑得起来。两条理由：
+///
+/// 1. `parse_pid_list` 在 **Windows 的测试目标**里也会被编译（它的 cfg 里有 `test`），
+///    而唯一的调用点是本模块下面那个 `cfg(all(test, unix))` 的用例模块 —— 用例跟着
+///    `unix` 门控的话，Windows 上留下的是一个"编译了却没人用"的私有函数（`dead_code`）。
+/// 2. CI 的**完整门禁只在 Linux 上执行**：用例跟着 `not(target_os = "linux")` 门控，
+///    等于把它放到门禁之外（`AGENTS.md` §7 那条"位于门禁之外、因而无人执行"）。
+#[cfg(test)]
+mod pid_list_tests {
+    use super::parse_pid_list;
+
+    /// `ps -Ao pid=` 那一列：能解析的留下，表头与畸形行跳过。
+    ///
+    /// 非 Linux 的 unix 上这里是**唯一**的解析点，所以正例与反例一起钉住：不带 `=` 时
+    /// 出现的表头行、空行、带别的内容的行都必须被跳过。
+    #[test]
+    fn the_pid_list_keeps_what_it_can_parse() {
+        let table = "  PID\n  100\n  101\n\n  oops\n  300\n  1 x\n";
+        assert_eq!(parse_pid_list(table), vec![100, 101, 300]);
+        assert!(parse_pid_list("").is_empty(), "空输出不是 pid 列表");
+    }
+}
+
 // 真实 PTY 的用例只在 unix 上跑；Windows 没有会话这个概念，等有 Job Object 时再补。
 #[cfg(all(test, unix))]
 mod tests {
@@ -210,17 +233,6 @@ mod tests {
     /// "路径不存在"而失败 —— 失败的并不是被验的行为。
     fn still_alive(pid: u32) -> bool {
         Pid::from_raw(pid as i32).is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
-    }
-
-    /// `ps -Ao pid=` 那一列：能解析的留下，表头与畸形行跳过。
-    ///
-    /// 非 Linux 的 unix 上这里是**唯一**的解析点，所以正例与反例一起钉住：不带 `=` 时
-    /// 出现的表头行、空行、带别的内容的行都必须被跳过。
-    #[test]
-    fn the_pid_list_keeps_what_it_can_parse() {
-        let table = "  PID\n  100\n  101\n\n  oops\n  300\n  1 x\n";
-        assert_eq!(parse_pid_list(table), vec![100, 101, 300]);
-        assert!(parse_pid_list("").is_empty(), "空输出不是 pid 列表");
     }
 
     /// 这套枚举在真机器上端到端跑一次：pid 列表看得到会话首进程，`getsid` 说得出它的会话。
