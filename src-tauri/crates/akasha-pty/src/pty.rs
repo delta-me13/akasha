@@ -15,8 +15,9 @@ use crate::transport::{Capabilities, ExitStatus, TerminalSize, Transport, Transp
 /// "调用方收尾了"与"调用方忘了、被兜住了" —— 而后者正是要让它暴露的
 /// （`AGENTS.md` §3.3：drop 不能代替显式 kill + wait）。
 pub struct PtyTransport {
-    /// 留着它只为 `resize`；读写两端已从它这里取走。
-    master: Box<dyn MasterPty + Send>,
+    /// 主端。`Option` 只为 [`Transport::shutdown`] 里能**主动关掉**它 —— 关掉主端是让
+    /// 卡在退出里的子进程真正结束的条件（见那里的第 3 步）；除此之外一直是 `Some`。
+    master: Option<Box<dyn MasterPty + Send>>,
     /// 写端：`take_writer()` 只能取一次，所以是 `Option`。
     writer: Option<Box<dyn Write + Send>>,
     /// 读端：`output_stream()` 取走后为 `None`。
@@ -55,7 +56,7 @@ impl PtyTransport {
             .map_err(context_err("取 PTY 写端失败"))?;
 
         Ok(Self {
-            master,
+            master: Some(master),
             writer: Some(writer),
             reader: Some(reader),
             child,
@@ -94,7 +95,8 @@ impl Transport for PtyTransport {
     }
 
     fn resize(&mut self, size: TerminalSize) -> Result<(), TransportError> {
-        self.master
+        let master = self.master.as_ref().ok_or(TransportError::Closed)?;
+        master
             .resize(size.into())
             .map_err(context_err("调整 PTY 尺寸失败"))
     }
@@ -132,7 +134,8 @@ impl Transport for PtyTransport {
         // 2. 会话里那些**忽略 SIGHUP** 的进程（`nohup` / `trap "" HUP` / 守护化的）不会被
         //    `Child::kill()` 收走，也不会被内核的 hangup 收走 —— 只有点名 SIGKILL 才行。
         //    这正是 plan 0204 实测到的残留。
-        // 3. 这一步**不能省**：不 wait 就会留下僵尸进程。
+        // 3. **关掉主端**，再回收子进程 —— 见下面那段。
+        // 4. 这一步**不能省**：不 wait 就会留下僵尸进程。
         if let Some(pid) = self.child.process_id() {
             crate::teardown::kill_session(pid);
         }
@@ -141,6 +144,16 @@ impl Transport for PtyTransport {
         // 而那正是我们想要的结局 —— 真实结局由紧随其后的 wait() 给出。
         // 注意这不是"用 drop 兜底"：显式 wait 就在下一行。
         let _ = self.child.kill();
+
+        // ⚠️ **主端必须在 wait 之前关掉**，这不是清理动作而是**让它结束的条件**：
+        // macOS 上存在一种"卡在退出"的子进程 —— 它已经收到 SIGKILL、也确实在退出，
+        // 但退出要等终端那一路收干净；主端还开着、又没人读的时候那个等待不结束，
+        // `wait4` 跟着一起不返回（本机实测：子进程的 `ps` state 是 `?E`，也就是
+        // "正在退出"；同一份代码在 Linux 上不出现）。症状是关标签页时 `shutdown`
+        // 无限阻塞 —— 终端应用不能有这种路径。
+        self.writer.take();
+        self.reader.take();
+        self.master.take();
 
         // 收尸。
         let raw = self.child.wait()?;
@@ -187,7 +200,7 @@ fn context_err<E: fmt::Display>(context: &'static str) -> impl FnOnce(E) -> Tran
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use rustix::process::{Pid, Signal};
+    use rustix::process::Pid;
     use std::sync::mpsc::{self, RecvTimeoutError};
     use std::time::{Duration, Instant};
 
@@ -364,24 +377,9 @@ mod tests {
 
         transport.shutdown().expect("shutdown 失败");
 
-        // ⚠️ "探针必须被收掉"这条**只在 Linux 上成立**：非 Linux 的 unix 没有可移植的会话枚举
-        // （要 `proc_listpids` + `getsid`），`kill_session` 因此退化成 `killpg`，而本探针被
-        // `set -m` 放进了**自己的进程组** —— 恰好是 `killpg` 够不着的那一类。缺口与理由见
-        // `teardown` 模块的平台差异表（plan 0204）。
-        #[cfg(target_os = "linux")]
         assert!(
             appears(pid, false),
             "忽略 SIGHUP 的子进程 {pid} 必须被收掉 —— 只 kill 那个 shell 是收不走的"
         );
-
-        // 非 Linux 上"探针活下来"是已知缺口，**不是**可以用例留下的残留：这里点名 SIGKILL
-        // 收掉它，并把"收得掉"当成断言 —— 它同时证明上面那次存活是真的（探针确实还在）。
-        #[cfg(not(target_os = "linux"))]
-        {
-            if let Some(probe) = Pid::from_raw(pid as i32) {
-                let _ = rustix::process::kill_process(probe, Signal::KILL);
-            }
-            assert!(appears(pid, false), "清理探针 {pid} 失败");
-        }
     }
 }
