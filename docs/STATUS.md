@@ -4,7 +4,7 @@
 > 会话结束前必须更新 —— 下一个会话（或另一个 agent）只读这个文件 + 相关 plan 就能接手，
 > 不需要回溯对话历史。规则见 [`docs/README.md`](./README.md)。
 
-**最后更新**：2026-09-15
+**最后更新**：2026-09-17
 
 ## 摘要
 
@@ -1236,6 +1236,8 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
      `~/.cargo` 与 `./target`，**不含** sccache 自己的缓存目录 —— 那层包装在 CI 上不可能命中；
      且空值即"没有包装"（本机 cargo 1.98.1 实测：把文件里的包装器换成不存在的那个，只要
      `RUSTC_WRAPPER` 为空就照样通过，证明空值真的覆盖了配置）。
+    ⚠️ **2026-09-17 起 CI 那一侧只是兜底**：仓库里的包装器已整份删除（问题 #163），
+    因为同一个包装器在 mise 的 cwd 解析下同样让依赖编不过 —— 两处处置至此收敛到同一条口径。
 155. **Tauri 的官方依赖列表里没有 `libudev-dev`，而 `serialport` 需要它**（CI 第二次运行）：
      Linux 那一格红在 `just ready` → `lint` → `clippy`，报的是 `libudev-sys v0.1.4` 的构建脚本
      panic —— `pkg-config --libs --cflags libudev` 答 `Package 'libudev' … not found`。
@@ -1287,3 +1289,15 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
      下一轮要抓的三样证据已经写进配方（日志为空时会明说、cargo 进程还在时会明说）：`cargo run`
      自己的退出码、`tasklist` 里有没有 `akasha.exe`、discovery 目录有没有出现过。
      在那之前 Windows 的 E2E 格子仍然是红的。
+ 163. **同一个 `rustc-wrapper` 在本机 macOS 上让每一个依赖都编不过**（本会话实测，macOS 26.6.2 /
+      arm64）：`.cargo/config.toml` 把 rustc 包成 `sccache`，而本机的 sccache 由 mise 提供 ——
+      mise 的 shim 按**当前目录**解析版本，cargo 编译 registry 里的依赖时 cwd 落在
+      `~/.cargo/registry/src/<crate>-<版本>/`，那里解析不到版本，于是**每一条** rustc 调用都以
+      `mise ERROR No version is set for shim: sccache` 失败，`just dev` / `just check` / `just test`
+      一个文件都编不出来（报错读起来像编译器坏了）。**不经 cargo 也能复现**：
+      `cd ~/.cargo/registry/src/index.crates.io-*/serde_core-* && sccache --version`。
+      它与问题 #154 同因（配置里的包装器在"包装器不可用"的环境里一票否决），触发条件从
+      "没装 sccache"变成"装了、但按 cwd 解析不到"。
+      处置：**删除 `.cargo/config.toml`** —— 与 #154 里 CI 的选择（清空 `RUSTC_WRAPPER`）收敛到
+      同一个口径：包装器不再进仓库配置；需要缓存时显式 `RUSTC_WRAPPER=sccache just check`。
+      ⚠️ 沙箱里直接执行 `just dev` 另有一处环境限制（PTY 报权限不足），与本条无关；用户终端下正常。

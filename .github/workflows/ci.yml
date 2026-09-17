@@ -35,10 +35,10 @@ defaults:
 
 env:
   CARGO_TERM_COLOR: always
-  # sccache 只装在本机（mise.toml），镜像上没有它；而 .cargo/config.toml 把它写成 rustc-wrapper，
-  # 因此不清空这个变量，cargo 连探测 rustc 都会失败（首次运行的唯一红因，见问题 #154）。
-  # rust-cache 只缓存 ~/.cargo 与 target/，不含 sccache 自己的缓存目录 ⇒ 这层包装在 CI 上不可能
-  # 命中；本地仍由 .cargo/config.toml 使用它。空值 = 没有包装（cargo 语义，本机实测）。
+  # 防的是"包装器不可用 → 整个门禁编不出一个文件"这一类失败（问题 #154：镜像上没有 sccache）。
+  # 仓库里的包装器已在 2026-09-17 删除（`rustc-wrapper` 在 mise 的 cwd 解析下同样编不过依赖，
+  # 见问题 #163）；这一行保留为**兜底**：残留的全局 cargo 配置由它压住，空值即没有包装。
+  # 空值 = 没有包装（cargo 语义，本机实测）。
   RUSTC_WRAPPER: ""
   # 系统依赖列表的唯一来源。Tauri 官方 Debian/Ubuntu 列表：https://v2.tauri.app/start/prerequisites/
   # 名称须为 libayatana-appindicator3-dev；旧名 libappindicator3-dev 在 ubuntu-latest 上不存在（问题 #10）。

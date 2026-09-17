@@ -17,6 +17,10 @@
 # ── Rust CLI 工具 ────────────────────────────────────────────────────────────
 # 有 aqua 预编译配方的写裸名字即可走预编译（快）。
 just = "1.58.0"
+# ⚠️ sccache **不再**是 rustc 包装器（`.cargo/config.toml` 已删除，见 docs/STATUS.md 问题 #163）：
+# mise 的 shim 按**当前目录**解析版本，而 cargo 编译依赖时的 cwd 在 `~/.cargo/registry/src/` 下
+# ——那里解析不到版本，于是每一个依赖都编不过（报错读起来像编译器坏了）。
+# 想手动启用：`RUSTC_WRAPPER=sccache just check`（该项目目录内才有版本，整条链路要一致）。
 sccache = "0.17.0"
 
 # 没有 aqua 配方的必须显式指定 cargo 后端 → 从源码编译，首次安装较慢。
