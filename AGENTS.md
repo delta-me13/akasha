@@ -76,12 +76,13 @@
 ### ⚠️ 一类会被误判成 bug 的失败：写工作区之外被沙箱拒绝
 
 在受限环境（agent 沙箱 / 容器 / 只读家目录）里，**需要写工作区之外**的命令会失败，
-且失败信息与工具或代码故障相似。已知两例：
+且失败信息与工具或代码故障相似。已知三类：
 
 | 命令 | 症状 | 想写的路径 |
 |---|---|---|
 | `just dev` | dconf 警告后 panic：`Failed to setup app: 只读文件系统 (os error 30)`。**发生在 `cargo build` 成功之后**，容易被误判成"编译成功但无法启动" | `$HOME/.local/share/...`、`/run/user/1000/dconf` |
 | `just deny` | `failed to acquire advisory database lock: ... failed to create parent directories` | `~/.cargo/advisory-dbs` |
+| `just dev` / `just test`（macOS） | `spawn /bin/sh 失败: failed to openpty: ... PermissionDenied` —— 与登录 shell 是 zsh 还是 bash 无关 | `/dev/ptmx`（pty 设备：Seatbelt 的 `file-write*` 白名单只放行 `/dev/null` 与工作区，pty 设备从未列入） |
 
 **这些是环境权限，不是项目 bug** —— 同一份代码在完整权限下实测正常启动、正常检查
 （基线见 `docs/STATUS.md`）。
@@ -94,6 +95,17 @@
    不得只报错一次即结束，也不得换一条命令绕开。
 3. **只在提权不可用**（被拒绝 / 无人审批）时，才退到替代方案（例如 `just dev` 的
    XDG 重定向 —— 它有副作用，见 `docs/just.md` §6）。
+4. 若环境**同时**不允许修改工具链、也不允许把整个会话放宽到 `danger-full-access`，
+   用 `scripts/agent-runner.py`（`just runner-start`，一次提权）：之后由它执行
+   `just dev` / `just test`。它的能力表在工作区之外的 policy 文件里，脚本内部没有命令表 ——
+   信任模型、配置步骤与生命周期见 [`docs/agent-runner.md`](./docs/agent-runner.md)。
+   两条硬规则：
+   - **同名 MCP 优先**：MCP 工具列表里已有同名实现（`akasha-agent-runner`）时先用 MCP，
+     脚本形态是它的降级路径；两者能力一致，契约见
+     [`docs/agent-runner.md`](./docs/agent-runner.md) §7 的能力表。
+   - **等待用配方**：`just runner-run <动作>` 阻塞到结束（退出码即动作退出码）；
+     需要先做别的就 `just runner-submit <动作>` 取 `request=<id>`，之后用
+     `just runner-wait <id>` 阻塞等待。**不得自己写轮询状态文件的检测脚本**。
 
 > 只在这条命令**确实被拒之后**才申请提权，不要预先提权：无差别的提权请求会被拒绝，
 > 也会让「权限被拒」这个信号本身失去意义。
@@ -109,7 +121,7 @@
 | 纯文本、日志、配置查找 | `grep` / `glob` | 非代码场景 |
 | 运行中 app 的 DOM / IPC / 后端状态 | **Victauri MCP** | Tauri 的场景不要用 CDP/Playwright |
 | 运行中 app 的验收与回归 | `victauri-test` + `VICTAURI_E2E=1` | 见 §7 |
-| 约束执行（把"禁止"变成机器检查） | `ast-grep scan` + `.ast-grep/rules/` | 见 §6 |
+| 约束执行（把"禁止"变成机器检查） | `ast-grep scan` + `scripts/ast-grep/rules/` | 见 §6 |
 
 > `ast-grep` 在本项目有**双重身份**：既是搜索工具，也是**约束执行器**。
 > 仅将其当作搜索工具会浪费它作为约束执行器的能力。
@@ -167,7 +179,7 @@ src-tauri/src/                   # IPC 薄壳：command + Channel + 事件 + 状
   ⚠️ **`Channel<Vec<u8>>` 不是二进制通道** —— tauri 有
   `impl<T: Serialize> IpcResponse for T` 这条 blanket impl，所以它发出去的是
   "六万多个数字的 JSON 数组"，与默认 JSON IPC 属于同一条低速路径。
-  由 `.ast-grep/rules/no-string-pty-channel.yml` 强制（§6）。
+  由 `scripts/ast-grep/rules/no-string-pty-channel.yml` 强制（§6）。
 - **合批后再发**：read loop 按「≥16ms 或 ≥64KiB」聚合一次，禁止逐字节 / 逐行 emit。
 - **绝不假设 UTF-8**：字节流可以被切在任意多字节序列中间。解码只能在 VT 层做，
   且必须容忍"半个字符"；跨 IPC 只传 `&[u8]`。
@@ -233,7 +245,7 @@ src-tauri/src/                   # IPC 薄壳：command + Channel + 事件 + 状
   ⚠️ 它的防护**有明确边界**（Windows 静止只读、macOS 没有 `dd`/`wf`、`/proc/self/mem` 仍读得到），
   所以**新增一个用途就要按 ADR-0002 D13 那张判据表重验一遍**，不得只说"已使用 memsafe"。
 - `unsafe`：默认禁止；**只有 `src-tauri/crates/akasha-store/` 允许出现它**（把口令送进
-  SQLCipher 的 C API，ADR-0002 D4）—— 由 `.ast-grep/rules/no-unsafe-outside-store.yml` 强制，
+  SQLCipher 的 C API，ADR-0002 D4）—— 由 `scripts/ast-grep/rules/no-unsafe-outside-store.yml` 强制，
   放宽它等于改架构。⚠️ 上一条（机密的防护交给 `memsafe`）正是这条能守住的**前提之一**：
   没人在自己代码里手写平台 syscall。
 - **`unsafe` 的注释按 Linux 内核的 Rust 规范写**（依据：内核
@@ -313,7 +325,7 @@ src-tauri/src/                   # IPC 薄壳：command + Channel + 事件 + 状
 
 ## 6. 结构护栏（ast-grep 从"搜索"升级为"约束执行"）
 
-- 配置：根目录 `sgconfig.yml`，规则目录 `.ast-grep/rules/`。
+- 配置：根目录 `sgconfig.yml`，规则目录 `scripts/ast-grep/rules/`。
 - `just lint` 包含 `ast-grep scan`（真代码）与 `ast-grep test`（规则自己的正反例）；
   本地与 CI 均执行（CI 见 `.github/workflows/ci.yml`）。
 - **规则与它守护的代码同 PR 落地**：规则先失败、代码补齐后通过。
@@ -348,8 +360,8 @@ src-tauri/src/                   # IPC 薄壳：command + Channel + 事件 + 状
 > ⚠️ **改了规则的 `files:` / `ignores:` 之后要重新执行一次负例**（目录迁移、crate 改名都算）：
 > 路径写错的表现是"不匹配任何文件"，即**静默失效** —— `ast-grep scan` 照样退出码 0。
 
-- **规则自己的正反例是回归测试，不是一次性探针**：仓库里有 `rule-tests/`（每条规则一个
-  文件：`valid` = 不许命中、`invalid` = 必须命中；基线在 `rule-tests/__snapshots__/`），
+- **规则自己的正反例是回归测试，不是一次性探针**：仓库里有 `scripts/ast-grep/tests/`（每条规则一个
+  文件：`valid` = 不许命中、`invalid` = 必须命中；基线在 `scripts/ast-grep/tests/__snapshots__/`），
   由 `just lint` 里的 **`ast-grep test`** 执行。改了规则就跟着改测例；基线变了先确认差异是否正确，
   再用 `ast-grep test -U` 更新 —— **那份差异就是"规则行为变了"的评审点**。
   ⚠️ **它不覆盖 `files:` / `ignores:`**（测例不是真实路径下的文件），所以上面那条
@@ -514,6 +526,16 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 数据源，含「怎么加一条、怎么收窄」的步骤；本节只回答「该写成什么」。禁用语表是回归护栏，
 不替代人工判断：改动文档时按本节判断，不得只求门禁转绿。
 
+## 注释规范
+- 注释只解释 why、约束、副作用、边界条件、非显然决策，不复述代码。
+- 使用技术书面语，陈述句/祈使句，避免第一/第二人称。
+- 禁止口语词（表内的词是字面量，写进行内代码，免得被 `just docs-style` 自己读成命中）：`其实、然后、不过、的话、吧、呢、啊、啦、嘛、嗯、哦、说白了、总的来说、值得注意的是、某种程度上、感觉、觉得`。
+- 连接词仅在真实逻辑关系中使用；能删则删。
+- (TS/JS)公共 API 用 JSDoc/docstring，含 @param/@returns/@throws。
+- Rust 采用官方推荐rust docs实践。
+- TODO: `TODO(owner): 条件/原因`。
+- 不注释掉的代码，不用感叹号/省略号。
+
 ---
 
 ## 9. 提交与版本控制
@@ -565,6 +587,11 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 - **非临时脚本一律做成 just 配方**，不要在仓库里散落 `.sh`：配方是唯一被 `docs-check`
   强制登记的入口（每个配方都必须出现在 `docs/just.md` §2，且 `just --list` 里可见），
   散落的脚本不在任何门禁的检查范围内。例外只有在 CI 中执行一次的安装步骤（它们不服务于本地工作流）。
+- **所有非配方脚本一律住 `scripts/`**，不在仓库根、`src-tauri/` 或隐藏目录里新建散落脚本：
+  - 工具脚本 → `scripts/*.py`；结构护栏的规则与测例 → `scripts/ast-grep/rules/`、
+    `scripts/ast-grep/tests/`（根 `sgconfig.yml` 指向它们，见 §6）；
+  - 脚本仍然**只经配方调用**（上一条）：`scripts/` 是脚本的住处，不是命令入口；
+  - 理由：脚本散落多处时，"哪一份在运行、该改哪一份"没有单一答案，也就没有单一 review 点。
 - ⚠️ crate 级配方**必须显式带 `--workspace`**：cargo 在成员目录里**只选当前包**，
   漏了会让 `crates/*` 的 check / clippy / test **完全不被执行**，而 `just ready` 照样全部通过
   （问题 #20）。`cargo fmt --all` 是例外（`--all` 本身就指全 workspace）。
