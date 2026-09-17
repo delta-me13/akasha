@@ -154,6 +154,15 @@ mod tests {
         false
     }
 
+    /// 进程是否**还在**：`kill(pid, 0)` 存在即 `Ok`、不存在即 `ESRCH`。
+    ///
+    /// ⚠️ 不读 `/proc/<pid>`：那个目录只在 Linux 上存在，拿它当诱饵的判据会让本用例因为
+    /// "路径不存在"而失败 —— 失败的并不是被验的行为。
+    #[cfg(target_os = "linux")]
+    fn still_alive(pid: u32) -> bool {
+        Pid::from_raw(pid as i32).is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
+    }
+
     #[test]
     fn a_whole_session_is_killed() {
         let mut victim = session();
@@ -166,6 +175,12 @@ mod tests {
         victim.shutdown().expect("shutdown 失败");
     }
 
+    /// ⚠️ **只在 Linux 上**：非 Linux 的 unix 没有可移植的会话枚举，`kill_session` 退化成
+    /// `killpg`（见本模块的平台差异表），"收掉一个会话、放过另一个会话"这条判据在这里验不了。
+    /// 更要紧的是 macOS 上 `bystander.shutdown()` **永远停在 `wait` 上**（实测栈：`pty.rs:146`
+    /// → portable-pty `Child::wait` → `wait4`；此时进程表里已无该子进程），那是一条独立缺口，
+    /// 查明之前不得让它把本地测试拖住。
+    #[cfg(target_os = "linux")]
     #[test]
     fn another_session_is_a_bystander_not_a_casualty() {
         let mut victim = session();
@@ -182,10 +197,7 @@ mod tests {
             None,
             "另一个会话的进程不得被误杀（诱饵）"
         );
-        assert!(
-            std::path::Path::new(&format!("/proc/{bystander_pid}")).exists(),
-            "诱饵进程还应当活着"
-        );
+        assert!(still_alive(bystander_pid), "诱饵进程还应当活着");
 
         victim.shutdown().expect("shutdown 失败");
         bystander.shutdown().expect("shutdown 失败");

@@ -31,6 +31,10 @@ use victauri_test::VictauriClient;
 ///
 /// 数"有几个 app 实例"时必须把它排除掉：看门狗**就是同一个可执行文件**再跑一次
 /// （plan 0205），按可执行文件数会把它一起数进去。
+///
+/// 唯一的用处是 `app_instances()`，而那个函数读 `/proc`、只在 Linux 上存在 ——
+/// 常量跟着它门控，否则 macOS 上会多一条"未使用的常量"，而 `just clippy` 带 `-D warnings`。
+#[cfg(target_os = "linux")]
 const WATCHDOG_FLAG: &str = "--akasha-session-watchdog";
 
 /// `eval_js` 的返回可能把结果包在 `result` 里，也可能就是裸值 —— 两种都认。

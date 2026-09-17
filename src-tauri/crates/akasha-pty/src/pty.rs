@@ -187,6 +187,7 @@ fn context_err<E: fmt::Display>(context: &'static str) -> impl FnOnce(E) -> Tran
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use rustix::process::{Pid, Signal};
     use std::sync::mpsc::{self, RecvTimeoutError};
     use std::time::{Duration, Instant};
 
@@ -300,11 +301,19 @@ mod tests {
         );
     }
 
-    /// 在**截止时间**内等 `/proc/<pid>` 变成"在"或"不在"。
-    fn proc_appears(pid: u32, exists: bool) -> bool {
+    /// 进程是否**还在**：`kill(pid, 0)` 存在即 `Ok`、不存在即 `ESRCH`。
+    ///
+    /// ⚠️ 不读 `/proc/<pid>`：那个目录只在 Linux 上存在，用它做判据会让本用例在 macOS 上
+    /// 因为"路径不存在"而失败 —— 失败的并不是被验的行为（与 `teardown` 的诱饵断言同一条口径）。
+    fn alive(pid: u32) -> bool {
+        Pid::from_raw(pid as i32).is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
+    }
+
+    /// 在**截止时间**内等进程变成"在"或"不在"。
+    fn appears(pid: u32, exists: bool) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if std::path::Path::new(&format!("/proc/{pid}")).exists() == exists {
+            if alive(pid) == exists {
                 return true;
             }
             if Instant::now() >= deadline {
@@ -335,25 +344,44 @@ mod tests {
         let mut transport = sh(TerminalSize::DEFAULT);
         let output = transport.output_stream().expect("第一次取输出流必须成功");
 
-        // 探针写成 `printf 'AKPROBE%s\n' "=$!"`：**回显**里只有 `AKPROBE%s`，
+        // 探针写成 `printf 'AKPROBE%s\n' =$!`：**回显**里只有 `AKPROBE%s`，
         // 所以下面按 `AKPROBE=` 找，命中的一定是 shell 求值后的输出（同 `real_shell_…` 用例）。
+        // ⚠️ `$!` **不得**加引号：macOS 的 `/bin/sh` 是 bash 3.2，行内出现 `!` 会做历史展开，
+        // `"=$!"` 直接报 `event not found`，探针根本不会起来。bash 只在 `!` 后面不是
+        // 空白 / 换行 / `=` / `(` 时才展开 —— 让 `!` 紧跟行尾即可；不带引号的 `$!` 也不会分词
+        // （结果只有数字）。
         transport
-            .write(b"set -m; (trap \"\" HUP; exec sleep 300) & printf 'AKPROBE%s\\n' \"=$!\"\n")
+            .write(b"set -m; (trap \"\" HUP; exec sleep 300) & printf 'AKPROBE%s\\n' =$!\n")
             .expect("write 失败");
 
         let seen = read_until(output, b"AKPROBE=", Duration::from_secs(15));
         let pid = parse_probe_pid(&seen)
             .unwrap_or_else(|| panic!("没读到探针 pid：{:?}", String::from_utf8_lossy(&seen)));
         assert!(
-            proc_appears(pid, true),
+            appears(pid, true),
             "探针 {pid} 应当还活着（否则这条用例什么都没验）"
         );
 
         transport.shutdown().expect("shutdown 失败");
 
+        // ⚠️ "探针必须被收掉"这条**只在 Linux 上成立**：非 Linux 的 unix 没有可移植的会话枚举
+        // （要 `proc_listpids` + `getsid`），`kill_session` 因此退化成 `killpg`，而本探针被
+        // `set -m` 放进了**自己的进程组** —— 恰好是 `killpg` 够不着的那一类。缺口与理由见
+        // `teardown` 模块的平台差异表（plan 0204）。
+        #[cfg(target_os = "linux")]
         assert!(
-            proc_appears(pid, false),
+            appears(pid, false),
             "忽略 SIGHUP 的子进程 {pid} 必须被收掉 —— 只 kill 那个 shell 是收不走的"
         );
+
+        // 非 Linux 上"探针活下来"是已知缺口，**不是**可以用例留下的残留：这里点名 SIGKILL
+        // 收掉它，并把"收得掉"当成断言 —— 它同时证明上面那次存活是真的（探针确实还在）。
+        #[cfg(not(target_os = "linux"))]
+        {
+            if let Some(probe) = Pid::from_raw(pid as i32) {
+                let _ = rustix::process::kill_process(probe, Signal::KILL);
+            }
+            assert!(appears(pid, false), "清理探针 {pid} 失败");
+        }
     }
 }

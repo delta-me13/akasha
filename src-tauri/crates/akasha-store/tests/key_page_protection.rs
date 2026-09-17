@@ -27,10 +27,11 @@
 mod common;
 
 use akasha_store::keys;
-use common::new_vault;
 
+// 三条判据都只在 Linux 上成立（见文件头），所以 `new_vault` 与另两个一起门控 ——
+// 不门控时 macOS 上会多一条"未使用的 import"，而 `just clippy` 带 `-D warnings`。
 #[cfg(target_os = "linux")]
-use common::{locked_kb, noaccess_pages};
+use common::{locked_kb, new_vault, noaccess_pages};
 
 /// 私钥那一页的四条判据 + 一条"用完还回去"。
 #[cfg(target_os = "linux")]

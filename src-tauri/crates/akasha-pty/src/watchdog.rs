@@ -278,6 +278,7 @@ mod tests {
     use super::*;
     use crate::transport::{TerminalSize, Transport};
     use crate::{Batch, BatchPolicy, PtyTransport, ShellLaunch, spawn_batcher};
+    use rustix::process::Pid;
     use std::io::Cursor;
     use std::sync::mpsc::Receiver;
     use std::time::{Duration, Instant};
@@ -318,9 +319,13 @@ mod tests {
         None
     }
 
-    /// 进程是否还在。
+    /// 进程是否还在：`kill(pid, 0)` 存在即 `Ok`、不存在即 `ESRCH`。
+    ///
+    /// ⚠️ 不读 `/proc/<pid>`：那个目录只在 Linux 上存在，用它当判据会让本模块的用例在 macOS 上
+    /// 一律报"探针没起来"（`alive` 恒为假），而失败的并不是被验的行为。语义与 `/proc` 那条一致：
+    /// 僵尸也有目录项，`kill(pid, 0)` 对僵尸同样成功。
     fn alive(pid: u32) -> bool {
-        Path::new(&format!("/proc/{pid}")).exists()
+        Pid::from_raw(pid as i32).is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
     }
 
     /// 在截止时间内等 `pid` 消失。
