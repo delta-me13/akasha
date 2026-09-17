@@ -4,7 +4,7 @@
 > 会话结束前必须更新 —— 下一个会话（或另一个 agent）只读这个文件 + 相关 plan 就能接手，
 > 不需要回溯对话历史。规则见 [`docs/README.md`](./README.md)。
 
-**最后更新**：2026-09-17
+**最后更新**：2026-09-18
 
 ## 摘要
 
@@ -61,6 +61,23 @@ CI 的 `checks-other` 执行的就是 `cargo check --workspace --all-targets`，
 而紧随其后的那次运行一直停在 `pending`，那是 `main` 上的**排队**语义（#161），不是卡住。
 两条的判据与处置（`workflow_dispatch`、配方里"日志是空的"会明说、典型耗时表）分别是 #161 / #162。
 ⚠️ 推送之后本机已能读 Actions（`git credential fill` 可用），结论不再只能从网页看。
+
+**macOS 的会话回收从"只 killpg"补成与会话等价的实现**（本会话，macOS 26.6.2 / arm64）：
+`teardown::kill_session` 在非 Linux 的 unix 上原先是"没有可移植的会话枚举"而退化成进程组，
+于是 `nohup` / `trap "" HUP` 这类**自己一个进程组**的作业收不回来（三条看门狗用例因此在 macOS 上
+必红）。现在它由两件事拼成：`ps -Ao pid=` **只当 pid 列表**用，会话归属交给内核的 `getsid` ——
+⚠️ `ps` 的 `sess` / `tsess` 两列在 macOS 上打印的是会话**指针**，对任何进程都输出 0
+（连会话首进程自己也是 0，本机实测），拿它当会话 id 会一个进程都匹配不到。
+不引入 `unsafe` 也不加依赖：不用 `libproc` 的 `proc_listpids`（`AGENTS.md` §3.4 只允许
+`akasha-store` 出现 `unsafe`），而 `getsid` 本来就在已依赖的 `rustix` 里。
+⚠️ **ADR-0005 §3.2** 的括号里写的是 Linux 的机制（扫 `/proc`）—— 那份 ADR 已定案、不可改，
+机制的平台差异以 `akasha-pty/src/teardown.rs` 的平台差异表为准（同 ADR-0006 那处过期句子的处理口径）。
+同时补上一处**必须关闭主端**的顺序：macOS 上被 SIGKILL 的子进程可能停在 `ps` 的 `?E`
+（正在退出）状态里，主端还开着又没人读时那个退出不结束、`wait4` 跟着一起不返回 ——
+症状是关标签页时 `shutdown` 无限阻塞（本机实测：`shutdown` 5 秒内不返回，子进程 state `?Es`）。
+判据：**本机 macOS 上 `just test` 从 4 条红变成 458/458 全绿**（Linux 侧同一套用例不变）。
+⚠️ 串口那三条走"PTY 从端当串口"的脚手架在 macOS 上仍然不成立（问题 #158 的同一处平台限制，
+上游对 pty 设波特率返回 `ENOTTY`），本轮把它们与整份 `pty_roundtrip` 显式门控到 Linux 并写明原因。
 
 **文档门禁改为非快速失败**（本会话）：`just docs-check` 原先把 `just docs-style` 作为独立一行调用，
 第一次失败即终止整个配方 —— 语体命中会把"命令未漂移 / ROADMAP 预算 / plan 预算"三类检查**全部掩盖**。
@@ -388,6 +405,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | ↑ **第三次运行验证了其中三处处置** | `RUSTC_WRAPPER` 为空且编译真的开始（#154）；Windows 走到了编译测试目标这一步、`openssl-sys` 的 vendored OpenSSL 已构建完（#156）；Linux 日志里 `could not find Cargo.toml` 的计数为 **0**、缓存键由 workspace 元数据给出（#157）。**E2E（ubuntu-latest）**：28 个目标全部执行完，`test result: ok` **29 条**、失败 **0 条**（唯一一处跳过是运行器不提供 `WEBGL_lose_context`，用例自己写明了原因）—— CI 上的 E2E 第一次完整执行 |
 | ↑ **CI 第二次运行的实际读数**（run `34987984477` @ `9081ac9`） | **macOS 那一格通过**（全部步骤绿，平台类型检查第一次有结论）；Linux 红在 `just ready` → `lint` → `clippy`、Windows 红在 `just check`：报错分别是 `libudev-sys` 的构建脚本找不到 `libudev.pc`（问题 #155）与 `openssl-sys` 的 vendored OpenSSL 配置失败（问题 #156）；`e2e` 仍为 `skipped`。日志里 `env:` 段落显示 `RUSTC_WRAPPER` 为空，编译确实开始 —— 空值这条处置有效。三处修正见 plan 0102 的「两次运行」 |
 | ↑ **CI 首次运行的实际读数**（run `34972060468` @ `24d4f72`；清理后的 workflow 再次运行 `34986599520` @ `31a4d7c` 同因） | 三个 job **全部失败于同一步**：Linux 的 `just ready`（红在 `lint` → `clippy`）、Windows 与 macOS 的 `just check`。三处报错逐字相同：`could not execute process` + `sccache <rustc> -vV` + `(never executed)`，以及 `No such file or directory (os error 2)`。**其余步骤全部成功**：checkout、系统依赖、`rust-toolchain`、`rust-cache`（首次 `No cache found`）、`install-action`（`just 1.58.0` 校验通过）、`npm install -g @ast-grep/cli@0.45.3`。`e2e` 状态为 **`skipped`**（`needs: checks-linux`），三平台 E2E 至今没有读数 |
+| `just test`（macOS 26.6.2 / arm64，经 `just runner-run test` 在沙箱外执行） | **458 tests run: 458 passed**（连续两次结果相同）。红过并已处置的六处：三条看门狗用例（会话枚举缺失，本会话补齐）、`pty` 的三条 `/proc` 判活与探针引号（问题 #45 那一类）、`store` 的权限对比断言（macOS 上 SQLite 建库本就 0600，对比判据退化为直接断言）、串口的 pty 脚手架（门控到 Linux，见「待验证」）。⚠️ `akasha-bw` 的 `install_takes_the_newest_release…` 在一次运行里报 `Peer disconnected`（问题 #165），随后两次运行都通过 |
 | `just test` | **473 tests run: 473 passed**（`akasha` **98** + `akasha-bw` **56** + `akasha-core` 30 + `akasha-pty` **40** + `akasha-serial` **25** + `akasha-ssh` **88** + `akasha-store` 136）。⚠️ `akasha` 的 91 条包含 `tests/` 下的集成目标（未设置 `VICTAURI_E2E` 时它们只输出原因并返回；目标与用例数见下面那条 `just test-e2e` 与 `src-tauri/justfile` 的 `E2E_TARGETS`） |
 | `cargo check -p akasha-core -p akasha-pty -p akasha-serial --target x86_64-pc-windows-msvc`（plan 0108） | 三条都**退出码 0** —— 改之前 `akasha-pty` 是 3 个错误（E0432 `rustix::process` + E0433 ×2）、`akasha-serial` 因依赖它同样红。负例：撤掉 `teardown.rs` 的 `#[cfg(unix)]` 立刻重新变红（`cannot find module or crate rustix`），恢复后又回到 0 |
 | ↑ **同一命令带 `--all-targets` 在本机过不去** | `criterion`（dev-dependency，只有 bench 用它）拉进 `alloca v0.4.0`，它的 C 构建脚本要 MSVC 的 `lib.exe` —— 本机没有 MSVC 工具链。**与本次改动无关**；CI 的 Windows 格子上有那个工具链 |
@@ -516,6 +534,12 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   ⚠️ **macOS 上连"假设备"都造不出来**：同一个 PTY 从端在那边打开会得到 `Not a typewriter`
   （CI 第三次运行实测），所以那三条 E2E 在 macOS 上按平台**显式跳过**并写明原因
   （`fake_serial_skip_reason`）；Windows 更早一步 —— ConPTY 没有设备节点。
+  ⚠️ 本会话把原因追到了上游那一行：`serialport` 在 Apple 目标上**用 `IOSSIOSPEED` 设波特率**，
+  它对 pty 返回 `ENOTTY`（`serialport-4.10.1/src/posix/termios.rs` 自己写着这一条），
+  于是"打开"这一步就失败、断言没有机会执行。**同一条限制现在也门控了单元与集成测试**：
+  `akasha-serial` 的 `a_pseudo_terminal_reports_the_parameters_it_can_hold`、
+  `an_unplugged_device_says_why_the_stream_ended` 与整份 `tests/pty_roundtrip.rs` 都标了
+  `#[cfg(target_os = "linux")]` 并写明理由 —— 参数映射在 macOS 上仍由 `settings.rs` 的单测守着。
   ⚠️ **`AGENTS.md` §7 里 `introspect { action: "processes" }` 那一条对串口没有对象**
   （`session_leader()` 是 `None`，crate 也不 spawn 进程）："真正退出之后零残留"在这条路上只剩
   注册表（`live` / `registered` 回到打开前的读数，实测 `1/1`）—— 它与"没有任何进程/线程留下"
@@ -1301,3 +1325,18 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       处置：**删除 `.cargo/config.toml`** —— 与 #154 里 CI 的选择（清空 `RUSTC_WRAPPER`）收敛到
       同一个口径：包装器不再进仓库配置；需要缓存时显式 `RUSTC_WRAPPER=sccache just check`。
       ⚠️ 沙箱里直接执行 `just dev` 另有一处环境限制（PTY 报权限不足），与本条无关；用户终端下正常。
+ 164. **macOS 上被 SIGKILL 的子进程会停在"正在退出"上，直到主端被关闭**（本会话实测，
+      macOS 26.6.2 / arm64）：`kill_session` 发出 SIGKILL 之后，`/bin/sh` 在 `ps` 里显示
+      `?Es`（`E` = trying to exit、`s` = session leader、命令名已带括号），而 `wait4` 一直
+      不返回 —— 同一时刻 `kill(pid, 0)` 仍然成功。**这一步是关键**：`wait4` 阻塞的原因不是
+      "信号没送到"（再发一次 SIGKILL 也无效），而是子进程的退出要等终端那一路收干净，而主端
+      还开着、又没人读。处置：`PtyTransport::shutdown` 在 `wait` **之前**主动关闭写端 / 读端 /
+      主端（`master` 因此变成 `Option`）。⚠️ 这不是清理动作而是**结束条件** ——
+      少了它，关标签页会无限阻塞（`just test` 里两条最普通的 shutdown 用例就是这么红的）。
+      判别口径：Linux 上同样的顺序不出这个问题，所以它只在 macOS 的读数上现形。
+ 165. **`akasha-bw` 的 `install_takes_the_newest_release…` 偶发 `Peer disconnected`**（本会话
+      实测一次，macOS）：该用例在测试进程内起一台 HTTP 服务端供 `acquire` 下载一个 zip，
+      那次失败发生在 **0.049 s**，报 `Network { message: "…io: Peer disconnected" }`；
+      随后两次完整的 `just test` 都通过（458/458）。**没有定位**：它只在五次运行里出现过一次，
+      而失败点在测试自己的脚手架里（服务端与客户端的时序），不在 e2e 目标之列。
+      下次再出现时先记下同一个用例的连续失败次数与失败前的服务端日志，再决定要不要查。
