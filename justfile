@@ -186,10 +186,12 @@ ready:
 #    * **非快速失败**：逐份文档各查一遍，全部查完才汇总报错 —— 一轮修完全部命中，
 #      不必"改一份再执行一次"；单份文档命中超过 20 条时列出前 20 条并写明剩余条数。
 #    * 由 docs-check 调用时同样不终止它的其余三类检查（那是**调用方**的性质）。
+#    * `paste` 要**显式写输入操作数 `-`**：BSD 的 paste（macOS）不给文件操作数就报 usage，
+#      而 GNU 的 paste 默认读 stdin —— 这两行的差别只在 macOS 上暴露，本机实测。
 docs-style:
     @pat=$(awk '/<!-- BANNED:BEGIN -->/{f=1;next} /<!-- BANNED:END -->/{f=0} f' docs/style.md \
              | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
-             | grep -vE '^(#|```|$)' | paste -sd'|'); \
+             | grep -vE '^(#|```|$)' | paste -s -d'|' -); \
     if [ -z "$pat" ]; then echo "❌ 读不到禁用语表 —— 检查 docs/style.md 的 BANNED 标记与内容"; exit 1; fi; \
     bad=0; hit_files=""; \
     for f in AGENTS.md CLAUDE.md README.md ROADMAP.md $(find docs -name '*.md' | sort); do \
