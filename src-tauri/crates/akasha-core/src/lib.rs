@@ -11,10 +11,10 @@
 //!
 //! 命名守 `docs/scope.md` §1.2：**后端类型名不得编码 UI 呈现方式**
 //! （不出 `Tab` / `Pane` / `Window` / `View`），由
-//! `.ast-grep/rules/no-ui-vocab-in-types.yml` 强制。
+//! `scripts/ast-grep/rules/no-ui-vocab-in-types.yml` 强制。
 //!
 //! **零 Tauri 依赖**（`AGENTS.md` §3.1），由
-//! `.ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
+//! `scripts/ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
 //!
 //! **范围**：只有数据结构与路由语义。不含任何后端实现（PTY 在 plan 0105）、
 //! 不含持久化（阶段 4）、不引入 async runtime（本步只立模型）。

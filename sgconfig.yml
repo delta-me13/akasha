@@ -1,10 +1,10 @@
 # ast-grep 配置 —— 双重身份：结构搜索入口 + 项目约束执行器（AGENTS.md §6）
 # `sg scan` 是本项目 lint 的一部分（just lint）。
 ruleDirs:
-  - .ast-grep/rules
+  - scripts/ast-grep/rules
 
 # 规则逻辑的回归测试（正例 / 反例），由 `just lint` 里的 `ast-grep test` 跑。
 # ⚠️ 它**不覆盖** `files:` / `ignores:`（测试代码不是真实路径下的文件）——
 # 改动规则的路径范围时仍要按 AGENTS.md §6 用真实路径的探针复核一次。
 testConfigs:
-  - testDir: rule-tests
+  - testDir: scripts/ast-grep/tests

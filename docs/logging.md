@@ -89,7 +89,7 @@
 
 ## 5. 由什么强制
 
-- `just lint` 里的 ast-grep 规则 [`no-non-ascii-log-message`](../.ast-grep/rules/no-non-ascii-log-message.yml)：
+- `just lint` 里的 ast-grep 规则 [`no-non-ascii-log-message`](../scripts/ast-grep/rules/no-non-ascii-log-message.yml)：
   拦"消息不是 ASCII"这一半（`tracing::*!` 里的中文字符串）。`tests/` 豁免。
 - 规则拦不住的（啰嗦、后果叙述、`Debug` 泄漏）**只能靠本文件 + review** ——
   改日志时对着 §1 §2 两张表自查。

@@ -3,10 +3,10 @@
 # 它存在的理由很具体：**这是全仓库唯一允许出现 `unsafe` 的 crate**。
 # 密钥必须经 `sqlite3_key()`（C API）送入，而不是 `PRAGMA key='…'` 文本形式（ADR-0002 D4）。
 # 这件事由两个东西一起守：workspace 的 `unsafe_code = "deny"`（root Cargo.toml 里写了
-# 为什么不能是 `forbid`）+ `.ast-grep/rules/no-unsafe-outside-store.yml`（只放行本目录）。
+# 为什么不能是 `forbid`）+ `scripts/ast-grep/rules/no-unsafe-outside-store.yml`（只放行本目录）。
 #
 # 依赖方向单向：`akasha` → `akasha-store`，反向视为架构违规（`AGENTS.md` §3.1）。
-# 本 crate **不得** `use tauri::*`，由 `.ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
+# 本 crate **不得** `use tauri::*`，由 `scripts/ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
 
 [package]
 name = "akasha-store"
@@ -53,5 +53,5 @@ memsafe = "1.0.2"
 # 继承全 workspace 的 lint（`unsafe_code = "deny"` 也在这里来的）。
 # ⚠️ 不能在这里"继承 + 把 unsafe_code 放宽成 deny"：cargo 不允许部分覆盖
 # （`cannot override workspace.lints`）。所以让 `unsafe` 只许出现在本 crate 的是
-# `.ast-grep/rules/no-unsafe-outside-store.yml`，不是这张表。
+# `scripts/ast-grep/rules/no-unsafe-outside-store.yml`，不是这张表。
 workspace = true

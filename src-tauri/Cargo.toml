@@ -10,7 +10,7 @@
 #
 # 依赖方向**单向**：`akasha`（本包）→ `crates/*`。反向依赖视为架构违规。
 # `crates/*` 不得 `use tauri::`（AGENTS.md §3.1），由
-# `.ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
+# `scripts/ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
 
 [package]
 name = "akasha"
@@ -57,7 +57,7 @@ members = ["crates/*"]
 # 所以 `forbid` 会让上面那句"单点 allow"永远写不出来 —— 而 `akasha-store` 恰恰需要它
 # （口令必须经 `sqlite3_key()` C API 送入，ADR-0002 D4）。既然不能按 crate 分开设，
 # 就只能选 `deny`，然后**用规则把"哪能写"这件事补回来**：
-# `.ast-grep/rules/no-unsafe-outside-store.yml` 规定 `unsafe` 只许出现在 `akasha-store`。
+# `scripts/ast-grep/rules/no-unsafe-outside-store.yml` 规定 `unsafe` 只许出现在 `akasha-store`。
 # 两层加起来与 `forbid` 等价，且比 `forbid` 多一条能改的口子。
 unsafe_code = "deny"
 

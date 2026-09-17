@@ -42,7 +42,7 @@
 //! （加密 / 明文两条路，后者有门槛），放回来用 [`export::restore`]（D6 的"导出件就是库"）。
 //!
 //! **零 Tauri 依赖**（`AGENTS.md` §3.1），由
-//! `.ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
+//! `scripts/ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
 
 pub mod dump;
 pub mod export;

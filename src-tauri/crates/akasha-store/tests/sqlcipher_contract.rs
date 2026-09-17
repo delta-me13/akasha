@@ -220,7 +220,7 @@ fn empty_passphrase_refused_before_touching_file() {
 }
 
 #[test]
-#[allow(unsafe_code)] // 本 crate 是唯一允许碰 ffi 的地方，见 .ast-grep/rules/no-unsafe-outside-store.yml
+#[allow(unsafe_code)] // 本 crate 是唯一允许碰 ffi 的地方，见 scripts/ast-grep/rules/no-unsafe-outside-store.yml
 fn empty_key_really_disables_encryption() {
     let dir = fixture_dir("empty-key-raw");
     let db = dir.join("akasha.db");
