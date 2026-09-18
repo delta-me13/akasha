@@ -65,6 +65,7 @@
 |---|---|---|---|---|
 | 0101 | 落地根 workspace | 已完成 | ADR-0001 已定案 | [0101](./archive/0101-root-workspace.md) |
 | 0106 | Rust 成员收进 `src-tauri/`（**取代 0101 的布局**） | 已完成 | plan 0101 / 0104 | [0106](./archive/0106-workspace-under-src-tauri.md) |
+| 0109 | crates 改为 `src-tauri/src` 下的模块（**取代 0106 的成员布局**，ADR-0008） | 进行中 | ADR-0008（实现中） | [0109](./0109-crates-to-modules.md) |
 | 0102 | CI 平台矩阵（Linux + Windows + macOS，GitHub Actions 一份） | 进行中（本地已完成，待 CI 实际运行） | plan 0101 | [0102](./0102-ci-platform-matrix.md) |
 | 0103 | `src-tauri/crates/akasha-core`：`Session` 模型骨架 | 已完成 | plan 0101 | [0103](./archive/0103-core-session-model.md) |
 | 0104 | 迁移后复测开发循环 | 已完成（监听范围曾失效，已修） | plan 0103（要有 `src-tauri/crates/` 成员才测得了） | [0104](./archive/0104-dev-loop-retest.md) |

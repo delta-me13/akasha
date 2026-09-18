@@ -41,6 +41,9 @@
 - [x] **落地 ADR-0001 决策一：根 workspace**
       验收：仓库根成为 workspace、`src-tauri` 降为成员之一，且门禁仍全部通过
       → [plan 0101](./docs/plans/archive/0101-root-workspace.md)
+- [ ] **crates 改为 `src-tauri/src` 下的模块**（ADR-0008 取代 ADR-0001 决策一与 ADR-0004）
+      验收：仓库内没有成员 manifest 与 `mod.rs`；纯逻辑不依赖 Tauri 的约束由路径规则接手，`just ready` 6/6
+      → [plan 0109](./docs/plans/0109-crates-to-modules.md)
 - [x] **Rust 成员收进 `src-tauri/`**（取代上面 0101 的根 workspace 布局，见 ADR-0004）
       验收：根目录无 manifest / 成员 / target，门禁全部通过，改成员仍触发重编译
       → [plan 0106](./docs/plans/archive/0106-workspace-under-src-tauri.md)
