@@ -100,3 +100,20 @@ just ready       # 预期：6/6
 ## 实施记录
 
 （边做边追加：每步的实际命令输出、nextest 读数、`just ready` 的最终读数。）
+
+### 2026-09-19 第 1 轮
+
+- **基线（HEAD `85c976a`）**：`#[test]` / `#[tokio::test]` 属性 451 个；`tests/` 下 64 个文件；
+  `just check` 绿。沙箱里 `cargo nextest run -p akasha --lib` 有 3 个 PTY 用例失败
+  （`openpty: PermissionDenied`）—— 即 `AGENTS.md` §1 记的环境权限，不是回归。
+- **akasha-core** 完成（`d4dcbc1`）：6 个文件 → `session/{model,registry,event}.rs`、
+  `config/model.rs`、`tunnel/model.rs`；三个壳 → 各自域的 `ipc.rs`；域根重新导出，
+  `crate::session::*` / `crate::config::*` / `crate::tunnel::*` 路径不变。`just check` 绿。
+- **akasha-bw** 完成（`deecc9c`）：10 个文件 → `bw/`，壳 → `bw/ipc.rs`；
+  两个集成测试迁进 `src-tauri/tests/`；依赖（sha2 / zeroize / zip / ureq）并入 app manifest。
+  `just check` 绿；`fake_cli` 8/8、`session_protection` 通过。
+- **过程中修掉的两处**：
+  1. 集成测试里的 `crate::` 一律要改成 `akasha_lib::`（测试是独立的 crate）；
+  2. 壳文件被"给纯逻辑加 `crate::bw::` 前缀"的那一遍扫到，`crate::config` 一度变成
+     `crate::bw::config` —— 批量替换必须把壳排除在纯逻辑那一遍之外。
+- **下一步**：`ssh` → `serial` → `store` → `pty`（按依赖序：先翻依赖方，成员才一直可编译）。
