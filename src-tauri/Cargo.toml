@@ -136,9 +136,14 @@ akasha-pty = { version = "0.1.0", path = "crates/akasha-pty" }
 # 本步只用了它的两样东西：落点（`vault_path`）与状态（`vault_state`）——
 # 解锁生命周期（谁持有 `Connection`、口令从哪来、何时抹掉）是 plan 0407。
 akasha-store = { version = "0.1.0", path = "crates/akasha-store" }
-# SSH 客户端（plan 0504 起 app 真的用它）。它对外只是 `akasha_pty::Transport`，
-# 所以会话层与前端**不需要**为 SSH 另立一条契约 —— 这正是 ADR-0003 D3 的兑现。
-akasha-ssh = { version = "0.1.0", path = "crates/akasha-ssh" }
+# SSH 栈（原 akasha-ssh，ADR-0003）：对外只是 `crate::pty::Transport`，所以会话层与前端
+# 不需要为 SSH 另立一条契约。russh 精确钉版本、crypto 后端只开 `ring`；升级它要改的面
+# 关在本模块里。`russh-sftp` 不依赖 `russh`（只在它的 dev-dependencies 里），因此引入它
+# 不会形成第二条版本约束。`rand` 是进程内测试服务端（`ssh::testing`）生成主机密钥要的，
+# 它是真依赖而不是 dev-dependency —— app 的 E2E 也要起那台服务端。
+russh = { version = "=0.63.3", default-features = false, features = ["ring", "rsa"] }
+russh-sftp = "=3.0.0"
+rand = "0.10"
 # 串口载体（plan 1101 起 app 真的用它）。与 SSH 同一条理由：它对外也只是
 # `akasha_pty::Transport`，所以会话层与前端不为第三个后端另立契约（scope.md §2）。
 # ⚠️ 加它同时把 `serialport` 与（Linux 上的）libudev 带进 `cargo-deny` 的图 —— 那正是想要的。
@@ -165,7 +170,7 @@ zbus = "5.9"
 [dev-dependencies]
 criterion = "0.8.2"
 insta = "1.48.0"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
 victauri-test = "0.8.8"
 
 # 继承上面的 [workspace.lints]（unsafe_code = forbid、clippy::unwrap_used = warn）。

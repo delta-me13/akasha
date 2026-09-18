@@ -7,7 +7,6 @@ pub mod pools;
 pub mod prompt;
 pub mod serial;
 pub mod session;
-pub mod sftp;
 pub mod single_instance;
 pub mod ssh;
 pub mod tray;
@@ -125,7 +124,7 @@ pub fn run() {
                 // 两侧各自的状态与当前目录都在这里（一个 SFTP 会话 = 一条记录）。
                 .probe("sftp", {
                     let sessions = sessions.clone();
-                    move || sftp::snapshot(&sessions)
+                    move || ssh::ipc::sftp::snapshot(&sessions)
                 })
                 // 托盘（plan 0605）：隧道那几行文字是"失败必须可见"（`scope.md` §5.2）
                 // 的落点，而这一份报的就是菜单上写的那些字。
@@ -148,7 +147,7 @@ pub fn run() {
                 // 还在不在（连接对象归转发任务持有、看护任务归 runtime 持有，都与实体表无关）。
                 .probe("residue", || {
                     serde_json::json!({
-                        "sshConnections": akasha_ssh::live_connections(),
+                        "sshConnections": crate::ssh::live_connections(),
                         "watchTasks": tunnel::watch_tasks(),
                     })
                 })

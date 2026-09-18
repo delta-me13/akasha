@@ -78,11 +78,13 @@ version = "0.1.0"
 dependencies = [
  "akasha-pty",
  "akasha-serial",
- "akasha-ssh",
  "akasha-store",
  "criterion",
  "insta",
  "portable-pty",
+ "rand",
+ "russh",
+ "russh-sftp",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -125,20 +127,6 @@ dependencies = [
  "portable-pty",
  "serialport",
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "akasha-ssh"
-version = "0.1.0"
-dependencies = [
- "akasha-pty",
- "akasha-store",
- "rand",
- "russh",
- "russh-sftp",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
 ]
 
 [[package]]

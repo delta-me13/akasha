@@ -4,9 +4,9 @@
 //! 都自己造库、自己起进程内的 SSH 服务端、都靠界面驱动。抄第二份的下场是两份慢慢分叉，
 //! 而分叉的方向总是"其中一条以为验了"。
 //!
-//! ⚠️ `tests/` 下的模块每个测试目标各编译一份（同 `akasha-ssh/tests/support/`），
+//! ⚠️ `tests/` 下的模块每个测试目标各编译一份（同 `tests/ssh_support/`），
 //! 所以"共享"只到这一层为止；跨 crate 的东西住在库里（那是那台服务端搬进
-//! `akasha_ssh::testing` 的理由）。
+//! `akasha_lib::ssh::testing` 的理由）。
 //!
 //! **不是测试目标**：`cargo` 只把 `tests/*.rs` 当目标，`tests/support/mod.rs` 是被各个目标
 //! `mod support;` 引进来的普通模块 —— 也因此不会撞上 `justfile` 里那条"没接进 test-e2e 的目标"的
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use akasha_ssh::testing::{Observed, Running};
+use akasha_lib::ssh::testing::{Observed, Running};
 use akasha_store::pools::{hosts, known_hosts};
 // `Connection` 从 store 那侧取而不是直接依赖 `rusqlite`：它是 store 的**公开类型**
 // （`open` / `create` 的返回值就是它），而版本对齐由 store 一处负责。

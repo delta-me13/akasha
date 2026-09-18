@@ -35,7 +35,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use akasha_ssh::testing::{Relay, ServerOptions, start};
+use akasha_lib::ssh::testing::{Relay, ServerOptions, start};
 use akasha_store::pools::{forwards, hosts};
 use serde_json::{Value, json};
 use support::{

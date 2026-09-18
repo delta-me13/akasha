@@ -9,15 +9,15 @@
 //! | 五态与"哪些转移合法" | `crate::tunnel::TunnelState`（纯逻辑，零 Tauri） |
 //! | 实体表与注册表 | [`crate::session::Sessions`] —— **同一张注册表**（D6），不另立一份 |
 //! | 连接怎么建 | [`crate::ssh::connect_connection`]（已认证、没有通道的 `SshConnection`） |
-//! | 转发怎么做 | `akasha_ssh::relay`（本地监听 + 每条入站连接一条 `direct_tcpip` 通道） |
-//! | `-D` 的目标从哪来 | `akasha_ssh::socks5`（无认证的 SOCKS5 服务端，plan 0603） |
+//! | 转发怎么做 | `crate::ssh::relay`（本地监听 + 每条入站连接一条 `direct_tcpip` 通道） |
+//! | `-D` 的目标从哪来 | `crate::ssh::socks5`（无认证的 SOCKS5 服务端，plan 0603） |
 //! | 事件与 probe | 本模块（`tunnel_state` / `tunnels`） |
 //!
 //! ## 一条"已连接"的隧道现在意味着什么
 //!
 //! 从 plan 0602 起，`已连接` 意味着两件事同时成立：**本地端口在监听**，
 //! 且**那条 SSH 连接活着**。两者合成一件事 —— 转发任务持有连接，端口与被转发的字节
-//! 都只属于它（`akasha_ssh::relay` 的模块文档写了收尾的两条路径）。
+//! 都只属于它（`crate::ssh::relay` 的模块文档写了收尾的两条路径）。
 //!
 //! ## 三个方向差在哪
 //!
@@ -65,7 +65,7 @@
 //! 3. 从注册表摘掉（幂等：已经不在册就是"已经关了"）。
 //!
 //! 判据是"连接数与重连任务数都归零"（ROADMAP），所以**这两个数必须有人报**：
-//! `akasha_ssh::live_connections()`（连接对象还活着几条）与 [`watch_tasks`]（看护循环还跑着
+//! `crate::ssh::live_connections()`（连接对象还活着几条）与 [`watch_tasks`]（看护循环还跑着
 //! 几条），由 `residue` 探针读出来。⚠️ 不能拿实体表当证据 —— 命令自己就会把实体摘掉。
 //!
 //! ⚠️ **在途的尝试也要能被停止**（同上）：一条**正在握手**的隧道手上只有一个 socket，
@@ -74,7 +74,7 @@
 use crate::config::Reconnect;
 use crate::session::SessionId;
 use crate::tunnel::{TunnelState, TunnelTransitionError};
-use akasha_ssh::{
+use crate::ssh::{
     ForwardEnd, ForwardEnding, ForwardTarget, Ingress, LocalForward, LocalListener, RemoteForward,
     SshError,
 };
@@ -94,7 +94,7 @@ use crate::vault::{ConnError, Vault};
 /// 一条隧道。
 ///
 /// 字段都是**资源归属**那一类（D6 的"自持有条目"）：规则是谁、连的是哪台、现在什么状态、
-/// 已经重试了几次、以及**那条转发**（它持有连接，见 `akasha_ssh::relay`）。
+/// 已经重试了几次、以及**那条转发**（它持有连接，见 `crate::ssh::relay`）。
 /// 没有"用户在界面上选中了它"这类信息 —— 后端不编码呈现方式（`AGENTS.md` §3.1）。
 pub struct Tunnel {
     id: SessionId,
@@ -208,7 +208,7 @@ impl Tunnel {
     /// 慢慢长歪（同 `hops_chain` 的理由）。
     ///
     /// ⚠️ 收尾本身是**异步**的（停止转发 = 发信号，收尾在 runtime 上做）；要看结果的地方
-    /// 读 `akasha_ssh::live_connections()` / 对端的连接计数，不看这个调用的返回。
+    /// 读 `crate::ssh::live_connections()` / 对端的连接计数，不看这个调用的返回。
     pub(crate) fn reclaim(self) {
         // 动作**先**停：它是唯一会在这条隧道已经决定关闭之后再把它连起来的东西。
         self.stop.stop();
@@ -449,7 +449,7 @@ pub enum TunnelError {
     ///
     /// 与 [`Self::Bind`] 分开：那一条是"这个端口没拿到"，换个端口就好；这一条是
     /// "这个地址**不许**绑" —— 换端口没有用，要改的是绑定的网卡范围。
-    /// 判据与理由见 `akasha_ssh::socks5`（这一侧无认证）。
+    /// 判据与理由见 `crate::ssh::socks5`（这一侧无认证）。
     #[error("SOCKS5 监听不能绑到 {address}：这一侧无认证，只允许绑回环地址")]
     NotLoopback { address: String },
 

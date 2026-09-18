@@ -39,7 +39,7 @@ use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
-use akasha_ssh::{
+use crate::ssh::{
     Credential, CredentialKind, CredentialProvider, CredentialRequest, HostKey, HostKeyPrompt,
     SshError, SshTarget,
 };
@@ -494,7 +494,7 @@ mod tests {
     #![allow(clippy::unwrap_used)] // 测试里的 unwrap 是断言手段（root Cargo.toml 的 lints 约定）
 
     use super::*;
-    use akasha_ssh::{HostKeyCache, HostKeyVerifier, KnownHostsVerifier, RecordedHostKey};
+    use crate::ssh::{HostKeyCache, HostKeyVerifier, KnownHostsVerifier, RecordedHostKey};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
@@ -560,7 +560,7 @@ mod tests {
 
     /// 一把真的公钥（`testing` 模块是 `HostKey` 的构造口所在地）。
     fn host_key() -> HostKey {
-        akasha_ssh::testing::host_key_from_openssh(
+        crate::ssh::testing::host_key_from_openssh(
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXOnqIIB9VdqO+GuhPnge4qQZ4neGrbYXvtur2skY47 probe@akasha",
         )
     }

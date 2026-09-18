@@ -34,14 +34,14 @@ use akasha_pty::{
     Batch, BatchPolicy, ExitStatus, PtyTransport, TerminalSize, Transport, TransportError,
     spawn_batcher,
 };
-use akasha_ssh::transfer::Endpoint;
-use akasha_ssh::{SftpClient, SshConnection};
+use crate::ssh::transfer::Endpoint;
+use crate::ssh::{SftpClient, SshConnection};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody, JavaScriptChannelId};
 use tauri::{AppHandle, Emitter, State, Webview};
 use tauri_specta::Event;
 
-use crate::sftp::{
+use crate::ssh::ipc::sftp::{
     Sftp, SftpLink, SftpOrigin, SftpSide, SftpSideInfo, SftpSummary, SftpTransfer, Tracked,
     TransferId,
 };
@@ -680,7 +680,7 @@ impl Sessions {
     pub(crate) fn sftp_in_flight(
         &self,
         handle: SessionHandle,
-    ) -> Result<Arc<akasha_ssh::InFlight>, IpcError> {
+    ) -> Result<Arc<crate::ssh::InFlight>, IpcError> {
         let inner = self.lock()?;
         let sftp = inner
             .sftps

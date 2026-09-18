@@ -20,7 +20,7 @@
 //! * 假 `bw` 放在 `managed` 那一轴的落点里（`<数据目录>/bitwarden/bw-<版本>/`）——
 //!   本机没有真实 vault（`docs/bitwarden.md` §8 记着这条），而"命令怎么拼、形状怎么解析、
 //!   导入之后能不能真连"这几件事不需要 vault 就能钉住；
-//! * 私钥是**现生成**的 ed25519（`akasha_ssh::testing::key_pair`），服务端认它的公钥 ——
+//! * 私钥是**现生成**的 ed25519（`akasha_lib::ssh::testing::key_pair`），服务端认它的公钥 ——
 //!   于是"哪把钥匙连上的"有据可查，而不是"反正连上了"。
 
 #![allow(clippy::unwrap_used)] // 测试里的 unwrap 是断言手段（root Cargo.toml 的 lints 约定）
@@ -30,7 +30,7 @@ mod support;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use akasha_ssh::testing::{ServerOptions, start};
+use akasha_lib::ssh::testing::{ServerOptions, start};
 use serde_json::{Value, json};
 use support::{
     CLOSE_TIMEOUT, PromptScript, USER, answer_prompts, click, connect_and_prepare, observed,
@@ -181,7 +181,7 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     };
 
     // ── 1. 现生成一对 ed25519；服务端只认它的公钥 ──────────────────────────
-    let (private_pem, fingerprint) = akasha_ssh::testing::key_pair();
+    let (private_pem, fingerprint) = akasha_lib::ssh::testing::key_pair();
     let server = start(ServerOptions {
         accepted_keys: vec![fingerprint.clone()],
         ..ServerOptions::default()
@@ -401,7 +401,7 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     // ⚠️ 诱饵：把库里那把私钥换成**另一把**（等价于"缓存被换过 / 坏了"）。
     //    少了这一步，"自检"与"永远说好"分不开。
     {
-        let (other_pem, _) = akasha_ssh::testing::key_pair();
+        let (other_pem, _) = akasha_lib::ssh::testing::key_pair();
         let conn = open_vault(&vault);
         let id = akasha_store::pools::keys::find_by_name(&conn, KEY_NAME)
             .unwrap()

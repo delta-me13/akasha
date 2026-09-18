@@ -911,7 +911,7 @@ pub fn bw_cache_verify(
                 let (computed, verdict) =
                     match akasha_store::pools::keys::private_key(conn, row.key_id) {
                         Ok(mut key) => match key.expose() {
-                            Ok(pem) => match akasha_ssh::fingerprint_of_private_key(&pem) {
+                            Ok(pem) => match crate::ssh::fingerprint_of_private_key(&pem) {
                                 Ok(computed) => {
                                     let verdict = if computed == row.fingerprint {
                                         BwCacheVerdict::Match

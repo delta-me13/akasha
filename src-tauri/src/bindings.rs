@@ -45,7 +45,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             // SSH 会话（plan 0504）。⚠️ 它**必须**留着 async：命令体里有一次会阻塞几秒的
             // 握手（最长 `connect_timeout`），而同步命令跑在处理 IPC 请求的那条线程上 ——
             // 挡住它就等于挡住全部 IPC，包括用户回答问题要用的那三条。
-            crate::ssh::open_ssh_session,
+            crate::ssh::ipc::open_ssh_session,
             crate::session::write_session,
             crate::session::resize_session,
             crate::session::close_session,
@@ -64,16 +64,16 @@ pub fn builder() -> Builder<tauri::Wry> {
             // 等传输的清理落地），而同步命令跑在**处理 IPC 请求的那条线程**上 ——
             // 挡住它就等于挡住全部 IPC。
             // `sftp_transfer` 同步：它只把任务排上 runtime 就返回（搬运本身在后台）。
-            crate::sftp::sftp_open,
-            crate::sftp::sftp_connect,
-            crate::sftp::sftp_list,
-            crate::sftp::sftp_transfer,
-            crate::sftp::sftp_transfer_cancel,
-            crate::sftp::sftp_transfers,
-            crate::sftp::sftp_sides,
+            crate::ssh::ipc::sftp::sftp_open,
+            crate::ssh::ipc::sftp::sftp_connect,
+            crate::ssh::ipc::sftp::sftp_list,
+            crate::ssh::ipc::sftp::sftp_transfer,
+            crate::ssh::ipc::sftp::sftp_transfer_cancel,
+            crate::ssh::ipc::sftp::sftp_transfers,
+            crate::ssh::ipc::sftp::sftp_sides,
             // 面板重新打开时接回已有的会话（关面板不停会话，见 `sftp_sessions` 的文档）。
-            crate::sftp::sftp_sessions,
-            crate::sftp::sftp_close,
+            crate::ssh::ipc::sftp::sftp_sessions,
+            crate::ssh::ipc::sftp::sftp_close,
             // Bitwarden（plan 0902 / 0905）：两个轴、运行时下载、登录 / 解锁 / 锁定 / 登出。
             // ⚠️ `bw_cli_install` 是 async：它要拉约 45 MB（同步命令会把处理 IPC 请求的
             // 那条线程占住几十秒，同 `open_ssh_session` 的理由）。

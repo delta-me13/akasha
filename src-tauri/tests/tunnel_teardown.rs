@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use akasha_ssh::testing::{Relay, Running, ServerOptions, start};
+use akasha_lib::ssh::testing::{Relay, Running, ServerOptions, start};
 use akasha_store::pools::{forwards, hosts};
 use serde_json::{Value, json};
 use support::{

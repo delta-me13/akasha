@@ -19,7 +19,7 @@
 //!
 //! ## 服务端都在**测试进程**里
 //!
-//! 跳板与目标两台都由本进程起（`akasha_ssh::testing`），所以"跳板看到了什么请求"、"目标收到了
+//! 跳板与目标两台都由本进程起（`akasha_lib::ssh::testing`），所以"跳板看到了什么请求"、"目标收到了
 //! 什么字节"、"界面上显示了什么"能在一条用例里对账。
 
 #![allow(clippy::unwrap_used)] // 测试里的 unwrap 是断言手段（root Cargo.toml 的 lints 约定）
@@ -29,7 +29,7 @@ mod support;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
 
-use akasha_ssh::testing::{Relay, Running, ServerOptions, start};
+use akasha_lib::ssh::testing::{Relay, Running, ServerOptions, start};
 use akasha_store::pools::hosts;
 use serde_json::{Value, json};
 use support::{

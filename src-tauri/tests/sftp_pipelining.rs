@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use akasha_ssh::testing::{ServerOptions, SftpItem, slow_link, start};
+use akasha_lib::ssh::testing::{ServerOptions, SftpItem, slow_link, start};
 use akasha_store::pools::hosts;
 use serde_json::{Value, json};
 use support::{

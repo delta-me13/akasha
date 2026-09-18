@@ -29,7 +29,7 @@ use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use akasha_ssh::testing::{Relay, Running, ServerOptions, start};
+use akasha_lib::ssh::testing::{Relay, Running, ServerOptions, start};
 use serde_json::{Value, json};
 use support::{
     CLOSE_TIMEOUT, PromptScript, USER, answer_prompts, click, connect_and_prepare, fill_input,

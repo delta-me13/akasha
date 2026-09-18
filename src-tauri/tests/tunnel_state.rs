@@ -30,7 +30,7 @@ mod support;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use akasha_ssh::testing::{ServerOptions, start};
+use akasha_lib::ssh::testing::{ServerOptions, start};
 use akasha_store::pools::{forwards, hosts};
 use serde_json::{Value, json};
 use support::{

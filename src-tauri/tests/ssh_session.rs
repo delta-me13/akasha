@@ -15,7 +15,7 @@
 //! ## 服务端在**测试进程**里
 //!
 //! app 是另一个进程，它连过来 —— 于是"服务端看到了什么"与"界面上看到了什么"是同一件事的
-//! 两种观察，可以在一条用例里对账。服务端本体是 `akasha_ssh::testing`（生产代码别用它，
+//! 两种观察，可以在一条用例里对账。服务端本体是 `akasha_lib::ssh::testing`（生产代码别用它，
 //! 理由写在那个模块的文档里）。
 //!
 //! ## 脚手架
@@ -30,7 +30,7 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use akasha_ssh::testing::{ServerOptions, start};
+use akasha_lib::ssh::testing::{ServerOptions, start};
 use akasha_store::pools::hosts;
 use serde_json::{Value, json};
 use support::{

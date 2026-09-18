@@ -228,7 +228,7 @@ pub fn import_ssh_config(
 ) -> Result<ImportReport, ImportError> {
     let file = match path {
         Some(path) => std::path::PathBuf::from(path),
-        None => akasha_ssh::user_ssh_config_file().ok_or_else(|| ImportError::Unreadable {
+        None => crate::ssh::user_ssh_config_file().ok_or_else(|| ImportError::Unreadable {
             path: "~/.ssh/config".to_owned(),
             message: "取不到家目录（`HOME` / `USERPROFILE` 都没有），不给路径就不知道该读哪个文件"
                 .to_owned(),
