@@ -1,9 +1,7 @@
 # 全局开发工具的唯一来源。
 #
-# 该文件采用mise安装开发必要工具
+# 用 mise 安装开发所需的全局 CLI 工具
 # 详见 AGENTS.md §10。
-#
-#
 #
 # 用法：
 #   mise install      # 按下面的版本装齐
@@ -11,20 +9,20 @@
 #   mise upgrade      # 升级（升级后请同步本文件的版本号并提交）
 #
 # 注意：
-#	1. mise 安装的工具在 PATH 上优先于 ~/.cargo/bin 里 cargo install 的同名工具。该特性由 mise 支持详见其官方文档。
-#	2. rustup工具及相应组件由rustup负责，部分依赖由系统包管理工具负责，详情请见tauri安装文档。
+#   1. mise 安装的工具在 PATH 上优先于 ~/.cargo/bin 里 cargo install 的同名工具（mise 的 shim 语义，见其官方文档）。
+#   2. Rust 工具链（rustc / cargo / clippy / rustfmt）由 rustup 管；系统库由发行版包管理器管（见 Tauri 安装文档）。
 
 [tools]
 just = "1.58.0"
 
-# 以下工具不存在于mise官方的aqua注册表中，采用cargo后端安装
+# 以下工具没有 aqua 预编译配方，必须显式指定 cargo 后端安装
 "cargo:bacon" = "3.25.0"
 "cargo:cargo-nextest" = "0.9.144"
 "cargo:cargo-deny" = "0.20.2"
 
-# 可选：rust二进制预编译下载器。采用该工具下载可避免编译耗时或解决当前环境无法编译某些工具的问题。
+# 可选：cargo-binstall，用预编译产物替代源码编译；本机未安装，先注释掉。
 # "cargo:cargo-binstall" = "latest"
 
-# 前端运行依赖以及包管理工具
+# 前端运行时与包管理器
 node = "26.8.2"
 pnpm = "12.3.4"

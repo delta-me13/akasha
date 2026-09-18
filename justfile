@@ -1,10 +1,10 @@
-# 该文件使用 just 处理于管理开发过程中使用的脚本。
+# 项目级命令入口：用 just 管理开发流程中的脚本。
 #
 # 脚本架构（详见 AGENTS.md §11）：
-#   - rust相关脚本注册文件位于 src-tauri/justfile
-#   - 前端及项目级脚本注册于本文件
+#   - crate 级命令位于 src-tauri/justfile
+#   - 项目级命令位于本文件，对 crate 级命令只做转发
 #
-# 相关脚本依赖：just / bacon / cargo-nextest / cargo-deny（见 mise.toml、AGENTS.md §10）
+# 相关工具依赖：just / bacon / cargo-nextest / cargo-deny（见 mise.toml、AGENTS.md §10）
 
 set shell := ["bash", "-uc"]
 
@@ -15,7 +15,7 @@ default:
 
 # ── 环境 ────────────────────────────────────────────────────────────────────
 
-# 调用mise安装开发使用工具
+# 按 mise.toml 装齐全局 CLI 工具
 tools:
     mise install
 
@@ -23,17 +23,17 @@ tools:
 tools-ls:
     @mise ls
 
-# 系统库前置库检查，暂仅支持Arch系
+# 系统库前置检查（当前仅覆盖 Arch 系）
 syscheck:
     @for p in webkit2gtk-4.1 javascriptcoregtk-4.1 gtk+-3.0 librsvg-2.0; do pkg-config --exists "$p" && echo "✅ $p $(pkg-config --modversion "$p")" || { echo "❌ $p 缺失 → Arch 系: sudo pacman -S webkit2gtk-4.1"; exit 1; }; done
 
-# 检查virtauri实际连接项目标识
+# 检查 victauri 实际连接的项目标识
 doctor:
     victauri doctor
 
 # ── 开发循环 ────────────────────────────────────────────────────────────────
 
-# 启动开发服务器，该服务器通过HMR动态监控工作区文件修改
+# 启动开发主控：前端 HMR，Rust 改动增量重编译并重启 app
 dev:
     pnpm tauri dev
 
@@ -43,49 +43,46 @@ dev-web:
 
 # ── AGENT 执行器（沙箱受限时的唯一出口；见 docs/agent-runner.md）──────────────
 #
-# workspace-write 沙箱禁写 pty 设备（/dev/ptmx）与 ~/.cargo，于是 just dev / just test
-# 只会拿到 openpty 的权限错误。下列配方把命令交给一个**能力表由工作区外文件决定**的执行器：
-# 动作表只来自 policy.json（工作区与 /tmp 之外，两处都受沙箱可写，放进去等于把能力表交给
-# 被约束方），请求只能携带动作名，不经过 /bin/sh，脚本哈希与 policy 登记值不符即拒绝启动。
-# 生成样板：just runner-policy（复制到 ~/.akasha-agent-runner/policy.json）。
-# 驱动分两种：runner-run 阻塞到结束；runner-submit 立刻拿到 id，再用 runner-wait 阻塞等待
-# （等待由内核唤醒，不是轮询文件系统）或用 runner-result 看一眼。
+# workspace-write 沙箱禁止写入工作区与临时目录之外的任何路径（含 PTY 设备与 ~/.cargo），于是
+# just dev / just test 只会拿到 openpty 的权限错误。下列配方把命令交给一个**能力表由工作区外文件决定**的执行器：
+# policy.json 必须放在工作区与 /tmp 之外（两处在沙箱内可写，放进去等于把能力表交给被约束方）；动作不在表中或脚本哈希与登记值不符即拒绝启动。
+# 生成样板：just runner-policy（复制到默认路径 ~/.akasha-agent-runner/policy.json）。
+# 驱动分两种：runner-run 同步阻塞至结束；runner-submit 立即返回 request=<id>，之后由 runner-wait 阻塞等待。
+# runner-wait 由内核唤醒而非轮询文件系统；它不可用时改用 runner-result 轮询，后者也可在运行途中查看状态。
 
-# 生成 policy 样板（含当前脚本哈希），并刷新 docs 下的样i板
-# 生成 policy 权限文件，结果打印到终端并输出到docs文件夹下agent-runner.policy.json样板
+# 生成 policy 样板（含当前脚本哈希），打印到终端并写入 docs/agent-runner.policy.json
 runner-policy:
     @/usr/bin/python3 scripts/agent-runner.py --print-policy --out docs/agent-runner.policy.json
 
-# 检查agent-runner代理服务现状。该命令无需提权。
+# 查看 agent-runner 服务状态与授权清单，无需提权。
 runner-status:
     @/usr/bin/python3 scripts/agent-runner.py --status
 
-# 常驻启动：整套机制里**唯一**的提权点（沙箱内会失败于 openpty，即为提权依据）
+# 常驻启动执行器（沙箱内的唯一提权点），需提权。
 runner-start:
     /usr/bin/python3 scripts/agent-runner.py --serve
 
-# 停止执行器并回收它名下的全部进程组。该命令无需提权。
+# 停止执行器并回收其名下的全部进程组，无需提权。
 runner-stop:
     @/usr/bin/python3 scripts/agent-runner.py --stop
 
-# 关闭开发服务器，但保留执行器持续运行。
+# 只回收 dev（app），保留执行器。
 runner-stop-dev:
     @/usr/bin/python3 scripts/agent-runner.py --stop-dev
 
-# 提交子命令并阻塞。退出码 = 动作退出码，默认超时时间540s。
+# 提交动作并阻塞到结束，退出码即动作退出码（默认等待 540s）。
 runner-run action timeout="540":
     @/usr/bin/python3 scripts/agent-runner.py --run "{{action}}" --timeout "{{timeout}}"
 
-# 只提交动作，立刻打印 request=<id>（先做别的，回头再等）
-# 异步指令，提交子命令后立即返回 request=<id>，非阻塞。可后续通过runner-wait显示等待执行完成。
+# 只提交动作，立即返回 request=<id>；之后由 runner-wait 阻塞等待。
 runner-submit action:
     @/usr/bin/python3 scripts/agent-runner.py --submit "{{action}}"
 
-# 阻塞并等待某请求结束, 该指令幂等，默认超时540s。
+# 阻塞等待某请求结束（已结束则立即返回，可重复等待），默认超时 540s。
 runner-wait id timeout="540":
     @/usr/bin/python3 scripts/agent-runner.py --wait "{{id}}" --timeout "{{timeout}}"
 
-# 非阻塞读某请求的结果，适用于轮训（对应id请求为结束则返回 running，退出码 4）
+# 非阻塞读某请求的结果（未结束打印 running，退出码 4），适用于轮询。
 runner-result id:
     @/usr/bin/python3 scripts/agent-runner.py --result "{{id}}"
 
@@ -105,11 +102,11 @@ fmt:
 fmt-check:
     just --justfile {{SRC}}/justfile fmt-check
 
-# Rust HMR开发服务器，用于触发自动重编译
+# Rust 秒级反馈循环（bacon），不启动 app
 watch:
     just --justfile {{SRC}}/justfile watch
 
-# 单元测试（采用cargo-nextest后端）
+# 单元测试（cargo-nextest）
 test:
     just --justfile {{SRC}}/justfile test
 
@@ -117,7 +114,7 @@ test:
 test-e2e:
     just --justfile {{SRC}}/justfile test-e2e
 
-# 验证项目是否满足便携app的必要条件
+# 可搬迁性验证：bin 所在文件夹搬走后数据仍在
 portable:
     just --justfile {{SRC}}/justfile portable
 
@@ -129,7 +126,7 @@ libudev-check:
 serial-check:
     just --justfile {{SRC}}/justfile serial-check
 
-# 基准测试
+# 吞吐基线（criterion），用于改动前后对比，不是门禁
 bench:
     just --justfile {{SRC}}/justfile bench
 
@@ -141,34 +138,31 @@ deny:
 deny-offline:
     just --justfile {{SRC}}/justfile deny-offline
 
-# 自动生成Rust Tauri event的js绑定。Rust command/event → src/ipc/bindings.ts
+# 由 Rust command/event 生成 src/ipc/bindings.ts
 gen-types:
     just --justfile {{SRC}}/justfile gen-types
 
-# 检查js侧Tuari绑定是否与rust测代码一致
+# 检查生成物是否与 Rust 侧一致
 gen-types-check:
     just --justfile {{SRC}}/justfile gen-types-check
 
-# ── 组合门禁（跨越根与 crate，所以只能在根定义）──────────────────────────────
+# ── 组合门禁（跨越根与 crate，只能在根定义）──────────────────────────────
 
-# lint = clippy（crate 级）+ ast-grep scan（仓库级，读根 sgconfig.yml）+ ast-grep test
+# lint = clippy（crate 级）+ ast-grep scan（仓库级，配置文件为 sgconfig.yml）+ ast-grep test
 #
-# 两个 ast-grep 步骤守的是不同的东西，别合并：
-#   * `scan` 扫**真代码**——规则有没有被违反；
-#   * `test` 跑 `scripts/ast-grep/tests/` 里的**正例 / 反例**——规则自己还对不对（改窄了、改宽了、
-#     正则写错了都在这儿现形）。⚠️ 它**不覆盖 `files:` / `ignores:`**（测例不是真实路径
-#     下的文件）：改路径范围时要按 AGENTS.md §6 用真实路径的探针复核一次。
+# 两个 ast-grep 步骤守的不是同一件事，不得合并：
+#   * `scan` 扫描整体仓库检查规则是否被违反；
+#   * `test` 运行 `scripts/ast-grep/tests/` 里的**正例 / 反例**，验证规则本身是否仍然正确；⚠️ 测例不是真实路径下的文件，所以它**不覆盖 `files:` / `ignores:`** —— 改路径范围时要按 AGENTS.md §6 用真实路径探针复核一次。
 lint:
     just clippy
     ast-grep scan
     ast-grep test
 
-# 默认安静：每步一行 + 耗时；失败时把该步输出倒出来（超长则首尾各 40 行并落盘）。
-# 为什么需要这个壳：cargo deny 对 Tauri 这种依赖树会打 5000+ 行「重复版本」警告，
-# 而 multiple-versions 是 warn 级、永远不让门禁失败 —— 在成功的运行里那些纯粹是噪音。
-# 要看完整输出就直接跑单个配方（just deny-offline / just lint / just test ...）。
+# 默认安静：每步一行 + 耗时；失败时输出该步日志（超过 80 行则打印首尾各 40 行），完整输出留在 .just-ready-fail.log。
+# 要看某一步的完整输出就直接运行该配方（just deny-offline / just lint / just test ...）。
+# ⚠️ 单步日志可达数千行，查看时需截断（如 tail）。
 #
-# 可执行的 DoD（AGENTS.md §7）：提交前跑这一个。
+# 可执行的 DoD（AGENTS.md §7），提交前运行一次。
 ready:
     @set -uo pipefail; \
     steps="fmt-check lint test deny-offline gen-types-check docs-check"; \
@@ -193,41 +187,38 @@ ready:
         fi; \
         echo; \
         echo "❌ just ready 失败于: just $s"; \
-        echo "   完整输出: .just-ready-fail.log（或直接单跑 just ${s}）"; \
+        echo "   完整输出: .just-ready-fail.log（或直接运行对应指令 just ${s}）"; \
         exit 1; \
       fi; \
     done; \
-    echo "✅ just ready 全绿（${ok}/${total}）"
+    echo "✅ just ready 通过（${ok}/${total}）"
 
-# 文档纪律（四部分，规则见 AGENTS.md §8 / §8.1 / §8.2，plan 规则见 docs/plans/README.md）。
-# 四部分**每轮全部执行**（非快速失败）：第一类失败不终止其余三类 —— 一轮给出全部待修项。
+# 文档纪律（四部分，详细规则见 AGENTS.md §8 / §8.1 / §8.2，plan 规则详见 docs/plans/README.md）。
+# 四部分**每轮全部执行**（非快速失败）。
 #
 # A. 命令未漂移 —— 防止照着一份过期规则去用已不存在的旧命令
-#    * docs/just.md §2 是**权威清单**：必须覆盖**全部**配方（正向，且**只认 §2 表格内的记录**）
-#    * AGENTS.md / README.md / ROADMAP.md 与 docs/**/*.md 可以只提一部分，但提到的每个命令必须真实存在（反向）
-# B. 汇总类文档没长细节 —— ROADMAP 放"判据"，不放"手段"
+#    * docs/just.md §2 是**权威清单**：必须覆盖**全部**配方（正向，且**只承认 §2 表格内的记录**）
+#    * AGENTS.md / README.md / ROADMAP.md 与 docs/**/*.md 可以仅记录部分指令，但记录的每个命令必须真实存在（反向）
+# B. 汇总类文档不放细节 —— ROADMAP 放"判据"，不放"手段"
 #    * 每条 ≤3 行、无代码块、反引号里不出现命令调用（--flag / {...}）
-#    * 只拦"细节泄漏"，**不拦能力条目本身的增长**：条目数该随能力涨，行数不该随细节涨
-# C. plan 的预算与索引 —— 防止归档机制把细节堆进一个大文件
+# C. plan 的预算与索引 —— 防止归档机制将细节写入单一大文件
 #    * 每份 plan（含 archive/）≤200 行；超了要拆成两份，不是继续加
 #    * 索引 docs/plans/README.md 双向一致：有文件必有索引行，有索引行必有文件
-#    * 标「进行中」却没有「## 验收命令」的 plan 直接红 —— 骨架 plan 不许开工
+#    * 标为「进行中」却没有「## 验收命令」的 plan 直接红 —— 骨架 plan 不许开工
 #
 # 已知问题，记录在此避免重复：
 #   1. 反斜杠转义的反引号在 grep -E 里会把反引号本身吞掉，于是 sed 剥不掉 "just " 前缀。
 #      改用「just <名> + 右侧边界」判定，不依赖 markdown 写法。
 #   2. 正向检查若不限定在 §2 表格内就形同虚设 —— 某条命令可能只在排错段落里被顺带提及，
-#      而表格里其实已经删掉了。所以用 awk 取出 §2 段落，只在那里面找。
+#      而表格里已经删掉了。所以用 awk 取出 §2 段落，只在那里面找。
 #   3. 含反引号的 grep 模式必须整体放进**单引号**里，否则会被 bash 当命令替换执行。
-#   4. 反向检查**不含 CLAUDE.md** —— 那个文件是 AGENTS.md 的指针 + Victauri 自动生成块，
-#      块内的英文散文会被裸词正则读成配方名（实测两条："just retry" / "just the"）。
+#   4. 反向检查**不含 CLAUDE.md** —— 该文件为 AGENTS.md 的指针 + Victauri 自动生成块，块内的英文散文会被裸词正则读成配方名（实测两条："just retry" / "just the"）。
 #
 # D. 文档语体 —— 剥离代码块与行内代码后匹配禁用语表（规范见 AGENTS.md §8.2）
 #    * 表在 docs/style.md 的 BANNED 标记之间（唯一数据源；加词步骤见该文件 §2）；
-#      规则本体与术语对照见 AGENTS.md §8.2。片段拼成一条正则后逐份文档 grep -E。
-#    * **非快速失败**：逐份文档各查一遍，全部查完才汇总报错 —— 一轮修完全部命中，
-#      不必"改一份再执行一次"；单份文档命中超过 20 条时列出前 20 条并写明剩余条数。
-#    * 由 docs-check 调用时同样不终止它的其余三类检查（那是**调用方**的性质）。
+#      规则本体与术语对照见 AGENTS.md §8.2。
+#    * **非快速失败**：逐份文档各查一遍，全部查完才汇总报错；单份文档命中超过 20 条时
+#      列出前 20 条并写明剩余条数。
 #    * `paste` 要**显式写输入操作数 `-`**：BSD 的 paste（macOS）不给文件操作数就报 usage，
 #      而 GNU 的 paste 默认读 stdin —— 这两行的差别只在 macOS 上暴露，本机实测。
 docs-style:
@@ -278,7 +269,7 @@ docs-check:
       id=$(basename "$f" | cut -c1-4); \
       grep -qE "^\| $id " docs/plans/README.md || { echo "❌ docs/plans/README.md 索引缺行: $id ($f)"; miss=1; }; \
       if grep -qE '\*\*状态\*\*：进行中' "$f" && ! grep -q '^## 验收命令' "$f"; then \
-        echo "❌ 标为「进行中」却没有「## 验收命令」—— 骨架 plan 不许开工: $f"; miss=1; \
+        echo "❌ 标为「进行中」却没有「## 验收命令」—— 对应plan不允许开始实现: $f"; miss=1; \
       fi; \
     done; \
     for id in $(grep -oE '^\| [0-9]{4} ' docs/plans/README.md | grep -oE '[0-9]{4}'); do \
