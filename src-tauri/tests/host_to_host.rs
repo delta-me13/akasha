@@ -36,7 +36,9 @@ use std::sync::Arc;
 
 use akasha_lib::ssh::testing::{Relay, Running, ServerOptions, SftpItem, start};
 use akasha_lib::ssh::transfer::{Cancel, Progress, TransferRequest, transfer};
-use akasha_lib::ssh::{CredentialCache, PinnedHostKey, SshAuth, SshConnection, SshError, SshTarget};
+use akasha_lib::ssh::{
+    CredentialCache, PinnedHostKey, SshAuth, SshConnection, SshError, SshTarget,
+};
 use support::{CONNECT_TIMEOUT, CountingProvider, connect_options, connect_options_to};
 
 /// 两台服务端各用各的登录口令：`via` 那一跳要真的再认证一次（凭据不是从目标那台借的）。

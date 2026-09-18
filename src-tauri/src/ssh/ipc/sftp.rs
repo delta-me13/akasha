@@ -41,9 +41,9 @@ use tauri::{AppHandle, Manager, State};
 use tokio::runtime::Handle as RuntimeHandle;
 use tokio::task::JoinHandle;
 
-use crate::store::ipc::pools::HostId;
 use crate::session::{IpcError, SessionHandle, Sessions};
 use crate::ssh::{Ssh, SshFailureKind, SshIpcError};
+use crate::store::ipc::pools::HostId;
 use crate::store::ipc::vault::{ConnError, Vault};
 
 /// 两栏里的哪一栏。**唯一进入契约的呈现概念**（ADR-0006 D7）。

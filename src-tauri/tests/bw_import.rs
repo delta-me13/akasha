@@ -406,7 +406,8 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
         let id = akasha_lib::store::pools::keys::find_by_name(&conn, KEY_NAME)
             .unwrap()
             .expect("库里该有那把钥匙");
-        let mut other = akasha_lib::store::pools::keys::PrivateKey::new(other_pem.into_bytes()).unwrap();
+        let mut other =
+            akasha_lib::store::pools::keys::PrivateKey::new(other_pem.into_bytes()).unwrap();
         akasha_lib::store::pools::keys::set_private_key(&conn, id, &mut other).unwrap();
     }
     click(

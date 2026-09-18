@@ -73,22 +73,22 @@
 
 use crate::config::Reconnect;
 use crate::session::SessionId;
-use crate::tunnel::{TunnelState, TunnelTransitionError};
 use crate::ssh::{
     ForwardEnd, ForwardEnding, ForwardTarget, Ingress, LocalForward, LocalListener, RemoteForward,
     SshError,
 };
 use crate::store::StoreError;
 use crate::store::pools::forwards::Direction;
+use crate::tunnel::{TunnelState, TunnelTransitionError};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_specta::Event;
 use tokio::sync::watch;
 
-use crate::store::ipc::pools::{ForwardDirection, ForwardId, HostId};
 use crate::session::{IpcError, SessionHandle, Sessions};
 use crate::ssh::{Ssh, SshFailureKind, SshIpcError};
+use crate::store::ipc::pools::{ForwardDirection, ForwardId, HostId};
 use crate::store::ipc::vault::{ConnError, Vault};
 
 /// 一条隧道。

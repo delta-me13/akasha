@@ -45,8 +45,8 @@
 //! `scripts/ast-grep/rules/no-tauri-in-pure-modules.yml` 强制。
 
 pub mod dump;
-pub mod ipc;
 pub mod export;
+pub mod ipc;
 mod passphrase;
 pub mod pools;
 /// 受保护的一页内存（ADR-0002 D13 的**同一个原语**）。公开的理由见模块文档：

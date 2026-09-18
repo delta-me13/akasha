@@ -25,17 +25,17 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 
-use crate::store::ipc::pools::HostId;
-use crate::tunnel::ActiveForward;
-use crate::session::{SessionEvent, SessionId, SessionKind, SessionRegistry};
-use crate::tunnel::TunnelState;
 use crate::pty::watchdog::SessionWatchdog;
 use crate::pty::{
     Batch, BatchPolicy, ExitStatus, PtyTransport, TerminalSize, Transport, TransportError,
     spawn_batcher,
 };
+use crate::session::{SessionEvent, SessionId, SessionKind, SessionRegistry};
 use crate::ssh::transfer::Endpoint;
 use crate::ssh::{SftpClient, SshConnection};
+use crate::store::ipc::pools::HostId;
+use crate::tunnel::ActiveForward;
+use crate::tunnel::TunnelState;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody, JavaScriptChannelId};
 use tauri::{AppHandle, Emitter, State, Webview};

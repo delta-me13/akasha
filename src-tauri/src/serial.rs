@@ -32,13 +32,13 @@
 //! ```
 
 mod enumerate;
-pub mod ipc;
 mod error;
+pub mod ipc;
 mod settings;
 mod transport;
 
 pub use enumerate::{PortInfo, PortKind, ports};
 pub use error::SerialError;
+pub use ipc::*;
 pub use settings::{DataBits, Flow, Parity, SerialSettings, StopBits};
 pub use transport::SerialTransport;
-pub use ipc::*;

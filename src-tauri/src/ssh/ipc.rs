@@ -44,9 +44,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, Webview};
 use tokio::runtime::{Handle as RuntimeHandle, Runtime};
 
-use crate::store::ipc::pools::HostId;
 use crate::prompt::Prompts;
 use crate::session::{self, IpcError, RawChannel, SessionHandle, Sessions};
+use crate::store::ipc::pools::HostId;
 use crate::store::ipc::vault::{ConnError, Vault};
 
 /// SSH runtime 的 worker 数。

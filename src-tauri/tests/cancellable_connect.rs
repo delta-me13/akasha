@@ -24,7 +24,9 @@ use std::io::Read;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use akasha_lib::ssh::{CredentialCache, PinnedHostKey, SshAuth, SshConnection, SshError, SshTarget};
+use akasha_lib::ssh::{
+    CredentialCache, PinnedHostKey, SshAuth, SshConnection, SshError, SshTarget,
+};
 use support::{CountingProvider, connect_options_to};
 
 /// 每个用例自己建一个 runtime（ADR-0003 D2：库**不**自建 runtime，由调用方给 `Handle`）。

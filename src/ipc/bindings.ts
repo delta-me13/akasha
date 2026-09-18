@@ -54,7 +54,7 @@ export const commands = {
 	 *  `path` 为 `None` → `~/.ssh/config`（家目录取不到时**明确报错**，不猜一个路径去读）。
 	 *  `overwrite` = `false`（默认）：同名已存在就**不动它**，只在报告里列出来。
 	 * 
-	 *  支持哪些指令、不支持时是报错还是警告 —— 全在 `akasha_store::sshconfig` 里，这个命令
+	 *  支持哪些指令、不支持时是报错还是警告 —— 全在 `crate::store::sshconfig` 里，这个命令
 	 *  只负责"读文件、问用户名、写库、把结果拼成报告"。
 	 */
 	importSshConfig: (path: string | null, overwrite: boolean) => typedError<ImportReport, ImportError>(__TAURI_INVOKE("import_ssh_config", { path, overwrite })),
@@ -307,7 +307,7 @@ export const events = {
 /**
  *  认证方式过 IPC 的形状。
  * 
- *  与 `akasha_store::pools::hosts::Auth` 分开：存储 crate **不依赖 specta**
+ *  与 `crate::store::pools::hosts::Auth` 分开：存储 crate **不依赖 specta**
  *  （那是 app 钉住版本的东西），所以这里做一次显式映射 —— 而映射写成穷尽 `match`，
  *  池里加一种认证方式时**这里编译不过**。
  */
@@ -361,7 +361,7 @@ export type BwCliInfo = {
 };
 
 /**
- *  与 [`akasha_bw::BwError`] 一一对应。分成两份是因为 IPC 上要的是一个能穷尽 `switch`
+ *  与 [`crate::bw::BwError`] 一一对应。分成两份是因为 IPC 上要的是一个能穷尽 `switch`
  *  的枚举，而 crate 的错误带着内部细节（路径、长度、被拒绝的地址）。
  */
 export type BwErrorKind = 
@@ -394,7 +394,7 @@ export type BwImportError =
  *  导入报告（过 IPC 的形状）。
  * 
  *  它要回答三个问题，缺一个用户就没法相信这次导入 —— 与 `import_ssh_config` 的
- *  [`crate::pools::ImportReport`] 同一形状：
+ *  [`crate::store::ipc::pools::ImportReport`] 同一形状：
  * 
  *  | 字段 | 回答 |
  *  |---|---|
@@ -812,7 +812,7 @@ export type SerialParams = {
 /**
  *  校验位过 IPC 的形状。
  * 
- *  与 `akasha_store::pools::serial::Parity` 分开：存储 crate **不依赖 specta**
+ *  与 `crate::store::pools::serial::Parity` 分开：存储 crate **不依赖 specta**
  *  （那是 app 钉住版本的东西），串口 crate 也**不带 serde**。两侧的映射都写成穷尽 `match`，
  *  于是任一侧加一种取值时**这里编译不过** —— 而不是悄悄少一个分支。
  */
@@ -923,7 +923,7 @@ export type SftpError =
  *  分辨它们靠 `live` 比"还没结束的条数"少。
  */
 export type SftpInFlight = {
-	/**  上限（来自配置，见 `akasha_core::Transfer::in_flight`）。 */
+	/**  上限（来自配置，见 `crate::config::Transfer::in_flight`）。 */
 	limit: number,
 	/**  此刻有几个文件在搬。 */
 	live: number,
@@ -1121,7 +1121,7 @@ export type SshIpcError =
 } };
 
 /**
- *  库文件的状态。**与 `akasha_store::VaultState` 分开**：这是 IPC 类型（要生成 TS），
+ *  库文件的状态。**与 `crate::store::VaultState` 分开**：这是 IPC 类型（要生成 TS），
  *  而存储 crate 不该为了生成 TS 去依赖被 app 钉住版本的 `specta`。
  * 
  *  两边的映射写成穷尽 `match`（下面的 `From`）：存储层加了状态，**这里编译不过** ——
@@ -1197,7 +1197,7 @@ export type TunnelError =
  * 
  *  与 [`Self::Bind`] 分开：那一条是"这个端口没拿到"，换个端口就好；这一条是
  *  "这个地址**不许**绑" —— 换端口没有用，要改的是绑定的网卡范围。
- *  判据与理由见 `akasha_ssh::socks5`（这一侧无认证）。
+ *  判据与理由见 `crate::ssh::socks5`（这一侧无认证）。
  */
 { kind: "notLoopback"; detail: {
 	address: string,
@@ -1234,7 +1234,7 @@ export type TunnelStateChanged = {
 /**
  *  状态过 IPC 的形状。
  * 
- *  与 `akasha_core::TunnelState` 分开：`Reconnecting` 的次数在那边是**载荷**，在这边是
+ *  与 `crate::tunnel::TunnelState` 分开：`Reconnecting` 的次数在那边是**载荷**，在这边是
  *  事件里的另一个字段（`attempt`）—— 前端因此不必对"每种状态长什么样"分支。
  *  映射写成穷尽 `match`：core 加一个状态时**这里编译不过**。
  */
@@ -1295,7 +1295,7 @@ export type VaultError =
  */
 { kind: "emptyPassphrase" } | 
 /**
- *  口令比一页受保护内存还长（`akasha_store::MAX_LEN`）。**不是截断**：
+ *  口令比一页受保护内存还长（`crate::store::MAX_LEN`）。**不是截断**：
  *  截断会让"口令错了"变成一件没人能解释的事。
  */
 { kind: "passphraseTooLong"; detail: {
