@@ -21,8 +21,9 @@
 **读数**：`just check` / `just clippy`（`-D warnings`）/ `just lint`（clippy + ast-grep scan +
 ast-grep test，6 条规则）绿；成员集成测试 SSH **51/51**、store **114/114**、serial 两次配置通过。
 `just test` 在本沙箱里 4 个 `pty::local` 用例失败于 `openpty: PermissionDenied`
-（`AGENTS.md` §1 记的环境权限），`libudev-check` 与 `deny-offline` 分别需要 Linux 宿主与联网 ——
-三条都不是这次改动引入的。
+（`AGENTS.md` §1 记的环境权限）；**带完整权限重新执行 `just ready`**，那 4 条通过，
+剩下的一条是**已知问题 #165**（`bw::acquire` 的 install 用例偶发 `Peer disconnected`，未定位）。
+`libudev-check` 需要 Linux 宿主。三条都不是这次改动引入的。
 
 ⚠️ **本文件下方的历史读数写的仍是旧 crate 路径**（`akasha_ssh::…` / `src-tauri/crates/…`）：
 它们记录的是当时的事实，按 ADR-0008 §4 不追改。当前路径与规则以 `AGENTS.md` §3.1 / §6 为准。
