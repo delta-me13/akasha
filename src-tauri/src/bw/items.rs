@@ -15,7 +15,7 @@
 //!    别的一律丢掉（serde 默认行为）—— 我们没有"先解析成 `serde_json::Value` 再挑"那条路。
 //! 2. **错误消息不带原文**：形状不对时报的是 serde 的位置信息（第几行第几列），
 //!    不是那段字节（[`BwError::Parse`] 的 `message` 会进界面与日志）。
-//! 3. 那段字节本身由调用方擦零（[`crate::Cli::items`] 返回 `Zeroizing<Vec<u8>>`）。
+//! 3. 那段字节本身由调用方擦零（[`crate::bw::Cli::items`] 返回 `Zeroizing<Vec<u8>>`）。
 //!
 //! ## 字段名的两版（实测 + 上游实现）
 //!
@@ -26,7 +26,7 @@
 
 use serde::Deserialize;
 
-use crate::error::BwError;
+use crate::bw::error::BwError;
 
 /// 上游的条目类型编号：`CipherType.SshKey = 5`（1 登录 / 2 安全笔记 / 3 卡 / 4 身份 / 5 SSH 密钥）。
 const TYPE_SSH_KEY: u8 = 5;

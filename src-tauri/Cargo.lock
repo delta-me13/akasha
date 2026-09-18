@@ -76,7 +76,6 @@ dependencies = [
 name = "akasha"
 version = "0.1.0"
 dependencies = [
- "akasha-bw",
  "akasha-pty",
  "akasha-serial",
  "akasha-ssh",
@@ -86,6 +85,7 @@ dependencies = [
  "portable-pty",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "specta",
  "specta-typescript",
  "tauri",
@@ -98,23 +98,11 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "ureq",
  "victauri-plugin",
  "victauri-test",
  "vte",
  "zbus",
-]
-
-[[package]]
-name = "akasha-bw"
-version = "0.1.0"
-dependencies = [
- "akasha-store",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.20",
- "tracing",
- "ureq",
  "zeroize",
  "zip",
 ]

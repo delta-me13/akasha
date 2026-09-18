@@ -1,6 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 pub mod bindings;
-pub mod bitwarden;
+pub mod bw;
 pub mod config;
 pub mod lifecycle;
 pub mod pools;
@@ -75,7 +75,7 @@ pub fn run() {
     //
     // 提问表要单独 `manage` 一份（同一个 `Arc`，不是两份表）：三条回答命令只认它，
     // 而它们不该为了拿一份表去穿过 `Ssh`。
-    let bitwarden = bitwarden::Bitwarden::default();
+    let bitwarden = bw::Bitwarden::default();
     let ssh = ssh::Ssh::start();
     let ssh_error = ssh.startup_error().map(str::to_owned);
     let prompts = ssh.prompts().clone();
@@ -138,7 +138,7 @@ pub fn run() {
                 // ⚠️ 它**不起进程**：读的是上一次动作留下的读数。
                 .probe("bitwarden", {
                     let bitwarden = bitwarden.clone();
-                    move || bitwarden::probe(&bitwarden)
+                    move || bw::probe(&bitwarden)
                 })
                 // **关闭之后还剩什么**（plan 0606）：判据"关闭转发 Session 后连接数与重连任务数
                 // 都归零"（D5）的机器可读那一半。
@@ -199,8 +199,8 @@ pub fn run() {
             // Bitwarden 的两个轴（plan 0902）：配置文件里写了就用它，没写就是默认的 `host`。
             // ⚠️ 只读、不下载、不解析可执行文件 —— 那几步都在用户动作里做（启动路径上不碰网络）。
             if let Some(dir) = config::data_dir_of(app.handle()) {
-                let settings = bitwarden::settings_from_config(&dir);
-                app.state::<bitwarden::Bitwarden>().configure(dir, settings);
+                let settings = bw::settings_from_config(&dir);
+                app.state::<bw::Bitwarden>().configure(dir, settings);
             }
             // 生效的配置登记成状态：命令侧（隧道重连的预算）要读它。
             // ⚠️ 登记的是**生效的那一份**（含默认值），不是文件里的原文。

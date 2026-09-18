@@ -116,22 +116,22 @@ pub enum WriteError {
 }
 
 /// 字符串 → 二进制来源。不认识的取值取默认值（口径同 [`load`]：配置读不出来不挡任何事）。
-fn binary_source(raw: Option<&str>) -> akasha_bw::BinarySource {
-    raw.and_then(akasha_bw::BinarySource::parse)
+fn binary_source(raw: Option<&str>) -> crate::bw::BinarySource {
+    raw.and_then(crate::bw::BinarySource::parse)
         .unwrap_or_default()
 }
 
 /// 字符串 → 状态目录。同上。
-fn appdata_mode(raw: Option<&str>) -> akasha_bw::AppData {
-    raw.and_then(akasha_bw::AppData::parse).unwrap_or_default()
+fn appdata_mode(raw: Option<&str>) -> crate::bw::AppData {
+    raw.and_then(crate::bw::AppData::parse).unwrap_or_default()
 }
 
 /// 读 Bitwarden 的两个轴。**永不失败**：文件没有 / 坏了 / 值不认识一律用默认值 + 一条日志。
 ///
 /// 收**数据目录**而不是 `AppHandle`：`.setup()` 里数据目录已经算出来了，而命令侧要的是
 /// "同一个目录"这件事 —— 两处各自再算一遍 `data_dir_of` 迟早会有一处先改。
-pub fn bitwarden(dir: &Path) -> akasha_bw::Settings {
-    let fallback = akasha_bw::Settings::default();
+pub fn bitwarden(dir: &Path) -> crate::bw::Settings {
+    let fallback = crate::bw::Settings::default();
     let path = dir.join(FILE_NAME);
     let Ok(text) = std::fs::read_to_string(&path) else {
         return fallback;
@@ -143,7 +143,7 @@ pub fn bitwarden(dir: &Path) -> akasha_bw::Settings {
     let Some(settings) = file.bitwarden else {
         return fallback;
     };
-    akasha_bw::Settings {
+    crate::bw::Settings {
         binary: binary_source(settings.binary.as_deref()),
         appdata: appdata_mode(settings.appdata.as_deref()),
     }
@@ -153,7 +153,7 @@ pub fn bitwarden(dir: &Path) -> akasha_bw::Settings {
 ///
 /// 顺序：读整份 → 只换 `bitwarden` → 写临时文件 → 改名。改名是原子的，所以不存在
 /// "写到一半的配置"（配置坏掉的后果是下一次启动回到默认值，而不是启动不了）。
-pub fn save_bitwarden(dir: &Path, settings: akasha_bw::Settings) -> Result<(), WriteError> {
+pub fn save_bitwarden(dir: &Path, settings: crate::bw::Settings) -> Result<(), WriteError> {
     let path = dir.join(FILE_NAME);
     let mut file = match std::fs::read_to_string(&path) {
         Ok(text) => serde_json::from_str::<File>(&text)

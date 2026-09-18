@@ -30,8 +30,8 @@ use std::time::Duration;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::error::BwError;
-use crate::location::{EXECUTABLE, Paths, version_key};
+use crate::bw::error::BwError;
+use crate::bw::location::{EXECUTABLE, Paths, version_key};
 
 /// 上游 release 列表的地址（可用 [`Sources`] 换掉，测试指向进程内的假上游）。
 pub const RELEASES_API: &str = "https://api.github.com/repos/bitwarden/clients/releases";
@@ -329,7 +329,7 @@ mod tests {
     #![allow(clippy::unwrap_used)] // 测试里的 unwrap 是断言手段（root Cargo.toml 的 lints 约定）
 
     use super::*;
-    use crate::testing::Stub;
+    use crate::bw::testing::Stub;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("akasha-bw-acq-{}-{name}", std::process::id()));

@@ -81,22 +81,22 @@ pub fn builder() -> Builder<tauri::Wry> {
             // 约 140 MB 的 Node SEA，启动就要几百毫秒）—— 登录 / 解锁要联网 + KDF，
             // 最长可到 `timeout::NETWORK`（120 秒），但那是用户按下按钮之后等在原地的那几秒，
             // 而不是"每条 IPC 都被挡住"。
-            crate::bitwarden::bw_cli_status,
-            crate::bitwarden::bw_cli_settings,
-            crate::bitwarden::bw_cli_install,
-            crate::bitwarden::bw_status,
-            crate::bitwarden::bw_server_set,
-            crate::bitwarden::bw_login,
-            crate::bitwarden::bw_unlock,
-            crate::bitwarden::bw_lock,
-            crate::bitwarden::bw_logout,
-            crate::bitwarden::bw_sync,
+            crate::bw::bw_cli_status,
+            crate::bw::bw_cli_settings,
+            crate::bw::bw_cli_install,
+            crate::bw::bw_status,
+            crate::bw::bw_server_set,
+            crate::bw::bw_login,
+            crate::bw::bw_unlock,
+            crate::bw::bw_lock,
+            crate::bw::bw_logout,
+            crate::bw::bw_sync,
             // 只读导入 SSH key 条目（plan 0903）。同步：一次本地进程调用 + 一次事务，
             // 与面板上其余几条同档（读整个 vault 那一步会多花几百毫秒到几秒）。
-            crate::bitwarden::bw_import_keys,
+            crate::bw::bw_import_keys,
             // 离线缓存的两条检查（plan 0904）：自检**不联网、不起 bw**，比对要 session。
-            crate::bitwarden::bw_cache_verify,
-            crate::bitwarden::bw_cache_check,
+            crate::bw::bw_cache_verify,
+            crate::bw::bw_cache_check,
         ])
         .events(collect_events![
             crate::session::SessionEnded,

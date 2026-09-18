@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use akasha_bw::{AppData, BinarySource, BwError, Cli, Located, Settings, Timeouts};
+use akasha_lib::bw::{AppData, BinarySource, BwError, Cli, Located, Settings, Timeouts};
 
 /// 一个临时目录（本仓库没有 `tempfile` 依赖，与其余 crate 同一条口径）。
 fn scratch(name: &str) -> PathBuf {
@@ -83,7 +83,7 @@ fn version_and_variant_come_from_the_real_command_lines() {
     assert_eq!(cli.version().unwrap(), "2026.8.0");
     assert_eq!(
         cli.variant().unwrap(),
-        akasha_bw::Variant::Oss,
+        akasha_lib::bw::Variant::Oss,
         "假 help 里没有 device-approval 那一行"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -95,7 +95,7 @@ fn status_is_read_through_the_real_parse_path() {
     let cli = Cli::new(&fake_bw(&dir));
 
     let status = cli.status().unwrap();
-    assert_eq!(status.state, akasha_bw::State::Locked);
+    assert_eq!(status.state, akasha_lib::bw::State::Locked);
     assert_eq!(
         status.server_url.as_deref(),
         Some("https://vault.example.com")
@@ -204,7 +204,7 @@ fn listing_items_goes_through_the_same_session_environment() {
     let mut session = cli.unlock("pw").unwrap();
 
     let raw = cli.items(&mut session).unwrap();
-    let found = akasha_bw::items::parse(&raw).unwrap();
+    let found = akasha_lib::bw::items::parse(&raw).unwrap();
     assert_eq!(found.total, 2);
     assert_eq!(
         found

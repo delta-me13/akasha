@@ -20,7 +20,7 @@
 //!
 //! ## 为什么输出是 `Vec<u8>` 而不是 `String`
 //!
-//! session key 要从这里**搬进**受保护页（[`crate::session`]）。先变成 `String` 就会在
+//! session key 要从这里**搬进**受保护页（[`crate::bw::session`]）。先变成 `String` 就会在
 //! 普通堆上多留一份 —— `Vec<u8>` 可以直接交给 `Protected::new`，它成功时会把源缓冲擦零。
 
 use std::path::{Path, PathBuf};
@@ -29,11 +29,11 @@ use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
 
-use crate::error::BwError;
-use crate::location::Located;
-use crate::session::Session;
-use crate::status::{self, Status};
-use crate::variant::{self, Variant};
+use crate::bw::error::BwError;
+use crate::bw::location::Located;
+use crate::bw::session::Session;
+use crate::bw::status::{self, Status};
+use crate::bw::variant::{self, Variant};
 
 /// 主密码用的环境变量名（`--passwordenv` 的参数就是它）。
 const PASSWORD_ENV: &str = "BW_PASSWORD";
@@ -45,7 +45,7 @@ const SESSION_ENV: &str = "BW_SESSION";
 /// 这里是在等一个我们已经持有的子进程，`try_wait` 是它唯一的同步问法。
 const POLL: Duration = Duration::from_millis(20);
 
-/// 三类命令各自的期限。默认值在 [`crate::timeout`]；**可换**是为了让"超时"这条路径
+/// 三类命令各自的期限。默认值在 [`crate::bw::timeout`]；**可换**是为了让"超时"这条路径
 /// 能被测到 —— 一条 20 秒的默认期限没法在单测里等。
 #[derive(Debug, Clone, Copy)]
 pub struct Timeouts {
@@ -57,9 +57,9 @@ pub struct Timeouts {
 impl Default for Timeouts {
     fn default() -> Self {
         Self {
-            local: crate::timeout::LOCAL,
-            status: crate::timeout::STATUS,
-            network: crate::timeout::NETWORK,
+            local: crate::bw::timeout::LOCAL,
+            status: crate::bw::timeout::STATUS,
+            network: crate::bw::timeout::NETWORK,
         }
     }
 }
@@ -111,7 +111,7 @@ impl Cli {
         }
     }
 
-    /// 换掉三类期限（默认值见 [`crate::timeout`]）。
+    /// 换掉三类期限（默认值见 [`crate::bw::timeout`]）。
     pub fn with_timeouts(mut self, timeouts: Timeouts) -> Self {
         self.timeouts = timeouts;
         self
@@ -262,7 +262,7 @@ impl Cli {
     /// 回收。⚠️ 它**不是**受保护页（页大小是编译期常量，而这里可能几 MB）；
     /// 受保护页留给真正长住的那两样（session key、私钥）。
     ///
-    /// 读完那一段的**解析**是纯函数（[`crate::items::parse`]），所以这个函数只负责"跑命令、
+    /// 读完那一段的**解析**是纯函数（[`crate::bw::items::parse`]），所以这个函数只负责"跑命令、
     /// 拿字节"，不解释形状。
     pub fn items(&self, session: &mut Session) -> Result<Zeroizing<Vec<u8>>, BwError> {
         let key = session_key(session)?;

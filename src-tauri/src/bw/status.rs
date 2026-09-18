@@ -12,7 +12,7 @@
 
 use serde::Deserialize;
 
-use crate::error::BwError;
+use crate::bw::error::BwError;
 
 /// vault 的三态。取值名与上游一致（它出现在 JSON 里）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

@@ -14,7 +14,7 @@
 //!
 //! **不落盘**。`bw` 自己会把 access token 写进它的 `data.json`（那是上游的状态，ADR-0007 D6），
 //! 但本模块手里的这个 key 不进文件、不进日志、不进事件载荷 —— 它只活在进程内存里，
-//! [`crate::Cli::lock`] / `logout` 与进程退出都会让它消失。
+//! [`crate::bw::Cli::lock`] / `logout` 与进程退出都会让它消失。
 //!
 //! ## 长度上限
 //!
@@ -24,7 +24,7 @@
 
 use akasha_store::protected::{Exposed, PageError, Protected};
 
-use crate::error::BwError;
+use crate::bw::error::BwError;
 
 /// session key 的上限（字节）。
 pub const TOKEN_MAX: usize = 256;

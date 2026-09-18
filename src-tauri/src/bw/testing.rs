@@ -14,8 +14,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use crate::acquire::{Sources, asset_name, host_target};
-use crate::location::EXECUTABLE;
+use crate::bw::acquire::{Sources, asset_name, host_target};
+use crate::bw::location::EXECUTABLE;
 
 /// 假上游。`Drop` 时停掉那条接受循环。
 pub struct Stub {
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn the_stub_serves_the_list_and_the_asset() {
         let stub = Stub::start(&["cli-v2026.8.0"], "2026.8.0");
-        let http = crate::Http::new(Duration::from_secs(5));
+        let http = crate::bw::Http::new(Duration::from_secs(5));
         let sources = stub.sources();
 
         let list = http.get(&sources.releases, 1024).expect("列表读得到");
@@ -274,10 +274,10 @@ mod tests {
     #[test]
     fn anything_else_is_a_404() {
         let stub = Stub::start(&["cli-v2026.8.0"], "2026.8.0");
-        let http = crate::Http::new(Duration::from_secs(5));
+        let http = crate::bw::Http::new(Duration::from_secs(5));
         let err = http
             .get(&format!("{}/download/nope.zip", stub.base()), 1024)
             .expect_err("不存在的资产要报错");
-        assert!(matches!(err, crate::BwError::Network { .. }), "{err:?}");
+        assert!(matches!(err, crate::bw::BwError::Network { .. }), "{err:?}");
     }
 }

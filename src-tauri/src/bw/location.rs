@@ -16,7 +16,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use crate::error::BwError;
+use crate::bw::error::BwError;
 
 /// 可执行文件的名字。Windows 上带扩展名。
 pub const EXECUTABLE: &str = if cfg!(windows) { "bw.exe" } else { "bw" };
@@ -198,7 +198,7 @@ impl Paths {
     }
 }
 
-/// 解析结果：[`Cli`](crate::Cli) 的两个输入。
+/// 解析结果：[`Cli`](crate::bw::Cli) 的两个输入。
 #[derive(Debug, Clone)]
 pub struct Located {
     /// 要跑的那个可执行文件。

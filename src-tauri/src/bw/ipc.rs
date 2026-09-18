@@ -33,7 +33,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use akasha_bw::{BwError, Cli, Paths, Session, Settings, State, Status};
+use crate::bw::{BwError, Cli, Paths, Session, Settings, State, Status};
 use tauri::State as TauriState;
 
 use crate::config;
@@ -89,7 +89,7 @@ pub struct BwIpcError {
     pub message: String,
 }
 
-/// 与 [`akasha_bw::BwError`] 一一对应。分成两份是因为 IPC 上要的是一个能穷尽 `switch`
+/// 与 [`crate::bw::BwError`] 一一对应。分成两份是因为 IPC 上要的是一个能穷尽 `switch`
 /// 的枚举，而 crate 的错误带着内部细节（路径、长度、被拒绝的地址）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -297,9 +297,9 @@ fn ask(cli: &Cli) -> Probed {
         Ok(variant) => {
             probed.variant = Some(
                 match variant {
-                    akasha_bw::Variant::Oss => "oss",
-                    akasha_bw::Variant::Proprietary => "proprietary",
-                    akasha_bw::Variant::Unknown => "unknown",
+                    crate::bw::Variant::Oss => "oss",
+                    crate::bw::Variant::Proprietary => "proprietary",
+                    crate::bw::Variant::Unknown => "unknown",
                 }
                 .to_owned(),
             );
@@ -425,11 +425,11 @@ pub fn bw_cli_settings(
     binary: String,
     appdata: String,
 ) -> Result<BwSnapshot, BwIpcError> {
-    let binary = akasha_bw::BinarySource::parse(&binary).ok_or_else(|| BwIpcError {
+    let binary = crate::bw::BinarySource::parse(&binary).ok_or_else(|| BwIpcError {
         kind: BwErrorKind::Internal,
         message: format!("不认识的二进制来源 {binary:?}"),
     })?;
-    let appdata = akasha_bw::AppData::parse(&appdata).ok_or_else(|| BwIpcError {
+    let appdata = crate::bw::AppData::parse(&appdata).ok_or_else(|| BwIpcError {
         kind: BwErrorKind::Internal,
         message: format!("不认识的状态目录 {appdata:?}"),
     })?;
@@ -472,8 +472,8 @@ pub async fn bw_cli_install(
     let installed_dir = dir.clone();
     let installed = tauri::async_runtime::spawn_blocking(move || {
         let paths = Paths::new(&installed_dir);
-        let http = akasha_bw::Http::new(akasha_bw::timeout::DOWNLOAD);
-        akasha_bw::acquire::install(&http, &akasha_bw::Sources::default(), &paths)
+        let http = crate::bw::Http::new(crate::bw::timeout::DOWNLOAD);
+        crate::bw::acquire::install(&http, &crate::bw::Sources::default(), &paths)
     })
     .await
     .map_err(|err| BwIpcError {
@@ -491,7 +491,7 @@ pub async fn bw_cli_install(
     let settings = {
         let mut inner = bitwarden.lock();
         // "下载并使用这一份"是一件事：只装不切，`host` 那一轴上仍然什么都用不了。
-        inner.settings.binary = akasha_bw::BinarySource::Managed;
+        inner.settings.binary = crate::bw::BinarySource::Managed;
         inner.session = None;
         inner.last = None;
         inner.settings
@@ -538,7 +538,7 @@ pub fn bw_login(
 ) -> Result<BwSnapshot, BwIpcError> {
     // ⚠️ 借的是这两个 `String`，**不许 `Box::leak`**：那会把每一条口令的副本永久留在堆上。
     let two_factor = match (method.as_deref(), code.as_deref()) {
-        (Some(method), Some(code)) => Some(akasha_bw::cli::TwoFactor { method, code }),
+        (Some(method), Some(code)) => Some(crate::bw::cli::TwoFactor { method, code }),
         _ => None,
     };
     act(&bitwarden, |cli, inner| {
@@ -720,7 +720,7 @@ pub fn bw_import_keys(
     vault: TauriState<'_, crate::vault::Vault>,
     overwrite: bool,
 ) -> Result<BwImportReport, BwImportError> {
-    let akasha_bw::Inventory { total, ssh_keys } = list_ssh_keys(&bitwarden)?;
+    let crate::bw::Inventory { total, ssh_keys } = list_ssh_keys(&bitwarden)?;
 
     // 上游的条目 → 落库要的形状。三档"导不进来"在这里逐条记下来，**不是整批失败**：
     // 一条只有公钥的条目不该让另外九条好的也进不来。
@@ -969,9 +969,9 @@ pub fn bw_cache_check(
     bitwarden: TauriState<'_, Bitwarden>,
     vault: TauriState<'_, crate::vault::Vault>,
 ) -> Result<BwRefreshReport, BwImportError> {
-    let akasha_bw::Inventory { total, ssh_keys } = list_ssh_keys(&bitwarden)?;
+    let crate::bw::Inventory { total, ssh_keys } = list_ssh_keys(&bitwarden)?;
     // 上游按 `cipher_id` 建表：缓存里的每一条都要能一眼查到"上游现在说的是什么"。
-    let upstream: std::collections::BTreeMap<String, akasha_bw::SshKeyItem> = ssh_keys
+    let upstream: std::collections::BTreeMap<String, crate::bw::SshKeyItem> = ssh_keys
         .into_iter()
         .map(|key| (key.id.clone(), key))
         .collect();
@@ -1025,11 +1025,11 @@ pub fn bw_cache_check(
     })
 }
 
-/// 跑一次 `bw list items --raw` 并解析成 [`akasha_bw::Inventory`]（**不碰库**）。
+/// 跑一次 `bw list items --raw` 并解析成 [`crate::bw::Inventory`]（**不碰库**）。
 ///
 /// 那段输出是整个 vault 的明文，它在这一趟里的生命期就是这一行：`Cli::items` 返回
-/// `Zeroizing`，[`akasha_bw::items::parse`] 读完，函数返回时缓冲区被擦零。
-fn list_ssh_keys(bitwarden: &Bitwarden) -> Result<akasha_bw::Inventory, BwImportError> {
+/// `Zeroizing`，[`crate::bw::items::parse`] 读完，函数返回时缓冲区被擦零。
+fn list_ssh_keys(bitwarden: &Bitwarden) -> Result<crate::bw::Inventory, BwImportError> {
     let mut inner = bitwarden.lock();
     let settings = inner.settings;
     let Some(dir) = inner.dir.clone() else {
@@ -1047,7 +1047,7 @@ fn list_ssh_keys(bitwarden: &Bitwarden) -> Result<akasha_bw::Inventory, BwImport
     })?;
 
     let raw = cli.items(session).map_err(BwImportError::from)?;
-    akasha_bw::items::parse(&raw).map_err(BwImportError::from)
+    crate::bw::items::parse(&raw).map_err(BwImportError::from)
 }
 
 /// `bitwarden` probe：与 [`bw_cli_status`] 同一份读数（`AGENTS.md` §7：观察后端状态用 probe）。

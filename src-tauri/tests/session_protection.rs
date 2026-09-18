@@ -24,7 +24,7 @@
 
 use std::fs;
 
-use akasha_bw::Session;
+use akasha_lib::bw::Session;
 
 /// 这份 session key 的长度**不是**重点，取文档里那个例子的形状。
 const TOKEN: &str = "5PBYGU+5yt3RHcCjoeJKx/wByU34vokGRZjXpSH7Ylo8w==";
