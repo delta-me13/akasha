@@ -141,3 +141,25 @@ just ready       # 预期：6/6
   `cargo nextest run -p akasha --lib` 的 3 个 PTY 用例仍是 `openpty: PermissionDenied`。
 - **下一步**：`store` → `pty`（剩下的两个成员），然后是三条例规则与探针、`Cargo.toml` 注释删除、
   `AGENTS.md` §0/§3.1/§6/§11 与 docs 同步、`just ready` 全绿。
+
+### 2026-09-19 第 3 轮 —— 六个成员全部成为模块
+
+- **akasha-store** 完成（`2f697b1`）：6 个源文件与 `pools/` 进 `store/`（`pools/mod.rs` 改为
+  `pools.rs`），两个壳成为 `store/ipc/{vault,pools}.rs`；14 个集成测试与 `tests/store_common/`
+  迁进 `tests/`。**护栏与代码同批落地**：`no-tauri-in-core-crates` →
+  `no-tauri-in-pure-modules`（`files` 覆盖全部 `src-tauri/src/**`，靠 `ignores` 列出
+  允许碰 Tauri 的 app 侧文件 —— 新增模块默认被检查），`no-unsafe-outside-store` 的 `ignores`
+  改到 `src-tauri/src/store.rs` / `store/**` 与两个契约测试，`no-ui-vocab-in-types` 的
+  `files` 收敛到 `src-tauri/src/**`。真实路径探针（正例命中、诱饵不命中）已做并删除探针。
+  读数：`just check` / `clippy` / `lint`（6 条规则）绿；store 集成测试 **114/114**。
+- **akasha-pty** 完成（`d851ad1`）：7 个文件进 `pty/`，`pty.rs` 因与父模块同名
+  （`clippy::module_inception`）改名 `local.rs`；`benches/batching.rs` 进
+  `src-tauri/benches/`，`rustix` 的 `cfg(unix)` 依赖与 `[[bench]]` 并入 app manifest；
+  `[workspace]` 去掉 `members` glob（成员已不存在，空 glob 是硬错误）。
+- **`Cargo.toml` 注释删除**（`b035b0f`）：只留可执行配置（107 行 → 105 行的净结果）。
+- **环境读数（不是回归）**：`just test` 里 4 个 `pty::local` 用例失败于
+  `openpty: PermissionDenied` —— `AGENTS.md` §1 记的沙箱限制；`libudev-check` 需要 Linux 宿主。
+  这两条使 `just ready` 在本沙箱**不可能全绿**，判据改为逐条核对可执行的各项。
+- **下一步（收尾）**：docs 同步（`AGENTS.md` §0/§3.1/§6/§11 单独提交、`docs/just.md` §2/§9、
+  `docs/scope.md`、`docs/STATUS.md`、`ROADMAP.md` 阶段 1、`docs/adr/README.md`）、
+  ADR-0008 转「已定案」、本 plan 归档、逐条执行 `just ready` 的各项。
