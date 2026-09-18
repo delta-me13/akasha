@@ -1,86 +1,34 @@
-# akasha —— **workspace root 就在这里**（`src-tauri/`）。
-#
-# 布局决定见 [`docs/adr/0004`](../docs/adr/0004-rust-workspace-under-src-tauri.md)：
-# Rust 成员全部收在 `src-tauri/` 下（`src-tauri/crates/*`），**仓库根不放任何 Rust 成员**。
-# 其中一条理由很具体：tauri CLI 默认只监听 `src-tauri`，成员在它**里面**就自动被监听，
-# 不需要 `additionalWatchFolders` 那类额外配置（曾因缺它静默失效，见 docs/STATUS.md 坑 #21）。
-#
-# 代价照实记下：仓库根没有 manifest，在**根目录直接跑 `cargo …` 会失败**（坑 #8）。
-# 一律用根 `justfile` 的转发配方（`just check` / `just test` / …），它们以 `src-tauri/` 为 cwd。
-#
-# 依赖方向**单向**：`akasha`（本包）→ `crates/*`。反向依赖视为架构违规。
-# `crates/*` 不得 `use tauri::`（AGENTS.md §3.1），由
-# `scripts/ast-grep/rules/no-tauri-in-core-crates.yml` 强制。
-
 [package]
 name = "akasha"
 version = "0.1.0"
 description = "A Tauri App"
 authors = ["cyrene"]
 edition = "2024"
-# ⚠️ 必须有：仓库里有**两个** bin（`akasha` 与代码生成工具 `gen-types`），
-# 而 `tauri dev` 跑的是 `cargo run --` —— 不给默认值它就直接失败：
-# `cargo run could not determine which binary to run`。
-# 症状很迷惑：Vite 起得来、tauri 开始监听，看起来"什么都正常"，但 app 根本没启动。
+
 default-run = "akasha"
-# 桌面应用，不发布到 crates.io。这同时让 cargo-deny 的 [licenses.private]
-# 跳过本 crate 的许可证表达式要求（第三方依赖仍逐个检查）。
+
 publish = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+
 name = "akasha_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-# ── workspace 定义（本包即 workspace root）────────────────────────────────────
-
 [workspace]
 resolver = "2"
-# 成员已全部并入 src/（ADR-0008）：本包即 workspace root，不再有 members glob ——
-# 空 glob 是硬错误（`crates/` 不存在时 cargo 直接报）。
 
-# 全 workspace 的 lint 基线。成员（`crates/*`）必须各自写 `[lints] workspace = true`
-# 才继承 —— 少了那一行，本节对它们形同虚设。
-#
-# ⚠️ 继承是**全有或全无**：成员不能"继承 + 覆盖其中一条"（cargo 直接报
-# `cannot override workspace.lints`）。所以下面的取值只能是**全 workspace 同一个**。
 [workspace.lints.rust]
-# AGENTS.md §3.4：unsafe 默认禁止；确有必要时单点 `#[allow(unsafe_code)]` + `// SAFETY:` 注释。
-#
-# ⚠️ 这里是 **deny 而不是 forbid**，理由是硬的：rustc 规定 `forbid` **不能被 `#[allow]` 覆盖**，
-# 所以 `forbid` 会让上面那句"单点 allow"永远写不出来 —— 而 `akasha-store` 恰恰需要它
-# （口令必须经 `sqlite3_key()` C API 送入，ADR-0002 D4）。既然不能按 crate 分开设，
-# 就只能选 `deny`，然后**用规则把"哪能写"这件事补回来**：
-# `scripts/ast-grep/rules/no-unsafe-outside-store.yml` 规定 `unsafe` 只许出现在 `akasha-store`。
-# 两层加起来与 `forbid` 等价，且比 `forbid` 多一条能改的口子。
+
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
-# AGENTS.md §0 禁止 unwrap 出现在 command 边界与长驻任务中。这里设 warn 而非 deny：
-# `just clippy` 带 `-D warnings`，所以生产代码里它实际就是错误；测试里的 unwrap 是断言手段，
-# 由测试目标自己 `#![allow(clippy::unwrap_used)]` 显式豁免。
+
 unwrap_used = "warn"
 
-# `unsafe` 的**文档注释**（规则见 AGENTS.md §3.4）。这三条就是 Linux 内核的做法 ——
-# 它的 Makefile 里写的是 `-Wclippy::undocumented_unsafe_blocks` /
-# `-Wclippy::unnecessary_safety_comment` / `-Wclippy::unnecessary_safety_doc`，
-# 依据是 `Documentation/rust/coding-guidelines.rst`（"These must appear before every
-# `unsafe` block"）。前两条一正一反地守 `// SAFETY:`（该写没写 / 写在了安全块上），
-# 第三条守 `/// # Safety`（不该挂在安全函数上）。
-#
-# ⚠️ **不需要** clippy.toml 的 `check-private-items`：实测这三条本来就查私有项 ——
-# 唯一那处 `unsafe` 在**私有**函数 `apply_key` 里，把 `// SAFETY:` 改名之后它照样红
-# （反而要小心的是反过来的情形：以后若升级 clippy 后它不再报，就是静默失效）。
 undocumented_unsafe_blocks = "deny"
 unnecessary_safety_comment = "deny"
 unnecessary_safety_doc = "deny"
 
-# release profile **必须**放在 workspace root：成员里的 `[profile.*]` 会被静默忽略
-# （坑 #18）。本文件就是 root，所以它在这里是对的。
 [profile.release]
 codegen-units = 1
 lto = true
@@ -88,21 +36,14 @@ opt-level = 3
 panic = "abort"
 strip = true
 
-# ── 本包 ────────────────────────────────────────────────────────────────────
-
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# `tray-icon`：系统托盘（plan 0301）。⚠️ 它只加**能力**，不加权限 —— 托盘全在 Rust 侧建、
-# 前端一次都不碰，所以 `capabilities/*.json` 里**不**该多出 `core:tray:*`（`AGENTS.md` §4.3）。
-# ⚠️ Linux 上图标要落到 `$XDG_RUNTIME_DIR/tray-icon`（tray-icon 的 `temp_icon_path`）：
-# 只读 runtime dir / 容器里建不起来 —— 那时**只记日志、不挡启动**（见 `src/tray.rs`）。
+
 tauri = { version = "2", features = ["specta", "tray-icon"] }
 tauri-plugin-opener = "2"
-# 单实例（plan 0304）：第二个实例**唤起已有窗口**而不是各跑一套。
-# 机制按平台分：Linux = D-Bus 会话总线上的一个名字、Windows = 命名 mutex、
-# macOS = `/tmp` 下的 unix socket。**没有权限**要加 —— 它全在 Rust 侧，前端碰不到（§4.3）。
+
 tauri-plugin-single-instance = "2.4.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -110,70 +51,44 @@ victauri-plugin = "0.8.8"
 portable-pty = "0.9.0"
 vte = "0.15.0"
 thiserror = "2.0.20"
-# `log-always` 让 tracing 事件同时产出 `log` 记录 —— app 里没有 tracing subscriber，
-# 没有这个特性，`tracing::info!` 的回收记录会静默消失（plan 0204 的"证据"就没了）。
+
 tracing = { version = "0.1.44", features = ["log-always"] }
 tracing-subscriber = "0.3.23"
 tauri-plugin-log = "2.9.1"
-# IPC 类型边界（AGENTS.md §5）：Rust 声明 → 生成 src/ipc/bindings.ts。
-# ⚠️ 上游明确要求 beta 期间**用 `=` 钉住版本**（否则一次 `cargo update` 就可能
-# 悄悄换掉生成器行为，而产物差异看起来像"我改了什么"）。
+
 tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
 specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 specta-typescript = "=0.0.12"
 
-# 存储层（原 akasha-store，plan 0403 / ADR-0002）：SQLCipher 的打开与密钥送入，以及受保护页。
-# ⚠️ `bundled-sqlcipher-vendored-openssl` 两个词都不能少：`bundled-sqlcipher` 单独用会去链
-# **系统** OpenSSL，四平台构建（尤其交叉编译）立刻变成负担。版本跟着 `victauri-plugin` 的
-# `rusqlite ^0.32` 走（`libsqlite3-sys` 带 `links = "sqlite3"`，同一个原生库只能有一个版本）。
 rusqlite = { version = "0.32.1", features = ["bundled-sqlcipher-vendored-openssl"] }
-# 口令的**内存防护**（plan 0406）：受保护页而不是普通堆。
+
 memsafe = "1.0.2"
-# SSH 栈（原 akasha-ssh，ADR-0003）：对外只是 `crate::pty::Transport`，所以会话层与前端
-# 不需要为 SSH 另立一条契约。russh 精确钉版本、crypto 后端只开 `ring`；升级它要改的面
-# 关在本模块里。`russh-sftp` 不依赖 `russh`（只在它的 dev-dependencies 里），因此引入它
-# 不会形成第二条版本约束。`rand` 是进程内测试服务端（`ssh::testing`）生成主机密钥要的，
-# 它是真依赖而不是 dev-dependency —— app 的 E2E 也要起那台服务端。
+
 russh = { version = "=0.63.3", default-features = false, features = ["ring", "rsa"] }
 russh-sftp = "=3.0.0"
 rand = "0.10"
-# 串口（原 akasha-serial，plan 0801 / 1101）：它对外也只是 `crate::pty::Transport`，
-# 所以会话层与前端不为第三个后端另立契约（`scope.md` §2）。`default-features = false` ——
-# libudev 只在 Linux 上被链接，见 [features]。
+
 serialport = { version = "4.10.1", default-features = false }
-# Bitwarden CLI 客户端（原 akasha-bw，plan 0902）：两个轴、运行时下载、`bw` 的调用与解析。
-# ⚠️ `ureq` 是 rustls + ring（与 `russh` 同一个 crypto 后端）、`zip` 只开 `deflate` ——
-# HTTP 与解包都是别人写过的活儿（`docs/bitwarden.md` §7 记着上游的下载形状）。
+
 sha2 = "0.11"
 zeroize = "1.9"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
-# 专用 runtime（ADR-0003 D2：库不自建 runtime，app 建**一个**并注入 `Handle`）。
-# features 与 D2 写下的那份一致（rt-multi-thread / time / sync / io-util / net）；
-# ⚠️ `sync` 是 plan 0504 加的：连接线程与 async 命令之间那条 oneshot 用它。
+
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync", "io-util", "net"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# 只为了 single_instance.rs 里的**一条判据**：会话总线连得上吗。
-# 没有它的环境（容器、CI 的 xvfb）注册不了单实例，而那条降级路径必须能被看见
-# （托盘用同样的思路记 `tray_ready`）。
-# ⚠️ 这不是新增依赖：同一个版本早已在依赖树里（`tauri-plugin-opener` → `zbus`）。
+
 zbus = "5.9"
 
 [target.'cfg(unix)'.dependencies]
-# 收掉整个会话（`pty/teardown.rs`）要发 SIGKILL，而 workspace 的 `unsafe_code = "deny"`
-# 不允许我们自己写 `unsafe { libc::kill(…) }` —— 走 rustix 的安全封装。它本来就在依赖树里。
-# ⚠️ 只在 unix 上：上游把 `rustix::process` 限定在 `#[cfg(not(windows))]`，Windows 目标上
-# 引用它直接编译不过（问题 #149）。写成目标专属依赖，于是"哪个平台需要它"是 manifest 上的事实。
+
 rustix = { version = "1", features = ["process"] }
 
 [features]
-# 默认开：Linux 上要它才有 USB 端口的信息（VID/PID/序列号）—— 那是 serialport 的枚举后端。
+
 default = ["libudev"]
-# 这个 feature 在**所有**平台都处于打开状态，而 libudev 只在 Linux 上被链接：serialport 把那个
-# optional 依赖声明在 `[target.'cfg(all(target_os = "linux", not(target_env = "musl")))'.dependencies]`
-# 里，于是 Windows / macOS 上这个 feature 激活的是一个不存在的依赖，什么都不编译。
-# 判据：`cargo tree --target x86_64-pc-windows-msvc` 里没有 libudev（just libudev-check）。
+
 libudev = ["serialport/libudev"]
 
 [dev-dependencies]
@@ -182,12 +97,9 @@ insta = "1.48.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
 victauri-test = "0.8.8"
 
-# 吞吐基线（`just bench`）。用 criterion 自己的 harness（libtest 的 `#[bench]` 只在 nightly 上，
-# 且没有基线对比与统计）。
 [[bench]]
 name = "batching"
 harness = false
 
-# 继承上面的 [workspace.lints]（unsafe_code = forbid、clippy::unwrap_used = warn）。
 [lints]
 workspace = true
