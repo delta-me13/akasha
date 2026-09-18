@@ -234,6 +234,6 @@ CI（`.github/workflows/ci.yml`，GitHub Actions 一份）三个 job：
 
 ## 9. 关于 `mise.toml`
 
-全局 CLI 工具（just / bacon / cargo-nextest / sccache / cargo-deny）记在 `mise.toml`。
+全局 CLI 工具（just / bacon / cargo-nextest / cargo-deny）记在 `mise.toml`。
 装了 mise 并激活 shell 后，**进入本目录会自动装齐缺失的工具**（`just tools` 是同一件事的手动版）。
 不想让 mise 管理、继续使用 `~/.cargo/bin` 里那套，删除 `mise.toml` 即可。

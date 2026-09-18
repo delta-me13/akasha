@@ -19,8 +19,7 @@ publish = false
 [dependencies]
 # ⚠️ 两个词都不能少（`docs/scope.md` §6）：`bundled-sqlcipher` 单独用会去链**系统** OpenSSL，
 # 四平台构建（尤其交叉编译）立刻变成负担，所以必须带 `-vendored-openssl`。
-# 代价照实记：它把 `openssl-src` 拉进构建，**从源码编一遍 OpenSSL**（首次数分钟，
-# 之后由 sccache 缓存）—— 这是"不撞系统 OpenSSL"的价格，不是配置失误。
+# 代价照实记：它把 `openssl-src` 拉进构建，**从源码编一遍 OpenSSL**（首次数分钟）—— 这是"不撞系统 OpenSSL"的价格，不是配置失误。
 #
 # ⚠️ 版本**不是我们选的**：`victauri-plugin`（调试期嵌在 app 里的 MCP 服务）已经依赖
 # `rusqlite ^0.32`，而 `libsqlite3-sys` 带 `links = "sqlite3"` —— cargo 规定同一个原生库

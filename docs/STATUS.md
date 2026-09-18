@@ -1324,7 +1324,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       它与问题 #154 同因（配置里的包装器在"包装器不可用"的环境里一票否决），触发条件从
       "没装 sccache"变成"装了、但按 cwd 解析不到"。
       处置：**删除 `.cargo/config.toml`** —— 与 #154 里 CI 的选择（清空 `RUSTC_WRAPPER`）收敛到
-      同一个口径：包装器不再进仓库配置；需要缓存时显式 `RUSTC_WRAPPER=sccache just check`。
+      同一个口径：包装器不再进仓库配置；需要缓存时另行安装 sccache，再显式 `RUSTC_WRAPPER=sccache just check`。
       ⚠️ 沙箱里直接执行 `just dev` 另有一处环境限制（PTY 报权限不足），与本条无关；用户终端下正常。
  164. **macOS 上被 SIGKILL 的子进程会停在"正在退出"上，直到主端被关闭**（本会话实测，
       macOS 26.6.2 / arm64）：`kill_session` 发出 SIGKILL 之后，`/bin/sh` 在 `ps` 里显示
