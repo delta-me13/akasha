@@ -1,46 +1,30 @@
 # 全局开发工具的唯一来源。
 #
-# 为什么单独一个文件：这里的条目是 **CLI 工具**，不是被编译进产物的依赖。
-# 它们装一次、在整台机器上生效，因此不属于 Cargo.toml / package.json。
+# 该文件采用mise安装开发必要工具
 # 详见 AGENTS.md §10。
+#
+#
 #
 # 用法：
 #   mise install      # 按下面的版本装齐
 #   mise ls           # 查看实际生效的版本与来源
 #   mise upgrade      # 升级（升级后请同步本文件的版本号并提交）
 #
-# 为什么用 mise 而不是一个自定义脚本：本机已经在用 mise 管理 node / pnpm
-# （~/.config/mise/config.toml），把工具链收敛到一个机制比多一套自研脚本更好。
-# 注意：mise 装出来的二进制在 PATH 上优先于 ~/.cargo/bin 里 cargo install 的同名工具。
+# 注意：
+#	1. mise 安装的工具在 PATH 上优先于 ~/.cargo/bin 里 cargo install 的同名工具。该特性由 mise 支持详见其官方文档。
+#	2. rustup工具及相应组件由rustup负责，部分依赖由系统包管理工具负责，详情请见tauri安装文档。
 
 [tools]
-# ── Rust CLI 工具 ────────────────────────────────────────────────────────────
-# 有 aqua 预编译配方的写裸名字即可走预编译（快）。
 just = "1.58.0"
-# ⚠️ sccache **不再**是 rustc 包装器（`.cargo/config.toml` 已删除，见 docs/STATUS.md 问题 #163）：
-# mise 的 shim 按**当前目录**解析版本，而 cargo 编译依赖时的 cwd 在 `~/.cargo/registry/src/` 下
-# ——那里解析不到版本，于是每一个依赖都编不过（报错读起来像编译器坏了）。
-# 想手动启用：`RUSTC_WRAPPER=sccache just check`（该项目目录内才有版本，整条链路要一致）。
-sccache = "0.17.0"
 
-# 没有 aqua 配方的必须显式指定 cargo 后端 → 从源码编译，首次安装较慢。
+# 以下工具不存在于mise官方的aqua注册表中，采用cargo后端安装
 "cargo:bacon" = "3.25.0"
 "cargo:cargo-nextest" = "0.9.144"
 "cargo:cargo-deny" = "0.20.2"
 
-# 可选：预编译安装器。装上后其余 cargo 工具可秒装。
-# 本机当前未安装，且现有工具已齐，故先注释掉。
+# 可选：rust二进制预编译下载器。采用该工具下载可避免编译耗时或解决当前环境无法编译某些工具的问题。
 # "cargo:cargo-binstall" = "latest"
 
-# ── 前端运行时 ───────────────────────────────────────────────────────────────
-# 这两个目前由全局配置管理（"latest"），在项目内固定版本更稳：
-# 避免 pnpm 大版本变更悄悄改变 lockfile 格式。
+# 前端运行依赖以及包管理工具
 node = "26.8.2"
 pnpm = "12.3.4"
-
-# ── 刻意不放在这里的东西 ─────────────────────────────────────────────────────
-# * Rust 工具链本身（rustc / cargo / clippy / rustfmt）：
-#   由 rustup 管，不要与 mise 混管。若要固定版本，正确做法是在仓库根加
-#   rust-toolchain.toml（`channel = "1.98.1"`），而不是写进本文件。
-# * 系统库（webkit2gtk-4.1 等）：属于发行版包管理器（本机 pacman），
-#   不能用 mise 或 cargo 管理。

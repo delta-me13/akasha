@@ -1,11 +1,10 @@
-# akasha — 项目级命令入口。
+# 该文件使用 just 处理于管理开发过程中使用的脚本。
 #
-# 分工（详见 AGENTS.md §11）：
-#   * crate 级命令住在 src-tauri/justfile（那里 cwd 天然正确，无需 --manifest-path）
-#   * 本文件放项目级命令，并对 crate 级命令**只做转发**
-#   * 命令体永远只有一处，不复制 —— 复制出来的第二份必然漂移
+# 脚本架构（详见 AGENTS.md §11）：
+#   - rust相关脚本注册文件位于 src-tauri/justfile
+#   - 前端及项目级脚本注册于本文件
 #
-# 依赖：just / bacon / cargo-nextest / cargo-deny / sccache（见 mise.toml、AGENTS.md §10）
+# 相关脚本依赖：just / bacon / cargo-nextest / cargo-deny（见 mise.toml、AGENTS.md §10）
 
 set shell := ["bash", "-uc"]
 
@@ -16,7 +15,7 @@ default:
 
 # ── 环境 ────────────────────────────────────────────────────────────────────
 
-# 按 mise.toml 装齐全局 CLI 工具（这些不是 Cargo.toml 依赖）
+# 调用mise安装开发使用工具
 tools:
     mise install
 
@@ -24,26 +23,21 @@ tools:
 tools-ls:
     @mise ls
 
-# 系统库前置检查（Arch 系缺 webkit2gtk-4.1 时，cargo 要到构建脚本阶段才报错）
+# 系统库前置库检查，暂仅支持Arch系
 syscheck:
     @for p in webkit2gtk-4.1 javascriptcoregtk-4.1 gtk+-3.0 librsvg-2.0; do pkg-config --exists "$p" && echo "✅ $p $(pkg-config --modversion "$p")" || { echo "❌ $p 缺失 → Arch 系: sudo pacman -S webkit2gtk-4.1"; exit 1; }; done
 
-# 连接检查：确认连到的是 akasha，而不是别的 Victauri app
+# 检查virtauri实际连接项目标识
 doctor:
     victauri doctor
 
 # ── 开发循环 ────────────────────────────────────────────────────────────────
 
-# 监听范围**不需要额外配置**：workspace 就在 `src-tauri/` 里（ADR-0004），
-# 而 tauri CLI 默认监听 `src-tauri` —— 成员天然被覆盖，实测见 docs/STATUS.md 问题 #21。
-# ⚠️ 别把成员挪到 `src-tauri/` 外面：一旦挪出去，开发循环会**静默失效**
-# （门禁全绿，但改了代码看不到效果），那时才需要 `build.additionalWatchFolders`。
-#
-# 常驻开发主控：前端 HMR；Rust 改动自动增量重编译 + 重启 app。只需启动一次
+# 启动开发服务器，该服务器通过HMR动态监控工作区文件修改
 dev:
     pnpm tauri dev
 
-# 只跑前端：不启动 app，配合 mockIPC 在浏览器里迭代 UI
+# 仅启动前端开发服务器
 dev-web:
     pnpm dev
 
@@ -57,11 +51,12 @@ dev-web:
 # 驱动分两种：runner-run 阻塞到结束；runner-submit 立刻拿到 id，再用 runner-wait 阻塞等待
 # （等待由内核唤醒，不是轮询文件系统）或用 runner-result 看一眼。
 
-# 生成 policy 样板（含当前脚本哈希），并刷新 docs 下的样板
+# 生成 policy 样板（含当前脚本哈希），并刷新 docs 下的样i板
+# 生成 policy 权限文件，结果打印到终端并输出到docs文件夹下agent-runner.policy.json样板
 runner-policy:
     @/usr/bin/python3 scripts/agent-runner.py --print-policy --out docs/agent-runner.policy.json
 
-# 状态与授权清单（校验 policy 与脚本哈希；不需要提权）
+# 检查agent-runner代理服务现状。该命令无需提权。
 runner-status:
     @/usr/bin/python3 scripts/agent-runner.py --status
 
@@ -69,27 +64,28 @@ runner-status:
 runner-start:
     /usr/bin/python3 scripts/agent-runner.py --serve
 
-# 停止执行器并回收它名下的全部进程组（缩权，不需要提权）
+# 停止执行器并回收它名下的全部进程组。该命令无需提权。
 runner-stop:
     @/usr/bin/python3 scripts/agent-runner.py --stop
 
-# 只回收 dev（app），保留执行器
+# 关闭开发服务器，但保留执行器持续运行。
 runner-stop-dev:
     @/usr/bin/python3 scripts/agent-runner.py --stop-dev
 
-# 提交动作并阻塞到结束；退出码 = 动作退出码（默认最多等 540s，低于 DSH 前台调用上限 600s）
+# 提交子命令并阻塞。退出码 = 动作退出码，默认超时时间540s。
 runner-run action timeout="540":
     @/usr/bin/python3 scripts/agent-runner.py --run "{{action}}" --timeout "{{timeout}}"
 
 # 只提交动作，立刻打印 request=<id>（先做别的，回头再等）
+# 异步指令，提交子命令后立即返回 request=<id>，非阻塞。可后续通过runner-wait显示等待执行完成。
 runner-submit action:
     @/usr/bin/python3 scripts/agent-runner.py --submit "{{action}}"
 
-# 阻塞等待某请求结束（已结束则立即返回；可重复等待，结果不会丢）
+# 阻塞并等待某请求结束, 该指令幂等，默认超时540s。
 runner-wait id timeout="540":
     @/usr/bin/python3 scripts/agent-runner.py --wait "{{id}}" --timeout "{{timeout}}"
 
-# 非阻塞读某请求的结果（未结束打印 running，退出码 4）
+# 非阻塞读某请求的结果，适用于轮训（对应id请求为结束则返回 running，退出码 4）
 runner-result id:
     @/usr/bin/python3 scripts/agent-runner.py --result "{{id}}"
 
@@ -109,11 +105,11 @@ fmt:
 fmt-check:
     just --justfile {{SRC}}/justfile fmt-check
 
-# Rust 秒级反馈循环（bacon），不启动 app
+# Rust HMR开发服务器，用于触发自动重编译
 watch:
     just --justfile {{SRC}}/justfile watch
 
-# 单元测试（cargo-nextest）
+# 单元测试（采用cargo-nextest后端）
 test:
     just --justfile {{SRC}}/justfile test
 
@@ -121,7 +117,7 @@ test:
 test-e2e:
     just --justfile {{SRC}}/justfile test-e2e
 
-# 可搬迁性：把 bin 所在文件夹搬走之后数据还在吗（自己起 app，见 src-tauri/justfile）
+# 验证项目是否满足便携app的必要条件
 portable:
     just --justfile {{SRC}}/justfile portable
 
@@ -133,7 +129,7 @@ libudev-check:
 serial-check:
     just --justfile {{SRC}}/justfile serial-check
 
-# 吞吐基线（criterion）。**不是门禁** —— 它是用于改动前后对比的基线
+# 基准测试
 bench:
     just --justfile {{SRC}}/justfile bench
 
@@ -145,11 +141,11 @@ deny:
 deny-offline:
     just --justfile {{SRC}}/justfile deny-offline
 
-# Rust command/event → src/ipc/bindings.ts
+# 自动生成Rust Tauri event的js绑定。Rust command/event → src/ipc/bindings.ts
 gen-types:
     just --justfile {{SRC}}/justfile gen-types
 
-# 生成物是否与 Rust 侧一致（改过 IPC 忘了生成就红）
+# 检查js侧Tuari绑定是否与rust测代码一致
 gen-types-check:
     just --justfile {{SRC}}/justfile gen-types-check
 
