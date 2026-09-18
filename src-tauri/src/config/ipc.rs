@@ -296,7 +296,7 @@ pub fn require_writable(dir: &Path) -> Result<(), NotWritable> {
 ///
 /// 公开它是因为数据目录不止放配置文件：加密库也落在**同一个**目录里
 /// （ADR-0002 D1）—— 分两个目录的话，"搬走文件夹"就只搬走一半。
-/// 谁放什么由各自的模块决定（配置在 [`FILE_NAME`]，库在 `akasha_store::vault_path`）。
+/// 谁放什么由各自的模块决定（配置在 [`FILE_NAME`]，库在 `crate::store::vault_path`）。
 pub fn data_dir_of(app: &AppHandle<Wry>) -> Option<PathBuf> {
     let os_dir = app.path().app_data_dir().ok();
     data_dir(exe_dir().as_deref(), os_dir)
@@ -533,12 +533,12 @@ mod tests {
 
         let dir = data_dir(Some(&exe_dir), None).expect("便携目录生效");
         let config = dir.join(FILE_NAME);
-        let vault = akasha_store::vault_path(&dir);
+        let vault = crate::store::vault_path(&dir);
 
         assert_eq!(config.parent(), vault.parent());
         assert_eq!(
             vault.file_name().and_then(|name| name.to_str()),
-            Some(akasha_store::STORE_FILE_NAME)
+            Some(crate::store::STORE_FILE_NAME)
         );
 
         let _ = std::fs::remove_dir_all(&exe_dir);

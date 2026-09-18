@@ -28,7 +28,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use akasha_store::{Passphrase, create, forwards, hosts, keys, serial};
+use akasha_lib::store::{Passphrase, create, forwards, hosts, keys, serial};
 use serde_json::{Value, json};
 use victauri_test::VictauriClient;
 
@@ -121,7 +121,7 @@ fn seed(path: &Path) {
 /// 这个库能不能用**我们自己的口令**打开 —— 也就是"它是不是我们造的那个"。
 fn is_ours(path: &Path) -> bool {
     let mut passphrase = Passphrase::new(PASSPHRASE.as_bytes().to_vec()).unwrap();
-    akasha_store::open(path, &mut passphrase).is_ok()
+    akasha_lib::store::open(path, &mut passphrase).is_ok()
 }
 
 /// app 进程的 pid：victauri 的发现目录是 `<temp>/victauri/<pid>/`，

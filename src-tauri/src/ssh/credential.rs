@@ -24,14 +24,14 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use akasha_store::protected::{Exposed, Protected};
+use crate::store::protected::{Exposed, Protected};
 
 use crate::ssh::error::SshError;
 use crate::ssh::target::SshTarget;
 
 /// 一句凭据的字节上限 —— 也就是受保护页的大小。
 ///
-/// 与 `akasha_store::Passphrase` 的 `MAX_LEN` 取同一个值（256）是**有意的**：
+/// 与 `crate::store::Passphrase` 的 `MAX_LEN` 取同一个值（256）是**有意的**：
 /// 同一个用户、同一类东西（一句话的口令），没有理由在两个地方给出不同的上限。
 /// 超了是明确报错，不是截断。
 pub const MAX_CREDENTIAL_LEN: usize = 256;

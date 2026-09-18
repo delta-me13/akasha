@@ -1,0 +1,42 @@
+id: no-tauri-in-pure-modules
+language: Rust
+severity: error
+message: 纯逻辑模块不得依赖 Tauri —— 它们必须能脱离 app 单测（AGENTS.md §3.1）
+note: |
+  分层是**单向**的：app 侧的编组（`lib.rs` / `tray.rs` / `lifecycle.rs` /
+  `single_instance.rs` / `bindings.rs` / `prompt.rs` / 各域的 `ipc.rs`）可以碰 Tauri，
+  纯逻辑模块不可以。
+
+  命中这条规则通常意味着"这段逻辑需要 app 环境"（窗口、托盘、IPC、AppHandle）。
+  两种处置都行，但不要就地 `#[allow]`：
+    * 该逻辑本就属于 app 侧 → 放进对应域的 `ipc.rs`，或放到顶层装配文件里；
+    * 逻辑本身是可复用的纯逻辑 → 把 Tauri 相关部分留在 `ipc.rs`，纯逻辑留在域模块里。
+
+  ⚠️ `files:` 覆盖全部 `src-tauri/src/**`，靠 `ignores:` 列出**允许**碰 Tauri 的文件 ——
+  新增模块因此默认被检查（默认安全）；反过来只列纯逻辑目录的写法，会在新增域时静默漏检。
+  新增一个 app 侧文件时把它加进 `ignores:`，那一步是显式的。
+files:
+  - "src-tauri/src/**/*.rs"
+ignores:
+  - "src-tauri/src/lib.rs"
+  - "src-tauri/src/main.rs"
+  - "src-tauri/src/bin/**"
+  - "src-tauri/src/bindings.rs"
+  - "src-tauri/src/lifecycle.rs"
+  - "src-tauri/src/prompt.rs"
+  - "src-tauri/src/single_instance.rs"
+  - "src-tauri/src/tray.rs"
+  - "src-tauri/src/watchdog.rs"
+  - "src-tauri/src/**/ipc.rs"
+  - "src-tauri/src/**/ipc/**"
+rule:
+  any:
+    # `use tauri::X` 与内联的 `tauri::X`（两者都是 scoped_identifier，一次报一条）。
+    # 注意 `tauri_build::` / `tauri_plugin_opener::` 不会命中：`tauri::` 要求紧跟冒号。
+    - kind: scoped_identifier
+      regex: "^tauri::"
+    # `use tauri::{...}`：use tree 是 scoped_use_list，上面的分支覆盖不到。
+    - kind: use_declaration
+      regex: '^use\s+tauri::\{'
+    - pattern: use tauri;
+    - pattern: extern crate tauri;

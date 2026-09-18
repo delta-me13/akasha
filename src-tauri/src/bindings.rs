@@ -22,17 +22,17 @@ pub fn builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             crate::greet,
-            crate::vault::vault_status,
-            crate::vault::vault_unlock,
-            crate::vault::vault_lock,
+            crate::store::ipc::vault::vault_status,
+            crate::store::ipc::vault::vault_unlock,
+            crate::store::ipc::vault::vault_lock,
             // 池的只读读取（plan 0504）：界面据此列出主机。
-            crate::pools::vault_hosts,
+            crate::store::ipc::pools::vault_hosts,
             // 池的**第一条写路径**（plan 0506）：从 `~/.ssh/config` 导入。
             // ⚠️ 它同步就行：读一个小文件 + 一次事务都在毫秒级，而这条命令**不握手**
             //（会阻塞几秒的那种活儿在 `open_ssh_session` 那条 async 命令上）。
-            crate::pools::import_ssh_config,
+            crate::store::ipc::pools::import_ssh_config,
             // 转发规则池的只读读取（plan 0601）：界面据此列出"有哪些隧道可以打开"。
-            crate::pools::vault_forwards,
+            crate::store::ipc::pools::vault_forwards,
             // 串口配置池的只读读取（plan 1101）：界面据此列出"有哪些串口可以打开"。
             crate::serial::vault_serials,
             // 本机端口的枚举（plan 1102）。**同步**：一次系统调用，与 `open_serial_session` 同档。

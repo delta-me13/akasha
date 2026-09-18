@@ -3,15 +3,14 @@ pub mod bindings;
 pub mod bw;
 pub mod config;
 pub mod lifecycle;
-pub mod pools;
 pub mod prompt;
 pub mod serial;
 pub mod session;
 pub mod single_instance;
 pub mod ssh;
+pub mod store;
 pub mod tray;
 pub mod tunnel;
-pub mod vault;
 pub mod watchdog;
 
 use crate::config::CloseBehavior;
@@ -90,7 +89,7 @@ pub fn run() {
         .manage(sessions.clone())
         // 库的解锁状态（plan 0407）。**启动时是锁着的** —— 口令只从 `vault_unlock` 进来，
         // 没有自动解锁，也没有从配置文件 / 环境变量读取的路径（ADR-0002 D5）。
-        .manage(vault::Vault::default())
+        .manage(store::ipc::vault::Vault::default())
         .manage(ssh)
         .manage(prompts)
         // Bitwarden 的两个轴（plan 0902）：默认取 `host`（用户当次指令）。

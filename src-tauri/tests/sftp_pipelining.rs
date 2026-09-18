@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use akasha_lib::ssh::testing::{ServerOptions, SftpItem, slow_link, start};
-use akasha_store::pools::hosts;
+use akasha_lib::store::pools::hosts;
 use serde_json::{Value, json};
 use support::{
     USER, click, connect_and_prepare, fill_input, forget, open_vault, text, text_of, unlock,

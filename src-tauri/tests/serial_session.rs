@@ -31,7 +31,7 @@ mod support;
 
 use std::path::Path;
 
-use akasha_store::pools::serial;
+use akasha_lib::store::pools::serial;
 use serde_json::{Value, json};
 use support::{
     CLOSE_TIMEOUT, FakeSerialDevice, click, connect_and_prepare, open_serial_panel, open_vault,

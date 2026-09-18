@@ -32,7 +32,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use akasha_lib::ssh::testing::{Relay, Running, ServerOptions, SftpItem, start};
-use akasha_store::pools::hosts;
+use akasha_lib::store::pools::hosts;
 use serde_json::{Value, json};
 use support::{
     CLOSE_TIMEOUT, USER, click, connect_and_prepare, forget, open_vault, text, text_of, unlock,

@@ -2,12 +2,12 @@
 //!
 //! ## 它与库口令是两种机密
 //!
-//! | | 库口令（[`akasha_store::Passphrase`]） | session key（本模块） |
+//! | | 库口令（[`crate::store::Passphrase`]） | session key（本模块） |
 //! |---|---|---|
 //! | 要交出去吗 | 否 —— 只送进 SQLCipher 的 C API | **是** —— 每次带 session 的命令都要原样交给 `bw` 子进程 |
 //! | 出口 | `pub(crate) expose` | [`Session::expose`]：给一个提权窗口，用完即关 |
 //!
-//! 因此这里用的是 `akasha_store::protected` 的**同一个原语**（`Protected<N>`，ADR-0002 D13），
+//! 因此这里用的是 `crate::store::protected` 的**同一个原语**（`Protected<N>`，ADR-0002 D13），
 //! 而不是自己再包一层 `mlock` —— 两处各写一份必然漂移（该模块的文档写了理由）。
 //!
 //! ## 落盘这件事
@@ -22,7 +22,7 @@
 //! session key 是 44 个字符）。**超长是错误而不是截断**：截断会让"token 无效"
 //! 变成一件没人能解释的事，与 `protected.rs` 对私钥、口令的口径一致。
 
-use akasha_store::protected::{Exposed, PageError, Protected};
+use crate::store::protected::{Exposed, PageError, Protected};
 
 use crate::bw::error::BwError;
 

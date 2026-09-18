@@ -78,18 +78,18 @@ use crate::ssh::{
     ForwardEnd, ForwardEnding, ForwardTarget, Ingress, LocalForward, LocalListener, RemoteForward,
     SshError,
 };
-use akasha_store::StoreError;
-use akasha_store::pools::forwards::Direction;
+use crate::store::StoreError;
+use crate::store::pools::forwards::Direction;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_specta::Event;
 use tokio::sync::watch;
 
-use crate::pools::{ForwardDirection, ForwardId, HostId};
+use crate::store::ipc::pools::{ForwardDirection, ForwardId, HostId};
 use crate::session::{IpcError, SessionHandle, Sessions};
 use crate::ssh::{Ssh, SshFailureKind, SshIpcError};
-use crate::vault::{ConnError, Vault};
+use crate::store::ipc::vault::{ConnError, Vault};
 
 /// 一条隧道。
 ///
@@ -779,7 +779,7 @@ impl Rule {
 fn load_rule(app: &AppHandle, forward_id: ForwardId) -> Result<Rule, TunnelError> {
     let vault = app.state::<Vault>();
     let row = vault
-        .with_conn(|conn| akasha_store::pools::forwards::forward(conn, i64::from(forward_id)))
+        .with_conn(|conn| crate::store::pools::forwards::forward(conn, i64::from(forward_id)))
         .map_err(|err| match err {
             ConnError::Locked => TunnelError::Locked,
             ConnError::Store(StoreError::NoSuchRow { .. }) => {

@@ -41,10 +41,10 @@ use tauri::{AppHandle, Manager, State};
 use tokio::runtime::Handle as RuntimeHandle;
 use tokio::task::JoinHandle;
 
-use crate::pools::HostId;
+use crate::store::ipc::pools::HostId;
 use crate::session::{IpcError, SessionHandle, Sessions};
 use crate::ssh::{Ssh, SshFailureKind, SshIpcError};
-use crate::vault::{ConnError, Vault};
+use crate::store::ipc::vault::{ConnError, Vault};
 
 /// 两栏里的哪一栏。**唯一进入契约的呈现概念**（ADR-0006 D7）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -336,7 +336,7 @@ impl From<ConnError> for SftpError {
     fn from(err: ConnError) -> Self {
         match err {
             ConnError::Locked => Self::Locked,
-            ConnError::Store(akasha_store::StoreError::NoSuchRow { .. }) => {
+            ConnError::Store(crate::store::StoreError::NoSuchRow { .. }) => {
                 Self::NoSuchHost { id: 0 }
             }
             ConnError::Store(other) => Self::Internal {
@@ -1117,10 +1117,10 @@ fn via_host(
 /// （`SshTarget`）—— 名字是**池**的概念，不是连接的概念。
 fn host_name(vault: &Vault, host_id: HostId) -> Result<String, SftpError> {
     let row = vault
-        .with_conn(|conn| akasha_store::pools::hosts::host(conn, i64::from(host_id)))
+        .with_conn(|conn| crate::store::pools::hosts::host(conn, i64::from(host_id)))
         .map_err(|err| match err {
             ConnError::Locked => SftpError::Locked,
-            ConnError::Store(akasha_store::StoreError::NoSuchRow { .. }) => {
+            ConnError::Store(crate::store::StoreError::NoSuchRow { .. }) => {
                 SftpError::NoSuchHost { id: host_id }
             }
             other => SftpError::from(other),

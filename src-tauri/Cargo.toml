@@ -129,13 +129,13 @@ specta-typescript = "=0.0.12"
 # ⚠️ 必须带 `version`：只写 `path` 等于版本号写 `*`，而 deny.toml 里
 # `wildcards = "deny"` 会把这种依赖直接判红（"2 wildcard dependencies"）。
 akasha-pty = { version = "0.1.0", path = "crates/akasha-pty" }
-# 存储层（plan 0403）。⚠️ 加它同时**修好了一个门禁盲点**：cargo-deny 把 manifest 指向的包
-# 当作**唯一的图根**，所以在这个依赖出现之前，`akasha-store` 连同它独有的整棵子树
-# （vendored OpenSSL）根本不在依赖图里 —— 那时 `bans`/`licenses` 对它一声不响。
-# 现在它进图了，`--workspace` 那道保险也有了独立的意义（见 docs/just.md §2）。
-# 本步只用了它的两样东西：落点（`vault_path`）与状态（`vault_state`）——
-# 解锁生命周期（谁持有 `Connection`、口令从哪来、何时抹掉）是 plan 0407。
-akasha-store = { version = "0.1.0", path = "crates/akasha-store" }
+# 存储层（原 akasha-store，plan 0403 / ADR-0002）：SQLCipher 的打开与密钥送入，以及受保护页。
+# ⚠️ `bundled-sqlcipher-vendored-openssl` 两个词都不能少：`bundled-sqlcipher` 单独用会去链
+# **系统** OpenSSL，四平台构建（尤其交叉编译）立刻变成负担。版本跟着 `victauri-plugin` 的
+# `rusqlite ^0.32` 走（`libsqlite3-sys` 带 `links = "sqlite3"`，同一个原生库只能有一个版本）。
+rusqlite = { version = "0.32.1", features = ["bundled-sqlcipher-vendored-openssl"] }
+# 口令的**内存防护**（plan 0406）：受保护页而不是普通堆。
+memsafe = "1.0.2"
 # SSH 栈（原 akasha-ssh，ADR-0003）：对外只是 `crate::pty::Transport`，所以会话层与前端
 # 不需要为 SSH 另立一条契约。russh 精确钉版本、crypto 后端只开 `ring`；升级它要改的面
 # 关在本模块里。`russh-sftp` 不依赖 `russh`（只在它的 dev-dependencies 里），因此引入它

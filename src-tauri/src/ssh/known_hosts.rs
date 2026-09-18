@@ -39,7 +39,7 @@ use crate::ssh::target::SshTarget;
 
 /// 库里记着的一把主机密钥。
 ///
-/// 形状刻意与 `akasha_store::known_hosts::KnownHost` 对齐（它就是那个类型的适配目标）：
+/// 形状刻意与 `crate::store::known_hosts::KnownHost` 对齐（它就是那个类型的适配目标）：
 /// `blob` 是**判定材料**，`fingerprint` 只用来把"记录的是哪一把"说给用户听。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedHostKey {
@@ -90,7 +90,7 @@ pub trait HostKeyCache: Send + Sync {
     /// 记下一把**用户刚确认过**的密钥。
     ///
     /// 实现方必须把"已经记着别的密钥"这件事变成**拒绝**（库那一层就是这么写的，
-    /// 见 `akasha_store::known_hosts::remember`）—— 静默改写等于把中间人攻击变成默认行为。
+    /// 见 `crate::store::known_hosts::remember`）—— 静默改写等于把中间人攻击变成默认行为。
     fn remember(&self, host: &str, port: u16, key: &HostKey) -> Result<(), SshError>;
 }
 

@@ -37,7 +37,7 @@ use crate::bw::{BwError, Cli, Paths, Session, Settings, State, Status};
 use tauri::State as TauriState;
 
 use crate::config;
-use crate::vault::PassphraseInput;
+use crate::store::ipc::vault::PassphraseInput;
 
 /// app 侧的长住状态。**一次只跑一个 `bw`**（理由见模块文档）。
 #[derive(Clone, Default)]
@@ -599,7 +599,7 @@ pub fn bw_sync(bitwarden: TauriState<'_, Bitwarden>) -> Result<BwSnapshot, BwIpc
 /// 导入报告（过 IPC 的形状）。
 ///
 /// 它要回答三个问题，缺一个用户就没法相信这次导入 —— 与 `import_ssh_config` 的
-/// [`crate::pools::ImportReport`] 同一形状：
+/// [`crate::store::ipc::pools::ImportReport`] 同一形状：
 ///
 /// | 字段 | 回答 |
 /// |---|---|
@@ -658,9 +658,9 @@ pub enum BwImportSkip {
     TooLong,
 }
 
-impl From<akasha_store::pools::bw_items::Skip> for BwImportSkip {
-    fn from(skip: akasha_store::pools::bw_items::Skip) -> Self {
-        use akasha_store::pools::bw_items::Skip;
+impl From<crate::store::pools::bw_items::Skip> for BwImportSkip {
+    fn from(skip: crate::store::pools::bw_items::Skip) -> Self {
+        use crate::store::pools::bw_items::Skip;
         match skip {
             Skip::Exists => Self::Exists,
             Skip::DuplicateName => Self::DuplicateName,
@@ -696,10 +696,10 @@ impl From<BwError> for BwImportError {
     }
 }
 
-impl From<crate::vault::ConnError> for BwImportError {
-    fn from(err: crate::vault::ConnError) -> Self {
+impl From<crate::store::ipc::vault::ConnError> for BwImportError {
+    fn from(err: crate::store::ipc::vault::ConnError) -> Self {
         match err {
-            crate::vault::ConnError::Locked => Self::Locked,
+            crate::store::ipc::vault::ConnError::Locked => Self::Locked,
             other => Self::Failed {
                 message: other.to_string(),
             },
@@ -717,14 +717,14 @@ impl From<crate::vault::ConnError> for BwImportError {
 #[specta::specta]
 pub fn bw_import_keys(
     bitwarden: TauriState<'_, Bitwarden>,
-    vault: TauriState<'_, crate::vault::Vault>,
+    vault: TauriState<'_, crate::store::ipc::vault::Vault>,
     overwrite: bool,
 ) -> Result<BwImportReport, BwImportError> {
     let crate::bw::Inventory { total, ssh_keys } = list_ssh_keys(&bitwarden)?;
 
     // 上游的条目 → 落库要的形状。三档"导不进来"在这里逐条记下来，**不是整批失败**：
     // 一条只有公钥的条目不该让另外九条好的也进不来。
-    let mut incoming: Vec<akasha_store::pools::bw_items::Incoming> = Vec::new();
+    let mut incoming: Vec<crate::store::pools::bw_items::Incoming> = Vec::new();
     let mut skipped: Vec<SkippedKey> = Vec::new();
     for key in ssh_keys {
         if !key.has_private_key() {
@@ -744,7 +744,7 @@ pub fn bw_import_keys(
         // `into_bytes` 把那个 `String` 的缓冲**移**过来（没有第二份副本），
         // 而 `PrivateKey::new` 成功时会把这块缓冲擦零。
         let name = key.name;
-        let private = match akasha_store::pools::keys::PrivateKey::new(key.private_key.into_bytes())
+        let private = match crate::store::pools::keys::PrivateKey::new(key.private_key.into_bytes())
         {
             Ok(private) => private,
             // 另一档（空私钥）在上面就已经挡掉了 —— 这里只剩"超过一页"。
@@ -756,7 +756,7 @@ pub fn bw_import_keys(
                 continue;
             }
         };
-        incoming.push(akasha_store::pools::bw_items::Incoming {
+        incoming.push(crate::store::pools::bw_items::Incoming {
             cipher_id: key.id,
             name,
             revision_date: key.revision_date,
@@ -774,7 +774,7 @@ pub fn bw_import_keys(
 
     let outcome = vault
         .with_conn(|conn| {
-            akasha_store::pools::bw_items::import_snapshot(conn, &mut incoming, overwrite)
+            crate::store::pools::bw_items::import_snapshot(conn, &mut incoming, overwrite)
         })
         .map_err(BwImportError::from)?;
 
@@ -787,7 +787,7 @@ pub fn bw_import_keys(
         "bitwarden ssh keys imported"
     );
 
-    let named = |rows: Vec<akasha_store::pools::bw_items::Row>| -> Vec<ImportedKey> {
+    let named = |rows: Vec<crate::store::pools::bw_items::Row>| -> Vec<ImportedKey> {
         rows.into_iter()
             .map(|row| ImportedKey {
                 fingerprint: fingerprints.get(&row.name).cloned().unwrap_or_default(),
@@ -901,15 +901,15 @@ pub enum BwRefreshState {
 #[tauri::command]
 #[specta::specta]
 pub fn bw_cache_verify(
-    vault: TauriState<'_, crate::vault::Vault>,
+    vault: TauriState<'_, crate::store::ipc::vault::Vault>,
 ) -> Result<BwCacheReport, BwImportError> {
     let rows = vault
         .with_conn(|conn| {
             let mut out = Vec::new();
-            for row in akasha_store::pools::bw_items::items(conn)? {
+            for row in crate::store::pools::bw_items::items(conn)? {
                 // 逐行取私钥：它进受保护页，算完指纹就 drop（页随之降权）。
                 let (computed, verdict) =
-                    match akasha_store::pools::keys::private_key(conn, row.key_id) {
+                    match crate::store::pools::keys::private_key(conn, row.key_id) {
                         Ok(mut key) => match key.expose() {
                             Ok(pem) => match crate::ssh::fingerprint_of_private_key(&pem) {
                                 Ok(computed) => {
@@ -967,7 +967,7 @@ pub fn bw_cache_verify(
 #[specta::specta]
 pub fn bw_cache_check(
     bitwarden: TauriState<'_, Bitwarden>,
-    vault: TauriState<'_, crate::vault::Vault>,
+    vault: TauriState<'_, crate::store::ipc::vault::Vault>,
 ) -> Result<BwRefreshReport, BwImportError> {
     let crate::bw::Inventory { total, ssh_keys } = list_ssh_keys(&bitwarden)?;
     // 上游按 `cipher_id` 建表：缓存里的每一条都要能一眼查到"上游现在说的是什么"。
@@ -977,7 +977,7 @@ pub fn bw_cache_check(
         .collect();
 
     let cached = vault
-        .with_conn(akasha_store::pools::bw_items::items)
+        .with_conn(crate::store::pools::bw_items::items)
         .map_err(BwImportError::from)?;
 
     let entries: Vec<BwRefreshEntry> = cached

@@ -38,16 +38,16 @@ use crate::ssh::{
     CredentialCache, HostKey, HostKeyCache, KeyCandidate, KnownHostsVerifier, RecordedHostKey,
     SshAuth, SshConfig, SshConnect, SshConnection, SshError, SshTarget, SshTransport,
 };
-use akasha_store::StoreError;
-use akasha_store::pools::hosts::Auth;
+use crate::store::StoreError;
+use crate::store::pools::hosts::Auth;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Webview};
 use tokio::runtime::{Handle as RuntimeHandle, Runtime};
 
-use crate::pools::HostId;
+use crate::store::ipc::pools::HostId;
 use crate::prompt::Prompts;
 use crate::session::{self, IpcError, RawChannel, SessionHandle, Sessions};
-use crate::vault::{ConnError, Vault};
+use crate::store::ipc::vault::{ConnError, Vault};
 
 /// SSH runtime 的 worker 数。
 ///
@@ -250,7 +250,7 @@ impl HostKeyCache for VaultHostKeys {
     ) -> Result<Option<RecordedHostKey>, SshError> {
         let found = self
             .vault
-            .with_conn(|conn| akasha_store::pools::known_hosts::lookup(conn, host, port, key_type))
+            .with_conn(|conn| crate::store::pools::known_hosts::lookup(conn, host, port, key_type))
             .map_err(unavailable)?;
         Ok(found.map(|row| RecordedHostKey {
             // 判定材料是**本体**，不是指纹文本（D11）。
@@ -260,7 +260,7 @@ impl HostKeyCache for VaultHostKeys {
     }
 
     fn remember(&self, host: &str, port: u16, key: &HostKey) -> Result<(), SshError> {
-        let new = akasha_store::pools::known_hosts::NewKnownHost {
+        let new = crate::store::pools::known_hosts::NewKnownHost {
             host: host.to_owned(),
             port,
             key_type: key.algorithm().to_owned(),
@@ -268,7 +268,7 @@ impl HostKeyCache for VaultHostKeys {
             fingerprint: key.fingerprint().to_owned(),
         };
         self.vault
-            .with_conn(|conn| akasha_store::pools::known_hosts::remember(conn, &new))
+            .with_conn(|conn| crate::store::pools::known_hosts::remember(conn, &new))
             .map(|_id| ())
             .map_err(unavailable)
     }
@@ -294,7 +294,7 @@ fn plan_chain(vault: &Vault, id: HostId) -> Result<Vec<Planned>, SshIpcError> {
     // 池那一层用 `i64` 作行 id，IPC 这一侧是 `u32` 代理 —— 到这里再换回去（不是截断，
     // 而是回到它本来的宽度：`HostId` 就是从 `i64` checked 出来的）。
     let rows = vault
-        .with_conn(|conn| akasha_store::pools::hosts::jump_chain(conn, i64::from(id)))
+        .with_conn(|conn| crate::store::pools::hosts::jump_chain(conn, i64::from(id)))
         .map_err(|err| match err {
             ConnError::Locked => SshIpcError::Locked,
             // 池里没有这一行是"用户挑错了"，不是库坏了 —— 这一步单独认
@@ -317,7 +317,7 @@ fn plan_chain(vault: &Vault, id: HostId) -> Result<Vec<Planned>, SshIpcError> {
 /// 认证方式决定带不带钥匙、试不试 agent（ADR-0003 D7 的顺序由 `akasha-ssh` 定，
 /// 这里只决定**给它什么材料**）—— **每一跳各算各的**：跳板与目标是两台机器，
 /// 凭据与钥匙都各是各的。
-fn planned(vault: &Vault, row: akasha_store::pools::hosts::Host) -> Result<Planned, SshIpcError> {
+fn planned(vault: &Vault, row: crate::store::pools::hosts::Host) -> Result<Planned, SshIpcError> {
     let auth = match row.auth {
         Auth::Password => SshAuth::keys(Vec::new()),
         Auth::Agent => SshAuth::agent_only(),
@@ -342,7 +342,7 @@ fn planned(vault: &Vault, row: akasha_store::pools::hosts::Host) -> Result<Plann
 fn candidate(vault: &Vault, key_id: i64) -> Result<KeyCandidate, SshIpcError> {
     let pem = vault
         .with_conn(|conn| {
-            let mut private = akasha_store::pools::keys::private_key(conn, key_id)?;
+            let mut private = crate::store::pools::keys::private_key(conn, key_id)?;
             let exposed = private.expose()?;
             Ok(exposed.to_vec())
         })

@@ -34,7 +34,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use akasha_lib::config::EXIT_NOT_WRITABLE;
-use akasha_store::{Passphrase, forwards, hosts, keys, serial};
+use akasha_lib::store::{Passphrase, forwards, hosts, keys, serial};
 use serde_json::{Value, json};
 use victauri_test::VictauriClient;
 
@@ -336,7 +336,7 @@ fn vault_state(status: &Value) -> String {
 /// 与 `vault_unlock.rs` 同一种做法。
 fn seed(path: &Path) {
     let mut passphrase = Passphrase::new(PASSPHRASE.as_bytes().to_vec()).unwrap();
-    let conn = akasha_store::open(path, &mut passphrase).unwrap();
+    let conn = akasha_lib::store::open(path, &mut passphrase).unwrap();
 
     let key_id = {
         let mut private =
@@ -398,7 +398,7 @@ fn seed(path: &Path) {
 /// 库侧：四行的**内容**（不只是行数）还在吗 —— 搬完之后的第二份证据。
 fn assert_contents(path: &Path) {
     let mut passphrase = Passphrase::new(PASSPHRASE.as_bytes().to_vec()).unwrap();
-    let conn = akasha_store::open(path, &mut passphrase)
+    let conn = akasha_lib::store::open(path, &mut passphrase)
         .unwrap_or_else(|err| panic!("搬完之后用同一个口令打不开 {}：{err}", path.display()));
 
     assert_eq!(keys::keys(&conn).unwrap()[0].name, "portable-key");

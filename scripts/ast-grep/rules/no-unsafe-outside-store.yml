@@ -21,7 +21,12 @@ note: |
 files:
   - "src-tauri/**/*.rs"
 ignores:
-  - "src-tauri/crates/akasha-store/**"
+  - "src-tauri/src/store.rs"
+  - "src-tauri/src/store/**"
+  # 契约测试为了钉住 SQLCipher 的语义（空 key 会怎样、`rekey` 会不会换盐）直接调
+  # `sqlite3_key` / `sqlite3_rekey`；`format_migration` 也有一处。
+  - "src-tauri/tests/sqlcipher_contract.rs"
+  - "src-tauri/tests/format_migration.rs"
 rule:
   # 匹配 `unsafe` 关键字本身：`unsafe { … }`、`unsafe fn`、`unsafe trait`、`unsafe impl`、
   # `unsafe extern` 一次全覆盖（`kind: unsafe` 在 ast-grep 里是非法写法）。

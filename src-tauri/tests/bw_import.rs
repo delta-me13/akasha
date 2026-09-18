@@ -146,19 +146,19 @@ fn install_fake_bw(data_dir: &Path, script: &str) -> PathBuf {
 /// 顺序不能反：主机那行可能引用着钥匙，先删钥匙会被外键拦住。
 fn forget_previous(path: &Path) {
     let conn = open_vault(path);
-    for host in akasha_store::pools::hosts::hosts(&conn).unwrap() {
+    for host in akasha_lib::store::pools::hosts::hosts(&conn).unwrap() {
         if host.name == HOST_NAME {
-            akasha_store::pools::hosts::delete_host(&conn, host.id).unwrap();
+            akasha_lib::store::pools::hosts::delete_host(&conn, host.id).unwrap();
         }
     }
-    if let Some(id) = akasha_store::pools::keys::find_by_name(&conn, KEY_NAME).unwrap() {
-        akasha_store::pools::keys::delete_key(&conn, id).unwrap();
+    if let Some(id) = akasha_lib::store::pools::keys::find_by_name(&conn, KEY_NAME).unwrap() {
+        akasha_lib::store::pools::keys::delete_key(&conn, id).unwrap();
     }
 }
 
 /// 库里那把钥匙的行 id（`vault_hosts` 的 `keyId` 要对上它）。
 fn key_row_id(path: &Path) -> Option<i64> {
-    akasha_store::pools::keys::find_by_name(&open_vault(path), KEY_NAME).unwrap()
+    akasha_lib::store::pools::keys::find_by_name(&open_vault(path), KEY_NAME).unwrap()
 }
 
 async fn invoke(client: &mut VictauriClient, command: &str, args: Value) -> Value {
@@ -403,11 +403,11 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     {
         let (other_pem, _) = akasha_lib::ssh::testing::key_pair();
         let conn = open_vault(&vault);
-        let id = akasha_store::pools::keys::find_by_name(&conn, KEY_NAME)
+        let id = akasha_lib::store::pools::keys::find_by_name(&conn, KEY_NAME)
             .unwrap()
             .expect("库里该有那把钥匙");
-        let mut other = akasha_store::pools::keys::PrivateKey::new(other_pem.into_bytes()).unwrap();
-        akasha_store::pools::keys::set_private_key(&conn, id, &mut other).unwrap();
+        let mut other = akasha_lib::store::pools::keys::PrivateKey::new(other_pem.into_bytes()).unwrap();
+        akasha_lib::store::pools::keys::set_private_key(&conn, id, &mut other).unwrap();
     }
     click(
         &mut client,

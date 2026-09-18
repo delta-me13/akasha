@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use akasha_lib::ssh::testing::{ServerOptions, start};
-use akasha_store::pools::hosts;
+use akasha_lib::store::pools::hosts;
 use serde_json::{Value, json};
 use support::{
     CLOSE_TIMEOUT, CONNECT_TIMEOUT_MS, USER, click, connect_and_prepare, fill_secret, forget,

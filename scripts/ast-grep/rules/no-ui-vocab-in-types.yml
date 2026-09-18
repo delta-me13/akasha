@@ -19,7 +19,6 @@ note: |
   `NegTabProbe` / `TabItem` / `MyWindowSpec` / `WindowLike` 命中，
   `Table` / `Panel` / `Viewport` / `Previewer` 不命中。
 files:
-  - "src-tauri/crates/**/*.rs"
   - "src-tauri/src/**/*.rs"
 rule:
   any:

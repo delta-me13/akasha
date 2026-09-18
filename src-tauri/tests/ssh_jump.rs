@@ -30,7 +30,7 @@ use std::net::ToSocketAddrs;
 use std::time::Duration;
 
 use akasha_lib::ssh::testing::{Relay, Running, ServerOptions, start};
-use akasha_store::pools::hosts;
+use akasha_lib::store::pools::hosts;
 use serde_json::{Value, json};
 use support::{
     CLOSE_TIMEOUT, PromptScript, USER, answer_prompts, click, connect_and_prepare, forget,

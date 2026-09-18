@@ -25,7 +25,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 
-use crate::pools::HostId;
+use crate::store::ipc::pools::HostId;
 use crate::tunnel::ActiveForward;
 use crate::session::{SessionEvent, SessionId, SessionKind, SessionRegistry};
 use crate::tunnel::TunnelState;

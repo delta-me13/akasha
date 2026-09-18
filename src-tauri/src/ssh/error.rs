@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use akasha_store::protected::PageError;
+use crate::store::protected::PageError;
 
 use crate::ssh::known_hosts::RecordedIn;
 use crate::ssh::target::SshTarget;

@@ -29,16 +29,16 @@ use crate::serial::{
     DataBits, Flow, Parity, PortInfo, PortKind, SerialError, SerialSettings, SerialTransport,
     StopBits,
 };
-use akasha_store::pools::serial as pool;
+use crate::store::pools::serial as pool;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State, Webview};
 
 use crate::session::{self, IpcError, RawChannel, SessionHandle, Sessions};
-use crate::vault::{Vault, VaultError};
+use crate::store::ipc::vault::{Vault, VaultError};
 
 /// 串口配置行的**过 IPC 表示**。
 ///
-/// 与 [`crate::pools::HostId`] 同一条理由用 `u32` 代理 `i64`：生成器拒绝把 64 位整数导出成
+/// 与 [`crate::store::ipc::pools::HostId`] 同一条理由用 `u32` 代理 `i64`：生成器拒绝把 64 位整数导出成
 /// TS（BigInt 精度问题，问题 #32），而截断会把"要开的那条配置"变成**另一条**。
 pub type SerialId = u32;
 
@@ -51,7 +51,7 @@ fn serial_id(id: i64) -> Result<SerialId, VaultError> {
 
 /// 校验位过 IPC 的形状。
 ///
-/// 与 `akasha_store::pools::serial::Parity` 分开：存储 crate **不依赖 specta**
+/// 与 `crate::store::pools::serial::Parity` 分开：存储 crate **不依赖 specta**
 /// （那是 app 钉住版本的东西），串口 crate 也**不带 serde**。两侧的映射都写成穷尽 `match`，
 /// 于是任一侧加一种取值时**这里编译不过** —— 而不是悄悄少一个分支。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]

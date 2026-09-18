@@ -1,5 +1,5 @@
 # ⚠️ 本文件只测"哪些 unsafe 形状会被命中"。**store 的豁免（`ignores:`）测不了** ——
-# 那一条必须用真实路径下的探针复核：`crates/akasha-store/src/**` 里放一个真 `unsafe`，
+# 那一条必须用真实路径下的探针复核：`src-tauri/src/store/**` 里放一个真 `unsafe`，
 # 期望 0 命中（AGENTS.md §6）。
 id: no-unsafe-outside-store
 valid:

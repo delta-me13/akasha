@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use akasha_lib::ssh::testing::{Relay, Running, ServerOptions, start};
-use akasha_store::pools::{forwards, hosts};
+use akasha_lib::store::pools::{forwards, hosts};
 use serde_json::{Value, json};
 use support::{
     USER, click, connect_and_prepare, connect_tunnel_through_prompts, connect_tunnel_until, forget,

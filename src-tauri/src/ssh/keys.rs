@@ -1,15 +1,15 @@
 //! 认证材料：**候选私钥**与它们的选择顺序（ADR-0003 D7）。
 //!
 //! 私钥以 **PEM 字节**的形式进来，住在一页受保护内存里（ADR-0002 D13）——
-//! 与密钥池那一页是**同一个原语**（`akasha_store::protected::Protected`），
+//! 与密钥池那一页是**同一个原语**（`crate::store::protected::Protected`），
 //! 不是另抄一份。从密钥池取出 PEM 是**调用方**的事（app 持有解锁后的库），
 //! 本 crate 只负责"拿这些候选去认证"。
 //!
 //! ⚠️ 握手时需要一份**普通堆上的明文私钥**（`russh` 要 `ssh_key::PrivateKey` 才能签名），
 //! 它无法放进受保护页。缓解 = 只在握手窗口内存在、签完即 drop、**不进缓存**（D8）。
 
-use akasha_store::pools::keys::MAX_PEM_LEN;
-use akasha_store::protected::{Exposed, Protected};
+use crate::store::pools::keys::MAX_PEM_LEN;
+use crate::store::protected::{Exposed, Protected};
 use russh::keys::{HashAlg, decode_secret_key};
 
 use crate::ssh::error::SshError;

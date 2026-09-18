@@ -22,10 +22,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use akasha_lib::ssh::testing::{Observed, Running};
-use akasha_store::pools::{hosts, known_hosts};
+use akasha_lib::store::pools::{hosts, known_hosts};
 // `Connection` 从 store 那侧取而不是直接依赖 `rusqlite`：它是 store 的**公开类型**
 // （`open` / `create` 的返回值就是它），而版本对齐由 store 一处负责。
-use akasha_store::{Connection, Passphrase, VaultState, vault_state};
+use akasha_lib::store::{Connection, Passphrase, VaultState, vault_state};
 use serde_json::{Value, json};
 use victauri_test::VictauriClient;
 
@@ -81,7 +81,7 @@ impl Drop for Fixture {
 /// 这个库能不能用**我们自己的口令**打开 —— 也就是"它是不是我们造的那个"。
 fn is_ours(path: &Path) -> bool {
     let mut passphrase = Passphrase::new(PASSPHRASE.as_bytes().to_vec()).unwrap();
-    akasha_store::open(path, &mut passphrase).is_ok()
+    akasha_lib::store::open(path, &mut passphrase).is_ok()
 }
 
 /// 连上 app、看清库在哪 / 是什么状态、必要时先锁上。
@@ -142,9 +142,9 @@ pub async fn connect_and_prepare() -> Option<(VictauriClient, Fixture, PathBuf)>
 pub fn open_vault(path: &Path) -> Connection {
     let mut passphrase = Passphrase::new(PASSPHRASE.as_bytes().to_vec()).unwrap();
     match vault_state(path).unwrap() {
-        VaultState::Present => akasha_store::open(path, &mut passphrase).unwrap(),
+        VaultState::Present => akasha_lib::store::open(path, &mut passphrase).unwrap(),
         VaultState::Missing | VaultState::Empty => {
-            akasha_store::create(path, &mut passphrase).unwrap()
+            akasha_lib::store::create(path, &mut passphrase).unwrap()
         }
     }
 }
@@ -176,7 +176,7 @@ pub async fn unlock(client: &mut VictauriClient) {
 /// 库里记着的 known_hosts 行（读的是**同一个文件**，所以它同时说明"库那一侧真的写了"）。
 pub fn recorded_host_keys(path: &Path) -> Vec<known_hosts::KnownHost> {
     let mut passphrase = Passphrase::new(PASSPHRASE.as_bytes().to_vec()).unwrap();
-    let conn = akasha_store::open(path, &mut passphrase).unwrap();
+    let conn = akasha_lib::store::open(path, &mut passphrase).unwrap();
     known_hosts::known_hosts(&conn).unwrap()
 }
 

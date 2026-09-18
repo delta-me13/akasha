@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tauri_specta::Event;
 
-use crate::vault::PassphraseInput;
+use crate::store::ipc::vault::PassphraseInput;
 
 /// 一次提问等多久。**超时就拒绝**（见模块文档的性质 1）。
 ///
