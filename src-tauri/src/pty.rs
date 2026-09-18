@@ -1,4 +1,4 @@
-//! akasha-pty —— **`Transport`：通用字节载体**。
+//! pty —— **`Transport`：通用字节载体**。
 //!
 //! 这里落成的是**通用**抽象，不是 PTY 专属 trait：本地 PTY 只是它的第一个实现，
 //! 之后 SSH shell 通道与串口要装进同一个 trait（`docs/scope.md` §2）。
@@ -20,7 +20,7 @@
 //! 还有**一条路径谁都没机会跑代码**：`tauri dev` 的重编译重启是 SIGKILL（plan 0205）。
 //! 那一条靠 [`watchdog`]：另起一个进程读一条管道，app 一死就由它把登记过的会话全部收掉。
 //!
-//! 本 crate **不含**：IPC（plan 0202）、前端（阶段 2）、`Session` 模型（已在 `akasha-core`）。
+//! 本 crate **不含**：IPC（plan 0202）、前端（阶段 2）、`Session` 模型（已在 `session` 模块）。
 //! 它只管"字节怎么进出载体"，外加把输出合批成 [`Batch`]（[`spawn_batcher`]）。
 //!
 //! ```no_run

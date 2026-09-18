@@ -240,7 +240,7 @@ mod tests {
 
     /// 测试用的临时目录（本仓库没有 `tempfile` 依赖，与 `config.rs` 同一条口径）。
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("akasha-bw-loc-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bw-loc-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("建临时目录");
         dir

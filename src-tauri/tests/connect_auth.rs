@@ -294,7 +294,7 @@ fn the_wire_shows_keyboard_interactive_before_password() {
 #[test]
 fn an_unavailable_agent_falls_through() {
     // 指向一个不存在的 socket。**不改环境变量**：那在 Rust 2024 里是 `unsafe`，
-    // 而本仓库只允许 `akasha-store` 出现 `unsafe`（AGENTS.md §3.4）——
+    // 而本仓库只允许 `store` 出现 `unsafe`（AGENTS.md §3.4）——
     // 于是"agent 在哪"这件事本身就是输入的一部分。
 
     let runtime = runtime();

@@ -116,7 +116,7 @@ fn sigkill(pid: i32) -> bool {
 /// macOS 没有 `/proc`，而 POSIX 也没有"列出某个会话的成员"的调用，所以这里要把两件事
 /// 拼起来：**枚举 pid**（`ps`）与**问内核这个 pid 在哪个会话里**（`getsid`）。
 /// 只能用 `ps` 枚举 pid：其他 unix 上唯一的替代是 `libproc` 的 `proc_listpids`，
-/// 那要写 `unsafe`，而本仓库只允许 `akasha-store` 出现它（`AGENTS.md` §3.4）。
+/// 那要写 `unsafe`，而本仓库只允许 `store` 出现它（`AGENTS.md` §3.4）。
 ///
 /// ⚠️ **不读 `ps` 的 `sess` / `tsess` 列**：本机实测（macOS 26.6.2）那两个关键字打印的是
 /// 会话**指针**，对任何进程都输出 0（连会话首进程也是 0）—— 拿它当会话 id 会一个进程都

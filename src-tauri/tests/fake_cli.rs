@@ -18,7 +18,7 @@ use akasha_lib::bw::{AppData, BinarySource, BwError, Cli, Located, Settings, Tim
 
 /// 一个临时目录（本仓库没有 `tempfile` 依赖，与其余 crate 同一条口径）。
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("akasha-bw-cli-{}-{name}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bw-cli-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

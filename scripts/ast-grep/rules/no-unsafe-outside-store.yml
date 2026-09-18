@@ -2,10 +2,10 @@ id: no-unsafe-outside-store
 language: Rust
 severity: error
 # ⚠️ message 必须加引号：YAML 里反引号是保留指示符，不能出现在裸标量的开头。
-message: "`unsafe` 只允许出现在 `akasha-store` —— 它是唯一需要碰 SQLCipher C API 的 crate（AGENTS.md §3.4）"
+message: "`unsafe` 只允许出现在存储模块（`src-tauri/src/store`）及其契约测试 —— 那是唯一需要碰 SQLCipher C API 的地方（AGENTS.md §3.4）"
 note: |
   `unsafe` 的**唯一**正当理由是"必须调一个 C API，而它没有安全包装"。本仓库放行的是
-  **整个 `akasha-store`**：库里那一处把口令送进 `sqlite3_key()`（ADR-0002 D4 —— 不允许用
+  **整个存储模块**：`store.rs` 里那一处把口令送进 `sqlite3_key()`（ADR-0002 D4 —— 不允许用
   `PRAGMA key='…'` 文本形式，那会把口令写进 SQL 语句），它的契约测试为了钉住 SQLCipher
   的语义（空 key 会怎样、`rekey` 会不会换盐）也直接调 `sqlite3_key` / `sqlite3_rekey`。
   除此之外的任何 `unsafe` 都不是"不得不用"。

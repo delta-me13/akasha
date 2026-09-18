@@ -339,14 +339,14 @@ impl VaultError {
 
     /// 把存储层的错误翻成 IPC 这一侧的说法。
     ///
-    /// 穷尽 `match`：`akasha-store` 加一个变体，**这里编译不过** ——
+    /// 穷尽 `match`：`store` 加一个变体，**这里编译不过** ——
     /// 而不是悄悄落进某个兜底分支，让用户在一句没有信息量的话上做决定。
     fn from_store(err: StoreError) -> Self {
         match err {
             StoreError::NotADatabase => Self::WrongPassphrase,
             StoreError::EmptyPassphrase => Self::EmptyPassphrase,
             StoreError::PassphraseTooLong { max } => Self::PassphraseTooLong {
-                // `akasha-store` 里那一页是 256 字节，且有 `const _ = assert!(MAX_LEN <= i32::MAX)`
+                // `store` 里那一页是 256 字节，且有 `const _ = assert!(MAX_LEN <= i32::MAX)`
                 // —— 这里一定放得下。写 `unwrap_or` 而不是 `as`，是为了不引入静默截断
                 // （真放不下时给一个"大到不可能"的上限，比给一个错的数字好）。
                 max: u32::try_from(max).unwrap_or(u32::MAX),

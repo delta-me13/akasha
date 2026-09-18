@@ -1,4 +1,4 @@
-//! `akasha-ssh` 的错误：**分域**定义（`AGENTS.md` §3.4）。
+//! `ssh` 的错误：**分域**定义（`AGENTS.md` §3.4）。
 //!
 //! 分域的标准是"调用方**处置不同**"：连不上（可以稍后重试）、主机密钥不对
 //! （**必须**让用户看见，不能重试）、认证失败（重试只会把账号锁上，ADR-0003 D13）。
@@ -15,7 +15,7 @@ use crate::ssh::target::SshTarget;
 /// 连接、认证或通道操作失败的原因。
 #[derive(Debug, thiserror::Error)]
 pub enum SshError {
-    /// 空口令。与 `akasha-store` 的 `Passphrase` 同一条理由：**空值造不出来**
+    /// 空口令。与 `store` 的 `Passphrase` 同一条理由：**空值造不出来**
     /// （一个能被误传的空值迟早会被误传）。
     #[error("凭据不能为空")]
     EmptyCredential,

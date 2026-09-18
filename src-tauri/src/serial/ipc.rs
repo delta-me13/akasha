@@ -1,6 +1,6 @@
 //! **串口接进 IPC**（plan 1101）—— 让真 app 能开一个串口会话。
 //!
-//! 这个模块是"库那一侧"（`akasha-serial`）与"界面那一侧"之间的接线，一共三件事：
+//! 这个模块是"库那一侧"（`serial`）与"界面那一侧"之间的接线，一共三件事：
 //!
 //! | 事 | 在哪 | 为什么在这里 |
 //! |---|---|---|
@@ -167,7 +167,7 @@ pub struct SerialPort {
     pub kind: SerialPortKind,
 }
 
-/// 端口的硬件类别过 IPC 的形状。理由同 [`SerialParity`]：`akasha-serial` 不带 serde / specta，
+/// 端口的硬件类别过 IPC 的形状。理由同 [`SerialParity`]：`serial` 不带 serde / specta，
 /// 两侧各认自己的类型，映射写成穷尽 `match`。
 ///
 /// `Usb` 的五项**都可能缺**（设备自己没报、udev 的硬件库也没有）：缺了就是 `None`，
@@ -228,7 +228,7 @@ impl From<PortInfo> for SerialPort {
     }
 }
 
-/// 本机枚举到的串口，**按路径排序**、同一路径只出现一次（顺序与去重由 `akasha-serial` 的
+/// 本机枚举到的串口，**按路径排序**、同一路径只出现一次（顺序与去重由 `serial` 的
 /// `normalize` 定）。
 ///
 /// ⚠️ **列在这里不等于打得开**（问题 #150）：Linux 那边按 udev 设备给 devnode，**不检查**它在
@@ -254,7 +254,7 @@ pub enum SerialIpcError {
     Settings { field: String, value: String },
 
     /// 打开这个设备失败。**路径在这里**，因为用户要去看的是那个设备、不是我们代码里的哪一行
-    /// （与 `akasha-serial` 的 `SerialError::Open` / `Handle` 同一条口径）。
+    /// （与 `serial` 的 `SerialError::Open` / `Handle` 同一条口径）。
     #[error("串口打不开：{path}（{message}）")]
     Open { path: String, message: String },
 
@@ -269,7 +269,7 @@ pub enum SerialIpcError {
     Internal { message: String },
 }
 
-/// `akasha-serial` 的说法 → 这一侧。
+/// `serial` 的说法 → 这一侧。
 ///
 /// ⚠️ `Open` / `Handle` 合并成一档（用户的下一步动作相同：去看那个设备），
 /// 两者的区别留在 `message` 里（原文来自上游）。
@@ -499,14 +499,14 @@ mod tests {
     fn a_missing_device_reports_the_path_it_tried() {
         // 打不开是**这条路上最常见的一类失败**（设备不在 / 没权限 / 被占用），
         // 报错里必须有那个路径。用一个几乎不可能存在的名字，不碰任何真实设备。
-        let settings = SerialSettings::new("/dev/akasha-serial-1101-does-not-exist", 9600);
+        let settings = SerialSettings::new("/dev/serial-1101-does-not-exist", 9600);
         let err = match open(&settings) {
             Ok(_) => panic!("一个不存在的设备竟然打开了"),
             Err(err) => err,
         };
         let rendered = err.to_string();
         assert!(
-            rendered.contains("/dev/akasha-serial-1101-does-not-exist"),
+            rendered.contains("/dev/serial-1101-does-not-exist"),
             "错误里没有路径：{rendered}"
         );
         assert!(matches!(err, SerialIpcError::Open { .. }), "{err:?}");

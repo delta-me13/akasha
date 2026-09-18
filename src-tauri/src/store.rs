@@ -1,4 +1,4 @@
-//! akasha-store —— **加密库的打开路径**：把口令经 C API 送进 SQLCipher，然后把库打开。
+//! store —— **加密库的打开路径**：把口令经 C API 送进 SQLCipher，然后把库打开。
 //!
 //! 这个 crate 只做一件事，但这件事必须做对：**顺序**。`Connection::open` 之后、
 //! **第一条会读库的语句**之前就得把密钥送进去 —— SQLCipher 是"首次用到密钥时才派生"，

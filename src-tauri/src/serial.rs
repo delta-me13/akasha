@@ -1,8 +1,8 @@
-//! akasha-serial —— **`Transport` 的串口实现**（`docs/scope.md` §2 的第三个后端）。
+//! serial —— **`Transport` 的串口实现**（`docs/scope.md` §2 的第三个后端）。
 //!
 //! 它做四件事：枚举本机的串口、按参数打开一个串口、把字节送进去与取出来、显式收尾。
-//! 会话模型（`akasha-core`）、IPC 与界面都不在这里 —— 那些是 app 的事，
-//! 与 `akasha-pty` / `akasha-ssh` 同一条边界。
+//! 会话模型（`session` 模块）、IPC 与界面都不在这里 —— 那些是 app 的事，
+//! 与 `pty` / `ssh` 同一条边界。
 //!
 //! 四条来自规范的形状：
 //!

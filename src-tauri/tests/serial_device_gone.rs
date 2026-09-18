@@ -35,7 +35,7 @@ use support::{
 };
 use victauri_test::VictauriClient;
 
-/// 那句原因里的一部分（`akasha-serial` 的 `SerialError::DeviceGone` 的文案）。
+/// 那句原因里的一部分（`serial` 的 `SerialError::DeviceGone` 的文案）。
 const GONE: &str = "串口设备已断开";
 
 /// `sessions` probe —— "没有残留注册"这条断言的读数口（串口没有本地进程）。

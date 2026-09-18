@@ -493,7 +493,7 @@ impl From<IpcError> for TunnelError {
 }
 
 impl TunnelError {
-    /// 绑定那一步的两档说法（`akasha-ssh` 的 [`SshError::Listen`] 与
+    /// 绑定那一步的两档说法（`ssh` 的 [`SshError::Listen`] 与
     /// [`SshError::NotLoopback`]）。
     ///
     /// 绑定失败要单独一档：用户对它的下一步动作是"腾出端口 / 换端口 / 换绑定地址"，
@@ -512,7 +512,7 @@ impl TunnelError {
         }
     }
 
-    /// 远端监听那一步的说法（`akasha-ssh` 的 [`SshError::RemoteListen`]）。
+    /// 远端监听那一步的说法（`ssh` 的 [`SshError::RemoteListen`]）。
     ///
     /// 与 [`Self::from_bind`] 分开：一个要动本机，一个要动服务端。
     fn from_remote(err: SshError) -> Self {

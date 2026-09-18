@@ -50,7 +50,7 @@ impl KeyCandidate {
 /// 从一把私钥算出**公钥的 `SHA256:…` 指纹**（plan 0904 的离线自检）。
 ///
 /// 为什么住在这里：解析私钥要 `ssh_key`，而那个 crate 只在本 crate 里（`russh::keys`）——
-/// 让 `akasha-bw` 或 app 各自引一份，就会多出第二个版本的 `ssh-key`，而"指纹算的是不是同一个
+/// 让 `bw` 或 app 各自引一份，就会多出第二个版本的 `ssh-key`，而"指纹算的是不是同一个
 /// 东西"正是这条判据的全部内容。
 ///
 /// 输入是**从受保护页借出来的那一段**（`&[u8]`）：本函数不留副本。
@@ -75,7 +75,7 @@ pub struct SshAuth {
     ///
     /// 为什么要有它显式指定这一档：① 多用户机器 / 容器里 `SSH_AUTH_SOCK` 指向的
     /// 未必是用户想要的那个 agent；② **测试要能确定性地造出"agent 不在"** ——
-    /// 而改环境变量在 Rust 2024 里是 `unsafe`，本项目只在 `akasha-store` 里允许 `unsafe`
+    /// 而改环境变量在 Rust 2024 里是 `unsafe`，本项目只在 `store` 里允许 `unsafe`
     /// （AGENTS.md §3.4 与那三条 ast-grep 规则）。
     pub agent_socket: Option<std::path::PathBuf>,
     /// 候选私钥。

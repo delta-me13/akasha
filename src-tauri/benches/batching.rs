@@ -5,7 +5,7 @@
 //! 合批正落在每个字节的必经之路上，一次"顺手多一次分配/多一次拷贝"就能让吞吐腰斩，
 //! 而单测只看正确性，一点都看不出来。
 //!
-//! 跑法：`just bench`（或 `cargo bench -p akasha-pty`）。实测数字记在
+//! 跑法：`just bench`（或 `cargo bench -p pty`）。实测数字记在
 //! `docs/plans/archive/0201-output-batching.md` 与 `docs/STATUS.md`。
 
 use std::hint::black_box;

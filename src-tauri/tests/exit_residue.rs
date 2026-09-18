@@ -21,7 +21,7 @@
 //! `sh -c '…' &` 是三种 shell 下语义相同的写法。
 //!
 //! 平台差异照实说：会话级回收目前只有 Linux 实现（Windows 要 Job Object，macOS 要
-//! `proc_listpids` + `getsid`，见 `akasha-pty` 的 `teardown` 模块）。非 Linux 上不起探针、
+//! `proc_listpids` + `getsid`，见 `pty` 的 `teardown` 模块）。非 Linux 上不起探针、
 //! 只断言"关窗口 = app 真的退出"，并打印原因 —— 不把弱判据说成强判据。
 //!
 //! 本文件是测试，unwrap 在这里就是断言手段。
@@ -215,7 +215,7 @@ async fn closing_the_window_leaves_no_child_behind() {
 
     // ── 子进程一个都不剩 ───────────────────────────────────────────────────
     if let Some(probe) = probe {
-        // SIGKILL 的投递是**异步**的（`akasha-pty` 的 teardown 用例里写过这件事），
+        // SIGKILL 的投递是**异步**的（`pty` 的 teardown 用例里写过这件事），
         // 所以这里等的是"消失"，而不是"信号发过了"。
         assert!(
             waits_until(Duration::from_secs(15), || !alive(probe)),

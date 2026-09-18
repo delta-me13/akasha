@@ -80,7 +80,7 @@ impl Ssh {
     pub fn start() -> Self {
         match tokio::runtime::Builder::new_multi_thread()
             .worker_threads(SSH_WORKERS)
-            .thread_name("akasha-ssh")
+            .thread_name("ssh")
             .enable_all()
             .build()
         {
@@ -189,7 +189,7 @@ pub enum SshFailureKind {
 }
 
 impl SshIpcError {
-    /// 把 `akasha-ssh` 的说法收进 IPC 这一侧。
+    /// 把 `ssh` 的说法收进 IPC 这一侧。
     ///
     /// ⚠️ 这里**带兜底分支**（`Other`）是有意的：`SshError` 是分域定义的一大族，
     /// 而 IPC 只需要把"用户下一步做什么"分出来；多出来的变体不该让**这里**编译不过
@@ -287,7 +287,7 @@ struct Planned {
 
 /// **整条跳板链**：`[目标, 它的跳板, 跳板的跳板, …]`（与 `hosts::jump_chain` 同序）。
 ///
-/// 目标在前是 `akasha-store` 定的顺序（"我要连**这台**，它得先经**那台**"）；
+/// 目标在前是 `store` 定的顺序（"我要连**这台**，它得先经**那台**"）；
 /// 连接那一步要的是反过来，由 [`open_ssh_session`] 翻转 —— 靠近使用点翻转，
 /// 比让每一层都记一遍"哪个是最外层"要可靠。
 fn plan_chain(vault: &Vault, id: HostId) -> Result<Vec<Planned>, SshIpcError> {
@@ -314,7 +314,7 @@ fn plan_chain(vault: &Vault, id: HostId) -> Result<Vec<Planned>, SshIpcError> {
 
 /// 一行池记录 → "连它要什么"。
 ///
-/// 认证方式决定带不带钥匙、试不试 agent（ADR-0003 D7 的顺序由 `akasha-ssh` 定，
+/// 认证方式决定带不带钥匙、试不试 agent（ADR-0003 D7 的顺序由 `ssh` 定，
 /// 这里只决定**给它什么材料**）—— **每一跳各算各的**：跳板与目标是两台机器，
 /// 凭据与钥匙都各是各的。
 fn planned(vault: &Vault, row: crate::store::pools::hosts::Host) -> Result<Planned, SshIpcError> {
@@ -353,7 +353,7 @@ fn candidate(vault: &Vault, key_id: i64) -> Result<KeyCandidate, SshIpcError> {
 /// 候选私钥的**稳定标识**（进凭据缓存的键：同一台主机上两把钥匙各有各的口令）。
 ///
 /// 用行 id：池里的 `update` 会保留 id，所以"换了材料而标识没变"在**同一个解锁窗口内**
-/// 可能留下一条过期口令。那条路的自愈是现成的（`akasha-ssh` 解不开就 `forget` 再问一次），
+/// 可能留下一条过期口令。那条路的自愈是现成的（`ssh` 解不开就 `forget` 再问一次），
 /// 而缓存本身**只在内存里**（锁定 / 退出即清空）—— 所以这不值得为它加一列哈希。
 fn stable_id(key_id: i64) -> String {
     format!("key#{key_id}")
@@ -451,7 +451,7 @@ pub(crate) async fn connect_connection(
         hops = hops.len(),
         "ssh connection opening"
     );
-    spawn_sync("akasha-ssh-connection", move || {
+    spawn_sync("ssh-connection", move || {
         SshConnection::connect_via_until(&handle, hops, options, cancel)
     })
     .await?
@@ -465,7 +465,7 @@ pub(crate) async fn connect_connection(
 ///
 /// 两行**各自的跳板链都保留**：`via` 自己可能就是经跳板才够得着的，目标那行也可能配了跳板，
 /// 于是这条链是"本机 → … → via → … → 目标"。拼法只是把两段材料首尾相接；逐跳搭链、通道复用
-/// 与收尾顺序全在 `akasha-ssh` 那一处（plan 0505 的"只实现一次"）。
+/// 与收尾顺序全在 `ssh` 那一处（plan 0505 的"只实现一次"）。
 pub(crate) async fn connect_connection_via(
     ssh: &Ssh,
     vault: &Vault,
@@ -488,7 +488,7 @@ pub(crate) async fn connect_connection_via(
         hops = chain.len(),
         "ssh connection opening through host"
     );
-    spawn_sync("akasha-ssh-connection", move || {
+    spawn_sync("ssh-connection", move || {
         SshConnection::connect_via_until(&handle, chain, options, cancel)
     })
     .await?
@@ -537,7 +537,7 @@ pub async fn open_ssh_session(
         "ssh session opening"
     );
 
-    let transport = spawn_sync("akasha-ssh-connect", move || {
+    let transport = spawn_sync("ssh-connect", move || {
         SshTransport::connect_via(&handle, hops, options)
     })
     .await?

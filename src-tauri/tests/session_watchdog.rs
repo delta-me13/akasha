@@ -21,7 +21,7 @@
 //! 不碰 Victauri），让它在 E2E 里跑只会白起一套 Vite + app。清单在 `src-tauri/justfile`
 //! 的 `E2E_NO_APP` 里显式登记。
 //!
-//! 平台差异照实说：会话级回收目前只有 Linux 实现（`akasha-pty` 的 `teardown` 模块；
+//! 平台差异照实说：会话级回收目前只有 Linux 实现（`pty` 的 `teardown` 模块；
 //! Windows 要 Job Object，macOS 要 `proc_listpids` + `getsid`），所以强断言只在 Linux 上
 //! 跑，别处**显式跳过并打印原因** —— 不把弱判据说成强判据。
 //!

@@ -72,7 +72,7 @@ export const commands = {
 	 */
 	vaultSerials: () => typedError<SerialEntry[], VaultError>(__TAURI_INVOKE("vault_serials")),
 	/**
-	 *  本机枚举到的串口，**按路径排序**、同一路径只出现一次（顺序与去重由 `akasha-serial` 的
+	 *  本机枚举到的串口，**按路径排序**、同一路径只出现一次（顺序与去重由 `serial` 的
 	 *  `normalize` 定）。
 	 * 
 	 *  ⚠️ **列在这里不等于打得开**（问题 #150）：Linux 那边按 udev 设备给 devnode，**不检查**它在
@@ -617,7 +617,7 @@ export type ImportedKey = {
 /**
  *  IPC 边界的错误。
  * 
- *  域边界就在这里：`akasha-core` 与 `akasha-pty` **都不知道 IPC 存在**，所以它们的错误
+ *  域边界就在这里：`session` 的模型与 `pty` **都不知道 IPC 存在**，所以它们的错误
  *  在这里收敛成一个可序列化的形状（`AGENTS.md` §3.4）。前端能据此区分的只有四件事：
  *  会话不存在 / 载体出错 / 频道句柄无效 / 隧道状态转移被拒 —— 再细的分支要等真有 UI
  *  依赖它时再加。
@@ -731,7 +731,7 @@ prompt: string };
 export type RawChannel = string;
 
 /**
- *  **要哪一种凭据** —— 过 IPC 的形态（`akasha-ssh` 的 `CredentialKind` 没有 `specta`）。
+ *  **要哪一种凭据** —— 过 IPC 的形态（`ssh` 的 `CredentialKind` 没有 `specta`）。
  * 
  *  前端用它决定提示语的语气（验证码 / 口令 / 私钥口令），**不决定行为**：
  *  三种都是"一句秘密"，答案的走法完全相同。
@@ -773,7 +773,7 @@ export type SerialIpcError =
 } } | 
 /**
  *  打开这个设备失败。**路径在这里**，因为用户要去看的是那个设备、不是我们代码里的哪一行
- *  （与 `akasha-serial` 的 `SerialError::Open` / `Handle` 同一条口径）。
+ *  （与 `serial` 的 `SerialError::Open` / `Handle` 同一条口径）。
  */
 { kind: "open"; detail: {
 	path: string,
@@ -827,7 +827,7 @@ export type SerialPort = {
 };
 
 /**
- *  端口的硬件类别过 IPC 的形状。理由同 [`SerialParity`]：`akasha-serial` 不带 serde / specta，
+ *  端口的硬件类别过 IPC 的形状。理由同 [`SerialParity`]：`serial` 不带 serde / specta，
  *  两侧各认自己的类型，映射写成穷尽 `match`。
  * 
  *  `Usb` 的五项**都可能缺**（设备自己没报、udev 的硬件库也没有）：缺了就是 `None`，

@@ -189,7 +189,7 @@ impl<S: Read> Read for SerialReader<S> {
 
 /// 这个错误说的是"现在没有数据"，而不是"流坏了"。
 ///
-/// `Interrupted` 也算：被信号打断从来不是失败（`akasha_pty` 的读循环同样重试它）。
+/// `Interrupted` 也算：被信号打断从来不是失败（`pty` 模块的读循环同样重试它）。
 fn is_idle(err: &io::Error) -> bool {
     matches!(
         err.kind(),
@@ -200,7 +200,7 @@ fn is_idle(err: &io::Error) -> bool {
 /// 参数映射：本 crate 的枚举 → `serialport` 的枚举。
 ///
 /// 把 `serialport` 的类型关在本文件里：升级它要改的是这几行，
-/// 而不是 app 的命令与前端（同 `akasha-ssh` 对 `russh` 的处理）。
+/// 而不是 app 的命令与前端（同 `ssh` 对 `russh` 的处理）。
 const fn map_data_bits(bits: DataBits) -> serialport::DataBits {
     match bits {
         DataBits::Five => serialport::DataBits::Five,
@@ -280,7 +280,7 @@ mod tests {
     }
 
     /// 脚本化读端用的设备路径（断言"那句话说得清是哪台设备"）。
-    const PATH: &str = "/dev/akasha-serial-probe";
+    const PATH: &str = "/dev/serial-probe";
 
     fn reader(steps: Vec<io::Result<Vec<u8>>>) -> SerialReader<Scripted> {
         SerialReader {
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn an_interrupted_read_is_retried() {
-        // 被信号打断从来不是失败：一次 EINTR 吞掉整条输出流的形态见 akasha-pty 的读循环。
+        // 被信号打断从来不是失败：一次 EINTR 吞掉整条输出流的形态见 pty 的读循环。
         let mut reader = reader(vec![
             Err(io::Error::from(io::ErrorKind::Interrupted)),
             Ok(b"x".to_vec()),
@@ -450,8 +450,8 @@ mod tests {
     #[test]
     fn a_missing_device_reports_the_path_it_tried() {
         // 报错里必须有路径：用户要去看的是那个设备，而不是我们代码里的哪一行
-        // （同 akasha-ssh 的 SshError::File）。
-        let settings = SerialSettings::new("/dev/akasha-serial-does-not-exist", 9600);
+        // （同 ssh 的 SshError::File）。
+        let settings = SerialSettings::new("/dev/serial-does-not-exist", 9600);
         // 用 match 而不是 unwrap_err：载体本身不（也不该）实现 Debug ——
         // 它持有的是句柄，而句柄没有可读的表示。
         let err = match SerialTransport::open(&settings) {
@@ -460,7 +460,7 @@ mod tests {
         };
         let rendered = err.to_string();
         assert!(
-            rendered.contains("/dev/akasha-serial-does-not-exist"),
+            rendered.contains("/dev/serial-does-not-exist"),
             "错误里没有路径：{rendered}"
         );
         assert!(matches!(err, SerialError::Open { .. }));

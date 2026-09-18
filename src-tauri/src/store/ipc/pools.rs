@@ -1,4 +1,4 @@
-//! **池与界面之间的接口** —— 阶段 4 落的是四套池的 CRUD（`akasha-store` 的 `pools::*`，
+//! **池与界面之间的接口** —— 阶段 4 落的是四套池的 CRUD（`store` 的 `pools::*`，
 //! plan 0403），而它一条命令都没接进 IPC：那时没有任何界面要读它们。
 //!
 //! | 命令 | 哪来的 | 为什么是它 |
@@ -10,7 +10,7 @@
 //!
 //! 增删改是**用户动作**，各有各的判据（重名怎么办、跳板成环怎么提示、删掉被引用的行怎么
 //! 解释）—— 那些是仍未规划的界面工作。而导入不一样：它没有"填什么"的自由度，只有"照不照
-//! 这份文件做"这一个问题，而那个问题的答案已经写在 `akasha-store::sshconfig` 里了。
+//! 这份文件做"这一个问题，而那个问题的答案已经写在 `store::sshconfig` 里了。
 //!
 //! ## 过 IPC 的形状是有意的
 //!
@@ -327,7 +327,7 @@ fn linked_notes(linked: &[(String, String)], mut notes: Vec<String>) -> Vec<Stri
     notes
 }
 
-/// `akasha-store` 的说法 → 过 IPC 的形状。
+/// `store` 的说法 → 过 IPC 的形状。
 fn finding(finding: crate::store::sshconfig::Finding) -> ConfigFinding {
     ConfigFinding {
         line: u32::try_from(finding.line).unwrap_or(u32::MAX),

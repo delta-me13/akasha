@@ -16,7 +16,7 @@ default:
 # ── 编译与检查 ──────────────────────────────────────────────────────────────
 #
 # ⚠️ 必须显式带 `--workspace`：just 的 cwd 是 `src-tauri/`，而 **cargo 默认只选当前目录所在的包**。
-# 少了它，`crates/*` 的类型检查、lint 与单测会被**静默漏掉** —— `just ready` 照样全绿，
+# 少了它，`成员模块` 的类型检查、lint 与单测会被**静默漏掉** —— `just ready` 照样全绿，
 # 但那些 crate 根本没被编译过（见 docs/STATUS.md 问题 #20）。
 # `cargo fmt --all` 是例外：`--all` 本来就指 workspace 全部成员。
 
@@ -418,13 +418,13 @@ bench:
 # "that crate will be the sole root of the crate graph, meaning only other workspace
 # members that are dependencies of that workspace crate will be included"）。本仓库的
 # workspace root 同时是一个真实包（`akasha`），于是**只有 `akasha` 依赖得到的成员**
-# 才进图 —— `crates/*` 里尚未被 app 依赖的成员连同它们**独有的整棵子树**都在图外。
+# 才进图 —— `成员模块` 里尚未被 app 依赖的成员连同它们**独有的整棵子树**都在图外。
 #
 # 后果不是"少查一点"，而是**静默失效**：`[bans] deny` 里写 `keyring` 也一声不响地不生效，
-# 因为它唯一的来路（`akasha-store`）根本不在图里（plan 0402 实测：不加这个参数时
-# `bans ok`，加上之后 `bans FAILED … keyring → akasha-store`）。
+# 因为它唯一的来路（`store`）根本不在图里（plan 0402 实测：不加这个参数时
+# `bans ok`，加上之后 `bans FAILED … keyring → store`）。
 #
-# 这一条同时补上了一个**先于 0402 存在的洞**：`akasha-store` 的 vendored OpenSSL
+# 这一条同时补上了一个**先于 0402 存在的洞**：`store` 的 vendored OpenSSL
 # （`openssl-src` / `openssl-sys`）此前从未被许可证门禁看过一眼。
 
 # 许可证 + 漏洞 + 来源。advisories 需要联网拉 RustSec 数据库

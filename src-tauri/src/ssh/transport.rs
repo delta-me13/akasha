@@ -130,7 +130,7 @@ impl SshTransport {
         }
 
         let established = runtime.block_on(async {
-            // 跳板链的搭法**只有一份实现**（`akasha-ssh::forward::hops_chain`）：
+            // 跳板链的搭法**只有一份实现**（`ssh::forward::hops_chain`）：
             // 隧道那条路（`SshConnection::connect_via`）用的是同一个函数，差的只是终点。
             let carriers = hops_chain(hops).await?;
             // 最后一条流给目标：它是"离目标最近的那一跳"上的一条通道，直连时则是 None。
@@ -294,7 +294,7 @@ impl Read for SshOutput {
                     self.offset = 0;
                 }
                 // 队列空了且发送端没了 = 连接结束。读 `0` 是 EOF 的标准说法，
-                // 合批器据此收工（`akasha-pty` 的读循环就是这么结束的）。
+                // 合批器据此收工（`pty` 的读循环就是这么结束的）。
                 None => return Ok(0),
             }
         }

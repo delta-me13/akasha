@@ -5,7 +5,7 @@
 //!
 //! 两个注入点在测试里都是**桩**：`FakeCache` 替库、`CountingPrompt` 替用户
 //! （与 0502 的 `CountingProvider` 同一个套路）。所以这一份验的是**策略本身**；
-//! 库那一侧（表、`UNIQUE`、"不许改写"）由 `akasha-store` 的 `known_hosts_roundtrip` 守。
+//! 库那一侧（表、`UNIQUE`、"不许改写"）由 `store` 的 `known_hosts_roundtrip` 守。
 //!
 //! ⚠️ 服务端仍是**进程内**的 `russh`（见 `support`）：它证明客户端这条链，
 //! 不是与 OpenSSH 的互操作。

@@ -1,4 +1,4 @@
-//! akasha-ssh —— **SSH 客户端**：连接、认证，以及给会话层用的**同步 `Transport` 门面**。
+//! ssh —— **SSH 客户端**：连接、认证，以及给会话层用的**同步 `Transport` 门面**。
 //!
 //! 这个 crate 是 [ADR-0003](../../../docs/adr/0003-ssh-stack-and-resource-model.md) 的落地。
 //! 形状（`Transport` 映射、连接所有权、凭据缓存、认证顺序）都在那份 ADR 里定死了，

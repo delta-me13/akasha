@@ -16,7 +16,7 @@ import type { ConfigFinding } from "../ipc/hosts";
 /**
  * 界面列出的支持集。
  *
- * ⚠️ 权威在 `akasha_store::sshconfig`（那一份 `supported()` + 三档分类表），这里只是把
+ * ⚠️ 权威在 `store::sshconfig`（那一份 `supported()` + 三档分类表），这里只是把
  * "支持什么"印在用户点之前。**六条的名字要与那边一致** —— E2E 会同时读这段文字与后端行为，
  * 两边不一致时那条用例会红。
  */

@@ -17,7 +17,7 @@
 //! 1. **超时 = 拒绝**（120 s）。不是接受、也不是"把连接永远挂在那里"：
 //!    提问期间连接线程停在一次同步回调里，没有人回答就永远不返回。
 //! 2. **答案不落盘、不进日志**。口令经 [`PassphraseInput`] 进来（**没有 `Debug`/`Clone`**），
-//!    立刻变成 `akasha-ssh` 的 `Credential`（受保护页）。
+//!    立刻变成 `ssh` 的 `Credential`（受保护页）。
 //! 3. **答错类型一律当"没答"**：主机密钥那一问只认"接受/拒绝"，收到别的（或没收到）
 //!    → `HostKeyUnknown`（**拒绝连接**），绝不把一次错答读成"用户接受了"。
 //!
@@ -61,7 +61,7 @@ pub const PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
 /// 从 1 开始：`0` 在调试输出里太容易与"空值"混为一谈（生成成 TS 就是 `number`）。
 pub type PromptId = u32;
 
-/// **要哪一种凭据** —— 过 IPC 的形态（`akasha-ssh` 的 `CredentialKind` 没有 `specta`）。
+/// **要哪一种凭据** —— 过 IPC 的形态（`ssh` 的 `CredentialKind` 没有 `specta`）。
 ///
 /// 前端用它决定提示语的语气（验证码 / 口令 / 私钥口令），**不决定行为**：
 /// 三种都是"一句秘密"，答案的走法完全相同。
@@ -74,7 +74,7 @@ pub enum SecretKind {
 }
 
 impl From<&CredentialKind> for SecretKind {
-    /// 穷尽 `match`：`akasha-ssh` 加一种凭据，**这里编译不过** —— 而不是悄悄落进
+    /// 穷尽 `match`：`ssh` 加一种凭据，**这里编译不过** —— 而不是悄悄落进
     /// 某个兜底分支，让前端在一个它不认识的值上做默认动作。
     fn from(kind: &CredentialKind) -> Self {
         match kind {
@@ -622,7 +622,7 @@ mod tests {
         });
 
         let credential = prompts.request(&request()).expect("应当拿到凭据");
-        // ⚠️ 这里**读不出明文**（`expose` 是 `akasha-ssh` 内部的）：能断言的是字节数 ——
+        // ⚠️ 这里**读不出明文**（`expose` 是 `ssh` 内部的）：能断言的是字节数 ——
         // 而"答案原样到了问的人手里"这句话，字节数已经足够（多一个字符就对不上）。
         assert_eq!(credential.byte_len(), "hunter2".len());
         assert_eq!(prompts.pending_count(), 0, "答完必须把这一条摘掉");

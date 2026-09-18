@@ -1,6 +1,6 @@
 //! **把解析出来的条目落进池**（plan 0506 的第二步）。
 //!
-//! 解析那一半的判据在 [`sshconfig_parse`](../../../crates/akasha-store/tests/sshconfig_parse.rs)；
+//! 解析那一半的判据在 [`sshconfig_parse`](../../../crates/store/tests/sshconfig_parse.rs)；
 //! 这里盯的是**写**：
 //!
 //! | 盯什么 | 为什么 |
