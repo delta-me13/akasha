@@ -21,7 +21,7 @@
 //! （发行版缺 libudev）时它照常可用。
 //!
 //! ```no_run
-//! use akasha_pty::Transport;
+//! use crate::pty::Transport;
 //! use akasha_lib::serial::{SerialSettings, SerialTransport};
 //!
 //! let mut transport = SerialTransport::open(&SerialSettings::new("/dev/ttyUSB0", 115200))?;

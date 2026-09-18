@@ -41,7 +41,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
-use crate::teardown::kill_session;
+use crate::pty::teardown::kill_session;
 
 /// 看门狗模式的 argv 标志。
 ///
@@ -276,8 +276,8 @@ impl SessionWatchdog {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::transport::{TerminalSize, Transport};
-    use crate::{Batch, BatchPolicy, PtyTransport, ShellLaunch, spawn_batcher};
+    use crate::pty::transport::{TerminalSize, Transport};
+    use crate::pty::{Batch, BatchPolicy, PtyTransport, ShellLaunch, spawn_batcher};
     use rustix::process::Pid;
     use std::io::Cursor;
     use std::sync::mpsc::Receiver;

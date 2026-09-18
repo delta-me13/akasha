@@ -217,8 +217,8 @@ impl Default for OutputBatcher {
 /// # 读错误
 ///
 /// 读错误与 EOF 一样**结束流**，不单独上报：PTY 上的读错误绝大多数就是
-/// "子进程没了"（EIO），而结局该由 [`crate::Transport::exited`] /
-/// [`crate::Transport::shutdown`] 给出 —— 把故障塞进字节队列会让下游分不清
+/// "子进程没了"（EIO），而结局该由 [`crate::pty::Transport::exited`] /
+/// [`crate::pty::Transport::shutdown`] 给出 —— 把故障塞进字节队列会让下游分不清
 /// "这坨字节"和"读取失败"。
 ///
 /// # 两个线程什么时候收工
@@ -226,7 +226,7 @@ impl Default for OutputBatcher {
 /// 源 EOF / 读错误、或下游 drop 之后**再来一个字节**（那一瞬间 `send` 失败即知）。
 /// 有一种情形它们会停在等待上：**下游 drop 了而源完全安静** —— 此时没人给它们
 /// 发信号。它们不占 CPU（阻塞在 channel 上），但会一直持有读端；现实中这条流
-/// 的收尾由 [`crate::Transport::shutdown`] 完成（子进程一死，读端立刻返回并带出后续）。
+/// 的收尾由 [`crate::pty::Transport::shutdown`] 完成（子进程一死，读端立刻返回并带出后续）。
 /// 因此**别把 `Receiver` 的 drop 当作"结束这条流"的手段**，收尾要走 `shutdown`。
 pub fn spawn_batcher(reader: Box<dyn Read + Send>, policy: BatchPolicy) -> Receiver<Batch> {
     let (chunk_tx, chunk_rx) = mpsc::sync_channel::<Vec<u8>>(READ_BACKLOG);
@@ -306,8 +306,8 @@ fn batch_loop(chunks: Receiver<Vec<u8>>, policy: BatchPolicy, batches: &Sender<B
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeTransport;
-    use crate::transport::{Capabilities, TerminalSize, Transport};
+    use crate::pty::testing::FakeTransport;
+    use crate::pty::transport::{Capabilities, TerminalSize, Transport};
 
     /// 测试用的固定时钟原点。合批器只比较时刻，不关心它从哪来。
     fn t0() -> Instant {

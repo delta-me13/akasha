@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use akasha_pty::{Capabilities, ExitStatus, Transport, TransportError};
+use crate::pty::{Capabilities, ExitStatus, Transport, TransportError};
 use serialport::SerialPort;
 
 use crate::serial::error::SerialError;
@@ -142,7 +142,7 @@ impl Transport for SerialTransport {
 /// 而串口**没有**"对端关闭"这种事件 —— "现在没有数据"与"流结束了"必须由**我们**分开表达。
 ///
 /// 所以：超时 → 再看一眼停止标志 → 没立起来就继续读；停止标志立起来了 → 返回 `Ok(0)`。
-/// 上游（`akasha_pty::spawn_batcher`）据此交付残批并结束那条流。
+/// 上游（`crate::pty::spawn_batcher`）据此交付残批并结束那条流。
 struct SerialReader<S> {
     source: S,
     stop: Arc<AtomicBool>,

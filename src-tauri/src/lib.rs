@@ -4,6 +4,7 @@ pub mod bw;
 pub mod config;
 pub mod lifecycle;
 pub mod prompt;
+pub mod pty;
 pub mod serial;
 pub mod session;
 pub mod single_instance;

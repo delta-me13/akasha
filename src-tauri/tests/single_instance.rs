@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use victauri_test::VictauriClient;
 
-/// 看门狗模式的 argv 标志（`akasha_pty::watchdog::FLAG` 的线上表示）。
+/// 看门狗模式的 argv 标志（`akasha_lib::pty::watchdog::FLAG` 的线上表示）。
 ///
 /// 数"有几个 app 实例"时必须把它排除掉：看门狗**就是同一个可执行文件**再跑一次
 /// （plan 0205），按可执行文件数会把它一起数进去。

@@ -26,7 +26,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use akasha_pty::{Capabilities, ExitStatus, TerminalSize, Transport, TransportError};
+use crate::pty::{Capabilities, ExitStatus, TerminalSize, Transport, TransportError};
 use russh::client::{self, Handle};
 use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
 use tokio::runtime::Handle as RuntimeHandle;
@@ -281,7 +281,7 @@ impl Read for SshOutput {
     /// 阻塞到有数据、或者连接结束（返回 `Ok(0)` = EOF）。
     ///
     /// ⚠️ `blocking_recv` **不能在 tokio 上下文里调用**。调用方是合批线程
-    /// （`akasha_pty::spawn_batcher` 起的是 `std::thread`），所以这里成立 ——
+    /// （`crate::pty::spawn_batcher` 起的是 `std::thread`），所以这里成立 ——
     /// 而这也是"读方向必须有一条队列"的原因：把异步的连接状态机留给 task。
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if buf.is_empty() {

@@ -33,11 +33,11 @@ use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use akasha_pty::{
+use akasha_lib::pty::{
     Batch, BatchPolicy, PtyTransport, ShellLaunch, TerminalSize, Transport, spawn_batcher,
 };
 
-/// 看门狗模式的 argv 标志（`akasha_pty::watchdog::FLAG` 的线上表示）。
+/// 看门狗模式的 argv 标志（`akasha_lib::pty::watchdog::FLAG` 的线上表示）。
 const FLAG: &str = "--akasha-session-watchdog";
 
 /// 进程是否还在。

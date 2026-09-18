@@ -24,17 +24,17 @@
 //! 它只管"字节怎么进出载体"，外加把输出合批成 [`Batch`]（[`spawn_batcher`]）。
 //!
 //! ```no_run
-//! use akasha_pty::{PtyTransport, TerminalSize, Transport};
+//! use crate::pty::{PtyTransport, TerminalSize, Transport};
 //!
 //! let mut transport = PtyTransport::spawn_default(TerminalSize::DEFAULT)?;
 //! let _output = transport.output_stream();
 //! transport.write(b"echo hi\n")?;
 //! transport.shutdown()?; // 显式收尸；不调用它就会留下子进程
-//! # Ok::<(), akasha_pty::TransportError>(())
+//! # Ok::<(), crate::pty::TransportError>(())
 //! ```
 
 mod batcher;
-mod pty;
+mod local;
 mod shell;
 mod teardown;
 pub mod testing;
@@ -42,6 +42,6 @@ mod transport;
 pub mod watchdog;
 
 pub use batcher::{Batch, BatchPolicy, OutputBatcher, Trigger, spawn_batcher};
-pub use pty::PtyTransport;
+pub use local::PtyTransport;
 pub use shell::ShellLaunch;
 pub use transport::{Capabilities, ExitStatus, TerminalSize, Transport, TransportError};

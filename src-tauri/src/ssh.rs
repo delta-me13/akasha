@@ -12,7 +12,7 @@
 //! 2. **库不自建 runtime**（ADR D2）：入口收 [`tokio::runtime::Handle`]，
 //!    由 app 在启动时建**一个**专用 runtime。库偷偷建 runtime 的代价是
 //!    "谁 drop、几个 worker、什么时候停"都变成库的隐式行为。
-//! 3. **同步门面，异步在门后面**（ADR D3）：对外是 [`akasha_pty::Transport`]，
+//! 3. **同步门面，异步在门后面**（ADR D3）：对外是 [`crate::pty::Transport`]，
 //!    SSH 因此**不改会话层、不改前端** —— 这正是"用 capability flag 而不是新 trait"的兑现。
 //!
 //! ## 凭据从哪来（ADR D7 / D8）
@@ -36,7 +36,7 @@
 //!
 //! ## 两个门面，一条是异步的
 //!
-//! [`SshTransport`] 是**同步**门面（装进 `akasha_pty::Transport`，给会话层用）；
+//! [`SshTransport`] 是**同步**门面（装进 `crate::pty::Transport`，给会话层用）；
 //! [`SshConnection`] + [`SshStream`] 是**异步**那一层 —— `direct-tcpip` 原语（D9）住在那里，
 //! 跳板 / `-L` / SFTP 的 B 档都按"[一条流](SshStream)"消费它。谁用哪一层、为什么，
 //! 见 [`crate::SshConnection`] 的文档。
@@ -77,7 +77,7 @@ pub mod testing;
 pub mod transfer;
 mod transport;
 
-pub use akasha_pty::{TerminalSize, Transport, TransportError};
+pub use crate::pty::{TerminalSize, Transport, TransportError};
 pub use credential::{
     CacheKey, Credential, CredentialCache, CredentialKind, CredentialProvider, CredentialRequest,
     MAX_CREDENTIAL_LEN,

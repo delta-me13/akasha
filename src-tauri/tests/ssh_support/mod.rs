@@ -17,7 +17,7 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use akasha_pty::{TerminalSize, Transport};
+use akasha_lib::pty::{TerminalSize, Transport};
 use akasha_lib::ssh::{
     Credential, CredentialCache, CredentialProvider, CredentialRequest, HostKey, HostKeyVerifier,
     PinnedHostKey, SshAuth, SshConfig, SshConnect, SshError, SshTarget,

@@ -33,7 +33,7 @@ pub mod sftp;
 use std::future::Future;
 use std::sync::Arc;
 
-use akasha_pty::TerminalSize;
+use crate::pty::TerminalSize;
 use crate::ssh::{
     CredentialCache, HostKey, HostKeyCache, KeyCandidate, KnownHostsVerifier, RecordedHostKey,
     SshAuth, SshConfig, SshConnect, SshConnection, SshError, SshTarget, SshTransport,

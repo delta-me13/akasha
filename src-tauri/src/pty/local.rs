@@ -5,8 +5,8 @@ use std::io::{Read, Write};
 
 use portable_pty::{Child, MasterPty, PtyPair, PtySize, native_pty_system};
 
-use crate::shell::ShellLaunch;
-use crate::transport::{Capabilities, ExitStatus, TerminalSize, Transport, TransportError};
+use crate::pty::shell::ShellLaunch;
+use crate::pty::transport::{Capabilities, ExitStatus, TerminalSize, Transport, TransportError};
 
 /// 本地 PTY 上的一个字节载体（`AGENTS.md` §3.3 说的"PTY 子进程"就是这个）。
 ///
@@ -130,14 +130,14 @@ impl Transport for PtyTransport {
         // 顺序是有理由的，别换：
         //
         // 1. **先收整个会话，再收子进程** —— `kill_session` 靠"sid == 首进程 pid"来认会话，
-        //    而 pid 只有在首进程**还活着**时才不会被复用成别的会话（见 `crate::teardown`）。
+        //    而 pid 只有在首进程**还活着**时才不会被复用成别的会话（见 `crate::pty::teardown`）。
         // 2. 会话里那些**忽略 SIGHUP** 的进程（`nohup` / `trap "" HUP` / 守护化的）不会被
         //    `Child::kill()` 收走，也不会被内核的 hangup 收走 —— 只有点名 SIGKILL 才行。
         //    这正是 plan 0204 实测到的残留。
         // 3. **关掉主端**，再回收子进程 —— 见下面那段。
         // 4. 这一步**不能省**：不 wait 就会留下僵尸进程。
         if let Some(pid) = self.child.process_id() {
-            crate::teardown::kill_session(pid);
+            crate::pty::teardown::kill_session(pid);
         }
 
         // kill 的错误**不外抛**：它唯一现实的失败原因是"进程恰好在这一刻已经没了"，

@@ -76,7 +76,6 @@ dependencies = [
 name = "akasha"
 version = "0.1.0"
 dependencies = [
- "akasha-pty",
  "criterion",
  "insta",
  "memsafe",
@@ -85,6 +84,7 @@ dependencies = [
  "rusqlite",
  "russh",
  "russh-sftp",
+ "rustix",
  "serde",
  "serde_json",
  "serialport",
@@ -108,16 +108,6 @@ dependencies = [
  "zbus",
  "zeroize",
  "zip",
-]
-
-[[package]]
-name = "akasha-pty"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "portable-pty",
- "rustix",
- "thiserror 2.0.20",
 ]
 
 [[package]]

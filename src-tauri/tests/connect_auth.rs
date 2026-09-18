@@ -14,7 +14,7 @@ mod support;
 use std::sync::Arc;
 use std::time::Duration;
 
-use akasha_pty::{ExitStatus, TerminalSize, Transport};
+use akasha_lib::pty::{ExitStatus, TerminalSize, Transport};
 use akasha_lib::ssh::{
     CredentialCache, HostKeyVerifier, KeyCandidate, PinnedHostKey, SshAuth, SshError, SshTarget,
     SshTransport,

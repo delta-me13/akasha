@@ -29,8 +29,8 @@ use crate::store::ipc::pools::HostId;
 use crate::tunnel::ActiveForward;
 use crate::session::{SessionEvent, SessionId, SessionKind, SessionRegistry};
 use crate::tunnel::TunnelState;
-use akasha_pty::watchdog::SessionWatchdog;
-use akasha_pty::{
+use crate::pty::watchdog::SessionWatchdog;
+use crate::pty::{
     Batch, BatchPolicy, ExitStatus, PtyTransport, TerminalSize, Transport, TransportError,
     spawn_batcher,
 };
@@ -1260,8 +1260,8 @@ pub fn close_session(handle: SessionHandle, state: State<'_, Sessions>) -> Resul
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use akasha_pty::ExitStatus;
-    use akasha_pty::ShellLaunch;
+    use crate::pty::ExitStatus;
+    use crate::pty::ShellLaunch;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
@@ -1365,8 +1365,8 @@ mod tests {
     fn every_batch_reaches_the_sink_in_order() {
         // 纯逻辑那半边：用假载体跑一遍 forward，确认一个字节都不丢、顺序不变。
         // （没有 Tauri、没有真实进程 —— 这正是把转发单独提出来测的价值。）
-        use akasha_pty::Capabilities;
-        use akasha_pty::testing::FakeTransport;
+        use crate::pty::Capabilities;
+        use crate::pty::testing::FakeTransport;
 
         let mut transport = FakeTransport::new(Capabilities::PTY, TerminalSize::DEFAULT);
         let output = transport.output_stream().expect("取输出流失败");
@@ -1533,7 +1533,7 @@ mod tests {
     /// 把看门狗的控制端接到一段内存上，好断言协议到底写了什么。
     ///
     /// 为什么要断言**字节**而不是"调用过"：协议是**跨进程**的约定，两端各自编译、
-    /// 各自演进 —— 只有把写出去的行与 `akasha_pty::watchdog::parse` 对上，
+    /// 各自演进 —— 只有把写出去的行与 `crate::pty::watchdog::parse` 对上，
     /// 才能保证"app 说登记了"与"看门狗听懂了"是同一件事。
     #[derive(Clone)]
     struct ControlLog(Arc<Mutex<Vec<u8>>>);

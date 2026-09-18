@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use akasha_pty::TerminalSize;
+use crate::pty::TerminalSize;
 use russh::client::{self, Config, Handle, Msg};
 use russh::keys::{HashAlg, PublicKey, PublicKeyOrCertificate};
 use russh::{Channel, ChannelReadHalf, ChannelWriteHalf};

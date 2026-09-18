@@ -1,4 +1,4 @@
-//! 看门狗在 **app 这一侧**的接法（机制本身在 `akasha_pty::watchdog`，plan 0205）。
+//! 看门狗在 **app 这一侧**的接法（机制本身在 `crate::pty::watchdog`，plan 0205）。
 //!
 //! 这里只有两件事，都必须在 Tauri 起来**之前**决定：
 //!
@@ -10,7 +10,7 @@
 //! 两者的失败都**不致命**：app 该照常能用，只是少了"被 SIGKILL 时的最后一道兜底"
 //! （退化回 plan 0204 的水平）。一个终端不该因为兜底进程起不来就打不开。
 
-use akasha_pty::watchdog::{self, SessionWatchdog};
+use crate::pty::watchdog::{self, SessionWatchdog};
 
 use crate::session::Sessions;
 

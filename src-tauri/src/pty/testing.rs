@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::io::{self, Read};
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use crate::transport::{Capabilities, ExitStatus, TerminalSize, Transport, TransportError};
+use crate::pty::transport::{Capabilities, ExitStatus, TerminalSize, Transport, TransportError};
 
 /// 内存里的 [`Transport`]。
 pub struct FakeTransport {

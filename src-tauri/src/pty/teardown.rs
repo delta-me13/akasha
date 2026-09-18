@@ -26,7 +26,7 @@
 //!
 //! 为什么这样扫是安全的：sid 在会话存续期内**就是**首进程的 pid，只要首进程还活着，
 //! 那个 pid 就不可能被复用成别的会话 —— 所以调用点必须排在"kill 子进程"**之前**
-//! （[`crate::PtyTransport::shutdown`] 正是这个顺序）。
+//! （[`crate::pty::PtyTransport::shutdown`] 正是这个顺序）。
 //!
 //! # 平台差异（照实说，不假装一样）
 //!
@@ -216,8 +216,8 @@ mod pid_list_tests {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::transport::{TerminalSize, Transport};
-    use crate::{PtyTransport, ShellLaunch};
+    use crate::pty::transport::{TerminalSize, Transport};
+    use crate::pty::{PtyTransport, ShellLaunch};
 
     /// 起一个真 PTY（`/bin/sh`）。用它而不是 `std::process::Command`：会话首进程的 pid
     /// 必须是**确定的**，而 `Command::spawn` 拿到的 pid 与 `setsid` 之后的会话首进程

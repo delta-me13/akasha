@@ -12,7 +12,7 @@ use std::hint::black_box;
 use std::io::{self, Read};
 use std::time::{Duration, Instant};
 
-use akasha_pty::{BatchPolicy, OutputBatcher, spawn_batcher};
+use akasha_lib::pty::{BatchPolicy, OutputBatcher, spawn_batcher};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 const KIB: usize = 1024;

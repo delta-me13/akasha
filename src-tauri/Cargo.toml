@@ -40,10 +40,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [workspace]
 resolver = "2"
-# ⚠️ 空 glob 是**硬错误**，不是空匹配：`crates/` 不存在时 cargo 直接报
-# `failed to load manifest for workspace member .../crates/*`（坑 #22）。
-# 新增 crate 用 `cargo new --lib src-tauri/crates/<name>`，它会自动落进这个 glob。
-members = ["crates/*"]
+# 成员已全部并入 src/（ADR-0008）：本包即 workspace root，不再有 members glob ——
+# 空 glob 是硬错误（`crates/` 不存在时 cargo 直接报）。
 
 # 全 workspace 的 lint 基线。成员（`crates/*`）必须各自写 `[lints] workspace = true`
 # 才继承 —— 少了那一行，本节对它们形同虚设。
@@ -124,11 +122,6 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
 specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 specta-typescript = "=0.0.12"
 
-# 纯逻辑 crate。**依赖方向单向**：`akasha` → `crates/*`（AGENTS.md §3.1），
-# 反向依赖由 ast-grep 规则拦下。
-# ⚠️ 必须带 `version`：只写 `path` 等于版本号写 `*`，而 deny.toml 里
-# `wildcards = "deny"` 会把这种依赖直接判红（"2 wildcard dependencies"）。
-akasha-pty = { version = "0.1.0", path = "crates/akasha-pty" }
 # 存储层（原 akasha-store，plan 0403 / ADR-0002）：SQLCipher 的打开与密钥送入，以及受保护页。
 # ⚠️ `bundled-sqlcipher-vendored-openssl` 两个词都不能少：`bundled-sqlcipher` 单独用会去链
 # **系统** OpenSSL，四平台构建（尤其交叉编译）立刻变成负担。版本跟着 `victauri-plugin` 的
@@ -167,6 +160,13 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync", "io
 # ⚠️ 这不是新增依赖：同一个版本早已在依赖树里（`tauri-plugin-opener` → `zbus`）。
 zbus = "5.9"
 
+[target.'cfg(unix)'.dependencies]
+# 收掉整个会话（`pty/teardown.rs`）要发 SIGKILL，而 workspace 的 `unsafe_code = "deny"`
+# 不允许我们自己写 `unsafe { libc::kill(…) }` —— 走 rustix 的安全封装。它本来就在依赖树里。
+# ⚠️ 只在 unix 上：上游把 `rustix::process` 限定在 `#[cfg(not(windows))]`，Windows 目标上
+# 引用它直接编译不过（问题 #149）。写成目标专属依赖，于是"哪个平台需要它"是 manifest 上的事实。
+rustix = { version = "1", features = ["process"] }
+
 [features]
 # 默认开：Linux 上要它才有 USB 端口的信息（VID/PID/序列号）—— 那是 serialport 的枚举后端。
 default = ["libudev"]
@@ -181,6 +181,12 @@ criterion = "0.8.2"
 insta = "1.48.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
 victauri-test = "0.8.8"
+
+# 吞吐基线（`just bench`）。用 criterion 自己的 harness（libtest 的 `#[bench]` 只在 nightly 上，
+# 且没有基线对比与统计）。
+[[bench]]
+name = "batching"
+harness = false
 
 # 继承上面的 [workspace.lints]（unsafe_code = forbid、clippy::unwrap_used = warn）。
 [lints]

@@ -23,7 +23,7 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use akasha_pty::{Capabilities, TerminalSize, Transport, TransportError};
+use akasha_lib::pty::{Capabilities, TerminalSize, Transport, TransportError};
 use akasha_lib::serial::{SerialSettings, SerialTransport};
 use portable_pty::{PtyPair, PtySize, native_pty_system};
 

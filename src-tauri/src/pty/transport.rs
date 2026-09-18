@@ -147,7 +147,7 @@ pub trait Transport: Send {
     /// 那种 bug 不报错、不可复现，只在读端数量上出错。API 直接让它写不出来。
     ///
     /// 取走后怎么读（线程、合批、背压）是调用方的事 —— 本 crate 不**偷偷**起线程，
-    /// 合批要用就显式调 [`crate::spawn_batcher`]。
+    /// 合批要用就显式调 [`crate::pty::spawn_batcher`]。
     fn output_stream(&mut self) -> Option<Box<dyn Read + Send>>;
 
     /// 调整窗口尺寸。**默认返回 [`TransportError::Unsupported`]** —— 具备该能力的载体覆写它
@@ -187,7 +187,7 @@ pub trait Transport: Send {
     /// 本载体背后**本地进程**的会话首进程 pid（没有就是 `None`）。
     ///
     /// 它存在的理由只有一条：`tauri dev` 的重编译重启是 SIGKILL，进程里没有任何代码
-    /// 会执行 —— 那种时候只能靠 [`crate::watchdog`] 拿这个 pid 去收掉**整个会话**
+    /// 会执行 —— 那种时候只能靠 [`crate::pty::watchdog`] 拿这个 pid 去收掉**整个会话**
     /// （`AGENTS.md` §3.3 的"真正退出"那一格，见 plan 0205）。
     ///
     /// 默认 `None`：内存载体与将来的纯网络后端没有本地进程可收。
@@ -231,7 +231,7 @@ mod tests {
         // 默认 `None` 是刻意的：没有故障、或这个载体不记录，都不该凭空多出一句"原因"。
         // 会话层靠这个默认值把"有结局的载体"与"只有原因的载体"分开，所以它必须在类型层钉住。
         assert_eq!(
-            Transport::stream_error(&crate::testing::FakeTransport::new(
+            Transport::stream_error(&crate::pty::testing::FakeTransport::new(
                 Capabilities::NONE,
                 TerminalSize::DEFAULT,
             )),
@@ -251,7 +251,7 @@ mod tests {
         };
         assert!(ssh_terminal.exit_status && ssh_terminal.resize);
         assert_eq!(
-            Transport::session_leader(&crate::testing::FakeTransport::new(
+            Transport::session_leader(&crate::pty::testing::FakeTransport::new(
                 ssh_terminal,
                 TerminalSize::DEFAULT,
             )),
