@@ -117,3 +117,27 @@ just ready       # 预期：6/6
   2. 壳文件被"给纯逻辑加 `crate::bw::` 前缀"的那一遍扫到，`crate::config` 一度变成
      `crate::bw::config` —— 批量替换必须把壳排除在纯逻辑那一遍之外。
 - **下一步**：`ssh` → `serial` → `store` → `pty`（按依赖序：先翻依赖方，成员才一直可编译）。
+
+### 2026-09-19 第 2 轮
+
+- **akasha-ssh** 完成（`a2aa8b9`）：19 个源文件 → `ssh/`，两个壳 → `ssh/ipc.rs` 与
+  `ssh/ipc/sftp.rs`；依赖（russh / russh-sftp / rand）并入 app manifest；13 个集成测试
+  迁进 `src-tauri/tests/`，共用脚手架移到 `tests/ssh_support/`。
+  `just check` 与 `just clippy`（`-D warnings`）绿；SSH 集成测试 **51/51** 通过。
+- **akasha-serial** 完成（`c76e31b`）：4 个源文件 → `serial/`，壳 → `serial/ipc.rs`；
+  `libudev` 上升为 package feature（`default = ["libudev"]`）；两个集成测试迁进 `tests/`。
+  `just serial-check` 两次运行都通过。
+- **搬迁暴露并修掉的四处**（都不在"搬文件"本身的预期里）：
+  1. `known_hosts` 用例按 `CARGO_MANIFEST_DIR/../../target` 定位临时目录 —— 成员在
+     `crates/` 下时那正好是 `src-tauri/target`，搬进 `tests/` 后指到了工作区**之外**，
+     沙箱直接拒绝（`PermissionDenied`）。改为 `target/…`。
+  2. tauri / specta 宏要求命令注册指向**定义命令的模块**：`crate::ssh::open_ssh_session`
+     必须写成 `crate::ssh::ipc::open_ssh_session` —— 模块根的重导出满足不了宏生成的伴生项。
+  3. `pub use ipc::*;` 会让 `ipc` 里的 `pub mod sftp` 与纯逻辑的私有 `mod sftp;` 相撞
+     （`hidden_glob_reexports` 警告，在 `-D warnings` 下就是错误）—— 改成显式再导出。
+  4. `lib.rs` 里对已移出该模块的 `pub mod sftp;` 的声明，以及未加 `crate::` 限定的 `sftp::` 引用。
+- **环境读数（不是回归）**：`just libudev-check` 在本机（macOS 宿主）红在"依赖图里没有
+  libudev" —— 该判据的前提是 Linux 宿主（`libudev` 只声明在 linux 的 cfg 下）；
+  `cargo nextest run -p akasha --lib` 的 3 个 PTY 用例仍是 `openpty: PermissionDenied`。
+- **下一步**：`store` → `pty`（剩下的两个成员），然后是三条例规则与探针、`Cargo.toml` 注释删除、
+  `AGENTS.md` §0/§3.1/§6/§11 与 docs 同步、`just ready` 全绿。
