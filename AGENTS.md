@@ -561,8 +561,8 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 | Rust 工具链本身（rustc/cargo/clippy/rustfmt） | 暂无固定 —— 跟随 rustup `stable` | `rustup` |
 | 系统库（webkit2gtk 等） | 无（发行版包管理器） | `pacman -S`，**cargo/mise 均无法管理** |
 
-`mise.toml` 是"不属于 Cargo.toml 的工具"的唯一来源。里面只有 `just`、`sccache`
-有 aqua 预编译配方，`bacon` / `cargo-nextest` / `cargo-deny` 必须显式写
+`mise.toml` 是"不属于 Cargo.toml 的工具"的唯一来源。里面只有 `just` 有 aqua
+预编译配方，`bacon` / `cargo-nextest` / `cargo-deny` 必须显式写
 `"cargo:xxx"` 后端，首次安装会从源码编译（较慢）；**node / pnpm 也钉在这里**
 （前端运行时与 CLI 工具收敛到同一个机制，`just tools` 一次装齐）。
 
