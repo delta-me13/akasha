@@ -57,7 +57,7 @@
 | **`Session`** | 后端 | 用户打开的**一个工作单元**：终端 / SFTP / 端口转发 / 凭据库。**它是资源的归属单位**，生命周期约束它拥有的连接 | ~~`Tab`~~ ~~`Pane`~~ ~~`View`~~ —— 呈现方式，不是语义 |
 | **`Transport`** | 后端 | **字节载体**：本地 PTY / SSH shell 通道 / 串口 | ~~`PtySession`~~ —— PTY 专属，容不下第二个后端。**原方案里这个词叫 `Session`，已改名** |
 | **`Connection`** | 后端 | 一条 SSH 连接。因不做复用，一个 `Session` 可能对应一条或多条 | ~~`SshSession`~~ —— 与上层 `Session` 撞名 |
-| `Tab` / 面板 / 分屏 | **前端** | 至多是前端对 `Session` 的一种呈现 | 不得出现在 `src-tauri/crates/` 的类型名里 |
+| `Tab` / 面板 / 分屏 | **前端** | 至多是前端对 `Session` 的一种呈现 | 不得出现在 `src-tauri/src/` 的类型名里 |
 
 配套的类型后缀：`SessionId`、`SessionKind`、`SessionRegistry`、`SessionEvent`。
 
@@ -70,7 +70,7 @@
 
 | 规则 | 拦截 |
 |---|---|
-| `no-ui-vocab-in-types` | `src-tauri/crates/**` 与 `src-tauri/src/**` 的类型名中出现 `Tab` / `Pane` / `Window` / `View` |
+| `no-ui-vocab-in-types` | `src-tauri/src/**` 的类型名中出现 `Tab` / `Pane` / `Window` / `View` |
 
 ### 1.3 UI 的现状：**当前界面只是功能验证壳层**
 
@@ -109,7 +109,7 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
 
 - 能力差异**用 capability flag 表达**，不要用"多几个方法都得实现一遍"。
   serial 没有窗口尺寸、没有信号、没有退出码；SSH 没有本地进程语义。
-- 这个抽象必须在 `src-tauri/crates/akasha-pty` 落成**通用**形态，否则第二个后端到来时要重构。
+- 这个抽象必须在 `src-tauri/src/pty` 落成**通用**形态，否则第二个后端到来时要重构。
 
 **平台差异（并非"编译一次即可获得"）**：
 
@@ -152,7 +152,7 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
 2. **SFTP host↔host 的 B 档**（§4.1）
 3. **SSH 本地转发**（本节）
 
-因此它应当**只实现一次**，落在 `src-tauri/crates/akasha-ssh` 里，三处复用。
+因此它应当**只实现一次**，落在 `src-tauri/src/ssh` 里，三处复用。
 先实现跳板，即同时获得另外两处的基础。
 
 > 例外：**远程转发（`-R`）是另一套机制** —— 它由服务端发起连接
@@ -280,7 +280,7 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
   进度只能解析远端输出），**列为非目标**。
 - **无论哪档都不落盘**：全程流式，不经临时文件。
 - 传输引擎必须支持**并发 in-flight 请求**——多小文件的往返开销会主导耗时，
-  拓扑再好也不能弥补串行请求。同时搬几个文件**有上限**（有默认值，见 `akasha_core::Transfer`）：
+  拓扑再好也不能弥补串行请求。同时搬几个文件**有上限**（有默认值，见 `src-tauri/src/config` 的 `Transfer`）：
   上限同时是对端打开句柄数与本机缓冲数的上界。
 - B 档复用的是 §2.2 里那个 `direct-tcpip` 原语。
 
@@ -330,7 +330,7 @@ Transport: write(bytes) / output_stream() / resize(尽力) / shutdown() / exited
 2. **事件按 `SessionId` 路由**，不是全局广播后由前端过滤 —— 否则多 Session 并行时会串。
 3. **Session 类型之间互不依赖**：SFTP Session 不需要先开一个终端；转发 Session 也不需要。
 
-> 这条对**实现顺序**有直接影响：`akasha-core` 里的 Session 模型要**先立起来**，
+> 这条对**实现顺序**有直接影响：`session` 模块里的 Session 模型要**先立起来**，
 > 否则第一个后端就会把"终端 = 应用"的假设写进架构，之后拆它很贵。
 
 ### 5.2 托盘行为

@@ -24,22 +24,22 @@ SSH 端口转发（本地 / 远程 / 动态）、凭据池与系统托盘（窗�
 
 | 层 | 实现 |
 |---|---|
-| 后端 | Rust + Tauri 2：PTY / 进程 / VT 状态；纯逻辑下沉到不依赖 Tauri 的 crate |
+| 后端 | Rust + Tauri 2：PTY / 进程 / VT 状态；纯逻辑住在不依赖 Tauri 的域模块里 |
 | 前端 | React 19 + Vite，终端由 xterm.js 渲染 |
-| 持久化 | SQLCipher（`akasha-store`，[ADR-0002](./docs/adr/0002-secret-storage.md)） |
+| 持久化 | SQLCipher（`src-tauri/src/store`，[ADR-0002](./docs/adr/0002-secret-storage.md)） |
 
 ## 仓库布局
 
 | 路径 | 内容 |
 |---|---|
 | `src/` | 前端源码（React 19 + Vite） |
-| `src-tauri/` | Rust workspace 根（`src-tauri/Cargo.toml`）：命令、事件与状态注入 |
-| `src-tauri/crates/` | 不依赖 Tauri 的 crate：`akasha-pty` / `akasha-core` / `akasha-ssh` / `akasha-store` / `akasha-serial` / `akasha-bw` |
+| `src-tauri/` | Rust 包（`src-tauri/Cargo.toml`）：命令、事件与状态注入；纯逻辑在 `src-tauri/src/` 的域模块里 |
+| `src-tauri/src/` | 域模块：`pty` / `ssh` / `store` / `serial` / `bw` / `session` / `config` / `tunnel`。每个域里纯逻辑零 Tauri 依赖，app 侧是 `ipc.rs`（或 `ipc/`） |
 | `scripts/` | 开发脚本与结构护栏：`agent-runner.py`、ast-grep 规则与测例 |
 | `docs/` | 规范、决策（ADR）、计划与状态 |
 | `.github/workflows/ci.yml` | 唯一的 CI 工作流 |
 
-仓库根不含 `Cargo.toml`（[ADR-0004](./docs/adr/0004-rust-workspace-under-src-tauri.md)）；
+仓库根不含 `Cargo.toml`（[ADR-0008](./docs/adr/0008-crates-to-modules.md) 之后 `src-tauri` 是唯一 package）；
 crate 级命令经 `just` 执行，两个 justfile 的分工见 [`docs/just.md`](./docs/just.md) §3。
 
 ## 环境要求

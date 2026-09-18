@@ -2,7 +2,7 @@
 
 - **关联**：ROADMAP 阶段 1 ·「crates 改为 `src-tauri/src` 下的模块（ADR-0008）」
 - **前置**：ADR-0008（实现中）；阶段 0 的门禁基线（`just ready` 6/6）
-- **状态**：进行中
+- **状态**：已完成
 
 ## 目标 / 非目标
 
@@ -163,3 +163,14 @@ just ready       # 预期：6/6
 - **下一步（收尾）**：docs 同步（`AGENTS.md` §0/§3.1/§6/§11 单独提交、`docs/just.md` §2/§9、
   `docs/scope.md`、`docs/STATUS.md`、`ROADMAP.md` 阶段 1、`docs/adr/README.md`）、
   ADR-0008 转「已定案」、本 plan 归档、逐条执行 `just ready` 的各项。
+
+### 2026-09-19 收尾（已完成）
+
+- 文档同步：`AGENTS.md`（§0 / §1 / §3.1 / §3.4 / §6 / §7 / §11，单独提交 `13871dc`）、
+  `README.md`、`docs/just.md`、`docs/scope.md`、`ROADMAP.md`（阶段 1 标题与条目）、
+  `docs/adr/README.md`；ADR-0008 转「已定案」。
+- `just ready` 的逐条读数：`fmt-check` / `lint`（clippy + ast-grep scan + ast-grep test）/
+  `docs-check` / `gen-types-check` 绿；`test` 在本沙箱有 4 个 `pty::local` 用例失败于
+  `openpty: PermissionDenied`（AGENTS.md §1 的环境限制），`deny-offline` 需要联网取 advisory 库。
+  两者都不是本次改动引入的。
+- 归档：本文件整份移入 `docs/plans/archive/`，索引保留一行。

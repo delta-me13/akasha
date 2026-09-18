@@ -4,9 +4,28 @@
 > 会话结束前必须更新 —— 下一个会话（或另一个 agent）只读这个文件 + 相关 plan 就能接手，
 > 不需要回溯对话历史。规则见 [`docs/README.md`](./README.md)。
 
-**最后更新**：2026-09-18
+**最后更新**：2026-09-19
 
 ## 摘要
+
+**2026-09-19：布局重排（ADR-0008）** —— 6 个 workspace 成员（`akasha-core` / `akasha-pty` /
+`akasha-ssh` / `akasha-serial` / `akasha-store` / `akasha-bw`）全部并入 `src-tauri/src/`
+的域模块：`session/` `config/` `tunnel/` `pty/` `ssh/` `serial/` `store/` `bw/`。
+每个域里纯逻辑与 app 侧的 `ipc.rs`（或 `ipc/`）分开；`crates/` 与 6 份成员 manifest 已消失，
+`[workspace]` 只留 `[workspace.lints]` 供继承。护栏随之改到新路径：
+`no-tauri-in-core-crates` → **`no-tauri-in-pure-modules`**（`files:` 覆盖全部
+`src-tauri/src/**`，`ignores:` 列出允许碰 Tauri 的 app 侧文件），`no-unsafe-outside-store`
+的放行点改为 `src-tauri/src/store/`，`no-ui-vocab-in-types` 收敛到 `src-tauri/src/**`。
+`src-tauri/Cargo.toml` 的注释按所有者要求删除。
+
+**读数**：`just check` / `just clippy`（`-D warnings`）/ `just lint`（clippy + ast-grep scan +
+ast-grep test，6 条规则）绿；成员集成测试 SSH **51/51**、store **114/114**、serial 两次配置通过。
+`just test` 在本沙箱里 4 个 `pty::local` 用例失败于 `openpty: PermissionDenied`
+（`AGENTS.md` §1 记的环境权限），`libudev-check` 与 `deny-offline` 分别需要 Linux 宿主与联网 ——
+三条都不是这次改动引入的。
+
+⚠️ **本文件下方的历史读数写的仍是旧 crate 路径**（`akasha_ssh::…` / `src-tauri/crates/…`）：
+它们记录的是当时的事实，按 ADR-0008 §4 不追改。当前路径与规则以 `AGENTS.md` §3.1 / §6 为准。
 
 **阶段 2「端到端最小终端」5/5 完成**；**阶段 3「托盘与应用生命周期」6/6 完成**；
 **阶段 4「存储与凭据池」9/9 完成**；**阶段 5「SSH 栈」6/6 完成**；

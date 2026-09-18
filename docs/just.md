@@ -37,12 +37,12 @@
 | `just lint` | clippy + `ast-grep scan` + `ast-grep test`（结构护栏：**真代码**有没有违规 / **规则自己**还对不对） | 根组合 |
 | `just fmt` | rustfmt 格式化（`--all` = workspace 全成员） | 转发 |
 | `just fmt-check` | 只检查格式，不改文件 | 转发 |
-| `just test` | 单元测试（cargo-nextest），**workspace 全成员** | 转发 |
+| `just test` | 单元测试（cargo-nextest），**全部测试目标** | 转发 |
 | `just test-e2e` | E2E：真实 app 上的验收（契约 + 交互）。**自包含** —— 已有 app（`just dev`）就复用，没有就自行启动 Vite + app，运行结束后自行结束；跳过的用例会把原因输出。**自起时运行三段**：前两段验关窗语义（它由数据目录里的配置决定、只在启动时读）——**两段都先在 bin 同目录备好便携数据目录**（没有它 app 会退回 OS 数据目录，两段就运行在不同的目录里，第二段写的配置也就读不到），第一段没有配置文件 = 收托盘（`window_close` 在这里有判据），第二段写 `close_behavior=exit` 再启动一次 app（`exit_residue` 的退出刺激），配置文件在运行结束后还原；**第三段就是 `just portable`**（可搬迁性 —— 它自己复制 bin、自行启动 app，所以只能在此时没有别的 akasha 时运行）。目标按 `E2E_TARGETS` / `E2E_TARGETS_EXIT` 的顺序逐个串行运行（`cargo test` 一次收多个 `--test` 时是按名字排序的）；guard 要求 `tests/*.rs` 出现在 **`E2E_TARGETS` / `E2E_TARGETS_EXIT` / `E2E_NO_APP` / `E2E_SELF_APP`** 四处之一（后两者分别 = 不需要真实 app、自行启动 app 的集成测试，理由写在各自文件头） | 转发 |
 | `just bench` | 吞吐基线（criterion）。**不是门禁**，用于改动前后对比 | 转发 |
 | `just portable` | 可搬迁性：把 **bin 所在文件夹整个移动**之后数据还在吗（`docs/portable.md` §5 的五步，外加 §4 第 3 条"便携目录不可写就拒绝启动"）。**自行启动 app** —— 把二进制复制进临时布局，在 A 启动一次、移动为 B、再启动一次，两次都用 app 自己的命令读回四类池，并用库函数逐项比对内容。⚠️ **不能与别的 akasha 同时运行**：单实例（plan 0304）会让它启动的第二份自己退掉，所以先查一遍并说清该关闭什么；Vite 复用或自起（与 `just test-e2e` 同一套做法）。`just test-e2e` 的自起分支在**第三段**调用它，复用别人的 app 时那一段显式跳过并输出原因 | 转发 |
-| `just libudev-check` | serial 的 libudev 只在 Linux 上（plan 0801 的判据）：按**目标**核对 `akasha-serial` 的依赖图 —— Linux 上必须有，Windows / macOS 上必须没有。⚠️ `cargo tree --target` 会取回那个目标独有的依赖，冷缓存下需要联网；每条分支都先看 `cargo tree` 自己的退出码，否则「图没解析出来」会被读成「没有 libudev」 | 转发 |
-| `just serial-check` | serial 的**两条枚举实现都要真的执行一次**（plan 0802）：`akasha-serial` 的全部用例在默认配置（libudev）与 `--no-default-features`（sysfs）下各执行一遍。Linux 上哪一套实现被编译进去完全由那个 feature 决定（`serialport` 的 `enumerate.rs` 两个分支），所以「只执行默认配置」等于另一套一次都没有被执行过 —— 而它正是发行版缺 libudev 时的降级路径。本机实测：默认配置列出 32 条 `/dev/ttyS*`（`/dev` 下一个都没有），关闭该 feature 后列出 0 条 | 转发 |
+| `just libudev-check` | serial 的 libudev 只在 Linux 上（plan 0801 的判据）：按**目标**核对整包的依赖图里有没有 libudev —— Linux 上必须有，Windows / macOS 上必须没有。⚠️ `cargo tree --target` 会取回那个目标独有的依赖，冷缓存下需要联网；每条分支都先看 `cargo tree` 自己的退出码，否则「图没解析出来」会被读成「没有 libudev」 | 转发 |
+| `just serial-check` | serial 的**两条枚举实现都要真的执行一次**（plan 0802）：串口的两个测试目标（`enumeration` / `pty_roundtrip`）在默认配置（libudev）与 `--no-default-features`（sysfs）下各执行一遍。Linux 上哪一套实现被编译进去完全由那个 feature 决定（`serialport` 的 `enumerate.rs` 两个分支），所以「只执行默认配置」等于另一套一次都没有被执行过 —— 而它正是发行版缺 libudev 时的降级路径。本机实测：默认配置列出 32 条 `/dev/ttyS*`（`/dev` 下一个都没有），关闭该 feature 后列出 0 条 | 转发 |
 | `just deny` | 依赖门禁：许可证 / 漏洞 / 来源（需联网）。⚠️ 带 `--workspace`，理由见下 | 转发 |
 | `just deny-offline` | 同上，跳过需要联网的 advisories | 转发 |
 | `just gen-types` | Rust command/event → `src/ipc/bindings.ts`（生成物，**禁止手改**） | 转发 |
@@ -142,16 +142,11 @@ just deny-offline                       # 新依赖的许可证要过门禁
 
 想看细节就**单独运行那一步**（`just deny-offline` / `just lint` / `just test`），输出是完整的。
 
-### 为什么 `deny` / `deny-offline` 必须带 `--workspace`
+### 为什么 `deny` / `deny-offline` 仍带 `--workspace`
 
-cargo-deny 默认只把 **manifest 指向的那个包**当作依赖图的根。本仓库的 workspace root
-（`src-tauri/Cargo.toml`）同时是一个真实包（`akasha`），于是**只有 `akasha` 依赖得到的成员**
-才进图 —— `crates/*` 里尚未被 app 依赖的成员，连同它们**独有的整棵子树**，都在图外。
-
-这不是"少查一点"，而是**静默失效**：`deny.toml` 的 `[bans] deny` 里写 `keyring`，
-如果 `keyring` 唯一的来路（当时是 `akasha-store`）不在图里，门禁会照样报 `bans ok`。
-plan 0402 正是在此处发现该问题的（加 `--workspace` 后图 580 → 583 个 crate，
-负例立刻从 `bans ok` 变成 `bans FAILED`）。
+成员已按 ADR-0008 并入 `src/`，所以 `--workspace` 与"这一个包"等价。保留它的理由有两条：
+它曾经修掉一个**静默失效**（cargo-deny 默认只把 manifest 指向的那个包当作依赖图的根，
+未进图的子树连 `[bans] deny` 都不生效 —— plan 0402 实测）；将来若再拆出成员，写法不必改。
 
 ⚠️ 位置也有讲究：`--workspace` 是**顶层参数**，必须在 `check` **之前**
 （`cargo deny --workspace … check bans`），放在后面会被当成未知参数直接报错。
@@ -168,7 +163,7 @@ plan 0402 正是在此处发现该问题的（加 `--workspace` 后图 580 → 5
 | E2E 里"敲命令"之后屏幕没反应 | 先确认是否把 shell **阻塞**了：敲进终端的那一行必须 fish / bash / sh 都成立（`(cmd) &` 在 fish 里是**命令替换**，会一直等下去 —— 问题 #41）。症状是**所有**敲命令的用例一起超时，很容易误判成前端坏了 |
 | `just ready` 有一步失败 | 看结尾提示的那一步，或 `.just-ready-fail.log` |
 | 改了配方但 `just --list` 没显示 | 检查缩进（配方体必须是 tab 或统一缩进），以及是否写在了对的 justfile 里 |
-| 改了 `src-tauri/crates/` 下的文件，app 却不重编译 | 先确认它**确实在 `src-tauri/` 里面**（tauri CLI 默认只监听 `src-tauri`）。成员若被放到它外面（例如仓库根的 `crates/`），必须另配监听范围，否则开发循环**静默失效** —— 见 `STATUS.md` 问题 #21 |
+| 改了 `src-tauri/src/` 下的文件，app 却不重编译 | 先确认它**确实在 `src-tauri/` 里面**（tauri CLI 默认只监听 `src-tauri`）。源码若被放到它外面，必须另配监听范围，否则开发循环**静默失效** —— 见 `STATUS.md` 问题 #21 |
 | CI 上失败但本地全部通过 | 先看是哪条 job：Linux 执行的就是本地这条完整门禁，Windows / macOS 只做类型检查 —— 那两条失败多半是 cfg 分支或平台 API。构造与边界见 `AGENTS.md` §12 与 `docs/plans/0102` |
 
 **受限环境里运行 app**（容器 / agent 沙箱 / 无写权限的家目录）：
