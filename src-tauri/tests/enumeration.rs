@@ -7,7 +7,7 @@
 //! 一个都没有（libudev 那套实现不检查节点是否存在）。而且真去打开它们在别的机器上会碰到
 //! 用户接着的真实设备 —— 这条边界写在 `enumerate.rs` 的模块文档里。
 
-use akasha_serial::ports;
+use akasha_lib::serial::ports;
 
 #[test]
 fn the_listing_is_sorted_and_free_of_duplicates() {

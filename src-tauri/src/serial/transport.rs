@@ -8,8 +8,8 @@ use std::time::Duration;
 use akasha_pty::{Capabilities, ExitStatus, Transport, TransportError};
 use serialport::SerialPort;
 
-use crate::error::SerialError;
-use crate::settings::{DataBits, Flow, Parity, SerialSettings, StopBits};
+use crate::serial::error::SerialError;
+use crate::serial::settings::{DataBits, Flow, Parity, SerialSettings, StopBits};
 
 /// 读端多久醒一次看停止标志。
 ///

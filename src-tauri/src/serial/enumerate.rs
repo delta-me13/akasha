@@ -9,7 +9,7 @@
 //!   不检查那个节点在 `/dev` 下是否存在（实测：本机列出 32 条 `/dev/ttyS*`，全都打不开）。
 //!   所以调用方必须准备好 `open()` 失败这条路径 —— 它带路径与 OS 原因。
 
-use crate::error::SerialError;
+use crate::serial::error::SerialError;
 
 /// 一个串口设备。
 #[derive(Debug, Clone, PartialEq, Eq)]

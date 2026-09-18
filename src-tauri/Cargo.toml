@@ -144,10 +144,10 @@ akasha-store = { version = "0.1.0", path = "crates/akasha-store" }
 russh = { version = "=0.63.3", default-features = false, features = ["ring", "rsa"] }
 russh-sftp = "=3.0.0"
 rand = "0.10"
-# 串口载体（plan 1101 起 app 真的用它）。与 SSH 同一条理由：它对外也只是
-# `akasha_pty::Transport`，所以会话层与前端不为第三个后端另立契约（scope.md §2）。
-# ⚠️ 加它同时把 `serialport` 与（Linux 上的）libudev 带进 `cargo-deny` 的图 —— 那正是想要的。
-akasha-serial = { version = "0.1.0", path = "crates/akasha-serial" }
+# 串口（原 akasha-serial，plan 0801 / 1101）：它对外也只是 `crate::pty::Transport`，
+# 所以会话层与前端不为第三个后端另立契约（`scope.md` §2）。`default-features = false` ——
+# libudev 只在 Linux 上被链接，见 [features]。
+serialport = { version = "4.10.1", default-features = false }
 # Bitwarden CLI 客户端（原 akasha-bw，plan 0902）：两个轴、运行时下载、`bw` 的调用与解析。
 # ⚠️ `ureq` 是 rustls + ring（与 `russh` 同一个 crypto 后端）、`zip` 只开 `deflate` ——
 # HTTP 与解包都是别人写过的活儿（`docs/bitwarden.md` §7 记着上游的下载形状）。
@@ -166,6 +166,15 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync", "io
 # （托盘用同样的思路记 `tray_ready`）。
 # ⚠️ 这不是新增依赖：同一个版本早已在依赖树里（`tauri-plugin-opener` → `zbus`）。
 zbus = "5.9"
+
+[features]
+# 默认开：Linux 上要它才有 USB 端口的信息（VID/PID/序列号）—— 那是 serialport 的枚举后端。
+default = ["libudev"]
+# 这个 feature 在**所有**平台都处于打开状态，而 libudev 只在 Linux 上被链接：serialport 把那个
+# optional 依赖声明在 `[target.'cfg(all(target_os = "linux", not(target_env = "musl")))'.dependencies]`
+# 里，于是 Windows / macOS 上这个 feature 激活的是一个不存在的依赖，什么都不编译。
+# 判据：`cargo tree --target x86_64-pc-windows-msvc` 里没有 libudev（just libudev-check）。
+libudev = ["serialport/libudev"]
 
 [dev-dependencies]
 criterion = "0.8.2"

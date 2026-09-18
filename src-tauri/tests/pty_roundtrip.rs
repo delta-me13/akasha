@@ -24,7 +24,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use akasha_pty::{Capabilities, TerminalSize, Transport, TransportError};
-use akasha_serial::{SerialSettings, SerialTransport};
+use akasha_lib::serial::{SerialSettings, SerialTransport};
 use portable_pty::{PtyPair, PtySize, native_pty_system};
 
 /// 造一对 PTY，并把两端都持有到用例结束。

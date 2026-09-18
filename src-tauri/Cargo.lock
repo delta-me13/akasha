@@ -77,7 +77,6 @@ name = "akasha"
 version = "0.1.0"
 dependencies = [
  "akasha-pty",
- "akasha-serial",
  "akasha-store",
  "criterion",
  "insta",
@@ -87,6 +86,7 @@ dependencies = [
  "russh-sftp",
  "serde",
  "serde_json",
+ "serialport",
  "sha2 0.11.0",
  "specta",
  "specta-typescript",
@@ -116,16 +116,6 @@ dependencies = [
  "criterion",
  "portable-pty",
  "rustix",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "akasha-serial"
-version = "0.1.0"
-dependencies = [
- "akasha-pty",
- "portable-pty",
- "serialport",
  "thiserror 2.0.20",
 ]
 

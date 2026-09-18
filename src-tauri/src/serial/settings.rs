@@ -9,7 +9,7 @@
 //! `StopBits::try_from`，越界值在那里被拒并报出字段与取值（plan 0802）。
 //! "哪一行、哪个字段"的搬运属于 app。
 
-use crate::error::SerialError;
+use crate::serial::error::SerialError;
 
 /// 数据位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

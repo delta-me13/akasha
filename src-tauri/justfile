@@ -362,9 +362,8 @@ portable:
 # 于是"链不链它"完全由**那个目标的依赖图**决定 —— 在 Linux 上换一个 `--target` 就能核对，
 # 不必等到 CI 的那两个平台（那里的原生 `just check` 是另一条独立证据）。
 #
-# 判据只针对 `akasha-serial`（显式 `--package`）：这是本配方要回答的那个问题。
-# 整份 workspace 的跨目标依赖图会把 Windows / macOS 那一大套依赖也解析一遍，
-# 而那件事由 CI 的原生 `just check` 覆盖。
+# 判据是**整棵依赖图**里有没有 libudev（它只由 `serialport` 的 `libudev` feature 带进来）。
+# 代价照实记：整包的跨目标依赖图会把 Windows / macOS 那一大套依赖也解析一遍。
 #
 # ⚠️ `cargo tree --target` 会取回那个目标独有的依赖，**冷缓存下需要联网**。
 # ⚠️ 每条分支都先看 `cargo tree` 自己的退出码：图没解析成功时，"没有 libudev"与
@@ -372,7 +371,7 @@ portable:
 libudev-check:
     @set -uo pipefail; \
     fail=0; \
-    if out=$(cargo tree --package akasha-serial -e normal); then \
+    if out=$(cargo tree -e normal); then \
       printf '%s\n' "$out" | grep -q 'libudev v0.3' \
         && echo '✅ Linux：依赖图里有 libudev' \
         || { echo '❌ Linux：依赖图里没有 libudev —— feature 结构被改坏了？'; fail=1; }; \
@@ -380,7 +379,7 @@ libudev-check:
       echo '❌ Linux：cargo tree 失败'; fail=1; \
     fi; \
     for t in x86_64-pc-windows-msvc aarch64-apple-darwin; do \
-      if out=$(cargo tree --package akasha-serial --target "$t" -e normal); then \
+      if out=$(cargo tree --target "$t" -e normal); then \
         printf '%s\n' "$out" | grep -q libudev \
           && { echo "❌ ${t}：依赖图里出现了 libudev"; fail=1; } \
           || echo "✅ ${t}：依赖图里没有 libudev"; \
@@ -400,8 +399,8 @@ libudev-check:
 # 本机实测（plan 0802 的「前置检查」）：默认配置列出 32 条 `/dev/ttyS*`（而 `/dev` 下
 # 一个都没有），`--no-default-features` 列出 0 条 —— 两个分支确实在走不同的代码。
 serial-check:
-    cargo nextest run --package akasha-serial
-    cargo nextest run --package akasha-serial --no-default-features
+    cargo nextest run --test enumeration --test pty_roundtrip
+    cargo nextest run --test enumeration --test pty_roundtrip --no-default-features
 
 # ── 性能基线 ────────────────────────────────────────────────────────────────
 
