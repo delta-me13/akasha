@@ -28,14 +28,15 @@
 - **栈**：Rust 后端（PTY / 进程 / VT 状态）+ React 19 + Vite 8 前端（xterm 渲染）。
 - **架构原则**：
   1. **Rust 侧是唯一真相源** —— IPC 签名从 Rust 生成到 TS，不反向手写。
-  2. **`src-tauri` 是薄壳** —— 纯逻辑下沉到不依赖 Tauri 的 `src-tauri/crates/`，可脱离 app 测试。
+  2. **app 侧是薄壳** —— 纯逻辑住在不依赖 Tauri 的域模块里（`src-tauri/src/{pty,ssh,store,serial,bw,session,config,tunnel}/`），可脱离 app 测试。
   3. **终端输出与用户按键都是不可信输入** —— 解析层永远假设输入带恶意 escape 序列。
 
 ### 绝对禁止（违反即视为"未完成"，不接受"下次再改"）
 
 1. 前端裸调 `invoke("字符串命令名")` —— 必须走 `src/ipc/` 生成层。
 2. PTY 字节当 `String` 跨 IPC 传，或逐字节 / 逐行 emit。
-3. 在 `src-tauri/src/` 里写业务逻辑（应下沉到 `src-tauri/crates/`）。
+3. 在 app 侧文件里写业务逻辑（`lib.rs` / `tray.rs` / `lifecycle.rs` / `single_instance.rs` /
+   `bindings.rs` / `prompt.rs` / `watchdog.rs` 与各域的 `ipc.rs`）—— 业务逻辑属于对应域模块。
 4. `unwrap()` / `expect()` 出现在 command 边界或长驻任务中。
 5. 用固定 `sleep` 等待异步完成 —— 用 Victauri `wait_for`（见 §7）。
 6. 手改 `src/ipc/bindings.ts`（生成物）。
@@ -52,7 +53,7 @@
 | 改动 | 行为 | 代价 |
 |---|---|---|
 | 前端 (`src/**`) | Vite HMR | 毫秒级，**不重启 app** |
-| Rust (`src-tauri/**`，含 `crates/`) | 增量重编译 + **重启 app** | 秒～分钟级，**唯一路径** |
+| Rust (`src-tauri/**`) | 增量重编译 + **重启 app** | 秒～分钟级，**唯一路径** |
 
 **Victauri 不提供热重载。** 它是在*已运行*进程内嵌的 MCP 服务，35 个工具全部是
 检查/驱动（DOM、IPC、后端状态、数据库、窗口）。它的价值不是"不用重启"，而是
@@ -64,12 +65,12 @@
 - **常驻一个 `just dev`，不要每次手动重启。** Rust 保存后 CLI 自动重编译 + 重启；
   重启后 Victauri bridge 会**重新发现端口**，MCP 无需重连 —— 继续调用即可。
 - **Rust 侧提速的正确路径是"下沉 + 独立循环"，而不是等待重启**：
-  - 纯逻辑（PTY 抽象、VT 解析、状态机、布局）放 `src-tauri/crates/`，零 Tauri 依赖；
+  - 纯逻辑（PTY 抽象、VT 解析、状态机、布局）放 `src-tauri/src/` 的域模块，零 Tauri 依赖；
   - `just watch`（bacon）提供秒级 `check`/`test`，**全程不启动 app**；
   - `src-tauri` 只留 IPC 编组，改它的频率越低，重编译成本越低。
 - **前端迭代不启动 app**：`just dev-web` + Tauri `mockIPC`，在浏览器中运行 Vite HMR。
-- **没有 `.taurignore`，也不需要**：监听范围就是 `src-tauri/`（ADR-0004），成员天然被覆盖
-  （问题 #21）。真出现"改某个文件就无谓重建一次"时再建立它，并在此处登记 ——
+- **没有 `.taurignore`，也不需要**：监听范围就是 `src-tauri/`（ADR-0008 之后全部源码都在
+  它里面）。真出现"改某个文件就无谓重建一次"时再建立它，并在此处登记 ——
   不得照一条并不存在的机制去排查。
 - 跨平台差异交给 CI 矩阵，本地不必反复在所有平台上运行。
 
@@ -148,29 +149,40 @@
 ### 3.1 分层
 
 ```
-src-tauri/crates/akasha-pty/     # 载体抽象：`Transport` trait + PTY（portable-pty）实现、合批、回收、看门狗；无 Tauri 依赖，可 mock
-src-tauri/crates/akasha-core/    # 会话模型、事件、会话注册表、配置
-src-tauri/crates/akasha-ssh/     # SSH：russh 封装、认证、凭据、known_hosts、direct-tcpip（ADR-0003）
-src-tauri/crates/akasha-store/   # 持久化：SQLCipher 库、四类池、格式迁移、导出与导入（ADR-0002）
-src-tauri/src/                   # IPC 薄壳：command + Channel + 事件 + 状态注入
+src-tauri/src/
+├── lib.rs main.rs bin/gen-types.rs          # 入口
+├── bindings.rs lifecycle.rs prompt.rs        # app 装配（可用 Tauri）：生成物、运行事件、问答
+├── single_instance.rs tray.rs watchdog.rs
+├── session/  model.rs registry.rs event.rs ipc.rs   # 会话模型与它的 app 侧编组
+├── config/   model.rs ipc.rs                        # 配置判据 + 文件载体
+├── tunnel/   model.rs ipc.rs                        # 隧道状态机 + app 侧编组
+├── pty/      transport.rs batcher.rs local.rs shell.rs teardown.rs watchdog.rs testing.rs
+├── ssh/      …（19 个文件）ipc.rs ipc/sftp.rs
+├── serial/   …（4 个文件）ipc.rs
+├── store/    …（6 个文件 + pools/）ipc.rs ipc/{vault,pools}.rs
+└── bw/       …（9 个文件）ipc.rs
 ```
 
-- 依赖方向**单向**：`src-tauri` → `src-tauri/crates/*`，反向依赖视为架构违规。
-- `src-tauri/crates/*` 不得 `use tauri::*`。这条用 ast-grep 规则强制（§6）。
-- 范围扩大后还会引入更多 crate（serial / sftp / 隧道），能力与切分见 `docs/scope.md`；
-  **依赖方向规则同上，对新 crate 一律适用**。
+- **每个域模块里只有两类文件**：纯逻辑（零 Tauri 依赖）与 app 侧的 `ipc.rs`（或 `ipc/` 子目录）。
+  跨域的装配留在顶层。
+- **依赖方向单向**：app 侧 → 域模块；域模块之间只允许 `pty` 与 `store` 被依赖
+  （`ssh` / `serial` 依赖 `pty`，`ssh` / `bw` 依赖 `store`）。反向依赖视为架构违规。
+- **纯逻辑模块不得 `use tauri::`**，由 ast-grep 规则 `no-tauri-in-pure-modules` 强制（§6）——
+  `files:` 覆盖全部 `src-tauri/src/**`，`ignores:` 列出允许碰 Tauri 的 app 侧文件。
+- **现代 mod 约定**：`foo.rs` + `foo/`，不写 `mod.rs`。
+- 范围扩大后还会引入更多域模块（串口 / SFTP / 隧道已是），能力与切分见 `docs/scope.md`；
+  **依赖方向规则同上，对新模块一律适用**。
 - **命名：后端类型名不得编码 UI 呈现方式。** 前端把 `Session` 渲染成标签页 / 面板 /
   分屏 / 独立窗口均可以，后端只按语义命名。词汇表与理由见 `docs/scope.md` §1.2 ——
   要点：**`Session`** = 资源的归属单位（用户打开的一个工作单元）、
   **`Transport`** = 字节载体（PTY / SSH shell 通道 / 串口）、
   **`Connection`** = 一条 SSH 连接。不要用 `Tab` / `Pane` / `Window` / `View`（由 §6 的
   `no-ui-vocab-in-types` 按词边界强制），也不要用 `Workspace`（本仓库已指 Cargo workspace）。
-- 本节的**分层与命名**以 **ADR-0001 为准**（已定案）；**workspace 的物理位置**
-  （root 在 `src-tauri/`、成员在其 `crates/` 下、仓库根不放 Rust 成员）以
-  [`docs/adr/0004`](./docs/adr/0004-rust-workspace-under-src-tauri.md) 为准 ——
-  它取代了 ADR-0001 的决策一。
+- 本节的**分层**以 [ADR-0008](./docs/adr/0008-crates-to-modules.md) 为准 —— 它取代了 ADR-0001
+  的决策一（crate 切分）与 [ADR-0004](./docs/adr/0004-rust-workspace-under-src-tauri.md)
+  的 workspace 布局。**命名规则**仍以 ADR-0001 / `docs/scope.md` §1.2 为准。
 - ADR-0001 决策二仍有效：`akasha-vt`（VT 解析 / 屏幕状态 / 回滚缓冲，纯函数式、可快照测试）
-  **维持延后**；若确有必要则建于 `src-tauri/crates/akasha-vt/`，**不在仓库根平铺**。
+  **维持延后**；若确有必要则建于 `src-tauri/src/vt/`，**不在仓库根平铺**。
 
 ### 3.2 数据流与背压（终端应用的成败点）
 
@@ -244,7 +256,7 @@ src-tauri/src/                   # IPC 薄壳：command + Channel + 事件 + 状
   macOS 缺的分支，自研等于约两百行 `cfg` 加一处新 `unsafe`。
   ⚠️ 它的防护**有明确边界**（Windows 静止只读、macOS 没有 `dd`/`wf`、`/proc/self/mem` 仍读得到），
   所以**新增一个用途就要按 ADR-0002 D13 那张判据表重验一遍**，不得只说"已使用 memsafe"。
-- `unsafe`：默认禁止；**只有 `src-tauri/crates/akasha-store/` 允许出现它**（把口令送进
+- `unsafe`：默认禁止；**只有存储模块（`src-tauri/src/store/`）允许出现它**（把口令送进
   SQLCipher 的 C API，ADR-0002 D4）—— 由 `scripts/ast-grep/rules/no-unsafe-outside-store.yml` 强制，
   放宽它等于改架构。⚠️ 上一条（机密的防护交给 `memsafe`）正是这条能守住的**前提之一**：
   没人在自己代码里手写平台 syscall。
@@ -336,12 +348,12 @@ src-tauri/src/                   # IPC 薄壳：command + Channel + 事件 + 状
 | `no-bare-invoke` | 前端 `invoke("...")` 裸调用 |
 | `no-println` ✅ 已落地 | Rust `println!` / `eprintln!` |
 | `no-unwrap-in-commands` | command / 长驻任务中的 `unwrap()` |
-| `no-tauri-in-core-crates` ✅ 已落地 | `src-tauri/crates/**` 里 `use tauri::` |
-| `no-std-command-bypass` | 绕过 `akasha-pty` 直接用 `std::process::Command` |
+| `no-tauri-in-pure-modules` ✅ 已落地 | 纯逻辑模块里的 `use tauri::`（`files:` 覆盖 `src-tauri/src/**`，`ignores:` 列出 app 侧文件） |
+| `no-std-command-bypass` | 绕过 `pty` 模块直接用 `std::process::Command` |
 | `no-string-pty-channel` ✅ 已落地 | PTY 字节流走 `Channel<Vec<u8>>` / `Channel<String>`（实际为 JSON 数组）而不是 raw 通道（§3.2） |
-| `no-ui-vocab-in-types` ✅ 已落地 | `src-tauri/crates/**` 与 `src-tauri/src/**` 类型名中的 `Tab`/`Pane`/`Window`/`View`（见 §3.1 命名规则） |
+| `no-ui-vocab-in-types` ✅ 已落地 | `src-tauri/src/**` 类型名中的 `Tab`/`Pane`/`Window`/`View`（见 §3.1 命名规则） |
 | `no-non-ascii-log-message` ✅ 已落地 | `tracing::*!` 的消息里的非 ASCII 字符（消息必须是英文短语，§3.4） |
-| `no-unsafe-outside-store` ✅ 已落地 | `src-tauri/crates/akasha-store/` 之外的 `unsafe`（**唯一放行的 crate**；`// SAFETY:` 与 `# Safety` 怎么写见 §3.4） |
+| `no-unsafe-outside-store` ✅ 已落地 | `src-tauri/src/store/` 之外的 `unsafe`（**唯一放行的地方**；`// SAFETY:` 与 `# Safety` 怎么写见 §3.4） |
 
 > 现阶段这些规则尚**未全部创建** —— 每条规则应与它守护的代码一起落地，
 > 否则只会产生噪音。新增规则时同步更新上表。
@@ -376,7 +388,7 @@ src-tauri/src/                   # IPC 薄壳：command + Channel + 事件 + 状
 
 | 层 | 工具 | 范围 | 是否需要 app |
 |---|---|---|---|
-| 单元 / 属性 | `cargo-nextest`（+ `proptest` 按需） | `src-tauri/crates/*` 纯逻辑 | 否 |
+| 单元 / 属性 | `cargo-nextest`（+ `proptest` 按需） | `src-tauri/src/` 的域模块（纯逻辑） | 否 |
 | 快照 | `insta` | VT 解析输出、屏幕状态 | 否 |
 | 性能基线 | `criterion` | 解析与写路径吞吐 | 否 |
 | 集成 / E2E | `victauri-test` + `VICTAURI_E2E=1` | IPC 契约、前后端一致性 | **是** |
@@ -592,9 +604,9 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
     `scripts/ast-grep/tests/`（根 `sgconfig.yml` 指向它们，见 §6）；
   - 脚本仍然**只经配方调用**（上一条）：`scripts/` 是脚本的住处，不是命令入口；
   - 理由：脚本散落多处时，"哪一份在运行、该改哪一份"没有单一答案，也就没有单一 review 点。
-- ⚠️ crate 级配方**必须显式带 `--workspace`**：cargo 在成员目录里**只选当前包**，
-  漏了会让 `crates/*` 的 check / clippy / test **完全不被执行**，而 `just ready` 照样全部通过
-  （问题 #20）。`cargo fmt --all` 是例外（`--all` 本身就指全 workspace）。
+- 本包**就是 workspace root**（`[workspace]` 留在 `src-tauri/Cargo.toml` 里，只为 `[workspace.lints]`
+  的继承；成员已按 ADR-0008 全部并入 `src/`）。配方里的 `--workspace` 因此等价于"这一个包"，
+  保留它只是不必再区分两种写法。
 
 **完整命令清单（全部配方 + 用途 + 典型工作流 + 排错）见
 [`docs/just.md`](./docs/just.md) §2。** 新增或改名配方时必须同步那里 ——
