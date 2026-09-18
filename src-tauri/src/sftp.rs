@@ -33,7 +33,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use akasha_core::SessionId;
+use crate::session::SessionId;
 use akasha_ssh::transfer::{Cancel, Endpoint, Listing, Progress, TransferRequest};
 use akasha_ssh::{InFlight, LocalEndpoint, SftpClient, SshConnection};
 use serde::{Deserialize, Serialize};
@@ -212,7 +212,7 @@ pub struct SftpSummary {
 #[derive(Debug, Clone, Copy, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SftpInFlight {
-    /// 上限（来自配置，见 `akasha_core::Transfer::in_flight`）。
+    /// 上限（来自配置，见 `crate::config::Transfer::in_flight`）。
     pub limit: u32,
     /// 此刻有几个文件在搬。
     pub live: u32,

@@ -77,7 +77,6 @@ name = "akasha"
 version = "0.1.0"
 dependencies = [
  "akasha-bw",
- "akasha-core",
  "akasha-pty",
  "akasha-serial",
  "akasha-ssh",
@@ -119,10 +118,6 @@ dependencies = [
  "zeroize",
  "zip",
 ]
-
-[[package]]
-name = "akasha-core"
-version = "0.1.0"
 
 [[package]]
 name = "akasha-pty"

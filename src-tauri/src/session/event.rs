@@ -1,4 +1,4 @@
-use crate::session::SessionId;
+use super::model::SessionId;
 use crate::tunnel::TunnelState;
 
 /// 发给某个 `Session` 的事件。

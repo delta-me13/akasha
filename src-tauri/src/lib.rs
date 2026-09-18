@@ -15,7 +15,7 @@ pub mod tunnel;
 pub mod vault;
 pub mod watchdog;
 
-use akasha_core::CloseBehavior;
+use crate::config::CloseBehavior;
 use session::{Sessions, ShutdownReport};
 use tauri::Manager;
 

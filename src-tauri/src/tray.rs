@@ -12,7 +12,7 @@
 //! 为什么**不动** `capabilities/*.json`：整个托盘都在 Rust 侧建，前端一次都不碰
 //! （`AGENTS.md` §4.3 最小权限）。给 `core:tray:*` 只会把"改托盘"的能力白送给 webview。
 
-use akasha_core::TunnelState;
+use crate::tunnel::TunnelState;
 use tauri::menu::{IsMenuItem, Menu, MenuBuilder, MenuEvent, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Wry};

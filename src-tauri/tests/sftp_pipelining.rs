@@ -50,7 +50,7 @@ const HOST_NAME: &str = "e2e-sftp-pipelining";
 /// 交替走的时延下串行一批 ≈ 1.2 s，而并发一批远小于它 —— 差距落在"看得见"的量级上。
 const FILES: usize = 12;
 const BYTES: usize = 1024;
-/// 遍历上限分档里**生效的那一个**（`akasha_core::Transfer::default` 的默认值）。
+/// 遍历上限分档里**生效的那一个**（`crate::config::Transfer::default` 的默认值）。
 ///
 /// 写死在这里是刻意的：这条用例要断言"上限真的在起作用"，而在起作用的那一刻，探针报的
 /// `limit` 就是后端读到的配置值 —— 拿它当分母，用例就不会与配置分叉。

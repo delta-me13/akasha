@@ -16,7 +16,7 @@
 
 use std::sync::OnceLock;
 
-use akasha_core::{CloseAction, CloseBehavior};
+use crate::config::{CloseAction, CloseBehavior};
 use tauri::{Window, Wry};
 
 /// 启动那一刻定下来的两个事实。**两个都在 `.setup()` 里写一次**，之后只读。

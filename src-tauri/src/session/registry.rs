@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use crate::event::SessionEvent;
-use crate::session::{SessionError, SessionId, SessionKind};
+use super::event::SessionEvent;
+use super::model::{SessionError, SessionId, SessionKind};
 
 /// `Session` 的登记簿，**兼事件路由表**。
 ///
