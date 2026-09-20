@@ -431,6 +431,8 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 
 | 命令 / 检查 | 结果 |
 |---|---|
+| **`just test-e2e`（macOS 26.6.2 / arm64，经 `just runner-run test-e2e` 在沙箱外执行）** | 退出码 **0**，**全绿**：第一段 **28 个目标 / 37 个用例**全过（0 失败），第二段（`close_behavior=exit`）**1/1**，第三段（可搬迁性）**3/3**。⚠️ 走到这一步之前红过六处，全部是**"这条路径自己的前提"**：`tab_close` / `window_close` 的进程判活读 `/proc`（非 Linux 上门控，改用 `sessions` probe 那条与平台无关的断言）、`vault_unlock` 的 `VmLck` 同理、`tab_close` 关闭最后一个标签页之后注册表**就该是 0**（写成"回到起点"会让它必红，还把界面留在空状态，后续目标由此连带红）、E2E 发现目录的 `TMPDIR` 分叉（问题 #171）、导入要的 `USER`（问题 #172） |
+| **`just ready`（经 `just runner-run ready` 在沙箱外执行）** | **6/6 通过**（退出码 0，`test` 一步 254s）。此前同一环境上红过两次 `just test`：一次是 `pty::local` 的 `openpty`（沙箱内，见上），一次是 4 条 `bw::acquire`（回环假上游 `Connection reset by peer`）—— 后者与上面 `just test` 那行同一条已知偶发，紧接着重新执行**全绿** |
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
 | ↑ **CI 第三次运行的实际读数**（run `34989700283` @ `b7f6a62`） | **Linux 的 `just ready` 通过**（门禁六步全绿）、**E2E（ubuntu-latest）通过**、**检查（macos-latest）通过**；`检查（windows-latest）` 红在类型检查：`error[E0599]: no method named tty_name`（`tests/support/mod.rs`，问题 #160）；`E2E（macos-latest）` 红在三条串口目标（`串口打不开：/dev/ttys000（Not a typewriter）`）与连带的 `bw_import`，收尾时 bash 报 `unbound variable` 把退出码换成 **127**（问题 #158 / #159）；第五个 job（`E2E（windows-latest）`）在本机读到时仍在运行。⚠️ 这次运行里 `RUSTC_WRAPPER` 为空、编译真的开始 —— #154 的处置得到验证 |
 | ↑ **第三次运行验证了其中三处处置** | `RUSTC_WRAPPER` 为空且编译真的开始（#154）；Windows 走到了编译测试目标这一步、`openssl-sys` 的 vendored OpenSSL 已构建完（#156）；Linux 日志里 `could not find Cargo.toml` 的计数为 **0**、缓存键由 workspace 元数据给出（#157）。**E2E（ubuntu-latest）**：28 个目标全部执行完，`test result: ok` **29 条**、失败 **0 条**（唯一一处跳过是运行器不提供 `WEBGL_lose_context`，用例自己写明了原因）—— CI 上的 E2E 第一次完整执行 |
@@ -1465,3 +1467,28 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       而它不在 `just ready` 里，所以门禁全绿也发现不了：判据只能来自真的执行一次
       `just test-e2e`。处置：把 31 个目标按字典序登记进 `E2E_NO_APP`（它们的入口本来就是
       `just test` 的 nextest 全量运行），并把"迁移这类文件必须同步登记"写进那段注释。
+
+ 171. **发现目录由 `std::env::temp_dir()` 推导，而它在 `TMPDIR` 缺席时不取 `/tmp`**（本会话实测，
+      **已修**）：victauri 的发现目录是 `<temp>/victauri/<pid>/`，两侧各自算一遍 —— app 用
+      `std::env::temp_dir()`，`just test-e2e` 用 `${TMPDIR:-/tmp}`。执行器只给动作
+      `BASE_ENV` 的最小环境（不含 `TMPDIR`），于是本机（macOS）上两侧分叉：app 落到
+      `confstr` 给的那个私有目录（`/var/folders/…/T/victauri/`）、配方去找 `/tmp/victauri`，
+      症状是 **app 已启动、进程确实活着，配方却报"app 没起来（日志：…）"**，E2E 在这里停 120 秒后
+      `exit 1`，一条用例都没执行。定位读数：执行器里打印 `TMPDIR=[unset] tmp=[/tmp]`，
+      而 app 的日志与 `<系统临时目录>/victauri/<pid>/metadata.json` 都在。
+      处置两条 —— **① 样板给一个确定的 `TMPDIR`**（`policy.env`，见 `agent-runner.md` §3 / §6，
+      这是让两侧取同一个值的那条）；**② 配方按候选目录逐个找**（`/tmp` 与 `$TMPDIR` 各算一个），
+      对"app 由别的进程启动、两边 temp 目录不同"也成立（`test-e2e` / `portable` 都是）。
+      ⚠️ 教训：**`rm -rf` 式的"临时目录"不能在两侧各推一遍** —— 要推就取同一个来源。
+
+ 172. **"本机用户名"取自环境变量，而执行器的最小环境里没有它**（本会话实测，**已修**）：
+      `~/.ssh/config` 导入（`import_ssh_config`）在没写 `User` 的条目上要补本机用户名，
+      `local_user()` 读的是 `USER` / `USERNAME`；而执行器的 `BASE_ENV` 不含 `USER`
+      （`PATH` 与 `HOME` 另接），于是 `ssh_config_import` 与 `bw_import` 两条 E2E 目标
+      **在点完导入之后一起等满超时**：界面上那句话是"取不到本机用户名（`USER` / `USERNAME`
+      都没有）"，而断言只报"导入报告出现了 超时" —— 那句话是逐步缩小范围之后才看见的
+      （`support::wait_js` 现在会把界面上"已经在说"的那句话一起打进 panic 消息）。
+      处置同 #171：样板 `policy.env` 里补 `USER`（值由 `pwd.getpwuid(getuid())` 取，
+      **不读环境变量** —— 环境变量的取值可以被任意改写，而它要写进样板）。
+      ⚠️ 教训：**"进程外面长什么样"是 E2E 的一条隐式前提**，最小环境把前提抽走时，
+      症状出现在最远处（界面等超时），而不是在环境那一层。

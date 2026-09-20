@@ -189,17 +189,38 @@ pub fn text(value: &Value) -> String {
     payload(value).as_str().unwrap_or("?").to_string()
 }
 
+/// 超时的那一刻界面上"已经在说"的那句话（几条固定的错误面）。
+///
+/// 为什么要它：这条断言原来只报"某元素没出现"，而界面**可能已经把失败原因写在旁边那个
+/// 元素里**（`[data-import-problem]` / `[data-bw-import-failure]`）—— 那份原因正是排查要的
+/// 东西，让调用方再跑一次、再加一条断言才能看到它，等于把代价重复支付。
+async fn visible_failure(client: &mut VictauriClient) -> Option<String> {
+    let text = client
+        .eval_js(
+            "(() => { const sel = '[data-import-problem],[data-import-problems],\
+             [data-bw-import-failure],[data-serial-open-error]'; \
+             return Array.from(document.querySelectorAll(sel)).map((el) => el.textContent).join(' / '); })()",
+        )
+        .await
+        .ok()?;
+    let text = payload(&text).as_str()?.trim().to_owned();
+    (!text.is_empty()).then_some(text)
+}
+
 /// 等一个 JS 表达式为真（有截止时间的轮询，**不是** sleep 猜）。
 pub async fn wait_js(client: &mut VictauriClient, expression: &str, timeout_ms: u64, what: &str) {
     let waited = client
         .wait_for_expression(expression, None, Some(timeout_ms), None)
         .await
         .unwrap();
-    assert_eq!(
-        waited.get("ok").and_then(Value::as_bool),
-        Some(true),
-        "{what} 超时（{timeout_ms} ms）：{waited}"
-    );
+    if waited.get("ok").and_then(Value::as_bool) == Some(true) {
+        return;
+    }
+    let seen = match visible_failure(client).await {
+        Some(text) => format!("；界面上写着：{text}"),
+        None => String::new(),
+    };
+    panic!("{what} 超时（{timeout_ms} ms）：{waited}{seen}");
 }
 
 /// 点一下某个选择器选中的元素（点不到就断言失败 —— 那说明界面与用例对不上了）。

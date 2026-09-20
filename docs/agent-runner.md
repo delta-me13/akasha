@@ -45,6 +45,7 @@ macOS 上 DSH 给 workspace-write 会话套的 Seatbelt 配置只放行 `/dev/nu
      "action_timeout_sec": 1800,
      "max_concurrent_actions": 4,
      "result_ttl_sec": 3600,
+     "env": { "TMPDIR": "/tmp", "USER": "<当前用户的登录名，由 just runner-policy 填>" },
      "actions": {
        "check": ["/Users/firefly/.local/share/mise/shims/just", "check"],
        "test":  ["/Users/firefly/.local/share/mise/shims/just", "test"],
@@ -54,6 +55,8 @@ macOS 上 DSH 给 workspace-write 会话套的 Seatbelt 配置只放行 `/dev/nu
    ```
 
    `max_concurrent_actions` 与 `result_ttl_sec` 可省略（默认 4 与 3600）。
+   `env` 是**唯一**能让动作拿到额外环境变量的入口（键与值都必须是字符串），默认给
+   `TMPDIR` 与 `USER` 两个 —— 理由见 §6。
    机器生成的样板见 [`agent-runner.policy.json`](./agent-runner.policy.json)。
 3. 启动一次（需要一次提权）：`just runner-start`。沙箱内它会失败于 openpty —— 那就是提权的依据。
 
@@ -129,6 +132,14 @@ dev 另有一层监护进程：执行器被 `kill -9` 时，监护进程杀掉 d
 |---|---|---|
 | `AKASHA_AGENT_RUNNER_POLICY` | `~/.akasha-agent-runner/policy.json` | 能力表位置，**必须在工作区与临时目录之外** |
 | `AKASHA_AGENT_RUNNER_HOME` | `/tmp/akasha-agent-runner` | 运行时目录（请求、状态、日志、pid），权限 0700 |
+
+动作只拿到 `BASE_ENV` 的最小环境（`PATH` 与 `HOME` 另接），policy 的 `env` 是加变量的唯一入口。
+**样板的 `env` 给两个变量各一个确定值**，两个都不是可选的：
+
+| 变量 | 为什么必须有 |
+|---|---|
+| `TMPDIR` | 子进程的 `std::env::temp_dir()` 在它缺席时退到**平台自己的默认值**（macOS 上是 confstr 给的那个私有目录），而配方里的 shell 取的是 `${TMPDIR:-/tmp}` —— 两侧因此指向不同的目录，症状是 E2E 的"app 已启动但没有登记到 discovery 目录"（`STATUS.md` 问题 #171） |
+| `USER` | 界面与命令里的"本机用户名"取自它（`~/.ssh/config` 导入用它补没写 `User` 的条目，`local_user()`）—— 没有它，**导入会直接拒绝**，而 run 出去的 E2E 目标会在那条 UI 用例上等满超时（问题 #172） |
 
 ## 7. MCP 形态与能力表
 

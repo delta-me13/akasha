@@ -6,6 +6,11 @@
 //! ROADMAP 的验收就是这么写的：「解锁 → 读一次池 → **锁定之后进程里不留机密**
 //! （判据：`VmLck` 回落到解锁前的水平）」。而这一段**只能在真 app 上**验证：
 //!
+//! ⚠️ **`VmLck` 这一档只有 Linux 有**（见 `locked_marks`）：macOS / Windows 上没有
+//! `/proc/<pid>/status`，也没有与之等价的"这个进程锁了多少常驻页"读数。那两个平台上
+//! 本用例仍然执行其余全部步骤（四套池的行数、前后端状态、错误口令、重新解锁），只把
+//! 三条 `VmLck` 断言整段跳过并打印原因 —— 不让它变成"换个平台就必红"。
+//!
 //! * 库层那侧的证据在 `store/tests/unlock_lifecycle.rs`（整个进程内存扫一遍）；
 //! * 这里要验的是**另一件事**：app 里那条命令真的把两样东西一起丢掉了 ——
 //!   而 `/proc/<pid>/status` 里的 `VmLck` 是**测试进程自己**看到的外部事实，
@@ -126,6 +131,7 @@ fn is_ours(path: &Path) -> bool {
 
 /// app 进程的 pid：victauri 的发现目录是 `<temp>/victauri/<pid>/`，
 /// 而那个 `port` 文件里就是它监听的端口（问题 #40）。
+#[cfg(target_os = "linux")]
 fn app_pid(port: u16) -> Option<u32> {
     let root = std::env::temp_dir().join("victauri");
     for entry in fs::read_dir(root).ok()? {
@@ -139,11 +145,33 @@ fn app_pid(port: u16) -> Option<u32> {
 }
 
 /// app 进程**已经 `mlock` 住**的内存量（kB）—— 外部事实，不是它自报的。
+#[cfg(target_os = "linux")]
 fn locked_kb(pid: u32) -> Option<u64> {
     let text = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     text.lines()
         .find_map(|line| line.strip_prefix("VmLck:"))
         .and_then(|rest| rest.trim().trim_end_matches("kB").trim().parse().ok())
+}
+
+/// 三个读数（解锁前 / 解锁中 / 锁定后），单位 kB。
+///
+/// ⚠️ **Linux 之外没有这一档判据**：它读的是 `/proc/<pid>/status` 的 `VmLck` —— BSD 与
+/// Windows 都没有 `/proc`，macOS 也不给等价的"这个进程锁了多少常驻页"读数（Apple Silicon
+/// 的 `mach_vm_region` 里没有与之对应的字段）。所以非 Linux 上返回三个 `None`，那三条断言
+/// 随之跳过，**其余步骤（四套池 / 前后端状态 / 错误口令 / 重解锁）照常执行**。
+fn locked_marks(port: u16) -> (Option<u64>, Option<u64>, Option<u64>) {
+    #[cfg(target_os = "linux")]
+    {
+        let pid = app_pid(port).expect("找不到 app 的 discovery 目录 —— 拿不到 pid 就量不了 VmLck");
+        let before = locked_kb(pid).expect("读不到 app 的 /proc/<pid>/status");
+        eprintln!("解锁前：pid={pid} VmLck={before} kB");
+        (Some(before), None, None)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = port;
+        (None, None, None)
+    }
 }
 
 #[tokio::test]
@@ -169,10 +197,26 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
             .expect("返回值里必须有 path"),
     );
     assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("akasha.db"));
+
+    // ⚠️ **先回到"锁着"这个起点**：全部 E2E 目标共用同一个 app，而前面的目标可能解过锁
+    // （`vault_status` 只读，但不保证更早的目标没动过）。这一条判据本身（"app 起起来不是
+    // 自动解锁的"）已经由"库不存在时它报 `missing` + `unlocked:false`"那条基线守住；
+    // 这里再把"解锁 → 锁定"这一轮走完，测的是**锁定真的把东西丢掉了**。
+    if status.pointer("/unlocked").and_then(Value::as_bool) == Some(true) {
+        eprintln!("起点不是锁着的（前面的目标解过锁）—— 先锁定，再把这一轮走完");
+        client
+            .invoke_command("vault_lock", None)
+            .await
+            .expect("vault_lock 调不通");
+    }
+    let status = client
+        .invoke_command("vault_status", None)
+        .await
+        .expect("vault_status 调不通");
     assert_eq!(
         status.pointer("/unlocked").and_then(Value::as_bool),
         Some(false),
-        "app 刚起起来就该是锁着的（没有自动解锁、也没有从配置文件读口令那条路）"
+        "锁上之后 vault_status 还说解锁着：{status}"
     );
 
     // ── 2. 造一个我们自己认识的库（除非那里已经有别人的真库）────────────────
@@ -201,10 +245,7 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
     };
 
     // ── 3. 解锁，并且真的读到四套池里那四行 ─────────────────────────────────
-    let pid =
-        app_pid(client.port()).expect("找不到 app 的 discovery 目录 —— 拿不到 pid 就量不了 VmLck");
-    let locked_before = locked_kb(pid).expect("读不到 app 的 /proc/<pid>/status");
-    eprintln!("解锁前：pid={pid} VmLck={locked_before} kB");
+    let (locked_before, _, _) = locked_marks(client.port());
 
     let contents = client
         .invoke_command("vault_unlock", Some(json!({ "passphrase": PASSPHRASE })))
@@ -216,8 +257,7 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
         json!({ "keys": 1, "hosts": 1, "serials": 1, "forwards": 1 }),
         "解锁返回的四套池行数与我们造的对不上 —— 库真的被解开、被读通了吗？"
     );
-    let locked_during = locked_kb(pid).expect("读不到 app 的 /proc/<pid>/status");
-    eprintln!("解锁中：VmLck={locked_during} kB");
+    let locked_during = locked_marks(client.port()).1;
 
     // ── 4. 状态跟着走（前后端一致这条判据的对象）─────────────────────────────
     let unlocked_status = client.invoke_command("vault_status", None).await.unwrap();
@@ -239,18 +279,31 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
         json!(true),
         "刚才明明解锁着，vault_lock 却说没锁到东西"
     );
-    let locked_after = locked_kb(pid).expect("读不到 app 的 /proc/<pid>/status");
-    eprintln!("锁定后：VmLck={locked_after} kB（解锁前 {locked_before}，解锁中 {locked_during}）");
+    let locked_after = locked_marks(client.port()).2;
 
-    assert!(
-        locked_during > locked_before,
-        "解锁期间 app 的 VmLck 没有涨({locked_before} → {locked_during} kB)—— \
-         那条命令真的解锁了吗？（正对照：不涨的话下面那条断言什么也不证明）"
-    );
-    assert_eq!(
-        locked_after, locked_before,
-        "锁定之后 app 的 VmLck 没有回落到解锁前（{locked_before} → {locked_after} kB）"
-    );
+    // ⚠️ Linux 之外没有这一档读数（见 locked_marks）：那三条断言整段跳过并写明原因，
+    // 不把它做成"用例本身在别的平台上必红"。
+    #[cfg(target_os = "linux")]
+    {
+        let before = locked_before.expect("解锁前那次读数不该缺席（它就是在这里取到的）");
+        let during = locked_during.expect("读不到 app 的 /proc/<pid>/status");
+        let after = locked_after.expect("读不到 app 的 /proc/<pid>/status");
+        eprintln!("锁定后：VmLck={after} kB（解锁前 {before}，解锁中 {during}）");
+        assert!(
+            during > before,
+            "解锁期间 app 的 VmLck 没有涨({before} → {during} kB)—— \
+             那条命令真的解锁了吗？（正对照：不涨的话下面那条断言什么也不证明）"
+        );
+        assert_eq!(
+            after, before,
+            "锁定之后 app 的 VmLck 没有回落到解锁前（{before} → {after} kB）"
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (locked_before, locked_during, locked_after);
+        eprintln!("跳过 VmLck 那三条断言：本平台没有 /proc/<pid>/status 这一档读数");
+    }
 
     let locked_status = client.invoke_command("vault_status", None).await.unwrap();
     assert_eq!(

@@ -147,10 +147,18 @@ E2E_SELF_APP := "portable"
 # 按 `portable.md` §4 第 2 条退回 **OS 数据目录** —— 于是两段其实跑在不同的数据目录里，
 # 而第二段写进去的 `close_behavior` 也就读不到；更糟的是第一段会读到 OS 目录里**上一次**
 # 留下的配置（"关窗即退出"），让 `window_close` 莫名其妙地红。
+#
+# ⚠️ **发现目录按候选逐个找**：它由**每个进程**的 `std::env::temp_dir()` 给出，而它读 `TMPDIR` ——
+# app 与本 shell 是**两个进程**，取值可能不同（执行器给动作的最小环境不含该变量，于是本 shell
+# 退到 `/tmp`，而 app 取平台默认值）。只看一个候选时，症状是"app 起来了但没登记到 discovery
+# 目录"（问题 #171）。样板 policy 现在给了确定的 `TMPDIR`，但"app 由别人启动"这条路上
+# 两侧仍可能不同 —— 所以候选逐个找留着。
 test-e2e:
     @set -uo pipefail; \
     tmp="${TMPDIR:-${TEMP:-/tmp}}"; \
     disc="$tmp/victauri"; \
+    tmp_candidates="/tmp $tmp"; \
+    if [ -n "${TMPDIR:-}" ] && [ "$TMPDIR" != "$tmp" ]; then tmp_candidates="$tmp_candidates $TMPDIR"; fi; \
     vite_url="http://localhost:1420/"; \
     vite_pid=""; app_pid=""; cargo_pid=""; rc=0; \
     touched=0; made_dir=0; saved_cfg=""; \
@@ -187,11 +195,14 @@ test-e2e:
       cargo_pid=$!; \
       app_pid=""; \
       for _ in $(seq 1 120); do \
-        for d in "$disc"/*/; do \
-          [ -f "${d}port" ] || continue; \
-          p=${d%/}; p=${p##*/}; \
-          case " $before " in *" $p "*) continue ;; esac; \
-          app_pid=$p; break; \
+        for root in $tmp_candidates; do \
+          for d in "$root/victauri"/*/; do \
+            [ -f "${d}port" ] || continue; \
+            p=${d%/}; p=${p##*/}; \
+            case " $before " in *" $p "*) continue ;; esac; \
+            app_pid=$p; break; \
+          done; \
+          [ -n "$app_pid" ] && break; \
         done; \
         [ -n "$app_pid" ] && break; \
         pid_alive "$cargo_pid" || break; \
@@ -239,15 +250,17 @@ test-e2e:
     done; \
     [ "$rc" = 0 ] || exit 1; \
     app_port() { \
-      [ -d "$disc" ] || return 1; \
-      for d in "$disc"/*/; do \
-        [ -f "${d}port" ] || continue; \
-        p=${d%/}; p=${p##*/}; \
-        case "$p" in ''|*[!0-9]*) continue ;; esac; \
-        pid_alive "$p" || continue; \
-        port=$(cat "${d}port" 2>/dev/null) || continue; \
-        curl -s -o /dev/null -m 2 "http://127.0.0.1:${port}/" || continue; \
-        printf '%s' "$port"; return 0; \
+      for root in $tmp_candidates; do \
+        [ -d "$root/victauri" ] || continue; \
+        for d in "$root/victauri"/*/; do \
+          [ -f "${d}port" ] || continue; \
+          p=${d%/}; p=${p##*/}; \
+          case "$p" in ''|*[!0-9]*) continue ;; esac; \
+          pid_alive "$p" || continue; \
+          port=$(cat "${d}port" 2>/dev/null) || continue; \
+          curl -s -o /dev/null -m 2 "http://127.0.0.1:${port}/" || continue; \
+          printf '%s' "$port"; return 0; \
+        done; \
       done; \
       return 1; \
     }; \
@@ -319,6 +332,8 @@ portable:
     @set -uo pipefail; \
     tmp="${TMPDIR:-${TEMP:-/tmp}}"; \
     disc="$tmp/victauri"; \
+    tmp_candidates="/tmp $tmp"; \
+    if [ -n "${TMPDIR:-}" ] && [ "$TMPDIR" != "$tmp" ]; then tmp_candidates="$tmp_candidates $TMPDIR"; fi; \
     vite_url="http://localhost:1420/"; \
     vite_pid=""; \
     pid_alive() { \
@@ -338,8 +353,9 @@ portable:
       return 0; \
     }; \
     trap cleanup EXIT; \
-    if [ -d "$disc" ]; then \
-      for d in "$disc"/*/; do \
+    for root in $tmp_candidates; do \
+      [ -d "$root/victauri" ] || continue; \
+      for d in "$root/victauri"/*/; do \
         [ -f "${d}port" ] || continue; \
         p=${d%/}; p=${p##*/}; \
         pid_alive "$p" || continue; \
@@ -348,7 +364,7 @@ portable:
         echo "   症状看起来像\"可搬迁性坏了\"。先把那个 app 关掉（just dev 起的也是它）再跑。"; \
         exit 1; \
       done; \
-    fi; \
+    done; \
     if curl -s -o /dev/null -m 2 "$vite_url"; then \
       echo "→ 复用已在运行的 Vite（1420）"; \
     else \

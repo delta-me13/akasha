@@ -162,10 +162,15 @@ fn key_row_id(path: &Path) -> Option<i64> {
 }
 
 async fn invoke(client: &mut VictauriClient, command: &str, args: Value) -> Value {
+    // ⚠️ 失败时把**参数**一起打出来：`ToolError` 的 Display 只给 "JavaScript error:
+    // [object Object]"（后端报的是哪一档看不出来），而参数往往就是答案
+    // （问题 #172 就是这样定位的：`import_ssh_config` 缺一个本机用户名）。
     client
-        .invoke_command(command, Some(args))
+        .invoke_command(command, Some(args.clone()))
         .await
-        .unwrap_or_else(|err| panic!("`{command}` 调不通 —— 它登记进 bindings.rs 了吗？{err:?}"))
+        .unwrap_or_else(|err| {
+            panic!("`{command}` 调不通（参数 {args}）—— 它登记进 bindings.rs 了吗？{err:?}")
+        })
 }
 
 #[tokio::test]
