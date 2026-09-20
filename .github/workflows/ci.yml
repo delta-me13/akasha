@@ -59,14 +59,10 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # 预编译产物，附 SHA256 / attestation 校验。
+      # 预编译产物优先，无可用产物时回退源码构建。
       - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
         with:
-          tool: just@1.58.0,cargo-nextest,cargo-deny
-
-      # 不在 taiki-e/install-action 的支持列表内，经 npm 官方包安装（含预编译二进制）。
-      - name: 安装 ast-grep
-        run: npm install -g @ast-grep/cli@0.45.3
+          tool: just@1.58.0,cargo-nextest,cargo-deny,ast-grep@0.45.3
 
       - name: just ready
         run: just ready
