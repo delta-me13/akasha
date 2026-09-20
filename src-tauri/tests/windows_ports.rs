@@ -52,12 +52,12 @@ async fn the_enumerated_ports_say_what_they_are() {
         .await
         .expect("serial_ports 调不通 —— 它登记进 bindings.rs 了吗？");
     let ports = listed.as_array().cloned().unwrap_or_default();
-    eprintln!("枚举：本机 {} 条：{listed}", ports.len());
+    eprintln!("服务端: 端口数={}", ports.len());
 
     if windows_ports(&ports).is_empty() {
         // 不是失败：空表是正常结果（`serial/enumerate.rs` 的模块文档第一条）。
         eprintln!(
-            "跳过「每一条都带得出描述」：这台机器上没有 windows 档的端口 —— 枚举给出 {} 条",
+            "跳过: 这台机器上没有 windows 档的端口，枚举 {} 条",
             ports.len()
         );
         // ⚠️ **Windows 上枚举出了端口、却一条描述都没有**，那是这条链断了的形状，不是"没设备"。
@@ -87,10 +87,7 @@ async fn the_enumerated_ports_say_what_they_are() {
                 "windows 档的端口一项描述都没有 —— 那与 unknown 档没有区别：{port}"
             );
         }
-        eprintln!(
-            "描述：{} 条 windows 档的端口各自带得出描述",
-            windows_ports(&ports).len()
-        );
+        eprintln!("服务端: windows 档端口数={}", windows_ports(&ports).len());
     }
 
     // 另一侧：**其余平台上一条都不该是 windows 档**（那一档的取值只来自注册表）。
@@ -100,7 +97,6 @@ async fn the_enumerated_ports_say_what_they_are() {
             0,
             "非 Windows 平台上出现了 windows 档的端口 —— 那一档的取值只来自注册表：{listed}"
         );
-        eprintln!("其余平台：{} 条里没有一条是 windows 档", ports.len());
     }
 
     // ── 界面那一半：枚举结果**到了界面上**（不是只在命令的返回值里）──────────
@@ -133,7 +129,6 @@ async fn the_enumerated_ports_say_what_they_are() {
         empty_kinds, "0",
         "有端口的类别那一栏是空的：前端不认识那一档？"
     );
-    eprintln!("界面：{shown} 行，每一行的类别都有话说");
 
     let _ = client.invoke_command("vault_lock", None).await;
 }

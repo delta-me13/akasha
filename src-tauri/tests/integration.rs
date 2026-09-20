@@ -11,7 +11,7 @@ use victauri_test::VictauriClient;
 
 fn skip_unless_e2e() -> bool {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return true;
     }
     false

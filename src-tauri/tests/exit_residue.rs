@@ -38,14 +38,11 @@ const OWNS_APP_ENV: &str = "AKASHA_E2E_OWNS_APP";
 
 fn skip_unless_e2e() -> bool {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return true;
     }
     if std::env::var_os(OWNS_APP_ENV).is_none() {
-        eprintln!(
-            "Skipping: 复用了别的 app —— 这条用例会关掉它。\
-             单独验它请先停掉 `just dev`，再跑 `just test-e2e`（配方会自己起一套）"
-        );
+        eprintln!("跳过: 复用了别的 app，这条用例会关闭它，需先停止 just dev");
         return true;
     }
     false
@@ -186,13 +183,10 @@ async fn closing_the_window_leaves_no_child_behind() {
     let probe = if cfg!(target_os = "linux") {
         Some(start_ignorant_probe(&mut client).await)
     } else {
-        eprintln!(
-            "平台说明：会话级回收目前只有 Linux 实现，这里不起探针、只验「关窗口 = 真的退出」；\
-             探针在 Windows/macOS 上会留下来（见 plan 0204 的实施记录）"
-        );
+        eprintln!("跳过: 会话级回收只有 Linux 实现，非 Linux 平台不启动探针");
         None
     };
-    eprintln!("app = {app_pid}；端口 = {port}；探针 = {probe:?}");
+    eprintln!("进程: pid={app_pid} 端口={port} 探针={probe:?}");
 
     // ── 走**真实退出路径**：关窗口 ──────────────────────────────────────────
     // 本用例的退出刺激**没变**（还是关窗），变的是"关窗之后该发生什么"现在由配置说了算
@@ -211,7 +205,6 @@ async fn closing_the_window_leaves_no_child_behind() {
          （关窗的默认语义是隐藏，plan 0302，那种情况配方会跳过本用例），\
          要么数据目录里的配置文件没被读到"
     );
-    eprintln!("app 已退出（pid {app_pid}）");
 
     // ── 子进程一个都不剩 ───────────────────────────────────────────────────
     if let Some(probe) = probe {
@@ -222,6 +215,5 @@ async fn closing_the_window_leaves_no_child_behind() {
             "退出后仍有残留：忽略 SIGHUP 的 {probe} 还活着 —— \
              会话级回收没生效（只 kill 那个 shell 是收不走它的）"
         );
-        eprintln!("✅ 零残留：忽略 SIGHUP 的 {probe} 已随会话被收掉");
     }
 }

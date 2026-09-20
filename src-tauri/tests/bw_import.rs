@@ -193,7 +193,7 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     })
     .await;
     eprintln!(
-        "测试服务端 127.0.0.1:{}（主机密钥 {}）；客户端那把一次性钥匙的指纹是 {}",
+        "构造: 服务端=127.0.0.1:{} 主机密钥={} 客户端密钥指纹={}",
         server.addr.port(),
         server.fingerprint,
         fingerprint
@@ -243,7 +243,7 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     )
     .await;
     let refused = text_of(&mut client, "[data-bw-import-failure]").await;
-    eprintln!("没登录就导入：{refused}");
+    eprintln!("报告: 导入失败={refused}");
     assert!(
         refused.contains("还没有登录"),
         "要说清下一步是做哪件事（拿到 {refused:?}）"
@@ -270,7 +270,7 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     .await;
 
     let report = text_of(&mut client, "[data-bw-import-report]").await;
-    eprintln!("面板上的导入报告：{report}");
+    eprintln!("报告: 导入={report}");
     assert!(
         report.contains("上游给了 2 条，其中 SSH 密钥 1 条") && report.contains("新增 1"),
         "报告要能说清「看了几条、其中几条是 SSH key、进了几条」：{report}"
@@ -285,7 +285,7 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     );
 
     let key_id = key_row_id(&vault).expect("池里该有那把钥匙了");
-    eprintln!("池里那一行钥匙：id={key_id}");
+    eprintln!("池: 钥匙id={key_id}");
 
     // ── 5. 把主机指到它：`IdentityFile` 的 basename 与钥匙名相同 ───────────
     let config = data_dir.join("e2e-bw-config.conf");
@@ -304,7 +304,10 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
         json!({ "path": config.to_string_lossy(), "overwrite": true }),
     )
     .await;
-    eprintln!("导入 ssh_config：{imported}");
+    eprintln!(
+        "报告: 导入新增={}",
+        imported["created"].as_array().map_or(0, Vec::len)
+    );
 
     let hosts = invoke(&mut client, "vault_hosts", json!({})).await;
     let row = hosts
@@ -353,7 +356,7 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
         },
     )
     .await;
-    eprintln!("提示问答（按发生顺序）：{asked:?}");
+    eprintln!("界面: 提示数={}", asked.len());
     wait_connected(&mut client, 2, "用导入的钥匙开出来的 SSH 会话").await;
 
     // "连上"与"用的是这把钥匙"是两件事：服务端只认它的公钥，所以我们再核一次指纹。
@@ -371,8 +374,9 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
         seen.offered_keys
     );
     eprintln!(
-        "服务端：methods={:?} offered_keys={:?}",
-        seen.methods, seen.offered_keys
+        "服务端: 认证方式数={} 提供密钥数={}",
+        seen.methods.len(),
+        seen.offered_keys.len()
     );
 
     // ── 7. 字节能双向流（会话真的能用） ────────────────────────────────────
@@ -397,7 +401,7 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     )
     .await;
     let verified = text_of(&mut client, "[data-bw-cache-report]").await;
-    eprintln!("面板上的缓存自检：{verified}");
+    eprintln!("报告: 缓存自检={verified}");
     assert!(
         verified.contains("完好") && verified.contains(&fingerprint),
         "刚导入的那一份该报「完好」，且带上算出来的指纹：{verified}"
@@ -429,7 +433,7 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     )
     .await;
     eprintln!(
-        "换掉私钥之后的自检：{}",
+        "报告: 私钥替换后自检={}",
         text_of(&mut client, "[data-bw-cache-report]").await
     );
 
@@ -443,7 +447,7 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     )
     .await;
     let same = text_of(&mut client, "[data-bw-refresh-report]").await;
-    eprintln!("面板上的上游比对：{same}");
+    eprintln!("报告: 上游比对={same}");
     assert!(
         same.contains("没变"),
         "`revisionDate` 一个字没动，该报「没变」：{same}"
@@ -468,7 +472,7 @@ async fn imported_ssh_key_lands_in_the_pool_and_really_connects() {
     )
     .await;
     eprintln!(
-        "上游改过之后的比对：{}",
+        "报告: 上游变更后比对={}",
         text_of(&mut client, "[data-bw-refresh-report]").await
     );
 

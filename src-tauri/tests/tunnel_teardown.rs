@@ -183,7 +183,7 @@ impl Silent {
 impl Drop for Silent {
     fn drop(&mut self) {
         // 留下一条日志，好让失败时的诊断知道那个端口是哪个。
-        eprintln!("静默服务端 {} 接到过 {} 条", self.port, self.accepted());
+        eprintln!("服务端: 端口={} 接受连接={}", self.port, self.accepted());
     }
 }
 
@@ -487,7 +487,7 @@ async fn closing_a_forward_session_leaves_nothing_behind() {
     })
     .await;
     eprintln!(
-        "服务端：127.0.0.1:{}（本机 HTTP 服务在 {}）",
+        "构造: 服务端端口={} 中继端口={}",
         server.addr.port(),
         http.port()
     );
@@ -515,7 +515,6 @@ async fn closing_a_forward_session_leaves_nothing_behind() {
 
     wait_residue(&mut client, (2, 2), "两条隧道都连上之后").await;
     wait_server_connections(&server, 2, "两条隧道都连上之后").await;
-    eprintln!("两条隧道都连上：residue = (2, 2)，服务端也看到两条连接");
 
     // ── 5. 关掉 `-R`：只该少它那一条，另一条照常转发 ─────────────────────────
     stop(&mut client, seeded.remote_rule, "关掉远端转发那条").await;
@@ -527,7 +526,6 @@ async fn closing_a_forward_session_leaves_nothing_behind() {
     // `-R` 的收尾比 `-L` 多一步：**撤销服务端那个监听**（D10）。那个端口是服务端的资源，
     // 不撤销的话"关掉了隧道、端口还开着"。
     wait_port_released(seeded.remote_port, "关掉 -R 之后，服务端那个端口该还回去").await;
-    eprintln!("关掉 -R：连接数与看护任务数各少一，服务端那个端口也还回去了");
 
     // ── 6. 关掉 `-L`：两个计数归零，对端也看不到连接了 ───────────────────────
     stop(&mut client, seeded.local_rule, "关掉本机转发那条").await;
@@ -535,7 +533,6 @@ async fn closing_a_forward_session_leaves_nothing_behind() {
     wait_residue(&mut client, (0, 0), "两条都关掉之后").await;
     wait_server_connections(&server, 0, "两条都关掉之后").await;
     wait_port_released(seeded.local_port, "关掉 -L 之后，本机那个端口该还回去").await;
-    eprintln!("两条都关掉：residue = (0, 0)，服务端一条连接都不剩");
 
     // ── 7. 关闭是幂等的，而且没有被重新拉起来 ────────────────────────────────
     // ⚠️ `invoke_command` 在命令返回 `Err` 时是**工具层错误**（`Err`），所以"没 panic"
@@ -587,7 +584,6 @@ async fn closing_a_forward_session_leaves_nothing_behind() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    eprintln!("重试已经连上静默服务端（握手中），现在关掉这条隧道");
 
     stop(&mut client, seeded.hang_rule, "握手中停止这条隧道").await;
     wait_tunnel_gone(&mut client, hang).await;
@@ -601,10 +597,9 @@ async fn closing_a_forward_session_leaves_nothing_behind() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    eprintln!(
-        "在途的尝试被中止：对端在 {:?} 内读到 EOF",
-        silent.closed_at().map(|at| at.duration_since(accepted))
-    );
+    if let Some(at) = silent.closed_at() {
+        eprintln!("服务端: 中止耗时={:?}", at.duration_since(accepted));
+    }
     assert_eq!(
         residue(&mut client).await,
         (0, 0),

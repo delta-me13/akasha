@@ -107,7 +107,7 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
         return;
     }
     if let Some(reason) = support::fake_serial_skip_reason() {
-        eprintln!("跳过 serial_session：{reason}");
+        eprintln!("跳过: {reason}");
         return;
     }
 
@@ -142,7 +142,7 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
         Some(device.path()),
         "列出来的设备路径必须就是这一对 PTY 的从端"
     );
-    eprintln!("串口池：{listed}");
+    eprintln!("池: 行数={}", rows.len());
 
     // ── 4. 界面：点"串口" → 点池里那一行（填表单）→ 点「打开」────────────────
     let tabs_before = tab_count(&mut client).await;
@@ -179,7 +179,6 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
         title, SERIAL_NAME,
         "这一行是照池里那条配置填的、一个字没改，标题该是那条配置的名字"
     );
-    eprintln!("界面：串口标签页已连接（打开前 {tabs_before} 个标签页）");
 
     // ── 5. 设备 → 界面 ─────────────────────────────────────────────────────
     device.send(&format!("{FROM_DEVICE}\n"));
@@ -190,12 +189,12 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
         "设备发来的字节出现在了终端上",
     )
     .await;
-    eprintln!("设备 → 界面：{FROM_DEVICE}");
+    eprintln!("界面: 设备字节={FROM_DEVICE}");
 
     // ── 6. 界面 → 设备（另一组字节，所以主端读到的那一串只可能来自 app）────────
     type_line(&mut client, &format!("{TO_DEVICE}\n")).await;
     let got = device.wait_received(TO_DEVICE).await;
-    eprintln!("界面 → 设备：主端读到了 {got:?}");
+    eprintln!("设备: 主端收到={got:?}");
 
     // ── 7. 关标签页 = 立刻丢弃这个 Session（只丢它自己）────────────────────────
     click(&mut client, ".tab.is-active .tab-close", "关闭串口标签页").await;
@@ -224,7 +223,10 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
         sessions.pointer("/registered"),
         "两张表分叉了（有会话可查询、却无人管理）：{sessions}"
     );
-    eprintln!("关标签页：sessions probe = {sessions}（打开前 {sessions_before}）");
+    eprintln!(
+        "会话: live={} registered={}",
+        sessions["live"], sessions["registered"]
+    );
 
     // ── 8. 收尾：锁上并删掉自己造的库（`_fixture` 的析构负责删）─────────────
     let _ = client.invoke_command("vault_lock", None).await;

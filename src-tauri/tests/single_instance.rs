@@ -238,7 +238,7 @@ fn a_rebuilt_binary_is_still_recognised() {
 #[tokio::test]
 async fn a_second_instance_activates_the_hidden_window_of_the_first() {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return;
     }
 
@@ -250,14 +250,9 @@ async fn a_second_instance_activates_the_hidden_window_of_the_first() {
 
     // ── 0. 前提：这台机器上真的注册上了单实例机制 ───────────────────────────
     let state = single_instance(&mut client).await;
-    eprintln!("single_instance = {state}");
 
     if state.get("registered").and_then(serde_json::Value::as_bool) != Some(true) {
-        eprintln!(
-            "Skipping: 本机没有注册单实例机制（{state}）—— \n\
-             Linux 上它需要 D-Bus 会话总线（容器 / CI 的 xvfb 里没有），app 于是降级为\n\
-             「可以多开」。本用例只验注册上了的那条路，判据是 app 自己上报的状态，不猜。"
-        );
+        eprintln!("跳过: 本机没有注册单实例机制，Linux 上它需要 D-Bus 会话总线");
         return;
     }
     let before = state
@@ -290,7 +285,7 @@ async fn a_second_instance_activates_the_hidden_window_of_the_first() {
         .await
         .expect("隐藏窗口失败");
     wait_visible(&mut client, false, "起第二个实例之前窗口是藏着的").await;
-    eprintln!("app = {app_pid}；窗口已藏起来，activations = {before}");
+    eprintln!("进程: app={app_pid} activations={before}");
 
     // ── 2. 起第二个实例（就是**同一个可执行文件**再跑一次）──────────────────
     let log_path = std::env::temp_dir().join("akasha-e2e-second-instance.log");
@@ -319,12 +314,11 @@ async fn a_second_instance_activates_the_hidden_window_of_the_first() {
             std::fs::read_to_string(&log_path).unwrap_or_default()
         ),
     }
-    eprintln!("第二个实例 {elapsed:?} 后以 {status:?} 退出");
+    eprintln!("进程: 第二个实例退出耗时={elapsed:?}");
 
     // ── 4. 话带到了 + 窗口回到屏幕上 ────────────────────────────────────────
     wait_activations(&mut client, before + 1).await;
     wait_visible(&mut client, true, "第二个实例唤起之后窗口可见").await;
-    eprintln!("唤起之后：activations = {}，窗口可见", before + 1);
 
     // ── 5. 还是同一个窗口 / 同一个会话：藏之前的内容照旧读得到 ──────────────
     wait_js(
@@ -347,7 +341,5 @@ async fn a_second_instance_activates_the_hidden_window_of_the_first() {
         );
     }
     #[cfg(not(target_os = "linux"))]
-    eprintln!("（非 Linux：跳过「只有一个 app 进程」那层判据 —— 它靠 /proc 数进程）");
-
-    eprintln!("✅ 第二个实例唤起已有窗口（窗口当时是藏着的）：一个进程、一套会话");
+    eprintln!("跳过: 非 Linux 平台，进程实例计数依赖 /proc");
 }

@@ -80,7 +80,7 @@ async fn unplugging_the_device_ends_the_session_with_a_readable_reason() {
         return;
     }
     if let Some(reason) = support::fake_serial_skip_reason() {
-        eprintln!("跳过 serial_device_gone：{reason}");
+        eprintln!("跳过: {reason}");
         return;
     }
 
@@ -109,11 +109,10 @@ async fn unplugging_the_device_ends_the_session_with_a_readable_reason() {
     .await;
     click(&mut client, "[data-serial-open]", "打开这个串口会话").await;
     wait_connected(&mut client, (tabs_before + 1) as usize, "串口会话").await;
-    eprintln!("会话开起来了：{}", device.path());
+    eprintln!("会话: 设备路径={}", device.path());
 
     // ── 2. 拔掉设备（关掉唯一一份主端）──────────────────────────────────────
     device.unplug();
-    eprintln!("已拔掉设备：关掉唯一一份主端，从端那一路的 read 当场报错");
 
     // ── 3. 会话自己结束：标签页跟着关，原因留在通知行上 ──────────────────────
     wait_js(
@@ -126,11 +125,14 @@ async fn unplugging_the_device_ends_the_session_with_a_readable_reason() {
     wait_text_contains(&mut client, "[data-session-notice]", GONE).await;
     wait_text_contains(&mut client, "[data-session-notice]", device.path()).await;
     let said = text_of(&mut client, "[data-session-notice]").await;
-    eprintln!("通知行：{said:?}");
+    eprintln!("界面: 通知行={said:?}");
 
     // ── 4. 没有残留注册 ─────────────────────────────────────────────────────
     let back = wait_sessions(&mut client, &sessions_before).await;
-    eprintln!("拔掉之后 sessions probe = {back}（打开前 {sessions_before}）");
+    eprintln!(
+        "会话: live={} registered={}",
+        back["live"], back["registered"]
+    );
 
     let _ = client.invoke_command("vault_lock", None).await;
 }

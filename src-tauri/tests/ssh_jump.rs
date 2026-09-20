@@ -137,7 +137,7 @@ async fn a_session_through_a_bastion_reaches_a_host_only_it_can_see() {
     // ── 1. 两台服务端（都在**本进程**里）────────────────────────────────────
     let (jump, target) = two_hosts().await;
     eprintln!(
-        "跳板：127.0.0.1:{} 指纹 {}\n目标：{}:{}（真实地址 {}）指纹 {}",
+        "构造: 跳板=127.0.0.1:{} 跳板指纹={} 目标={}:{} 目标地址={} 目标指纹={}",
         jump.addr.port(),
         jump.fingerprint,
         INNER_NAME,
@@ -154,7 +154,7 @@ async fn a_session_through_a_bastion_reaches_a_host_only_it_can_see() {
         "那个目标名在本机解析得出来（{:?}）—— 这条用例的构造前提就不成立了",
         resolved.map(|mut addrs| addrs.next())
     );
-    eprintln!("构造前提：{INNER_NAME} 在本机解析失败（RFC 2606）—— 直连这条路不存在");
+    eprintln!("构造: 目标名={INNER_NAME} 本机解析=失败");
 
     // ── 3. 库 + 种子数据 + 解锁 ─────────────────────────────────────────────
     let Some((mut client, _fixture, path)) = connect_and_prepare().await else {
@@ -168,7 +168,7 @@ async fn a_session_through_a_bastion_reaches_a_host_only_it_can_see() {
         .invoke_command("vault_hosts", None)
         .await
         .expect("vault_hosts 调不通");
-    eprintln!("主机池：{listed}");
+    eprintln!("池: 行数={}", listed.as_array().map_or(0, Vec::len));
     let rows = listed.as_array().cloned().unwrap_or_default();
     let target_row = rows
         .iter()
@@ -202,7 +202,7 @@ async fn a_session_through_a_bastion_reaches_a_host_only_it_can_see() {
         badge.contains(JUMP_NAME),
         "选择器要显示这一行经谁连（拿到 {badge:?}）"
     );
-    eprintln!("界面：目标那一行显示「{badge}」");
+    eprintln!("界面: 跳板={badge}");
     click(
         &mut client,
         &format!(".host-picker-item[data-host-id=\"{target_id}\"]"),
@@ -218,7 +218,7 @@ async fn a_session_through_a_bastion_reaches_a_host_only_it_can_see() {
         &target.fingerprint,
     )
     .await;
-    eprintln!("提示问答（按发生顺序）：{asked:?}");
+    eprintln!("界面: 提示数={}", asked.len());
     assert!(
         asked
             .iter()
@@ -264,10 +264,6 @@ async fn a_session_through_a_bastion_reaches_a_host_only_it_can_see() {
         "端口也要是池里那一列 —— 客户端不该自己改写成真实端口"
     );
     assert!(jump_seen.shell_data.is_empty(), "跳板上不该有终端数据");
-    eprintln!(
-        "跳板服务端：收到 1 条 direct-tcpip → {}:{}",
-        jump_seen.direct_tcpip[0].host, jump_seen.direct_tcpip[0].port
-    );
 
     // ── 7. 字节能双向流：到了**目标**，而目标在客户端解析不出来的地址上 ───────
     type_line(&mut client, "echo via-the-bastion\n").await;
@@ -287,10 +283,7 @@ async fn a_session_through_a_bastion_reaches_a_host_only_it_can_see() {
         jump.shared.relayed_bytes() > 0,
         "跳板上的中继应当搬过字节（它真的通着）"
     );
-    eprintln!(
-        "终端回声：via-the-bastion（目标收到了同一串；跳板中继搬过 {} 字节）",
-        jump.shared.relayed_bytes()
-    );
+    eprintln!("服务端: 中继字节={}", jump.shared.relayed_bytes());
 
     // ── 8. 关标签页零残留 ──────────────────────────────────────────────────
     let closed = client
@@ -329,7 +322,10 @@ async fn a_session_through_a_bastion_reaches_a_host_only_it_can_see() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    eprintln!("关标签页：sessions probe = {sessions}");
+    eprintln!(
+        "会话: live={} registered={}",
+        sessions["live"], sessions["registered"]
+    );
 
     // 对端：**整条链**（目标那条会话 + 跳板那条承载连接）都断了 —— 这是"连接真的没了"的
     // 唯一外部证据，而跳板那一条正是"载着我们的那条连接"。
@@ -337,7 +333,7 @@ async fn a_session_through_a_bastion_reaches_a_host_only_it_can_see() {
     loop {
         let closed = observed(&target).sessions_closed;
         if closed >= 1 {
-            eprintln!("关标签页：目标服务端看到 {closed} 条连接断开");
+            eprintln!("服务端: 连接关闭={closed}");
             break;
         }
         assert!(

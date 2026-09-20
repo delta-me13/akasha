@@ -104,7 +104,7 @@ async fn sftp_lists_both_panes_without_any_terminal() {
     right_options.sftp = Some(vec![SftpItem::file("right-beta.txt")]);
     let right = start(right_options).await;
     eprintln!(
-        "服务端：左 127.0.0.1:{} · 右 127.0.0.1:{}",
+        "构造: 左服务端=127.0.0.1:{} 右服务端=127.0.0.1:{}",
         left.addr.port(),
         right.addr.port()
     );
@@ -132,7 +132,7 @@ async fn sftp_lists_both_panes_without_any_terminal() {
         number(&sessions_before, "/registered"),
         "两张表必须相等（读过基准之后的断言都以它为基准）：{sessions_before}"
     );
-    eprintln!("SFTP 之前：标签页 {tabs_before} 个、会话 {live_before} 个");
+    eprintln!("界面: 标签页={tabs_before} 会话={live_before}");
 
     // ── 4. 界面：打开 SFTP 面板，新建一个会话 ───────────────────────────────
     open_sftp_panel(&mut client).await;
@@ -144,7 +144,7 @@ async fn sftp_lists_both_panes_without_any_terminal() {
 
     // ── 6. 只连左侧：右侧必须仍是未连接（"两侧独立"）────────────────────────
     let asked = connect_side(&mut client, "left", &left.fingerprint).await;
-    eprintln!("左侧连上，问到过 {asked:?}");
+    eprintln!("会话: 侧=左 提示数={}", asked.len());
     assert_eq!(
         sftp_state(&mut client, "right").await,
         "disconnected",
@@ -153,7 +153,7 @@ async fn sftp_lists_both_panes_without_any_terminal() {
 
     // ── 7. 连右侧 ──────────────────────────────────────────────────────────
     let asked = connect_side(&mut client, "right", &right.fingerprint).await;
-    eprintln!("右侧连上，问到过 {asked:?}");
+    eprintln!("会话: 侧=右 提示数={}", asked.len());
 
     // ── 8. 判据：两侧各自列目录成功，且**列的是各自那一台** ──────────────────
     wait_js(
@@ -208,7 +208,6 @@ async fn sftp_lists_both_panes_without_any_terminal() {
             "{side} 这一侧的当前目录应当是服务端 `realpath` 给出的那个：{found}"
         );
     }
-    eprintln!("probe sftp = {session}");
 
     // 服务端那一侧：**各**记到 1 次 sftp 子系统请求（"列目录成功"不能只看我们自己说）。
     assert_eq!(
@@ -264,7 +263,7 @@ async fn sftp_lists_both_panes_without_any_terminal() {
         loop {
             let closed = observed(server).connections_closed;
             if closed >= 1 {
-                eprintln!("{label}侧服务端看到 {closed} 条连接断开");
+                eprintln!("服务端: 侧={label} 断开连接数={closed}");
                 break;
             }
             assert!(

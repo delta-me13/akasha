@@ -20,7 +20,7 @@ const APP_IDENTIFIER: &str = "fans.cyrene.akasha-terminal";
 
 fn skip_unless_e2e() -> bool {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return true;
     }
     false
@@ -73,8 +73,8 @@ async fn connect_and_check_plugin_info() {
         "端口上连到的不是 akasha —— 后面的结论都不可信：{info}"
     );
     eprintln!(
-        "Connected to {} (Victauri v{})",
-        APP_IDENTIFIER, info["version"]
+        "服务端: 标识={APP_IDENTIFIER} 版本={}",
+        info["version"].as_str().unwrap_or("?")
     );
 }
 
@@ -84,7 +84,7 @@ async fn screenshot_captures_window() {
         return;
     }
     if let Some(reason) = native_capture_skip_reason() {
-        eprintln!("跳过 screenshot：{reason}（CI 矩阵在 X11 / Windows / macOS 上跑这条）");
+        eprintln!("跳过: {reason}");
         return;
     }
 
@@ -96,7 +96,6 @@ async fn screenshot_captures_window() {
         || result.get("base64").is_some()
         || result.pointer("/result/content/0/data").is_some();
     assert!(has_image, "screenshot should return image data: {result}");
-    eprintln!("Screenshot captured successfully");
 }
 
 #[tokio::test]
@@ -116,7 +115,7 @@ async fn ipc_integrity_passes() {
 
     for result in &report.results {
         eprintln!(
-            "  [{}] {}",
+            "报告: 结果={} 检查={}",
             if result.passed { "PASS" } else { "FAIL" },
             result.description,
         );

@@ -234,7 +234,7 @@ fn screen_has(needle: &str) -> String {
 #[tokio::test]
 async fn closing_a_terminal_tab_discards_only_its_own_session() {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return;
     }
     let mut client = VictauriClient::discover()
@@ -277,12 +277,9 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
             "丢上下文后退到 canvas",
         )
         .await;
-        eprintln!("已把标签页 1 的 WebGL 上下文丢掉（退到 canvas）");
+        eprintln!("构造: 标签页=1 渲染器=canvas");
     } else {
-        eprintln!(
-            "跳过丢上下文：当前不是 WebGL 渲染器（可能已经被前面的目标丢过了 —— 那也满足本用例的前提），\
-             或驱动不提供 WEBGL_lose_context"
-        );
+        eprintln!("跳过: 当前渲染器不是 WebGL 或驱动不提供 WEBGL_lose_context");
     }
 
     // ── 1. 标签页 1 里的探针 A ─────────────────────────────────────────────
@@ -322,7 +319,7 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         alive(probe_b) && probe_a != probe_b,
         "两个标签页必须是两个会话（探针 {probe_a} / {probe_b}）"
     );
-    eprintln!("标签页 1：探针 A = {probe_a}；标签页 2：探针 B = {probe_b}");
+    eprintln!("探针: 标签页1={probe_a} 标签页2={probe_b}");
 
     // ── 4. 切回标签页 1：**切换不是关闭** ──────────────────────────────────
     assert!(
@@ -339,10 +336,6 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
     assert!(
         alive(probe_a) && alive(probe_b),
         "切换标签页不该收掉任何会话（A {probe_a} / B {probe_b}）"
-    );
-    eprintln!(
-        "标签页数：1 → + → 2 → 切换（当前「{}」）→ 两个探针都还在",
-        text(&client.eval_js(ACTIVE_TITLE).await.unwrap())
     );
 
     // ── 5. 点 × 关闭标签页 1：**立刻丢弃** ─────────────────────────────────
@@ -385,11 +378,11 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
     );
     if process_death_visible() {
         eprintln!(
-            "探针 A({probe_a}) 已随标签页消失（{} ms）",
+            "会话: 关闭耗时_ms={} 探针={probe_a}",
             clicked.elapsed().as_millis()
         );
     } else {
-        eprintln!("（非 Linux：进程级判据跳过；注册表读数已断言：{sessions_after_close}）");
+        eprintln!("跳过: 非 Linux 平台，进程级判据不可用");
     }
 
     // ── 6. **只丢它自己**：另一个标签页的进程与屏幕内容都要在 ───────────────
@@ -405,7 +398,6 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "剩下的标签页接管探针且屏幕内容仍在",
     )
     .await;
-    eprintln!("探针 B({probe_b}) 仍在，且它的屏幕内容还在");
 
     // 剩下的那个标签页**还能用** —— 关掉一个标签页不该把界面带坏。
     type_line(&mut client, "printf 'akasha-tab-alive-%s\\n' ok\n").await;
@@ -446,7 +438,6 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         empty.contains("没有打开的标签页"),
         "关掉最后一个标签页之后没有空状态（app 是不是被带崩了？）：{empty:?}"
     );
-    eprintln!("关掉最后一个标签页：空状态（app 仍在），探针 B({probe_b}) 也随会话被丢弃");
 
     // 空状态下还能再开一个 —— 界面是空的，进程不是。
     assert!(
@@ -484,7 +475,6 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "敲 exit 之后标签页自己关掉（会话结束 = 标签页关闭）",
     )
     .await;
-    eprintln!("在终端里敲 exit：标签页自己关掉（app 仍在）");
 
     // 会话结束了 ≠ app 退出：还能再开一个（也给后面的 `exit_residue` 留个能用的终端）。
     assert!(
@@ -507,7 +497,4 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "exit 之后新开的标签页可交互",
     )
     .await;
-
-    eprintln!("✅ 关闭终端标签页 = 立刻丢弃该 Session，且只丢它自己（关掉最后一个也不退出应用）");
-    eprintln!("✅ 在终端里敲 exit：会话自己结束，标签页跟着关掉（app 仍在）");
 }

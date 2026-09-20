@@ -42,7 +42,7 @@ const PASSPHRASE: &str = "e2e-unlock-lifecycle-passphrase";
 
 fn skip_unless_e2e() -> bool {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return true;
     }
     false
@@ -164,7 +164,7 @@ fn locked_marks(port: u16) -> (Option<u64>, Option<u64>, Option<u64>) {
     {
         let pid = app_pid(port).expect("找不到 app 的 discovery 目录 —— 拿不到 pid 就量不了 VmLck");
         let before = locked_kb(pid).expect("读不到 app 的 /proc/<pid>/status");
-        eprintln!("解锁前：pid={pid} VmLck={before} kB");
+        eprintln!("进程: pid={pid} VmLck={before}");
         (Some(before), None, None)
     }
     #[cfg(not(target_os = "linux"))]
@@ -189,7 +189,6 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
         .invoke_command("vault_status", None)
         .await
         .expect("vault_status 调不通 —— 它登记进 bindings.rs 了吗？");
-    eprintln!("vault_status = {status}");
     let path = PathBuf::from(
         status
             .pointer("/path")
@@ -203,7 +202,6 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
     // 自动解锁的"）已经由"库不存在时它报 `missing` + `unlocked:false`"那条基线守住；
     // 这里再把"解锁 → 锁定"这一轮走完，测的是**锁定真的把东西丢掉了**。
     if status.pointer("/unlocked").and_then(Value::as_bool) == Some(true) {
-        eprintln!("起点不是锁着的（前面的目标解过锁）—— 先锁定，再把这一轮走完");
         client
             .invoke_command("vault_lock", None)
             .await
@@ -232,8 +230,7 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
         "present" if is_ours(&path) => true, // 上一次跑留下的
         other => {
             eprintln!(
-                "跳过：{} 上已经有一个库（state={other}），而且它**不是**用这条用例的口令建的 —— \
-                 那是用户自己的数据，测试不许碰它",
+                "跳过: {} 上已有一个库（state={other}），且它不是这条用例的口令建的",
                 path.display()
             );
             return;
@@ -251,7 +248,6 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
         .invoke_command("vault_unlock", Some(json!({ "passphrase": PASSPHRASE })))
         .await
         .expect("vault_unlock 调不通（口令对、库也在）");
-    eprintln!("vault_unlock = {contents}");
     assert_eq!(
         contents,
         json!({ "keys": 1, "hosts": 1, "serials": 1, "forwards": 1 }),
@@ -288,7 +284,7 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
         let before = locked_before.expect("解锁前那次读数不该缺席（它就是在这里取到的）");
         let during = locked_during.expect("读不到 app 的 /proc/<pid>/status");
         let after = locked_after.expect("读不到 app 的 /proc/<pid>/status");
-        eprintln!("锁定后：VmLck={after} kB（解锁前 {before}，解锁中 {during}）");
+        eprintln!("进程: VmLck_解锁前={before} VmLck_解锁中={during} VmLck_锁定后={after}");
         assert!(
             during > before,
             "解锁期间 app 的 VmLck 没有涨({before} → {during} kB)—— \
@@ -302,7 +298,7 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (locked_before, locked_during, locked_after);
-        eprintln!("跳过 VmLck 那三条断言：本平台没有 /proc/<pid>/status 这一档读数");
+        eprintln!("跳过: 本平台没有 /proc/<pid>/status，无法读取 VmLck");
     }
 
     let locked_status = client.invoke_command("vault_status", None).await.unwrap();
@@ -323,7 +319,6 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
         wrong.is_err(),
         "错误口令居然解锁成功了 —— 那「锁着」这个状态就没有意义：{wrong:?}"
     );
-    eprintln!("错误口令被拒：{wrong:?}");
     let still_locked = client.invoke_command("vault_status", None).await.unwrap();
     assert_eq!(
         still_locked.pointer("/unlocked").and_then(Value::as_bool),

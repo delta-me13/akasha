@@ -262,7 +262,7 @@ async fn a_socks5_port_forwards_whatever_the_client_names() {
     })
     .await;
     eprintln!(
-        "服务端：127.0.0.1:{}（HTTP 服务在 {}）",
+        "构造: 服务端=127.0.0.1:{} HTTP服务=127.0.0.1:{}",
         server.addr.port(),
         http.port()
     );
@@ -298,7 +298,7 @@ async fn a_socks5_port_forwards_whatever_the_client_names() {
     let (handle, asked) =
         connect_tunnel_through_prompts(&mut client, open_rule, &server.fingerprint, PASSWORD).await;
     assert!(handle > 0, "probe 里必须有 handle");
-    eprintln!("隧道已连接：handle={handle}，问到过 {asked:?}");
+    eprintln!("隧道: handle={handle} 提示数={}", asked.len());
 
     let want = format!("127.0.0.1:{bind_port}");
     assert_eq!(
@@ -314,7 +314,6 @@ async fn a_socks5_port_forwards_whatever_the_client_names() {
             .expect("curl 那条阻塞任务没回话");
     assert!(ok, "curl 经 SOCKS5 取远端服务失败（stderr={stderr:?}）");
     assert_eq!(stdout, BODY, "curl 取回来的不是远端服务写的那一串字节");
-    eprintln!("curl --socks5-hostname 取回：{stdout:?}");
 
     // 对端那一半：它被要求连的**正是 curl 在握手里说的那个名字**，字节也真的搬过去了。
     let deadline = Instant::now() + CLOSE_TIMEOUT;
@@ -382,7 +381,7 @@ async fn a_socks5_port_forwards_whatever_the_client_names() {
         shown.contains("0.0.0.0"),
         "失败里要能看出是哪条地址（这一条是 0.0.0.0）：{shown:?}"
     );
-    eprintln!("非回环那条：{shown}");
+    eprintln!("界面: 失败提示={shown}");
     assert!(
         !tunnel_entries(&mut client)
             .await
@@ -438,7 +437,7 @@ async fn a_socks5_port_forwards_whatever_the_client_names() {
     loop {
         let closed = support::observed(&server).connections_closed;
         if closed >= 1 {
-            eprintln!("停止：服务端看到 {closed} 条连接断开");
+            eprintln!("服务端: 断开连接={closed}");
             break;
         }
         assert!(

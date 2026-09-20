@@ -148,7 +148,7 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
     // ── 1. 服务端（在**本进程**里）：随机端口 + 只认口令 ─────────────────────
     let server = start(ServerOptions::password(PASSWORD)).await;
     eprintln!(
-        "服务端：127.0.0.1:{} 指纹 {}",
+        "构造: 服务端=127.0.0.1:{} 指纹={}",
         server.addr.port(),
         server.fingerprint
     );
@@ -174,7 +174,6 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
         Some("local"),
         "方向过 IPC 是一个稳定短名：{listed}"
     );
-    eprintln!("转发规则池：{listed}");
 
     // ── 4. 界面：打开隧道面板，规则列出来 ────────────────────────────────────
     open_tunnel_panel(&mut client).await;
@@ -196,7 +195,7 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
     let (handle, asked) =
         connect_tunnel_through_prompts(&mut client, open_rule, &server.fingerprint, PASSWORD).await;
     assert!(handle > 0, "probe 里必须有 handle");
-    eprintln!("隧道已连接：handle={handle}，问到过 {asked:?}");
+    eprintln!("隧道: handle={handle} 提示数={}", asked.len());
 
     // 界面上的状态与后端一致（`data-tunnel-state` 的取值就是后端那个短名）。
     wait_js(
@@ -227,7 +226,6 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
         Some(want.as_str()),
         "已连接的隧道必须报出它监听的端口（plan 0602）：{bound:?}"
     );
-    eprintln!("监听地址：{want}");
 
     // ── 6. 判据：状态变化**发事件**，且按 `SessionId` 路由 ───────────────────
     let events = tunnel_events(&mut client).await;
@@ -257,7 +255,7 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
         Some(Value::Null),
         "非「重连中」的状态不该带 attempt（拿不到就不写，不填 0）：{events:?}"
     );
-    eprintln!("事件序列（handle={handle}）：{states:?}");
+    eprintln!("隧道: handle={handle} 状态数={}", states.len());
 
     // 服务端那一侧：它确实看到一次口令认证（不是"状态说连上了"就算）。
     let passwords = support::observed(&server).passwords;
@@ -295,7 +293,6 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
         }),
         "停止也要发事件（用户看得见的那一步）：{stopped:?}"
     );
-    eprintln!("停止：probe = {sessions}");
 
     // 对端：服务端看到那条**连接**断了 —— 这是"连接真的没了"的唯一外部证据
     // （`disconnect` 是在 runtime 上排队的，所以这里等它落地）。
@@ -305,7 +302,7 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
     loop {
         let closed = support::observed(&server).connections_closed;
         if closed >= 1 {
-            eprintln!("停止：服务端看到 {closed} 条连接断开");
+            eprintln!("服务端: 断开连接={closed}");
             break;
         }
         assert!(
@@ -332,7 +329,7 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
         failure.is_object(),
         "failure 该是那套按「下一步动作」分类的错误：{broken}"
     );
-    eprintln!("打不开的那条：{broken}");
+    eprintln!("隧道: handle={broken_handle}");
 
     // 状态落在 `失败`（这正是"失败必须可见"的机器可读那一半）。
     wait_tunnel_state(&mut client, broken_rule, "failed").await;
@@ -366,7 +363,7 @@ async fn a_tunnel_reports_five_states_through_events_and_can_be_stopped() {
         retry_states.contains(&"connecting") && retry_states.contains(&"failed"),
         "重试必须**再走一遍**连接中 → 失败：{retry_states:?}"
     );
-    eprintln!("重试：{retry_states:?}");
+    eprintln!("隧道: 重试状态数={}", retry_states.len());
 
     // ── 9. 收尾：把失败那条也停掉，然后锁库 ──────────────────────────────────
     client

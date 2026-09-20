@@ -180,7 +180,7 @@ async fn a_forwarded_port_reaches_a_service_only_the_remote_side_can_name() {
     })
     .await;
     eprintln!(
-        "服务端：127.0.0.1:{}（回声服务在 {}）",
+        "构造: 服务端=127.0.0.1:{} 回声服务=127.0.0.1:{}",
         server.addr.port(),
         echo.port()
     );
@@ -223,7 +223,7 @@ async fn a_forwarded_port_reaches_a_service_only_the_remote_side_can_name() {
         connect_tunnel_through_prompts(&mut client, forward_rule, &server.fingerprint, PASSWORD)
             .await;
     assert!(handle > 0, "probe 里必须有 handle");
-    eprintln!("隧道已连接：handle={handle}，问到过 {asked:?}");
+    eprintln!("隧道: handle={handle} 提示数={}", asked.len());
 
     // 从 plan 0602 起「已连接」意味着**端口在监听** —— probe 里必须看得见它。
     let want = format!("127.0.0.1:{bind_port}");
@@ -265,7 +265,6 @@ async fn a_forwarded_port_reaches_a_service_only_the_remote_side_can_name() {
         server.shared.relayed_bytes() > 0,
         "中继应当搬过字节（对端那一侧的计数）"
     );
-    eprintln!("对端：{:?}", seen.direct_tcpip);
 
     // ── 5. 每条入站连接各开一条通道（不是"一条通道用到底"）───────────────────
     assert_eq!(round_trip(bind_port).await, PAYLOAD, "第二条连接也该通");
@@ -299,7 +298,7 @@ async fn a_forwarded_port_reaches_a_service_only_the_remote_side_can_name() {
         shown.contains(&format!("127.0.0.1:{occupied_port}")),
         "同一条失败里也要能看出是哪个地址（这一条是 127.0.0.1:{occupied_port}）：{shown:?}"
     );
-    eprintln!("端口被占用的那条：{shown}");
+    eprintln!("界面: 失败提示={shown}");
     assert!(
         !tunnel_entries(&mut client).await.iter().any(|entry| {
             entry.pointer("/ruleId").and_then(Value::as_i64) == Some(occupied_rule)
@@ -354,7 +353,7 @@ async fn a_forwarded_port_reaches_a_service_only_the_remote_side_can_name() {
     loop {
         let closed = support::observed(&server).connections_closed;
         if closed >= 1 {
-            eprintln!("停止：服务端看到 {closed} 条连接断开");
+            eprintln!("服务端: 断开连接={closed}");
             break;
         }
         assert!(

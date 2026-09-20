@@ -11,6 +11,28 @@
 //! **不是测试目标**：`cargo` 只把 `tests/*.rs` 当目标，`tests/support/mod.rs` 是被各个目标
 //! `mod support;` 引进来的普通模块 —— 也因此不会撞上 `justfile` 里那条"没接进 test-e2e 的目标"的
 //! guard（它扫的是 `tests/*.rs`）。
+//!
+//! # 输出规范
+//!
+//! 用例以 `--nocapture` 执行，因此每一条 `eprintln!` 都会进入终端。输出只承担三件事，
+//! 每条都必须落在其中一类：
+//!
+//! 1. **观测**：`eprintln!("<主体>: <字段>=<值> …")`。主体是领域名词（`池` / `会话` /
+//!    `隧道` / `服务端` / `界面` / `报告` / `进程`），字段之间用单个空格分隔，
+//!    值是计数、时长、句柄、端口、路径或事件序列。
+//! 2. **跳过**：`eprintln!("跳过: <原因>")`。原因写平台或前提，一行写完。
+//! 3. **构造**：`eprintln!("构造: <字段>=<值> …")`。用例自己造出来的那些前提
+//!    （服务端地址、端口、指纹、库路径）。
+//!
+//! 以下内容不得输出 —— 它们只让日志变长，不增加信息：
+//!
+//! - **紧随其后的 `assert_eq!` 已经恰好固定其值的观测**：该断言已经把这件事说完；
+//! - **整个结构的 `Debug` 转储**（`{rows:?}` / `{listed:?}`）：改成计数或标识，改不动就删除；
+//! - **`✅ …` 成功横幅**：用例通过本身就是结论；
+//! - **复述断言结论或代码意图的旁白**，以及括号里的理由（理由写在注释里）。
+//!
+//! 措辞是正式书面语、无人称、无 emoji，且不出现口语词（`跑` / `起` / `关掉` /
+//! `拿不到` / `还活着` 之类）。
 
 #![allow(dead_code)] // 每个测试目标各取所需，用不到的辅助函数不该让 `-D warnings` 变红
 #![allow(clippy::unwrap_used)] // 测试里的 unwrap 是断言手段（root Cargo.toml 的 lints 约定）
@@ -40,7 +62,7 @@ pub const CONNECT_TIMEOUT_MS: u64 = 30_000;
 
 pub fn skip_unless_e2e() -> bool {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return true;
     }
     false
@@ -112,8 +134,7 @@ pub async fn connect_and_prepare() -> Option<(VictauriClient, Fixture, PathBuf)>
         "present" if is_ours(&path) => true, // 上一次跑留下的
         other => {
             eprintln!(
-                "跳过：{} 上已经有一个库（state={other}），而且它**不是**用这条用例的口令建的 —— \
-                 那是用户自己的数据，测试不许碰它",
+                "跳过: {} 上已有一个库（state={other}），且它不是这条用例的口令建的",
                 path.display()
             );
             return None;
@@ -755,7 +776,7 @@ impl FakeSerialDevice {
         } else {
             (None, None)
         };
-        eprintln!("假串口设备：{path}（本进程持有主端，读主端={reads_master}）");
+        eprintln!("构造: 假串口设备={path} 本进程持有主端={reads_master}");
         Self {
             path,
             writer,

@@ -47,7 +47,7 @@ const VAULT: &str = "akasha.db";
 
 fn skip_unless_e2e() -> bool {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: 用配方 `portable`（或 `just test-e2e`）跑 —— 它保证 Vite 在跑");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just portable 或 just test-e2e 设置）");
         return true;
     }
     false
@@ -435,7 +435,6 @@ async fn data_survives_the_move() {
     );
 
     let status = app.status_ready(&mut client).await;
-    eprintln!("A 的 vault_status = {status}");
     assert_eq!(vault_path(&status), a.vault(), "库不在 A 的便携目录里");
     assert_eq!(vault_state(&status), "missing");
 
@@ -477,7 +476,6 @@ async fn data_survives_the_move() {
     );
 
     let status = app.status_ready(&mut client).await;
-    eprintln!("B 的 vault_status = {status}");
     assert_eq!(vault_path(&status), b.vault(), "app 还在认搬走之前那个位置");
     assert_eq!(vault_state(&status), "present");
 
@@ -485,7 +483,6 @@ async fn data_survives_the_move() {
         .invoke_command("vault_unlock", Some(json!({ "passphrase": PASSPHRASE })))
         .await
         .expect("vault_unlock（搬完之后）");
-    eprintln!("B 解锁读回四套池 = {contents}");
     assert_eq!(
         contents,
         json!({ "keys": 1, "hosts": 1, "serials": 1, "forwards": 1 }),
@@ -513,15 +510,11 @@ async fn an_unwritable_portable_dir_refuses_to_start() {
     // **正对照**：这个环境真的拦得住写吗？拦不住（以 root 跑、或文件系统不理会 mode 位）
     // 就显式跳过并写明原因 —— 不把"没验过"说成"验过了"（`AGENTS.md` §7）。
     if fs::File::create(layout.data().join("probe")).is_ok() {
-        eprintln!(
-            "跳过：这个环境拦不住写（root？不理会 mode 位的文件系统？）—— \
-             造不出\"便携目录不可写\"这个前提"
-        );
+        eprintln!("跳过: 运行环境不限制对数据目录的写入，造不出「便携目录不可写」这一前提");
         return;
     }
 
     let (status, log) = run_until_exit(&layout);
-    eprintln!("退出码 {status:?}；日志尾部：\n{log}");
     assert_eq!(
         status.code(),
         Some(EXIT_NOT_WRITABLE),

@@ -16,7 +16,7 @@ use victauri_test::VictauriClient;
 
 fn skip_unless_e2e() -> bool {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return true;
     }
     false
@@ -100,7 +100,7 @@ async fn raw_channel_carries_ten_megabytes() {
     // 探针脚本本身返回的是句柄（不是布尔），所以这里只要求"没报工具错" ——
     // 真正的判据是下面那两条对 `window.__akashaProbe` 的轮询。
     let opened_raw = client.eval_js(OPEN_AND_WATCH).await.unwrap();
-    eprintln!("open_session → {opened_raw}");
+    eprintln!("会话: 句柄={}", number(&opened_raw));
 
     // 1. 会话真的开起来了（handle 由后端分配）。
     let opened = client
@@ -152,7 +152,7 @@ async fn raw_channel_carries_ten_megabytes() {
         .eval_js(&write_js("yes akasha | head -c 10000000\n"))
         .await
         .unwrap();
-    eprintln!("write_session → {wrote}");
+    eprintln!("会话: 写入成功={}", ok(&wrote));
 
     let flooded = client
         .wait_for_expression(
@@ -176,7 +176,7 @@ async fn raw_channel_carries_ten_megabytes() {
         "10 MB 没有全部到达（{before} → {after} 字节）：{flooded}"
     );
     eprintln!(
-        "✅ raw 通道送达 {after} 字节，分 {batches} 批（等待耗时 {} ms）",
+        "会话: 字节={after} 批次={batches} 耗时={} ms",
         flooded
             .get("elapsed_ms")
             .map(|v| v.to_string())
@@ -195,7 +195,7 @@ async fn raw_channel_carries_ten_megabytes() {
         .await
         .map(|v| payload(&v).as_str().unwrap_or("?").to_string())
         .unwrap_or_else(|_| "?".into());
-    eprintln!("帧类型：{frame_type}（JSON 帧 {json_frames} 个）");
+    eprintln!("会话: 帧类型={frame_type}");
     assert_eq!(
         json_frames, 0,
         "raw 通道退化成 JSON 数组了（帧类型 {frame_type}）—— 这正是 no-string-pty-channel 守的东西"
@@ -259,7 +259,7 @@ async fn raw_channel_carries_ten_megabytes() {
         "关闭会话后没有收到频道的结束帧：{ended}"
     );
     eprintln!(
-        "✅ 收尾帧 {} 个；console 里没有异常留下",
+        "会话: 收尾帧={}",
         number(
             &client
                 .eval_js("window.__akashaProbe.endFrames")

@@ -231,7 +231,7 @@ async fn lifecycle(client: &mut VictauriClient) -> serde_json::Value {
 #[tokio::test]
 async fn closing_the_window_hides_it_and_keeps_the_session() {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return;
     }
 
@@ -243,19 +243,13 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
 
     // ── 0. 前提：这个 app 的关窗语义确实是"隐藏" ─────────────────────────────
     let state = lifecycle(&mut client).await;
-    eprintln!("lifecycle = {state}");
 
     if state
         .get("close_action")
         .and_then(serde_json::Value::as_str)
         != Some("hide")
     {
-        eprintln!(
-            "Skipping: 这个 app 的关窗语义不是「隐藏」（{state}）—— \n\
-             要么托盘建不起来（只读 `$XDG_RUNTIME_DIR` / 没有会话总线，问题 #60 的降级 → 关窗即退出），\n\
-             要么配置里写的是 close_behavior=exit（那是 `exit_residue` 的对象）。\n\
-             本用例只验「隐藏」那条路，判据是 app 自己上报的状态，不猜。"
-        );
+        eprintln!("跳过: 关窗语义不是隐藏，托盘不可用或配置为 close_behavior=exit");
         return;
     }
 
@@ -283,7 +277,7 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
         sessions_before > 0,
         "关窗之前注册表里一个会话都没有 —— 那这条用例什么都没验"
     );
-    eprintln!("app = {app_pid}；探针 = {probe}；关窗前可见；会话 = {sessions_before}");
+    eprintln!("进程: app={app_pid} 探针={probe} 会话={sessions_before}");
 
     // ── 2. 关窗：**真实路径**（`Window::close()` → `CloseRequested`）──────────
     client
@@ -301,7 +295,6 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
          若本机的托盘建不起来，第一步就该跳过；走到这里说明**隐藏那条路没有生效**"
     );
     wait_visible(&mut client, false, "关窗之后窗口不可见").await;
-    eprintln!("关窗之后：进程 {app_pid} 仍在，窗口不可见");
 
     // ── 4. 会话还在：探针进程活着 + 注册表里的会话数不变（**预期行为**，不是泄漏 —— AGENTS.md §3.3）
     assert!(
@@ -359,6 +352,4 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
         !process_death_visible() || waits_until(Duration::from_secs(15), || !alive(probe)),
         "探针 {probe} 没被收掉 —— 隐藏过的会话不该失去作业控制"
     );
-
-    eprintln!("✅ 关窗 = 隐藏：进程、会话、终端缓冲都还在；显示回来之后照常可用");
 }

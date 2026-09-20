@@ -53,7 +53,7 @@ const LOSE_WEBGL_CONTEXT: &str = r#"(() => {
 
 fn skip_unless_e2e() -> bool {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return true;
     }
     false
@@ -159,7 +159,7 @@ async fn terminal_renders_on_canvas_and_survives_a_flood() {
             .await
             .unwrap(),
     );
-    eprintln!("渲染器：{renderer}；canvas {canvases} 块；DOM 行容器 {dom_rows} 个");
+    eprintln!("界面: 渲染器={renderer} 画布={canvases}");
     assert!(
         renderer == "webgl" || renderer == "canvas",
         "渲染器必须是 webgl 或 canvas，实际是 {renderer} —— 静默落到 DOM 是禁止的"
@@ -205,7 +205,7 @@ async fn terminal_renders_on_canvas_and_survives_a_flood() {
         )
         .await
         .unwrap();
-    eprintln!("8 MB 分 {} 批送达；哨兵已现", after - before);
+    eprintln!("界面: 批次增量={}", after - before);
     assert_eq!(
         pending.get("ok").and_then(serde_json::Value::as_bool),
         Some(true),
@@ -221,8 +221,6 @@ async fn terminal_renders_on_canvas_and_survives_a_flood() {
         "大流量之后的新命令",
     )
     .await;
-
-    eprintln!("✅ 画布渲染 + 按键来回 + 8 MB 灌流后仍可交互");
 }
 
 /// WebGL 上下文丢失 → **必须**退到 canvas，而且**不重建终端**（屏幕内容还在）。
@@ -266,7 +264,7 @@ async fn webgl_context_loss_falls_back_to_canvas() {
     );
     let lost = client.eval_js(LOSE_WEBGL_CONTEXT).await.unwrap();
     if !ok(&lost) {
-        eprintln!("跳过：当前渲染器是 {before}，或这个驱动不提供 WEBGL_lose_context");
+        eprintln!("跳过: 当前渲染器是 {before}，或该驱动不提供 WEBGL_lose_context");
         return;
     }
 
@@ -313,5 +311,5 @@ async fn webgl_context_loss_falls_back_to_canvas() {
             .await
             .unwrap(),
     );
-    eprintln!("✅ WebGL → canvas 降级成功（现有 canvas {canvases} 块，屏幕内容保留）");
+    eprintln!("界面: 画布={canvases}");
 }
