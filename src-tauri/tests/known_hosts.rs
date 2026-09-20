@@ -312,7 +312,7 @@ fn a_changed_host_key_is_refused_without_asking() {
             assert_eq!(recorded, &foreign_fingerprint, "记的是哪一把要说出来");
             assert_eq!(presented, &server.fingerprint, "现在给的是哪一把也要说出来");
             assert_ne!(recorded, presented, "前提：两把确实不同");
-            assert_eq!(*recorded_in, RecordedIn::Vault);
+            assert_eq!(recorded_in.as_ref(), &RecordedIn::Vault);
         }
         other => panic!("密钥变化该报 HostKeyChanged，实际：{other:?}"),
     }
@@ -386,7 +386,7 @@ fn a_changed_user_file_entry_is_refused_and_names_the_line() {
             recorded_in,
             ..
         } => {
-            match recorded_in {
+            match recorded_in.as_ref() {
                 RecordedIn::UserFile { path: named, line } => {
                     assert_eq!(named, &path);
                     assert_eq!(

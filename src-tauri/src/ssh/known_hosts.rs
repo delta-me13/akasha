@@ -159,7 +159,7 @@ impl HostKeyVerifier for KnownHostsVerifier {
                 port: target.port(),
                 recorded: recorded.fingerprint,
                 presented: key.fingerprint().to_owned(),
-                recorded_in: RecordedIn::Vault,
+                recorded_in: Box::new(RecordedIn::Vault),
             });
         }
 
@@ -187,10 +187,10 @@ impl HostKeyVerifier for KnownHostsVerifier {
                             })
                             .unwrap_or_else(|| "<无法读出的记录>".to_owned()),
                         presented: key.fingerprint().to_owned(),
-                        recorded_in: RecordedIn::UserFile {
+                        recorded_in: Box::new(RecordedIn::UserFile {
                             path: path.clone(),
                             line: recorded.and_then(|(_, line)| line),
-                        },
+                        }),
                     });
                 }
                 Err(err) => {

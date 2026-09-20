@@ -87,6 +87,13 @@ pub enum SshError {
     /// 与 [`SshError::HostKeyRejected`] 分开是刻意的：这一条是**警报**（中间人攻击的典型
     /// 形态就是这一步），而"没见过"只是一种常态。阶段 6 的重连判据也靠这个区分
     /// —— D13 把"主机密钥不匹配"列为**不重连**。
+    ///
+    /// ⚠️ **尺寸**：不装箱时这个变体是 128 字节，正好落在 `clippy::result_large_err` 的阈值上，
+    /// 而 `SshError` 的尺寸等于最大的那个变体 —— 于是 `tests/` 下每一个返回
+    /// `Result<_, SshError>` 的私有函数都要在栈上搬这么大一块（`just lint` 会红）。
+    /// 触发它的是 `recorded_in`：`RecordedIn` 48 字节（`PathBuf` + `Option<usize>`），
+    /// 是本变体里最大的字段。装箱后整个 `SshError` 是 88 字节。
+    /// 这条路径是警报、不是热路径，一次堆分配不值得为它省。尺寸由本模块的用例盯住。
     #[error(
         "主机密钥变了：{host}:{port} 记的是 {recorded}，现在给的是 {presented}（记录在{recorded_in}）"
     )]
@@ -98,7 +105,10 @@ pub enum SshError {
         /// 服务端这次给的。
         presented: String,
         /// 记录在哪 —— 我们的缓存，还是用户的 `~/.ssh/known_hosts`。
-        recorded_in: RecordedIn,
+        ///
+        /// ⚠️ 装箱只为**尺寸**（见本变体上的说明）：`Box<RecordedIn>` 8 字节，
+        /// 而 `RecordedIn` 自己 48 字节。
+        recorded_in: Box<RecordedIn>,
     },
 
     /// 没见过这把密钥，而**没有可问的人**（`HostKeyPrompt` 没配）。
@@ -354,5 +364,28 @@ impl ForwardFailure {
             // 上游以后加变体时走这里（而不是编译不过）：那一档对我们就是"别的"。
             russh::ChannelOpenFailure::Other { .. } => Self::Other,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SshError;
+
+    /// `SshError` 必须留在 `clippy::result_large_err` 的阈值之内。
+    ///
+    /// 为什么显式量一次：那条 lint 只在**别的 crate** 看这个错误类型时才报 —— 本仓库里
+    /// 能满足这个条件的只有 `tests/` 下那几个返回 `Result<_, SshError>` 的私有辅助函数，
+    /// 而它们改了形状（或不再私有）这条约束就静默消失。这里量的是类型自己，与谁返回它无关。
+    ///
+    /// 阈值是 `128`：`size_of` 正好 128 字节即会触发（已用同构的最小 crate 复核过）。
+    /// 尺寸的来由见 `HostKeyChanged` 上的说明。
+    #[test]
+    fn the_error_stays_below_the_large_error_threshold() {
+        let size = std::mem::size_of::<SshError>();
+        assert!(
+            size < 128,
+            "SshError 现在 {size} 字节：clippy::result_large_err 在 128 上就会报，\
+             而每个返回它的函数都要在栈上搬这么多 —— 把最大的那个变体装箱"
+        );
     }
 }
