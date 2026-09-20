@@ -59,6 +59,9 @@
 - [x] **Windows 上受保护页与 SQLCipher 不再争抢同一份额度**（问题 #167；ADR-0009）
       验收：Windows 上连续建 32 个 16 KiB 受保护页全部成功，且导出 / 还原那两条用例不再竞态失败
       → [plan 0110](./docs/plans/0110-windows-locked-page-budget.md)
+- [x] **Windows 上原生执行 `just test` 不再有红**（问题 #168：SOCKS5 拒绝后的 RST、路径的 verbatim 前缀）
+      验收：Windows 上原生执行完整一遍 workspace 测试，全部通过
+      → [plan 0111](./docs/plans/0111-windows-native-test-failures.md)
 - [x] `src-tauri/crates/akasha-core` 骨架：**`Session` 模型**（**必须先于任何后端**）
       验收：单测覆盖 `SessionId` 分配、关闭一个 `Session` 不影响另一个
       → [plan 0103](./docs/plans/archive/0103-core-session-model.md)

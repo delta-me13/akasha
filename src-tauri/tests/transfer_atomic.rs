@@ -509,6 +509,25 @@ async fn an_existing_temp_name_is_not_overwritten() {
     );
 }
 
+/// 端点返回的**规范化**路径（这条判据的对照）。
+///
+/// ⚠️ 不能直接拿 `std::fs::canonicalize` 比（问题 #168）：Windows 上它给的带 verbatim 前缀，
+/// 而端点在返回之前**有意**把那个前缀去掉（`ssh/local.rs` 的 `tidy` —— 那是原生路径的转义
+/// 写法，不是用户认得的路径：界面上那一栏的当前目录与“返回上一级”拼出来的字符串都不该带它）。
+/// 所以这里对照的是同一条规则：**先规范化、再去前缀**。
+fn canonical(path: &Path) -> String {
+    let text = std::fs::canonicalize(path)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    #[cfg(windows)]
+    {
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return rest.to_owned();
+        }
+    }
+    text
+}
 /// 本机端点自己不经过引擎的那一部分：列目录、认类型。
 #[tokio::test]
 async fn the_local_endpoint_lists_a_directory() {
@@ -523,7 +542,7 @@ async fn the_local_endpoint_lists_a_directory() {
 
     assert_eq!(
         listing.path,
-        std::fs::canonicalize(dir.path()).unwrap().to_string_lossy(),
+        canonical(dir.path()),
         "返回的应当是**规范化之后**的路径（调用方拿它当当前目录）"
     );
     let names: Vec<&str> = listing

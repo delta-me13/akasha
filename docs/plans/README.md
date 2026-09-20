@@ -73,6 +73,7 @@
 | 0107 | E2E 入口（`just test-e2e` 自包含） | 进行中（本地已实测；CI 三平台待实际运行） | plan 0202 / 0203 | [0107](./0107-e2e-entry.md) |
 | 0108 | Windows 目标的类型检查真的通过（问题 #149 的编译面） | 进行中 | plan 0801（平台边界）/ plan 0102（CI 矩阵要它才绿） | [0108](./0108-windows-type-check.md) |
 | 0110 | Windows 上受保护页的锁定额度（问题 #167；ADR-0009） | 已完成（2026-09-20：先落会红的用例，再抬进程最小工作集；`export_contract` / `passphrase_contract` 18/18） | ADR-0009（实现中） | [0110](./0110-windows-locked-page-budget.md) |
+| 0111 | Windows 上原生执行的另两条红（问题 #168） | 已完成（2026-09-20：SOCKS5 拒绝后读干净再关；对照物改成“先规范化、再去前缀”） | plan 0110（同一次发现） | [0111](./0111-windows-native-test-failures.md) |
 
 ### 阶段 2 — 端到端最小终端
 

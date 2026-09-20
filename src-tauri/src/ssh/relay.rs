@@ -40,7 +40,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::copy_bidirectional;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Handle as RuntimeHandle;
 use tokio::sync::oneshot;
@@ -315,10 +315,8 @@ async fn relay(
             Err(err) => {
                 // 问候阶段该回的东西 `negotiate` 已经回了（`05 FF`）；请求阶段被拒的
                 // `REP` 由它带在错误里，这里补上 —— 走到这一步的连接一条通道都没开。
-                if let Some(reply) = err.reply() {
-                    let _ = socks5::refuse(&mut socket, reply).await;
-                }
                 tracing::warn!(%peer, %err, "socks5 handshake failed");
+                refuse_and_close(&mut socket, err.reply()).await;
                 return;
             }
         },
@@ -360,6 +358,39 @@ async fn relay(
     }
 }
 
+/// 关一条**被拒**的连接之前，最多等这么久把对端剩下的字节读干净。
+///
+/// 它只是一个上限：对端可以永远不说话（不完整的请求），而这条任务不该为此一直挂着。
+const DRAIN_DEADLINE: Duration = Duration::from_millis(500);
+
+/// 拒绝之后把这条连接**体面地**关掉：先回 `REP`，再关写半边，最后把对端剩下的字节读完。
+///
+/// ⚠️ 为什么不能写完 `REP` 就直接返回（问题 #168）：被拒的请求里**可能还剩没读的字节**
+/// —— 不认的 `ATYP` 连它有多长都不知道，只能当场拒绝。而对端还开着的时候关一条接收缓冲
+/// 非空的连接，Windows 发的是 RST，**RST 会丢掉已经排队、还没被对端读走的字节**：
+/// 客户端于是看不到刚写出去的 `REP`，只看到 `ConnectionReset`。读干净再关，关闭走的是
+/// 四次挥手那一条，客户端先读到 `REP`、再读到 EOF（Linux 上这一步同样让“读完之后是 EOF”
+/// 这条判据更稳）。
+async fn refuse_and_close(socket: &mut TcpStream, reply: Option<socks5::Reply>) {
+    if let Some(reply) = reply
+        && socks5::refuse(socket, reply).await.is_err()
+    {
+        // 回不出去说明对端已经走了，没有什么还要交给它。
+        return;
+    }
+    // 关写半边：客户端读到的就是 EOF（`REP` 已经在它前面）。对端也关了时这一步不是错误。
+    let _ = socket.shutdown().await;
+    let mut sink = [0u8; 1024];
+    let drain = async {
+        loop {
+            match socket.read(&mut sink).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    };
+    let _ = tokio::time::timeout(DRAIN_DEADLINE, drain).await;
+}
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)] // 测试里的 unwrap 是断言手段（root Cargo.toml 的 lints 约定）

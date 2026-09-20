@@ -555,6 +555,10 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   ⚠️ **macOS 上连"假设备"都造不出来**：同一个 PTY 从端在那边打开会得到 `Not a typewriter`
   （CI 第三次运行实测），所以那三条 E2E 在 macOS 上按平台**显式跳过**并写明原因
   （`fake_serial_skip_reason`）；Windows 更早一步 —— ConPTY 没有设备节点。
+  ⚠️ **Windows 上另有两条 E2E 的路走通了，但设备那一层仍然缺席**（plan 0803）：`windows_ports`
+  不造假设备，它验的是**这台机器上真实存在的东西**（注册表里的 PnP 设备项）—— 那是首条在
+  Windows 上真的会执行的串口用例。**本机没有串口设备**（`SERIALCOMM` 键不存在），
+  所以它执行到的分支是空表；"枚举出**真的**带描述的端口"要一台有设备的 Windows 主机。
   ⚠️ 本会话把原因追到了上游那一行：`serialport` 在 Apple 目标上**用 `IOSSIOSPEED` 设波特率**，
   它对 pty 返回 `ENOTTY`（`serialport-4.10.1/src/posix/termios.rs` 自己写着这一条），
   于是"打开"这一步就失败、断言没有机会执行。**同一条限制现在也门控了单元与集成测试**：
@@ -788,6 +792,21 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   （配置由 app 启动时读）—— 但"重启之后两个轴仍是上次选的那一个"这条**没有专门的用例**。
 - [ ] **Windows 目标的编译被 `akasha-pty` 挡住**（问题 #149）：修它是计划级的活
   （Windows 上没有 POSIX 进程组语义）。它同时压着阶段 8 那半句"Windows / macOS 原生编译"。
+- [~] **plan 0803（Windows 上的串口枚举与它的证据）**：`PortKind` 新增 `Windows` 一档，
+      取值来自设备项的 `FriendlyName` / `HardwareID`（`SERIALCOMM` 给端口集合、设备项树给描述，
+      **两边用 COM 名对齐**）；`SerialPortKind` 与前端同步。本机**第一次**把 Windows 目标构建
+      通过（`cargo check --lib --target x86_64-pc-windows-msvc` 退出码 0、无警告；MSVC 与 SDK
+      本机都在，只有 vendored OpenSSL 需要一个原生 perl —— 问题 #156）；`serial::` **30 条**、
+      workspace `--lib` **218 条**全过，其中两条在 Windows 上真的走了一遍注册表那条路。
+      新增 E2E 目标 `windows_ports`：它**不造假设备**，因此不被 `fake_serial_skip_reason` 跳过 ——
+      那三条串口 E2E 在 Windows 上仍然全跳（ConPTY 没有设备节点）。新增配方 `just serial-unit`。
+      ⚠️ 判据在本机只走通一半：本机**没有任何串口设备**（`SERIALCOMM` 键不存在），执行到的分支
+      是**空表**；"枚举出真的带描述的端口"要一台有设备的 Windows 主机。另：负例证明
+      "让描述在 Windows 上静默失效"**编译期拦不住**，只有运行能发现 —— 那正是本目标存在的理由。
+      `just ready` 的 `lint` 那一关现在已经过了：它此前红在两处 SSH 测试的
+      `clippy::result_large_err` 上（与串口改动无关），已按问题 #166 修掉。本机继续往下走曾停在
+      `test`，那几处也已修掉（问题 #167 / #168）—— 现在本机
+      `cargo nextest run --workspace --no-fail-fast` 是 **423 条全过**。
 - [ ] **并发分档曲线里"上限 2 与串行一样慢"那一段没有定位**（plan 0704）：12 个 1 KiB 文件
   在带时延链路上，上限 1 = 1.17 s、2 = 1.16 s、4 = 0.56 s、8 = 0.38 s、16 = 0.21 s；
   上限 2 时两条传输**几乎同时结束**（166 ms / 207 ms），而各自都比单独执行时（96 ms）慢一倍，
@@ -1361,3 +1380,55 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       随后两次完整的 `just test` 都通过（458/458）。**没有定位**：它只在五次运行里出现过一次，
       而失败点在测试自己的脚手架里（服务端与客户端的时序），不在 e2e 目标之列。
       下次再出现时先记下同一个用例的连续失败次数与失败前的服务端日志，再决定要不要查。
+
+ 166. **`clippy::result_large_err` 只在"别的 crate"看那个错误类型时才报**（本会话实测，**已修**）：
+      `tests/known_hosts.rs:134` 与 `tests/pipelining.rs:771` 返回 `Result<_, SshError>`，曾被它命中
+      （`SshError` 正好 128 字节 = 阈值）。⚠️ **同一个 crate 内部怎么改都不出声**：在
+      `src/ssh/error.rs` 里加 `pub` / `pub(crate)` / 私有三种可见性的同签名函数，一个都不报 ——
+      用一个 20 行的同构 crate 双向复核过（本 crate 的错误类型不报，外来的报）。所以本仓库里能
+      触发它的只有 `tests/`，而那几条私有辅助函数一改形状，这条约束就静默消失。处置：把
+      `HostKeyChanged` 的 `recorded_in` 装箱（`RecordedIn` 48 字节，是那个变体最大的字段），
+      `SshError` 128 → 88 字节；并在 `src/ssh/error.rs` 加一条**直接量 `size_of`** 的用例
+      （阈值同样复核过：`size_of` 正好 128 即触发），使它不再依赖测试辅助函数的形状。
+
+ 167. **Windows 上 `VirtualLock` 的额度归整个进程共用，而 SQLCipher 的
+      `cipher_memory_security` 也在用它**（本会话实测，**已修** —— ADR-0009 / plan 0110）：
+      修掉 #166 之后 `just ready` 在本机继续往下走，停在 `test` —— `tests/export_contract.rs` 的
+      `an_encrypted_export_restores_into_another_directory` 在 `keys::private_key` 上报
+      `MemoryProtection(MemoryError(Os { code: 1453 }))`（`ERROR_WORKING_SET_QUOTA`）。
+      根因用可复现的读数钉住：
+      * **Windows 把“一个进程能锁多少页”限定为它的最小工作集**。一个 20 行的探针进程实测：
+        4 KiB 的页能锁 44 次、16 KiB 的 11 次、32 KiB 的 5 次 —— 三者都恰好 176 KiB；
+        调 `SetProcessWorkingSetSize(…, 64 MiB, …)` 之后同一份代码能锁 16334 页 ≈ 64 MiB。
+      * SQLCipher 的 `cipher_memory_security = ON`（D1）会给**每一次**分配调 `VirtualLock`
+        （`libsqlite3-sys` 的 `sqlcipher/sqlite3.c`：`sqlcipher_malloc → sqlcipher_mlock →
+        VirtualLock`，失败**只记日志**），于是它与我们自己的 `memsafe` 受保护页争用同一个 176 KiB 额度。
+      * 用例内插桩量到的余量（单位 = 一个 16 KiB 的私钥页）：进程起来 **11** →
+        `populated()` 之后 **3** → `restore` 之后 **4** → `open(restored)` 之后 **0**。
+        也就是说失败取决于那一刻 SQLCipher 手里握着多少 —— 同一次完整运行里
+        `the_export_file_is_itself_a_vault` 也红、单独执行又绿，`passphrase_contract` 那条同样
+        时红时绿：这是**竞态**，不是某一条用例写错了。
+      * ⚠️ 它同时是**产品**问题，不只是测试问题：App 里“库解锁着 + 读一把私钥”走的是同一条路。
+      处置取了两条候选里更保守的那一条，并按本仓库的规矩写成 **ADR-0009**（ADR-0002 已定案、
+      一字未改）：在 `src-tauri/src/store/protected.rs` 里，第一次构造受保护页之前把本进程的
+      最小 / 最大工作集抬到 16 MiB / 256 MiB —— 一处 Windows-only 的 `unsafe`（调
+      `SetProcessWorkingSetSize`），`Once` 保护，失败只记一条 `warn`。落地与读数在 plan 0110：
+      新用例 `windows_holds_many_protected_pages_at_once` 先红（`Os { code: 1453 }`）、
+      加实现之后转绿；`export_contract` / `passphrase_contract` = 18/18；
+      修好之后在同一条路径上量到 SQLCipher 与我们的页合起来只占约 288 KiB。
+      ⚠️ **CI 抓不到它**：完整门禁只在 Linux 执行，Windows 那一格只做类型检查 + E2E +
+      `just serial-unit`（`--lib`）—— 集成测试在 Windows 上一次都没执行过。
+
+ 168. **本机 Windows 上 `just test` 另有三条红**（本会话实测，**已修** —— plan 0111）：完整一遍
+      `cargo nextest run --workspace --no-fail-fast` = **422 条全部执行完、418 过、4 红**，
+      其中一条是 #167，另三条是 —— `socks5_forward::a_socks5_port_reaches_whatever_the_client_names`
+      （读 `REP` 时 `Os { code: 10054 }` = `ConnectionReset`：服务端本该先回那个字节，
+      而 Windows 上 RST 会丢掉已排队的字节）；`transfer_atomic::the_local_endpoint_lists_a_directory`
+      （判据拿 `std::fs::canonicalize` 的结果对照，而 Windows 的 `canonicalize` 给的是 `\\?\` verbatim 形态）；
+      `passphrase_contract::a_fresh_vault_only_accepts_the_passphrase_it_was_created_with`
+      （时红时绿，与 #167 同一个额度问题 —— 随 #167 一起转了绿）。后两条的修法分别是：
+      拒绝之后**把对端剩下的字节读干净再关**（接收缓冲非空的连接在 Windows 上关闭发的是 RST，
+      而 RST 会丢掉已经排队的 `REP`），以及把对照物改成“先规范化、再去前缀”（去掉 verbatim
+      前缀是 `ssh/local.rs` 的 `tidy` 刻意要做的，红的是对照物）。⚠️ 这三条都要一台 Windows
+      主机才能定位与验证：完整一遍 `cargo nextest run --workspace --no-fail-fast` 现在
+      **423 条全过**，而 Linux 门禁看不到它们。
