@@ -256,10 +256,13 @@ src-tauri/src/
   macOS 缺的分支，自研等于约两百行 `cfg` 加一处新 `unsafe`。
   ⚠️ 它的防护**有明确边界**（Windows 静止只读、macOS 没有 `dd`/`wf`、`/proc/self/mem` 仍读得到），
   所以**新增一个用途就要按 ADR-0002 D13 那张判据表重验一遍**，不得只说"已使用 memsafe"。
-- `unsafe`：默认禁止；**只有存储模块（`src-tauri/src/store/`）允许出现它**（把口令送进
-  SQLCipher 的 C API，ADR-0002 D4）—— 由 `scripts/ast-grep/rules/no-unsafe-outside-store.yml` 强制，
-  放宽它等于改架构。⚠️ 上一条（机密的防护交给 `memsafe`）正是这条能守住的**前提之一**：
-  没人在自己代码里手写平台 syscall。
+- `unsafe`：默认禁止；**只有存储模块（`src-tauri/src/store/`）允许出现它** —— 由
+  `scripts/ast-grep/rules/no-unsafe-outside-store.yml` 强制，放宽它等于改架构。目前两处：
+  **①** 把口令送进 SQLCipher 的 C API（ADR-0002 D4）；**②** Windows 上把进程的工作集抬到够
+  锁住受保护页（ADR-0009：`VirtualLock` 能锁多少页等于进程的最小工作集，而它与 SQLCipher 的
+  `cipher_memory_security` 共用这一份）。⚠️ 上一条（机密的防护交给 `memsafe`）仍是这条能守住的
+  **前提之一**：没有人自己写 `mlock` / `mprotect` / `VirtualLock` 的封装 —— ② 调的是**另一个**
+  API（`SetProcessWorkingSetSize`），不是那些封装的替身。
 - **`unsafe` 的注释按 Linux 内核的 Rust 规范写**（依据：内核
   `Documentation/rust/coding-guidelines.rst` —— 它把下面两件事分得很清楚，
   **不能互相替代、也不许只写其一**）：

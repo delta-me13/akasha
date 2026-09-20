@@ -8,7 +8,9 @@ note: |
   **整个存储模块**：`store.rs` 里那一处把口令送进 `sqlite3_key()`（ADR-0002 D4 —— 不允许用
   `PRAGMA key='…'` 文本形式，那会把口令写进 SQL 语句），它的契约测试为了钉住 SQLCipher
   的语义（空 key 会怎样、`rekey` 会不会换盐）也直接调 `sqlite3_key` / `sqlite3_rekey`。
-  除此之外的任何 `unsafe` 都不是"不得不用"。
+  同一条理由下的第二处是 `src-tauri/src/store/protected.rs`（ADR-0009：Windows 上
+  `SetProcessWorkingSetSize` 同样没有安全包装，而抬不抬工作集决定受保护页锁不锁得住 ——
+  `VirtualLock` 的额度就是进程的最小工作集）。除此之外的任何 `unsafe` 都不是"不得不用"。
 
   为什么需要这条**规则**而不是只靠 lint：workspace 的 `unsafe_code` 只能是 `deny`
   而不能是 `forbid`（rustc 规定 `forbid` 无法被 `#[allow]` 覆盖，那样 `AGENTS.md` §3.4
