@@ -18,9 +18,15 @@
 的放行点改为 `src-tauri/src/store/`，`no-ui-vocab-in-types` 收敛到 `src-tauri/src/**`。
 `src-tauri/Cargo.toml` 的注释按所有者要求删除。
 
-⚠️ **那次迁移漏看了一处**：Linux 的 `just ready` 编译 `tests/unlock_lifecycle.rs` 时报 `E0432`
-（`use akasha_lib::common;` —— `common` 是测试目标自己的模块，lib 里没有它）。2026-09-20 已修，
-Linux 侧 `just ready` 6/6 通过（问题 #169）。
+⚠️ **那次迁移漏看了两处**（2026-09-20 已修）：
+1. Linux 的 `just ready` 编译 `tests/unlock_lifecycle.rs` 时报 `E0432`（`use akasha_lib::common;`
+   —— `common` 是测试目标自己的模块，lib 里没有它）→ 问题 #169；
+2. plan 0109 第 6 步写着“`just test-e2e` 的目标清单一并改”，但 31 个迁进 `tests/` 的域集成测试
+   没有登记，`just test-e2e` 开头的 guard 对每一个都判红并 `exit 1`，E2E 用例一条都没执行
+   → 问题 #170。
+两处都在 `just ready` 的覆盖之外（前者被目标平台的 `cfg` 挡住，后者根本不在 `ready` 里），
+所以只有把两条路都真的执行一次才看得见。修后读数：Linux 侧 `just ready` **6/6**、
+`just test-e2e` 本机 **29 个目标 / 37 个用例全过**（见「已验证为通过」）。
 
 **读数**：`just check` / `just clippy`（`-D warnings`）/ `just lint`（clippy + ast-grep scan +
 ast-grep test，6 条规则）绿；成员集成测试 SSH **51/51**、store **114/114**、serial 两次配置通过。
@@ -499,7 +505,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | ↑ **判据：大量小文件的吞吐显著优于串行请求**（plan 0704） | ✅ `sftp_pipelining` E2E（真实 app + 测试进程内一台服务端，主机行指向一条**每方向延后 10 ms** 的链路，**5.39 s**）：左栏本机、右栏那台主机 → **串行**（12 个文件逐个发、逐个等结束）**1.553 s**、探针 `peak = 1` → **并发**（一口气发完）**561 ms**、`limit = 8`、`live = 0`、`peak = 5` —— **2.8×**；两批之后对端**真盘**上 12 个文件的字节逐一相同、目录里没有临时名，链路共搬了 208 段。⚠️ 耗时与 `peak` 每次不同（另一轮实测串行 1.509 s / 并发 389 ms / `peak 8`），断言只有"并发明显更快"这一条 |
 | ↑ **上限真的在，且排队与取消都在并发下正确**（plan 0704，crate 层 6 条） | ✅ `akasha-ssh` 新增 `pipelining` 6 条：7 个文件 / 上限 3 时目标端点**同时**只见到 3 个 `begin_write`（第 4 个连闸门都进不去）、放行后 7 个都落地而 `peak` 停在 3 / 排队中被取消的那条**一个端点都没碰过**（它的路径从未被 `open`）、进去的那条走收尾、目标目录空 / 5 个文件中间那个写失败 → 另外 4 个字节正确落地 / 两条并发传输写**同一个最终名**时目标目录里是**两个**不同的临时名（放行后最终名的字节等于两条源之一）/ 上传一个文件：服务端记到的 `open` 恰好一次（`/.probe.bin.part`）且临时名没出现在 `stat` 里（"由对端保证的唯一性"在协议层就是少一次往返） |
 | ↑ **分档数字**（plan 0704，crate 层） | 12 个 1 KiB 文件在带时延链路上：上限 1 = **1.168 s**、2 = 1.159 s、4 = 563 ms、8 = 377 ms、16 = 211 ms（每个文件 97.3 → 17.6 ms）。⚠️ **上限 2 与串行一样慢**，那一段没有定位（见「进行中 / 下一步」）；默认值因此不按饱和点取 |
-| ↑ **`just test-e2e` 全部通过** | 退出码 **0**：第一段（默认收托盘）**27 个目标 / 32 个用例**（`bitwarden_login` **27.13 s**、`bw_import` **16.06 s** —— 见下面那条：本机 `host` 轴上的 `bw` 是发行版的 npm 包，报一次错要 13 秒）+ 第二段 `exit_residue` **1 个用例** = **27 个目标 / 32 个用例**、0 失败；第三段（可搬迁性）`portable` **3 passed**。⚠️ `E2E_NO_APP` 的 `session_watchdog` 不在第一段的目标清单里（另有入口），`E2E_SELF_APP` 的 `portable` 由第三段执行、不计在上面那个数里 |
+| ↑ **`just test-e2e` 全部通过**（2026-09-20 本机重新执行） | 退出码 **0**：第一段（默认收托盘）**28 个目标 / 33 个用例** + 第二段 `exit_residue` **1 个用例** + 第三段（可搬迁性）`portable` **3 个用例** = **29 个目标 / 37 个用例**、0 失败。三处跳过都写明了原因：`smoke` 的截图（Wayland 会话拿不到 Victauri 认的原生句柄）、`tab_close` 的丢上下文（当前不是 WebGL 渲染器）、`tunnel_reconnect` 的托盘断言（本机建不起托盘，probe 报 `ready = false` —— 走的正是 §3.3 那条“托盘起不来就降级”的路径）。⚠️ `E2E_NO_APP` 的成员不在第一段的目标清单里（`just test` 是它们的入口），`E2E_SELF_APP` 的 `portable` 由第三段执行 |
 | ↑ **判据：对着真实上游下载一次**（一次性探针，plan 0902；读完数即删） | ✅ `cargo test -p akasha-bw --test probe_real_upstream -- --nocapture`（**24.63 s**）：解析到上游最新 `cli-v2026.8.0` → 真的从 GitHub 拉下资产 → 落在 `<数据目录>/bitwarden/bw-2026.8.0/bw`、**141819984 字节** → crate 报的 SHA-256 是 `d8bbc213…b1b1704`，与 `sha256sum` 直接算那个 zip 的**逐字符相同** → `Cli::version()` 报 `2026.8.0`、`Cli::variant()` 报 `Oss`、`Cli::status()` 报 `Unauthenticated`。⚠️ 探针里那次**直接执行**（不设 `BITWARDENCLI_APPDATA_DIR`）输出为空：这个沙箱的家目录只读，`bw` 建不出它自己的 `data.json` —— 这正是"`managed` 那一轴有必要"的一个旁证 |
 | ↑ **一个把 IPC 占住 27 秒的问题（plan 0902 的实现期发现）** | ⚠️ 本机 `host` 轴上**确实有一个 `bw`**（发行版的 `bitwarden-cli` 把 `/usr/bin/bw` 指向 npm 包），而它在这个只读家目录里要 **13 秒**才报错。第一版每个快照都起三次进程（版本 / 帮助 / 状态），于是 `bw_cli_settings` 撞上 Victauri 的 30 秒 eval 上限。处置两条：**探测结果按"解析出来的程序路径"缓存**（版本与变体对一个给定的程序文件是不变的），并且**连 `--version` 都答不出来的那一份不再往下问状态**（那不是"状态读不出来"，是"这一份 `bw` 用不了"）。⇒ 正常机器上每个快照不再起进程；本机这个坏 `bw` 上每次切到它也只要一次 13 秒 |
 | ↑ **E2E 目标之间会互相影响**（plan 0903 的实现期发现） | 全部目标在**同一个 app 进程**里执行，所以上一个目标留下的界面状态也留着：`bitwarden_login` 结束时 Bitwarden 面板是**开着**的，而 `bw_import` 原先直接点 `.tab-new-bw`（那是个开关）→ 面板被关闭 → 下一步的判据等到超时。单独执行那一条时全绿，**全量执行才红**。处置：用 `support::open_bitwarden_panel`（它先关再开）。⚠️ 与 `ssh_config_import` 头部记的"名字撞上内存凭据缓存"是同一类问题：新加目标时要问一句"上一个目标留下的是什么状态" |
@@ -1449,3 +1455,13 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       由此的教训：**平台门控的代码只有那一个平台的作业能证伪**；按旧名重写之后，要在会编译该
       分支的目标上执行一次 `cargo check --workspace --all-targets`。处置：改回 `crate::common`，
       Linux 侧 `just ready` 6/6 通过（修复前同一条命令报 `E0432`）。
+
+ 170. **归属清单不跟着文件迁移走，E2E 会在第一步判红**（本会话实测，**已修**）：
+      plan 0109 第 6 步要求迁移成员的 `tests/*.rs` 时"`just test-e2e` 的目标清单一并改"，
+      实际只改了 `just test` 那一侧 —— 31 个迁进来的域集成测试（store / ssh / sftp / pty / bw）
+      既不在 `E2E_TARGETS`，也不在 `E2E_NO_APP`，于是 `just test-e2e` 开头的 guard
+      （问题 #36：生成物无人执行）对每一个都报错并 `exit 1`：**一条 E2E 用例都没执行**。
+      ⚠️ 那个 guard 只看 `tests/*.rs`，与平台无关 —— 三个平台的 E2E 作业都会停在这里，
+      而它不在 `just ready` 里，所以门禁全绿也发现不了：判据只能来自真的执行一次
+      `just test-e2e`。处置：把 31 个目标按字典序登记进 `E2E_NO_APP`（它们的入口本来就是
+      `just test` 的 nextest 全量运行），并把"迁移这类文件必须同步登记"写进那段注释。

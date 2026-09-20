@@ -94,13 +94,19 @@ E2E_TARGETS := "smoke integration session_channel terminal_render tab_close wind
 # 需要 `close_behavior=exit` 的目标：**只能**在第二段跑（见上）。
 E2E_TARGETS_EXIT := "exit_residue"
 
-# **不需要真 app** 的集成测试（显式清单，理由写在各自的文件头）。
+# **不需要真 app** 的集成测试（显式清单，两类的归属见下）。
 #
 # 为什么要有这个清单：下面的 guard 会把"tests/ 里没接进 `test-e2e` 的目标"判红
-# （问题 #36：生成了但没人跑），但有些集成测试本来就**不碰 app** —— 例如
-# `session_watchdog`：它只把 app 二进制以看门狗身份再跑一次（没有窗口、没有 IPC、
-# 不碰 Victauri），进 E2E 只会白起一套 Vite + app，而 `just test` 才是它该在的地方。
-E2E_NO_APP := "session_watchdog"
+# （问题 #36：生成了但没人跑），但有些集成测试本来就**不碰 app**，进 E2E 只会白起一套
+# Vite + app，而 `just test`（nextest 覆盖 workspace 全部目标）才是它该在的地方：
+#   * 只把 app 二进制当子进程用的：`session_watchdog`（以看门狗身份再跑一次那个
+#     二进制，没有窗口、没有 IPC、不碰 Victauri）；
+#   * 域模块自己的集成测试：plan 0109 把 6 个成员的 `tests/*.rs` 迁进 `src-tauri/tests/`
+#     之后它们与 app 级 E2E 同住一个目录（各自起进程内的服务端、只调域函数）。
+# ⚠️ **迁移这一类文件时必须同步登记**：漏一个，guard 会让 `just test-e2e` 连第一段都
+# 执行不到（问题 #170 —— 迁移时清单没跟着改，E2E 作业在三个平台上都停在 guard 上）。
+# 本清单的成员不需要排序，故按字典序排列，便于与 `ls tests/*.rs` 对账。
+E2E_NO_APP := "bw_import_pool cancellable_connect connect_auth connection_count credential_protection enumeration export_contract fake_cli format_migration host_to_host hosts_import jump_host key_page_protection known_hosts known_hosts_roundtrip local_forward no_absolute_paths passphrase_contract passphrase_on_disk pipelining pools_roundtrip pty_roundtrip remote_forward schema_contract session_protection session_watchdog sftp_session socks5_forward sqlcipher_contract sshconfig_parse transfer_atomic unlock_lifecycle"
 
 # **自己起 app** 的集成测试（同样只登记，不放进 `test-e2e` 的目标清单）。
 #
