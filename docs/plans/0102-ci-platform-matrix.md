@@ -33,7 +33,7 @@ just ready                                      # 本地门禁必须先是绿的
    在 workflow 里另写 cargo 命令，两处必然分叉，而分叉的方向总是"CI 比本地松"。
 2. **Windows / macOS 只做类型检查**（`checks-macos` / `checks-windows` 各一条 job）。
    走 crate 级 `check` 的转发配方。
-3. **E2E 按平台各自成 job**（`e2e-linux` / `e2e-macos` / `e2e-windows`），每格的 `needs` 指向
+3. **E2E 按平台各自成 job**（`e2e-linux` / `e2e-macos` / `e2e-windows`），每条 E2E 的 `needs` 指向
    同平台的检查 job：检查与 E2E 在平台内串行，一个平台的检查失败不掩盖另一个平台的 E2E 结论。
 4. Linux 装 apt 依赖（含 `libayatana-appindicator3-dev` 与 `libxdo-dev`，问题 #10）后执行
    `just ready`；完整门禁只执行一次，避免矩阵把时间乘三。依赖列表只有 `env.APT_DEPS` 一处。
@@ -46,7 +46,9 @@ just ready                                      # 本地门禁必须先是绿的
 7. **把 GitHub 专属的省钱 / 提速开关用上**：`concurrency` + `cancel-in-progress` 取消同一分支
    上被取代的运行（`main` 除外 —— 合并后的结论不应被取消）、`permissions: contents: read`、
    `defaults.run.shell: bash`（与本地配方的 bash shell 对齐，Windows 上不再逐步写 `shell:`）。
-8. 缓存 `~/.cargo` 与 `target`，**按平台分键**（`Swatinem/rust-cache` 的键自动含 OS 与 rustc 版本）。
+8. 缓存 `~/.cargo` 与 `target`（键含 OS、架构、rustc 版本与锁文件哈希）。Linux 的检查与 E2E 共用一个
+   `shared-key`：检查侧执行完整门禁，其构建覆盖 E2E 所需；macOS / Windows 按 job 分键，那里的检查只做
+   `cargo check`，而 E2E 自己那份整构建在缓存里更值钱。
 9. E2E 用 `cargo metadata` 取产物路径、在 `xvfb-run` 下启动 app、执行
    `victauri-test` 与 `--test integration`，并**用 `if: always()` 回收后台进程**。
 10. Windows / macOS 若在 `cargo check` 阶段因 Tauri 的构建脚本失败：记录到「实施记录」并**单独决策**，
@@ -64,11 +66,9 @@ just ready                                      # 本地门禁必须先是绿的
 ```bash
 # 1. YAML 能解析，job 结构符合预期（用临时的 js-yaml，不进仓库）
 node -e 'const y=require("/tmp/yaml"),fs=require("fs");const w=y.load(fs.readFileSync(".github/workflows/ci.yml","utf8"));for(const [k,v] of Object.entries(w.jobs))console.log(k, JSON.stringify(v["runs-on"]), JSON.stringify(v.if??null), JSON.stringify(v.needs??null))'
-# 期望：checks-linux / ubuntu-latest / null / null
-#       checks-other / "${{ matrix.os }}" / null / null
-#       e2e / ubuntu-latest / null / "checks-linux"
+# 期望六条：checks-* 的 needs 为 null；e2e-* 的 needs 指向同平台的 checks-*
 
-# 2. 三平台齐全，且非 Linux 那条只做类型检查
+# 2. 三平台齐全
 grep -cE 'ubuntu-latest|windows-latest|macos-latest' .github/workflows/ci.yml   # ≥ 3
 
 # 3. GitHub 专属开关在位
@@ -103,7 +103,6 @@ CI 配置改动只影响门禁，不影响产物与用户数据。
    `checks-linux`（`ubuntu-latest`）、`checks-other`（`${{ matrix.os }}`，矩阵 windows/macos）、
    `e2e`（`needs: checks-linux`）
 2. `just ready` → 退出码 0
-3. 四个 just 资产 URL 全部 **HTTP 200**（Linux musl / macOS aarch64 / macOS x86_64 / Windows msvc）
 
 ### 与初稿不同的三处（都有理由）
 
@@ -189,12 +188,13 @@ E2E 格子没能把 app 起来（那格的日志一个字节都没有，问题 #
 前一次不结束就一直 `pending`（问题 #161，处置是 `workflow_dispatch` 与 `docs/just.md` §8 的
 耗时表）。
 
-仍只能在 runner 上读的：下一次运行的三格结论；缓存是否真的命中；E2E 在三平台各自能否走完。
-阶段 0 的「CI 通过」条目（`ROADMAP.md` 里标 `[~]`）依赖的是同一条结论。
+仍只能在 runner 上读的：下一次运行的六条 job 结论（含缓存是否真的命中、E2E 在三平台各自能否走完），阶段 0 的「CI 通过」条目（`ROADMAP.md` 里标 `[~]`）依赖的就是它。
 
 ### 2026-09-20：E2E 按平台各自串行；ast-grep 并入 `install-action` 清单
 
 `checks-other` 拆成 `checks-macos` / `checks-windows`，三个 E2E job 各自 `needs` 同平台的检查 job；
-注释按「准确描述、不含细节与缘由」重写。ast-grep 从 npm 全局包并入同一份 `install-action` 清单
-（`ast-grep@0.45.3`；本机实测回退路径取到 GitHub Releases 的预编译产物，SHA256 / attestation 一层只覆盖清单内的工具）。
-`js-yaml` 解析通过、`just ready` 退出码 0 —— 最终判据仍是 runner 上的实际运行。
+注释按「准确描述、不含细节与缘由」重写。ast-grep 从 npm 全局包并入同一份 `install-action` 清单（`ast-grep@0.45.3`；
+本机实测回退路径取到 GitHub Releases 的预编译产物，SHA256 / attestation 一层只覆盖清单内的工具）。
+三个 E2E job 去掉单格矩阵（`runs-on` 直写平台标签）。Linux 的检查与 E2E 共用一个 rust-cache `shared-key`
+（检查侧执行完整门禁，其构建覆盖 E2E 所需）；macOS / Windows 按 job 分键 —— 那里的检查只做 `cargo check`，
+E2E 自己那份整构建更值钱。`js-yaml` 解析通过、`just ready` 退出码 0 —— 最终判据仍是 runner 上的实际运行。

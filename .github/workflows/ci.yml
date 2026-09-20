@@ -55,9 +55,11 @@ jobs:
           components: clippy, rustfmt
 
       # 缓存 ~/.cargo 与 target；作用范围是本仓库的 workspace 根。
+      # 共用键：同平台的 E2E 作业还原同一份缓存。
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
         with:
           workspaces: src-tauri
+          shared-key: akasha-linux
 
       # 预编译产物优先，无可用产物时回退源码构建。
       - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
@@ -120,13 +122,8 @@ jobs:
   e2e-linux:
     name: E2E（Linux）
     needs: checks-linux
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     timeout-minutes: 60
-    strategy:
-      # 矩阵格之间不因彼此失败而取消。
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -140,9 +137,12 @@ jobs:
         with:
           toolchain: stable
 
+      # 与同平台的检查作业共用缓存键；本作业只还原。
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
         with:
           workspaces: src-tauri
+          shared-key: akasha-linux
+          save-if: false
 
       - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
         with:
@@ -174,13 +174,8 @@ jobs:
   e2e-macos:
     name: E2E（macOS）
     needs: checks-macos
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     timeout-minutes: 60
-    strategy:
-      # 矩阵格之间不因彼此失败而取消。
-      fail-fast: false
-      matrix:
-        os: [macos-latest]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -221,13 +216,8 @@ jobs:
   e2e-windows:
     name: E2E（Windows）
     needs: checks-windows
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     timeout-minutes: 60
-    strategy:
-      # 矩阵格之间不因彼此失败而取消。
-      fail-fast: false
-      matrix:
-        os: [windows-latest]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
