@@ -85,6 +85,14 @@ zbus = "5.9"
 
 rustix = { version = "1", features = ["process"] }
 
+[target.'cfg(windows)'.dependencies]
+
+# 读 HKLM 下的 PnP 设备项（plan 0803）：上游在 Windows 上把每个端口都报成"未知"，
+# 而描述只有注册表给得出。用它的**安全包装**而不是手写 extern —— `unsafe` 只许出现在
+# 存储模块（AGENTS.md §3.4，由 no-unsafe-outside-store 强制）。
+# 它已经在这条依赖树里（tauri-build → embed-resource），所以版本跟随上游即可。
+winreg = "0.55"
+
 [features]
 
 default = ["libudev"]

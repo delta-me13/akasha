@@ -231,6 +231,9 @@
 - [x] 端口枚举与连接参数（波特率/数据位/停止位/校验/流控）
       验收：枚举在本机列出真实端口；参数错误时给出可读报错
       → [plan 0802](./docs/plans/archive/0802-serial-enumeration-params.md)
+- [ ] **Windows 上的枚举带得出描述**（条件编译；上游在那边把一切都报成"未知"）
+      验收：Windows 上枚举出来的端口各自带得出描述；没有端口时给出空表而不是错误
+      → [plan 0803](./docs/plans/0803-windows-serial-tests.md)
 
 ---
 

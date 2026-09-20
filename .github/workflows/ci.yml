@@ -173,6 +173,12 @@ jobs:
 
       - uses: ./.github/actions/windows-perl
 
+      # 串口域**原生平台**上的单元读数（plan 0803）：那三条串口 E2E 在 Windows 上全部跳过
+      # （ConPTY 没有设备节点），这条配方是它们之外唯一在那边真的会执行的串口测试。
+      # 它只编 akasha 这一个包，因此不需要 app、不需要串口设备，几秒钟就有读数。
+      - name: 串口单元测试（原生平台）
+        run: just serial-unit
+
       - name: E2E（Linux：xvfb 提供 X11）
         if: runner.os == 'Linux'
         run: xvfb-run -a just test-e2e

@@ -126,6 +126,10 @@ libudev-check:
 serial-check:
     just --justfile {{SRC}}/justfile serial-check
 
+# serial 域的**平台面**单元测试（不需要 app、不需要设备，三平台可执行）
+serial-unit:
+    just --justfile {{SRC}}/justfile serial-unit
+
 # 吞吐基线（criterion），用于改动前后对比，不是门禁
 bench:
     just --justfile {{SRC}}/justfile bench

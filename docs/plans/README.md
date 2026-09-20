@@ -154,6 +154,7 @@
 |---|---|---|---|---|
 | 0801 | `src-tauri/crates/akasha-serial`：`libudev` 走 Linux-only feature | 已完成（2026-09-15：串口 `Transport` 落地；`just libudev-check` 按目标核对依赖图并用两条负例验过；13 条用例全过；`just ready` 6/6。⚠️ Windows 目标的原生编译待问题 #149） | plan 0105（`Transport` 已定形态） | [0801](./archive/0801-serial-crate-libudev.md) |
 | 0802 | 端口枚举与连接参数 | 已完成（2026-09-15：`ports()` 列本机 32 条且顺序稳定 / 无重复；参数在真 tty 上回读、越界取值报字段与取值；两条枚举实现各执行一遍 —— `just serial-check`；`just ready` 6/6。⚠️ 数据位 / 校验位在 PTY 上被归一化，真机证据见「待验证」） | plan 0801（已完成） | [0802](./archive/0802-serial-enumeration-params.md) |
+| 0803 | Windows 上的串口枚举与它的证据（条件编译） | 进行中 | plan 0801 / 0802（已完成）· plan 0108（Windows 目标的类型检查） | [0803](./0803-windows-serial-tests.md) |
 
 ### 阶段 9 — Bitwarden 导入
 

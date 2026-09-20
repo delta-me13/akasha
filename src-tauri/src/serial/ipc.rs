@@ -170,8 +170,11 @@ pub struct SerialPort {
 /// 端口的硬件类别过 IPC 的形状。理由同 [`SerialParity`]：`serial` 不带 serde / specta，
 /// 两侧各认自己的类型，映射写成穷尽 `match`。
 ///
-/// `Usb` 的五项**都可能缺**（设备自己没报、udev 的硬件库也没有）：缺了就是 `None`，
-/// 不填假值（`AGENTS.md` §3.4 的"字段值不得虚构"）。
+/// `Usb` 的五项与 `Windows` 的两项**都可能缺**（设备自己没报、udev 的硬件库也没有、
+/// 注册表里那个值不存在）：缺了就是 `None`，不填假值（`AGENTS.md` §3.4 的"字段值不得虚构"）。
+///
+/// ⚠️ `Windows` 这一档**只在 Windows 上产生**（plan 0803）：取值只来自那边的注册表。
+/// 其余平台上它也还在类型里 —— 前端因此只有一套形状，不必按平台分支。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub enum SerialPortKind {
@@ -192,6 +195,23 @@ pub enum SerialPortKind {
     Pci,
     /// 蓝牙串口（`rfcomm`）。
     Bluetooth,
+    /// **Windows 专有的一档**：注册表的 PnP 设备项给出的描述（plan 0803）。
+    ///
+    /// 上游在 Windows 上把一切都报成 `Unknown`（见 `serial::enumerate` 的模块文档），
+    /// 所以那边的端口只有走这一档才带得出描述。两项都可能缺。
+    Windows {
+        /// 设备描述（例如 `USB-SERIAL CH340 (COM3)`）。
+        ///
+        /// ⚠️ **必须逐字段写 `rename`**：枚举上的 `rename_all` 只改**变体名**，
+        /// 不改结构体变体里的字段名（与 `SerialEntry` 那种普通结构体不同）。
+        /// 漏掉它，生成物里就是 `friendly_name`，而前端读的是 `friendlyName` ——
+        /// 类型都对得上，界面上却一直显示不出来。
+        #[serde(rename = "friendlyName")]
+        friendly_name: Option<String>,
+        /// 硬件 id（例如 `USB\\VID_1A86&PID_7523`）。
+        #[serde(rename = "hardwareId")]
+        hardware_id: Option<String>,
+    },
     /// 判定不出来。
     Unknown,
 }
@@ -211,6 +231,13 @@ impl From<PortKind> for SerialPortKind {
                 serial,
                 manufacturer,
                 product,
+            },
+            PortKind::Windows {
+                friendly_name,
+                hardware_id,
+            } => Self::Windows {
+                friendly_name,
+                hardware_id,
             },
             PortKind::Pci => Self::Pci,
             PortKind::Bluetooth => Self::Bluetooth,
@@ -514,7 +541,7 @@ mod tests {
 
     #[test]
     fn every_port_kind_maps_to_an_ipc_kind() {
-        // 四档都要有去处，`Usb` 的五项一个不丢（装反了就是 vid / pid 互换）。
+        // 五档都要有去处，`Usb` 的五项一个不丢（装反了就是 vid / pid 互换）。
         let usb = PortInfo {
             path: "/dev/ttyUSB0".to_owned(),
             kind: PortKind::Usb {
@@ -554,6 +581,55 @@ mod tests {
             });
             assert_eq!(mapped.kind, expected);
         }
+    }
+
+    #[test]
+    fn a_windows_port_carries_its_description_across_the_boundary() {
+        // 这一档的全部意义就是那两个字符串（plan 0803）：装反或者丢掉一项，
+        // 界面上就会出现一台“看得见名字、看不见是什么”的设备 —— 而那正是上游在
+        // Windows 上的形态，本 plan 要消掉的正是它。
+        //
+        // ⚠️ 这一条在**任何平台**上都跑得起来：构造一个值不需要 Windows，
+        // 只有**产生**它才需要（`serial::enumerate` 的注册表那条路）。
+        // 所以映射这一半的证据是全平台共用的，跨平台的那一半由 E2E `windows_ports` 给。
+        // 硬件 id 里的分隔符就是两个反斜杠（注册表里的形态），逐字符写出来。
+        // ⚠️ 名字不能与下面解构出来的那一栏同名：同名会让断言引用到解构的那一个，
+        // 于是变成一条"装反了也通过"的假断言（这一处踩过）。
+        let expected_hardware_id = "USB\\VID_1A86&PID_7523".to_owned();
+        let mapped = SerialPort::from(PortInfo {
+            path: "COM7".to_owned(),
+            kind: PortKind::Windows {
+                friendly_name: Some("USB-SERIAL CH340 (COM7)".to_owned()),
+                hardware_id: Some(expected_hardware_id.clone()),
+            },
+        });
+        assert_eq!(mapped.path, "COM7");
+        match mapped.kind {
+            SerialPortKind::Windows {
+                friendly_name,
+                hardware_id,
+            } => {
+                assert_eq!(friendly_name.as_deref(), Some("USB-SERIAL CH340 (COM7)"));
+                assert_eq!(hardware_id.as_deref(), Some(expected_hardware_id.as_str()));
+            }
+            other => panic!("Windows 端口映射成了别的一档：{other:?}"),
+        }
+
+        // 两项都缺时留在原地：不填空串顶替（`AGENTS.md` §3.4）。
+        let mapped = SerialPort::from(PortInfo {
+            path: "COM8".to_owned(),
+            kind: PortKind::Windows {
+                friendly_name: None,
+                hardware_id: None,
+            },
+        });
+        assert_eq!(
+            mapped.kind,
+            SerialPortKind::Windows {
+                friendly_name: None,
+                hardware_id: None,
+            }
+        );
     }
 
     #[test]

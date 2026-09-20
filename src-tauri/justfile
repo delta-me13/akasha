@@ -72,6 +72,9 @@ test:
 # 最后一条（plan 0704）起**一台**服务端，但主机行指向它前面的**一条带时延的链路**
 # （`slow_link`，每段延后 10 ms）：它要量的是"并发比串行快多少"，而本机回环的往返太小，
 # 不放大就量不出差距。它同样不与前面的目标共享主机行。
+# `windows_ports`（plan 0803）是**唯一在 Windows 上真的会执行**的串口目标：另三条都要一对 PTY
+# 当假设备，而 ConPTY 没有设备节点（`fake_serial_skip_reason`）。它不造设备、也不开会话，
+# 只验“这台机器上枚举出来的端口带得出描述” —— 没有端口时显式跳过并写明原因。
 # `serial_session`（plan 1101）、`serial_ports_ui`（plan 1102）与 `serial_device_gone`（plan 1103）
 # **都只在串口上做事**：各自造一对 PTY、把**从端的路径**当设备（本机没有串口硬件 —— 问题 #150）。
 # 因此它们既不占端口、也不与前面任何目标共享行。⚠️ 三者**不共用那一对 PTY**：设备是独占打开的，
@@ -86,7 +89,7 @@ test:
 #   * 第一段（本清单）：没有配置文件 = 默认"收托盘" → `window_close` 有判据；
 #   * 第二段（`E2E_TARGETS_EXIT`）：写 `close_behavior=exit` 再起一次 app → `exit_residue`
 #     拿到的就是"关窗即退出"这条**可移植**的刺激（不需要托盘宿主，CI 上照样成立）。
-E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status vault_unlock ssh_session ssh_jump ssh_config_import tunnel_state tunnel_local_forward tunnel_dynamic_forward tunnel_remote_forward tunnel_reconnect tunnel_teardown sftp_dual_pane sftp_transfer_atomic sftp_host_to_host sftp_pipelining serial_session serial_ports_ui serial_device_gone bitwarden_login bw_import"
+E2E_TARGETS := "smoke integration session_channel terminal_render tab_close window_close single_instance vault_status vault_unlock ssh_session ssh_jump ssh_config_import tunnel_state tunnel_local_forward tunnel_dynamic_forward tunnel_remote_forward tunnel_reconnect tunnel_teardown sftp_dual_pane sftp_transfer_atomic sftp_host_to_host sftp_pipelining windows_ports serial_session serial_ports_ui serial_device_gone bitwarden_login bw_import"
 
 # 需要 `close_behavior=exit` 的目标：**只能**在第二段跑（见上）。
 E2E_TARGETS_EXIT := "exit_residue"
@@ -401,6 +404,28 @@ libudev-check:
 serial-check:
     cargo nextest run --test enumeration --test pty_roundtrip
     cargo nextest run --test enumeration --test pty_roundtrip --no-default-features
+
+# serial 的**平台面**单元测试（plan 0803）。
+#
+# 为什么单列：这里跑的是 `serial` 域自己的用例 —— 端口类别的映射、枚举的排序与去重、
+# 参数的取值域。它们**不需要 app、不需要设备**，所以应当在**每个平台的原生构建**上都执行一次；
+# 而 `just test`（= `cargo nextest run --workspace`）能跑它们，前提是整个 workspace
+# 编得出来 —— 那需要 OpenSSL 的 C 工具链。
+#
+# 这条配方把它拆出来：`--lib` 只构建 `akasha` 这一个包（成员模块是它的模块，见 ADR-0008），
+# 因此**不需要 app、不需要串口设备**，几秒钟就有读数。
+# CI 的 E2E 格子用它给 Windows 上的串口代码留下一条**真的执行过**的读数 ——
+# 那三条串口 E2E 在 Windows 上全部跳过（ConPTY 没有设备节点）。
+#
+# ⚠️ **它并不绕开 vendored OpenSSL**：`store` 是 `akasha` 的模块，`rusqlite` 就在这个包的
+# 依赖里（ADR-0008 之后没有独立的 serial crate 可以只依赖 `serialport`）。所以这条配方在
+# 冷缓存下仍需要原生 perl —— 与构建这个包的任何其它命令一样（问题 #156）。
+#
+# ⚠️ 用 `cargo test` 而不是 nextest：这条配方要在**三平台**的 E2E 格子里执行，
+# 而那个 job 只装 `just`（nextest 装在 Linux 的完整门禁那一格）。为一个聚焦子集
+# 给三个平台各加一个工具不划算，`cargo test` 的过滤语义在这里够用。
+serial-unit:
+    cargo test --lib -p akasha serial::
 
 # ── 性能基线 ────────────────────────────────────────────────────────────────
 

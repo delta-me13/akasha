@@ -830,12 +830,15 @@ export type SerialPort = {
  *  端口的硬件类别过 IPC 的形状。理由同 [`SerialParity`]：`serial` 不带 serde / specta，
  *  两侧各认自己的类型，映射写成穷尽 `match`。
  * 
- *  `Usb` 的五项**都可能缺**（设备自己没报、udev 的硬件库也没有）：缺了就是 `None`，
- *  不填假值（`AGENTS.md` §3.4 的"字段值不得虚构"）。
+ *  `Usb` 的五项与 `Windows` 的两项**都可能缺**（设备自己没报、udev 的硬件库也没有、
+ *  注册表里那个值不存在）：缺了就是 `None`，不填假值（`AGENTS.md` §3.4 的"字段值不得虚构"）。
+ * 
+ *  ⚠️ `Windows` 这一档**只在 Windows 上产生**（plan 0803）：取值只来自那边的注册表。
+ *  其余平台上它也还在类型里 —— 前端因此只有一套形状，不必按平台分支。
  */
 export type SerialPortKind = 
 /**  USB 转串口。 */
-{ usb: {
+({ usb: {
 	/**  厂商号。 */
 	vid: number,
 	/**  产品号。 */
@@ -846,11 +849,30 @@ export type SerialPortKind =
 	manufacturer: string | null,
 	/**  产品名。 */
 	product: string | null,
-} } | 
+} }) & { windows?: never } | 
 /**  主板上的 PCI 串口。 */
 "pci" | 
 /**  蓝牙串口（`rfcomm`）。 */
 "bluetooth" | 
+/**
+ *  **Windows 专有的一档**：注册表的 PnP 设备项给出的描述（plan 0803）。
+ * 
+ *  上游在 Windows 上把一切都报成 `Unknown`（见 `serial::enumerate` 的模块文档），
+ *  所以那边的端口只有走这一档才带得出描述。两项都可能缺。
+ */
+({ windows: {
+	/**
+	 *  设备描述（例如 `USB-SERIAL CH340 (COM3)`）。
+	 * 
+	 *  ⚠️ **必须逐字段写 `rename`**：枚举上的 `rename_all` 只改**变体名**，
+	 *  不改结构体变体里的字段名（与 `SerialEntry` 那种普通结构体不同）。
+	 *  漏掉它，生成物里就是 `friendly_name`，而前端读的是 `friendlyName` ——
+	 *  类型都对得上，界面上却一直显示不出来。
+	 */
+	friendlyName: string | null,
+	/**  硬件 id（例如 `USB\\VID_1A86&PID_7523`）。 */
+	hardwareId: string | null,
+} }) & { usb?: never } | 
 /**  判定不出来。 */
 "unknown";
 

@@ -134,11 +134,21 @@ function hex(value: number): string {
   return value.toString(16).padStart(4, "0");
 }
 
-/** 一条端口的类别说成人话。Usb 那五项**可能缺**（缺了就不显示那一截，不留一句假话）。 */
+/** 一条端口的类别说成人话。两档的描述字段**都可能缺**（缺了就不显示那一截，不留一句假话）。 */
 function describeKind(kind: SerialPort["kind"]): string {
-  if (kind === "pci") return "PCI 串口";
-  if (kind === "bluetooth") return "蓝牙串口";
-  if (kind === "unknown") return "类别未知";
+  // ⚠️ 这些不是字符串标签，而是**结构体变体**（生成物里是 `{ usb: {...} } & { windows?: never }`
+  // 这类联合）—— 所以先用属性存在与否收窄，不能在 `kind === "pci"` 上比。
+  if (typeof kind === "string") {
+    if (kind === "pci") return "PCI 串口";
+    if (kind === "bluetooth") return "蓝牙串口";
+    return "类别未知";
+  }
+  if (kind.windows) {
+    // Windows 专有的一档（plan 0803）：上游在那边报不出 USB / PCI，描述只有注册表给得出。
+    // 两项都可能缺 —— 只显示读到的那些，读不到的就不显示。
+    const { friendlyName, hardwareId } = kind.windows;
+    return [friendlyName, hardwareId].filter((part) => !!part).join(" · ") || "Windows 串口";
+  }
   // 剩下这一支就是 `usb`：TS 的收窄让"契约里加一档"在这里变成编译错误。
   const { vid, pid, manufacturer, product } = kind.usb;
   const name = [manufacturer, product].filter((part) => !!part).join(" ") || "USB 串口";
