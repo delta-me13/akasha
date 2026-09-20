@@ -40,7 +40,7 @@ mod linux {
 
     use akasha_lib::store::{Passphrase, create, open, vault_path};
 
-    use akasha_lib::common;
+    use crate::common;
 
     /// 每次从段里读多大一块。**块之间留 `needle.len() - 1` 字节的重叠**，
     /// 所以跨块边界的命中不会被漏掉，也不会被数两遍（完整命中装不进那点重叠里）。

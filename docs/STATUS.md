@@ -4,7 +4,7 @@
 > 会话结束前必须更新 —— 下一个会话（或另一个 agent）只读这个文件 + 相关 plan 就能接手，
 > 不需要回溯对话历史。规则见 [`docs/README.md`](./README.md)。
 
-**最后更新**：2026-09-19
+**最后更新**：2026-09-20
 
 ## 摘要
 
@@ -17,6 +17,10 @@
 `src-tauri/src/**`，`ignores:` 列出允许碰 Tauri 的 app 侧文件），`no-unsafe-outside-store`
 的放行点改为 `src-tauri/src/store/`，`no-ui-vocab-in-types` 收敛到 `src-tauri/src/**`。
 `src-tauri/Cargo.toml` 的注释按所有者要求删除。
+
+⚠️ **那次迁移漏看了一处**：Linux 的 `just ready` 编译 `tests/unlock_lifecycle.rs` 时报 `E0432`
+（`use akasha_lib::common;` —— `common` 是测试目标自己的模块，lib 里没有它）。2026-09-20 已修，
+Linux 侧 `just ready` 6/6 通过（问题 #169）。
 
 **读数**：`just check` / `just clippy`（`-D warnings`）/ `just lint`（clippy + ast-grep scan +
 ast-grep test，6 条规则）绿；成员集成测试 SSH **51/51**、store **114/114**、serial 两次配置通过。
@@ -1433,3 +1437,15 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       前缀是 `ssh/local.rs` 的 `tidy` 刻意要做的，红的是对照物）。⚠️ 这三条都要一台 Windows
       主机才能定位与验证：完整一遍 `cargo nextest run --workspace --no-fail-fast` 现在
       **423 条全过**，而 Linux 门禁看不到它们。
+
+ 169. **按 crate 名的重写会连带改掉测试目标自己的本地模块**（本会话实测，**已修**）：
+      plan 0109 把引用从 `akasha_store::…` 改成 `akasha_lib::store::…` 时，
+      `tests/unlock_lifecycle.rs` 里的 `use crate::common;` 被一并扫成 `use akasha_lib::common;`
+      —— 而 `common` 是该测试目标自己的模块（`#[path = "store_common/mod.rs"] mod common;`），
+      lib 里没有它。⚠️ **它整段在 `#[cfg(target_os = "linux")]` 内**：macOS 与 Windows 的
+      `just check` 连这一段都不编译，所以那两个平台的作业全绿，红的只有 Linux，失败点是
+      `test` 之前的编译（`E0432`：no `common` in the root），并且 `e2e-linux`
+      因 `needs: checks-linux` 整格跳过 —— 于是链路上真正执行过那条分支的作业一个都没有。
+      由此的教训：**平台门控的代码只有那一个平台的作业能证伪**；按旧名重写之后，要在会编译该
+      分支的目标上执行一次 `cargo check --workspace --all-targets`。处置：改回 `crate::common`，
+      Linux 侧 `just ready` 6/6 通过（修复前同一条命令报 `E0432`）。
