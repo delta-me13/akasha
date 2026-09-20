@@ -26,8 +26,8 @@
 - [x] **文档体系随范围扩大同步**（`docs/scope.md` 与 `docs/portable.md` 已登记进
       `AGENTS.md` §8；命名约定已写入 §3.1）
 - [x] **ADR 队列收敛为 3 份**（见 [`docs/adr/README.md`](./docs/adr/README.md)）
-- [~] **CI 通过** —— 工作流已重写（`checks-linux` / `checks-other` / `e2e` 三个 job）
-      验收：CI 上三个 job 通过 —— Linux（含 E2E）与 macOS 的类型检查已通过；Windows 的类型检查与两处
+- [~] **CI 通过** —— 工作流已重写（每平台一条流水线：检查 → E2E 两段串行，六个 job）
+      验收：CI 上六个 job 通过 —— Linux（含 E2E）与 macOS 的类型检查已通过；Windows 的类型检查与两处
       平台问题已修，结论待下一次运行
 - [x] **ADR-0001 定案** —— 已定案（2026-09-11），决策二裁定见其 §0.3
       验收：`docs/adr/0001` 状态已改为"已定案" ✓

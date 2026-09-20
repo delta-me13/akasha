@@ -66,7 +66,8 @@ v2 → v3 只加表）。**离线缓存**那一条把 plan 0903 记下的 `finge
 
 **阶段 1 补了一条：Windows 目标的类型检查**（plan 0108）。`akasha-pty` 里的 `rustix::process`
 （收会话用的 SIGKILL 封装）原本没有 `cfg` 守卫，于是 Windows 目标编译不过（问题 #149）——
-CI 的 `checks-other` 执行的就是 `cargo check --workspace --all-targets`，那两个平台因此至今
+CI 的两个原生平台检查 job（`checks-macos` / `checks-windows`）执行的就是
+`cargo check --workspace --all-targets`，那两个平台因此至今
 不可能通过。已按平台门控（`rustix` 变成 unix 专属依赖），能本地核对的三个成员现在都是退出码 0。
 ⚠️ **可编译不等于有实现**：Windows 上「回收整个会话」仍然是空的 —— 那条缺口见「进行中 / 下一步」。
 

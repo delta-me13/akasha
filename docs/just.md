@@ -204,13 +204,16 @@ just dev
 
 ## 8. 和 CI 的关系
 
-CI（`.github/workflows/ci.yml`，GitHub Actions 一份）三个 job：
+CI（`.github/workflows/ci.yml`，GitHub Actions 一份）六个 job —— **每个平台一条流水线**，
+检查与 E2E 两段在平台内串行，平台之间不互相等待：
 
 | job | 执行什么 |
 |---|---|
 | `checks-linux` | **就是本地那一条 `just ready`** —— 门禁只有一处定义 |
-| `checks-other` | Windows / macOS 上只运行 `just check`（挡 cfg 分支错误） |
-| `e2e` | 三平台矩阵（Linux/xvfb + macOS + Windows），三格运行的**都**是本地那条 `just test-e2e` |
+| `checks-macos` / `checks-windows` | 各自平台上只运行 `just check`（挡 cfg 分支错误） |
+| `e2e-linux` | `needs: checks-linux`；本地那条 `just test-e2e`（xvfb 提供 X11 显示） |
+| `e2e-macos` | `needs: checks-macos`；同上 |
+| `e2e-windows` | `needs: checks-windows`；同上 |
 
 同一分支上来了新推送，**上一次未完成的运行会被取消**（`main` 除外）——
 所以连着推几次只有最后一次运行完成，这是刻意的成本开关。

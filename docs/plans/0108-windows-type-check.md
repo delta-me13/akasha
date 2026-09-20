@@ -10,8 +10,8 @@
 
 `akasha-pty` 用了 Windows 上不存在的 `rustix::process` 且没有 `cfg` 守卫，
 于是 `cargo check --target x86_64-pc-windows-msvc` 在它这里就红（3 个 E0432 / E0433），
-依赖它的 `akasha-serial` 跟着红。CI 的 `checks-other` 执行的就是
-`cargo check --workspace --all-targets`，所以那两个平台**至今不可能通过**。
+依赖它的 `akasha-serial` 跟着红。CI 的两个原生平台检查 job（`checks-macos` /
+`checks-windows`）执行的就是 `cargo check --workspace --all-targets`，所以那两个平台**至今不可能通过**。
 
 判据（来自 ROADMAP）：**Windows 目标上的类型检查退出码 0**。
 
@@ -72,7 +72,7 @@ just ready    # 期望：fmt / lint / test / deny / gen-types / docs 六步全�
 ```
 
 - 完整判据（`akasha-store` / `akasha-ssh` / `akasha-bw` / `akasha` 四个成员）在 CI 的
-  `checks-other` × Windows 上给出。**本机为 Windows 目标构建它们的 C 依赖不可能**，
+  `checks-windows` 上给出。**本机为 Windows 目标构建它们的 C 依赖不可能**，
   所以这一条只能等仓库有 remote 之后实际执行一次 —— 它不阻塞本 plan 的落地。
 
 ## 留下的缺口（不在本 plan 内）

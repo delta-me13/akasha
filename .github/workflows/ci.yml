@@ -1,7 +1,6 @@
 # akasha 持续集成。
 #
-# 门禁定义、矩阵分工与成本取舍以 AGENTS.md §12 为准；双 forge 兼容层的评估与放弃记录见
-# docs/plans/0102-ci-platform-matrix.md。
+# 作业划分与门禁口径见 AGENTS.md §12。
 
 name: CI
 
@@ -10,47 +9,34 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # 手动触发：重新验证某一次提交，或者在一次运行被取消之后重来（不必为触发它而加一个空提交）。
+  # 手动触发：重新验证某一次提交。
   workflow_dispatch:
 
-# 同一分支只保留最新一次运行；main 除外 —— 合并后的结论不应被取代。
-#
-# ⚠️ 因此 main 上的新运行是**排队**等待，不是立刻开始：前一次还没结束，它的状态就一直是
-# `pending`（看起来像卡住）。一个组里最多留一个排队中的运行；取消正在跑的那次时，紧随其后的
-# 排队运行会一起消失（实测两次运行同时变成 `cancelled`）。
-# 各 job 的典型耗时（冷缓存）见 `docs/just.md` §8 —— 最慢的是 Windows 的 E2E（先做一次
-# 十几分钟的全量构建，再逐个跑目标）。
+# 同一 ref 的并发组至多保留一个进行中的运行；main 上的运行不被取代。
 concurrency:
-  group: ${{ format('{0}-{1}', github.workflow, github.ref) }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# 最小权限：本工作流只读取仓库内容；新增权限须写明理由。
+# 仅读取仓库内容。
 permissions:
   contents: read
 
-# 与本地配方使用同一个 shell（根 justfile 的 set shell），Windows 上的步骤因此无需各自声明 shell。
+# 全部 run 步骤统一使用 bash。
 defaults:
   run:
     shell: bash
 
 env:
   CARGO_TERM_COLOR: always
-  # 防的是"包装器不可用 → 整个门禁编不出一个文件"这一类失败（问题 #154：镜像上没有 sccache）。
-  # 仓库里的包装器已在 2026-09-17 删除（`rustc-wrapper` 在 mise 的 cwd 解析下同样编不过依赖，
-  # 见问题 #163）；这一行保留为**兜底**：残留的全局 cargo 配置由它压住，空值即没有包装。
-  # 空值 = 没有包装（cargo 语义，本机实测）。
+  # 空值即不注入编译器包装器。
   RUSTC_WRAPPER: ""
-  # 系统依赖列表的唯一来源。Tauri 官方 Debian/Ubuntu 列表：https://v2.tauri.app/start/prerequisites/
-  # 名称须为 libayatana-appindicator3-dev；旧名 libappindicator3-dev 在 ubuntu-latest 上不存在（问题 #10）。
-  # libudev-dev 不在那份官方列表里：它是 serialport（经 libudev-sys）的需求，缺了它会在 clippy
-  # 阶段停在 libudev-sys 的构建脚本上（问题 #155）。
+  # Linux 系统依赖的唯一来源。
   APT_DEPS: >-
     libwebkit2gtk-4.1-dev build-essential curl wget file
     libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libudev-dev
 
 jobs:
-  # 完整门禁：执行的即本地那一条 just ready，不在本文件另写 cargo 命令（AGENTS.md §12）。
-  # 前端依赖与前端构建都不是它的前置：generate_context 只在非 dev 构建里读取 frontendDist。
+  # 完整门禁：执行的即本地那一条 just ready。
   checks-linux:
     name: 检查（Linux）
     runs-on: ubuntu-latest
@@ -68,35 +54,51 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
 
-      # 缓存 ~/.cargo 与 target；缓存键由该 action 自动包含操作系统与 rustc 版本。
-      # workspaces 的默认值是仓库根（`. -> target`），而本仓库的 workspace 在 src-tauri/
-      # （ADR-0004）—— 不指认它，该 action 会在根目录执行 cargo metadata 并失败（问题 #157）。
+      # 缓存 ~/.cargo 与 target；作用范围是本仓库的 workspace 根。
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
         with:
           workspaces: src-tauri
 
-      # 预编译产物 + SHA256 / attestation 校验；just 的版本与 mise.toml 对齐。
+      # 预编译产物，附 SHA256 / attestation 校验。
       - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
         with:
           tool: just@1.58.0,cargo-nextest,cargo-deny
 
-      # ast-grep 不在该 action 的支持列表内，改用官方 npm 包（含预编译二进制）。
+      # 不在 taiki-e/install-action 的支持列表内，经 npm 官方包安装（含预编译二进制）。
       - name: 安装 ast-grep
         run: npm install -g @ast-grep/cli@0.45.3
 
       - name: just ready
         run: just ready
 
-  # 类型检查（含 tests / benches）：拦 cfg 分支错误，执行的即本地那一条 just check。
-  checks-other:
-    name: 检查（${{ matrix.os }}）
-    runs-on: ${{ matrix.os }}
+  # 类型检查（含 tests / benches）：执行的即本地那一条 just check。
+  checks-macos:
+    name: 检查（macOS）
+    runs-on: macos-latest
     timeout-minutes: 45
-    strategy:
-      # 一个平台的失败不得取消另一个：平台差异需一次看全，避免逐个平台串行排查。
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-03-27)
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        with:
+          workspaces: src-tauri
+
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
+        with:
+          tool: just@1.58.0
+
+      - name: 类型检查（含 tests / benches）
+        run: just check
+
+  # 类型检查（含 tests / benches）：执行的即本地那一条 just check。
+  checks-windows:
+    name: 检查（Windows）
+    runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -117,28 +119,23 @@ jobs:
       - name: 类型检查（含 tests / benches）
         run: just check
 
-  # E2E：三平台，执行的即本地那一条 just test-e2e（自包含：自行启动并回收 Vite 与 app）。
-  #
-  # needs 只有 checks-linux：平台类型检查与 E2E 是相互独立的信号，串成一条链会让某个平台的
-  # 类型检查失败掩盖 E2E 的结论。
-  #
-  # Linux 格附加 xvfb-run：Victauri 需要原生窗口句柄，纯 Wayland 会话不可用
-  # （用例会显式跳过并写明原因）。
-  e2e:
-    name: E2E（${{ matrix.os }}）
-    runs-on: ${{ matrix.os }}
+  # E2E（Linux）：执行的即本地那一条 just test-e2e（自包含：自行启动并回收 Vite 与 app）。
+  # 与本平台的检查作业串行。
+  e2e-linux:
+    name: E2E（Linux）
     needs: checks-linux
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
-      # 一个平台的失败不得取消另外两个：平台差异需一次看全，避免逐个平台串行排查。
+      # 矩阵格之间不因彼此失败而取消。
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: 系统依赖（Linux）
-        if: runner.os == 'Linux'
+      # xvfb 提供 X11 显示。
+      - name: 系统依赖
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends $APT_DEPS xvfb
@@ -155,8 +152,7 @@ jobs:
         with:
           tool: just@1.58.0
 
-      # node / pnpm 的版本以 mise.toml 为唯一来源（AGENTS.md §10），此处与之对齐，
-      # 避免前端产物与开发循环之间的版本差异。
+      # node / pnpm 版本以 mise.toml 为准。
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           version: 12.3.4
@@ -166,23 +162,109 @@ jobs:
           node-version: 26.8.2
           cache: pnpm
 
-      # just test-e2e 启动的是 Vite dev server（终端探针只在 dev 构建中注册），因此需要前端依赖；
-      # 后端由该配方自行构建。
+      # test-e2e 启动 Vite dev server，因此需要前端依赖。
       - name: 前端依赖
         run: pnpm install --frozen-lockfile
 
-      - uses: ./.github/actions/windows-perl
-
-      # 串口域**原生平台**上的单元读数（plan 0803）：那三条串口 E2E 在 Windows 上全部跳过
-      # （ConPTY 没有设备节点），这条配方是它们之外唯一在那边真的会执行的串口测试。
-      # 它只编 akasha 这一个包，因此不需要 app、不需要串口设备，几秒钟就有读数。
-      - name: 串口单元测试（原生平台）
+      # 串口域的平台面单元读数。
+      - name: 串口单元测试
         run: just serial-unit
 
-      - name: E2E（Linux：xvfb 提供 X11）
-        if: runner.os == 'Linux'
+      - name: E2E
         run: xvfb-run -a just test-e2e
 
+  # E2E（macOS）：执行的即本地那一条 just test-e2e（自包含：自行启动并回收 Vite 与 app）。
+  # 与本平台的检查作业串行。
+  e2e-macos:
+    name: E2E（macOS）
+    needs: checks-macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      # 矩阵格之间不因彼此失败而取消。
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-03-27)
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        with:
+          workspaces: src-tauri
+
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
+        with:
+          tool: just@1.58.0
+
+      # node / pnpm 版本以 mise.toml 为准。
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 12.3.4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 26.8.2
+          cache: pnpm
+
+      # test-e2e 启动 Vite dev server，因此需要前端依赖。
+      - name: 前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 串口单元测试
+        run: just serial-unit
+
       - name: E2E
-        if: runner.os != 'Linux'
+        run: just test-e2e
+
+  # E2E（Windows）：执行的即本地那一条 just test-e2e（自包含：自行启动并回收 Vite 与 app）。
+  # 与本平台的检查作业串行。
+  e2e-windows:
+    name: E2E（Windows）
+    needs: checks-windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      # 矩阵格之间不因彼此失败而取消。
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: ./.github/actions/windows-perl
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-03-27)
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        with:
+          workspaces: src-tauri
+
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2 (2026-09-10)
+        with:
+          tool: just@1.58.0
+
+      # node / pnpm 版本以 mise.toml 为准。
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 12.3.4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 26.8.2
+          cache: pnpm
+
+      # test-e2e 启动 Vite dev server，因此需要前端依赖。
+      - name: 前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 串口单元测试
+        run: just serial-unit
+
+      - name: E2E
         run: just test-e2e

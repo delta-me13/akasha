@@ -31,10 +31,10 @@ just ready                                      # 本地门禁必须先是绿的
 
 1. **Linux job 执行的即本地那一条 `just ready`**（`checks-linux`）。门禁只有一处定义：
    在 workflow 里另写 cargo 命令，两处必然分叉，而分叉的方向总是"CI 比本地松"。
-2. **Windows / macOS 只做类型检查**（`checks-other`，`runs-on: ${{ matrix.os }}`，
-   矩阵 `[windows-latest, macos-latest]`，`fail-fast: false`）。走 crate 级 `check` 的转发配方。
-3. **E2E 独立成 job，只 `needs: checks-linux`**（`e2e`）。平台类型检查与 E2E 是互相独立的信号：
-   若 `e2e` 也 needs `checks-other`，Windows 上的一次失败会连带使 E2E 的结论失效。
+2. **Windows / macOS 只做类型检查**（`checks-macos` / `checks-windows` 各一条 job）。
+   走 crate 级 `check` 的转发配方。
+3. **E2E 按平台各自成 job**（`e2e-linux` / `e2e-macos` / `e2e-windows`），每格的 `needs` 指向
+   同平台的检查 job：检查与 E2E 在平台内串行，一个平台的检查失败不掩盖另一个平台的 E2E 结论。
 4. Linux 装 apt 依赖（含 `libayatana-appindicator3-dev` 与 `libxdo-dev`，问题 #10）后执行
    `just ready`；完整门禁只执行一次，避免矩阵把时间乘三。依赖列表只有 `env.APT_DEPS` 一处。
 5. **工具安装统一走 `taiki-e/install-action`**（预编译产物 + SHA256 / attestation 校验）：
@@ -111,7 +111,7 @@ CI 配置改动只影响门禁，不影响产物与用户数据。
   拆开才能让"平台检查失败"与"E2E 失败"互不吞并。
 - **删掉原先单列的 `just docs-check` 步骤**：`just ready` 本来就包含它 —— 同一件事只定义一处。
   超时 30 → **45 分钟**。
-- **E2E 里的 `needs` 只留 `checks-linux`**，理由见步骤 3。
+- **E2E 里的 `needs` 指向同平台的检查 job**，理由见步骤 3。
 
 ### 第二轮：把 GitHub 专属能力吃透（2026-09-11）
 
@@ -191,3 +191,8 @@ E2E 格子没能把 app 起来（那格的日志一个字节都没有，问题 #
 
 仍只能在 runner 上读的：下一次运行的三格结论；缓存是否真的命中；E2E 在三平台各自能否走完。
 阶段 0 的「CI 通过」条目（`ROADMAP.md` 里标 `[~]`）依赖的是同一条结论。
+
+### 2026-09-20：E2E 改为按平台各自串行
+
+`checks-other` 拆成 `checks-macos` / `checks-windows`，三个 E2E job 各自 `needs` 同平台的检查 job；
+注释按「准确描述、不含细节与缘由」重写。`js-yaml` 解析通过、`just ready` 退出码 0 —— 最终判据仍是 runner 上的实际运行。
