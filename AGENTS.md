@@ -623,8 +623,8 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 
 ## 12. CI：只维护 GitHub Actions 一份
 
-`.github/workflows/ci.yml` 是**唯一**的工作流文件（三个 job：Linux 完整门禁 /
-Windows + macOS 类型检查 / **三平台 E2E 矩阵**）。**不要为别的 forge 加兼容层** ——
+`.github/workflows/ci.yml` 是**唯一**的工作流文件（**每个平台一条流水线**：检查 → E2E 两段串行，
+共六个 job）。**不要为别的 forge 加兼容层** ——
 曾做过"一份工作流同时供 Gitea 与 GitHub 使用"的实现，代价是整份工作流被限制在两边
 **共有的子集**内；2026-09-11 评估后放弃，那份约束清单与放弃理由见
 [`docs/plans/0102`](./docs/plans/0102-ci-platform-matrix.md)。
@@ -635,8 +635,9 @@ Windows + macOS 类型检查 / **三平台 E2E 矩阵**）。**不要为别的 f
   矩阵执行三遍只会使耗时变为三倍。**类型检查**在 Windows / macOS 再执行一份，用于拦截 cfg 分支错误；
   **E2E 反过来要在三个平台都执行** —— 平台差异（原生窗口句柄、进程判活与收尾）正是它的对象。
   **出包不在 CI 的目标内**（需要真实主机：WiX / NSIS / WebView2 bootstrapper 都不行）。
-- **E2E 只 `needs` Linux 那条 job**：平台类型检查与 E2E 是**互相独立**的信号，
-  串成一条链会使"Windows 失败"连带掩盖 E2E 的结论。
+- **检查与 E2E 在同一平台内串行，平台之间不串**：每个平台的 E2E job **只 `needs` 同平台的检查 job**
+  （Linux 指向完整门禁，Windows / macOS 各指向本平台的类型检查）。串成跨平台的一条链，会使一个平台的
+  检查失败连带掩盖另一个平台的 E2E 结论。
 - **系统依赖列表只有 `env.APT_DEPS` 一处**（Tauri 官方列表；注意是
   `libayatana-appindicator3-dev`，不是已消失的旧名 `libappindicator3-dev`）。
 - **放开使用 GitHub 专属能力，并优先选择节省成本的方案**：`concurrency` + `cancel-in-progress`
