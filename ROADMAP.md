@@ -56,6 +56,9 @@
 - [~] **Windows 目标的类型检查真的通过**（问题 #149 的编译面已修；#160 是同类的第二处）
       验收：Windows 目标上的类型检查退出码 0（本地只能核对不依赖 C 工具链的三个成员，其余交给 CI）
       → [plan 0108](./docs/plans/0108-windows-type-check.md)
+- [x] **Windows 上受保护页与 SQLCipher 不再争抢同一份额度**（问题 #167；ADR-0009）
+      验收：Windows 上连续建 32 个 16 KiB 受保护页全部成功，且导出 / 还原那两条用例不再竞态失败
+      → [plan 0110](./docs/plans/0110-windows-locked-page-budget.md)
 - [x] `src-tauri/crates/akasha-core` 骨架：**`Session` 模型**（**必须先于任何后端**）
       验收：单测覆盖 `SessionId` 分配、关闭一个 `Session` 不影响另一个
       → [plan 0103](./docs/plans/archive/0103-core-session-model.md)

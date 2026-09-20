@@ -64,6 +64,73 @@ impl std::fmt::Display for PageError {
 
 impl std::error::Error for PageError {}
 
+// ── Windows：进程能锁住多少页的额度 ────────────────────────────────────────
+
+/// Windows 上抬高之后的**最小工作集**——它同时是一个进程能锁住的页数的上限。
+///
+/// 取值理由：SQLCipher 的 `cipher_memory_security` 会给它自己的每一次分配调 `VirtualLock`，
+/// 而它的页缓存默认就是 2 MB（每个连接），再加上导出 / 还原那条 `ATTACH` 路径的临时分配，
+/// 同一时刻可能有数个 MB 处于锁定状态。16 MiB 给足余量；而它对常驻内存的下限没有实际影响，
+/// 本进程的常态驻留远高于它。
+#[cfg(windows)]
+const MIN_WORKING_SET: usize = 16 * 1024 * 1024;
+
+/// 抬高之后的**最大工作集**。能锁住多少页只由最小值决定，这一项是为了满足 API 的两条形状
+/// 约束：它必须 ≥ 最小值，且必须小于“可用页数 − 512 页”。取 256 MiB —— 向下远高于本应用的
+/// 常态驻留（否则内存紧张时内存管理器会开始裁剪它），向上远低于任何能跑 WebView2 的机器。
+#[cfg(windows)]
+const MAX_WORKING_SET: usize = 256 * 1024 * 1024;
+
+// `kernel32` 的两个入口。手写这两行而不是引入 `windows-sys`：只用到两个函数，
+// 而新增一个依赖要走 `just deny` 的许可证与来源门禁，代价不成比例。
+#[cfg(windows)]
+#[allow(unsafe_code)] // 本模块在 store/ 内（no-unsafe-outside-store.yml）；理由见下
+#[allow(non_snake_case)] // 这两个名字是 Win32 的导出名，改名就链接不上了
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetCurrentProcess() -> *mut std::ffi::c_void;
+    fn SetProcessWorkingSetSize(process: *mut std::ffi::c_void, min: usize, max: usize) -> i32;
+}
+
+/// 把本进程的最小 / 最大工作集抬到上面两个常量。**只调一次**，失败只记一条 `warn`。
+///
+/// 为什么必须做（问题 #167）：`VirtualLock` 的文档写明“一个进程能锁住的页数 = 它的最小工作集
+/// 减去一点开销”，而默认只有 50 页（200 KiB）。SQLCipher 的 `cipher_memory_security = ON`
+/// 与这里的受保护页**共用同一份额度**，于是“库解锁着 + 读一把私钥”会拿到
+/// `ERROR_WORKING_SET_QUOTA`；同一份文档给出的处置就是这一条。
+///
+/// 为什么放在这个模块：它是唯一构造受保护页的地方，而它一定早于任何连接被打开
+/// （`create` / `open` / `to_encrypted` 都要先有一个 [`crate::store::Passphrase`]），
+/// 所以抬额度必然发生在 SQLCipher 那一边开始上锁之前。
+///
+/// 为什么失败不阻断：这是进程级的调优，不是本次操作的前置条件。真的锁不住页时
+/// [`Protected::new`] 会把它报成 [`PageError::Memory`] —— 判据在那里，不在这里。
+#[cfg(windows)]
+#[allow(unsafe_code)] // 同上
+fn ensure_working_set() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: ① `GetCurrentProcess()` 返回一个**伪句柄**：它是常量、在任何线程上都有效、
+        // 不需要关闭，且天然带 `PROCESS_SET_QUOTA`（那是对自己的句柄）；② 两个尺寸参数都落在
+        // 文档允许的范围里（最小值 > 0 且 ≤ 最大值；最大值 ≥ 13 页且远小于“可用页数 − 512 页”）；
+        // ③ 这个调用只改本进程的工作集上下限，不碰任何指针或内存内容，失败也只是返回 0。
+        let raised = unsafe {
+            SetProcessWorkingSetSize(GetCurrentProcess(), MIN_WORKING_SET, MAX_WORKING_SET)
+        };
+        if raised == 0 {
+            // 拿不到错误码就不写这个字段（`AGENTS.md` §3.4：字段值不得虚构）。
+            match std::io::Error::last_os_error().raw_os_error() {
+                Some(code) => tracing::warn!(code, "process working set not raised"),
+                None => tracing::warn!("process working set not raised"),
+            }
+        }
+    });
+}
+
+/// 其他平台：能锁多少页由 `RLIMIT_MEMLOCK` 一类决定，没有对应的进程级旋钮。
+#[cfg(not(windows))]
+fn ensure_working_set() {}
+
 /// 一整页受保护内存，装着"最多 `N` 字节"的机密与它的实际长度。
 pub struct Protected<const N: usize> {
     secret: Secret<N>,
@@ -75,6 +142,7 @@ pub struct Protected<const N: usize> {
 impl<const N: usize> Protected<N> {
     /// 把 `bytes` 搬进受保护页。成功时**源缓冲已被擦零**（上游做的）。
     pub fn new(bytes: Vec<u8>) -> Result<Self, PageError> {
+        ensure_working_set();
         let mut bytes = bytes;
         if bytes.len() > N {
             // ⚠️ 这条路上 `bytes` 还是明文，而它马上要被 drop（= 释放一块存着秘密的
@@ -166,6 +234,23 @@ mod tests {
         }
     }
 
+    /// Windows 上“一个进程能锁住多少页”= **它的最小工作集**减去一点开销（`VirtualLock` 的
+    /// 文档），而默认只有 50 页（200 KiB）。SQLCipher 的 `cipher_memory_security = ON`
+    /// 会给它自己的每一次分配调 `VirtualLock`，与这里的受保护页**共用同一份额度** ——
+    /// 于是“库解锁着 + 读一把私钥”这条路会拿到 `ERROR_WORKING_SET_QUOTA`（问题 #167）。
+    ///
+    /// 这条用例钉住的正是那个额度够不够：连续建 32 个 16 KiB 的页（= 512 KiB）必须全部成功。
+    /// 没有抬额度时这里只能建起 11 个（176 KiB / 16 KiB），第 12 个就失败。
+    ///
+    /// ⚠️ 只在 Windows 上执行：其他平台上“能锁多少”由 `RLIMIT_MEMLOCK` 决定，与这条判据无关。
+    #[cfg(windows)]
+    #[test]
+    fn windows_holds_many_protected_pages_at_once() {
+        let pages: Vec<Protected<16384>> = (0..32)
+            .map(|_| Protected::<16384>::new(vec![0x5a; 32]).unwrap())
+            .collect();
+        assert_eq!(pages.len(), 32, "32 个受保护页（512 KiB）应当同时建得起来");
+    }
     #[test]
     fn wiping_is_observable() {
         // 不能断言"编译器没优化掉"，但能断言这条函数的**语义**：进来什么出去就全零。
