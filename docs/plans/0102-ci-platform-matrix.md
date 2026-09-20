@@ -37,12 +37,12 @@ just ready                                      # 本地门禁必须先是绿的
    同平台的检查 job：检查与 E2E 在平台内串行，一个平台的检查失败不掩盖另一个平台的 E2E 结论。
 4. Linux 装 apt 依赖（含 `libayatana-appindicator3-dev` 与 `libxdo-dev`，问题 #10）后执行
    `just ready`；完整门禁只执行一次，避免矩阵把时间乘三。依赖列表只有 `env.APT_DEPS` 一处。
-5. **工具安装统一走 `taiki-e/install-action`**：`checks-linux` 一次装齐
-   `just@1.58.0,cargo-nextest,cargo-deny,ast-grep@0.45.3`，`checks-macos` / `checks-windows`
-   只装 `just@1.58.0`（版本写死，与本地对齐）。**不得手写"按平台选资产 + curl + 追加
+5. **工具安装统一走 `taiki-e/install-action`**（预编译产物 + SHA256 / attestation 校验）：
+   `checks-linux` 一次装齐 `just@1.58.0,cargo-nextest,cargo-deny`，`checks-macos` /
+   `checks-windows` 只装 `just@1.58.0`（版本写死，与本地对齐）。**不得手写"按平台选资产 + curl + 追加
    `GITHUB_PATH`"的脚本** —— 那是兼容层的遗产，理由见「放弃记录」。
-6. ast-grep 与其余工具同一份清单，**不再经 npm 全局包**：该 crate 带
-   `package.metadata.binstall`，回退路径取 GitHub Releases 的预编译产物，取不到才源码构建。
+6. ast-grep 不在那份清单内，走 npm 官方包（**直接 `npm install -g`**）：清单外的工具由
+   `cargo-binstall` 回退，而该 crate 的 binstall 元数据没有校验和，npm 包有 registry 的 integrity。
 7. **把 GitHub 专属的省钱 / 提速开关用上**：`concurrency` + `cancel-in-progress` 取消同一分支
    上被取代的运行（`main` 除外 —— 合并后的结论不应被取消）、`permissions: contents: read`、
    `defaults.run.shell: bash`（与本地配方的 bash shell 对齐，Windows 上不再逐步写 `shell:`）。
@@ -122,7 +122,7 @@ CI 配置改动只影响门禁，不影响产物与用户数据。
 | `permissions: contents: read` | 最小权限（本工作流本来就只读仓库） |
 | `defaults.run.shell: bash` | 与本地配方的 bash shell 对齐；Windows 上不再逐步写 `shell:` |
 | 两个 job 的手写 just 安装脚本 → `install-action` | **净删 50 行 shell**；同时获得 SHA256 / attestation 校验，版本 `just@1.58.0` 写死 |
-| `npm install -g @ast-grep/cli`（去掉 `--prefix`；后改并入 `install-action` 的 `tool:`） | 那是 job 容器里绕全局写权限的写法，GitHub runner 无此问题 |
+| `npm install -g @ast-grep/cli`（去掉 `--prefix`） | 那是 job 容器里绕全局写权限的写法，GitHub runner 无此问题 |
 
 （`JUST_VERSION` 环境变量随之删除：版本现在写在 `tool:` 里。）
 
@@ -190,11 +190,11 @@ E2E 格子没能把 app 起来（那格的日志一个字节都没有，问题 #
 
 仍只能在 runner 上读的：下一次运行的六条 job 结论（含缓存是否真的命中、E2E 在三平台各自能否走完），阶段 0 的「CI 通过」条目（`ROADMAP.md` 里标 `[~]`）依赖的就是它。
 
-### 2026-09-20：E2E 按平台各自串行；ast-grep 并入 `install-action` 清单
+### 2026-09-20：E2E 按平台各自串行；ast-grep 的安装路径
 
-`checks-other` 拆成 `checks-macos` / `checks-windows`，三个 E2E job 各自 `needs` 同平台的检查 job；
-注释按「准确描述、不含细节与缘由」重写。ast-grep 从 npm 全局包并入同一份 `install-action` 清单（`ast-grep@0.45.3`；
-本机实测回退路径取到 GitHub Releases 的预编译产物，SHA256 / attestation 一层只覆盖清单内的工具）。
-三个 E2E job 去掉单格矩阵（`runs-on` 直写平台标签）。Linux 的检查与 E2E 共用一个 rust-cache `shared-key`
-（检查侧执行完整门禁，其构建覆盖 E2E 所需）；macOS / Windows 按 job 分键 —— 那里的检查只做 `cargo check`，
-E2E 自己那份整构建更值钱。`js-yaml` 解析通过、`just ready` 退出码 0 —— 最终判据仍是 runner 上的实际运行。
+`checks-other` 拆成 `checks-macos` / `checks-windows`，三个 E2E job 各自 `needs` 同平台的检查 job；注释按「准确描述、不含细节与缘由」重写。
+三个 E2E job 去掉单格矩阵（`runs-on` 直写平台标签）。Linux 的检查与 E2E 共用一个 rust-cache `shared-key`（检查侧执行完整门禁，其构建覆盖 E2E 所需）；
+macOS / Windows 按 job 分键 —— 那里的检查只做 `cargo check`，E2E 自己那份整构建更值钱。
+ast-grep 先并入 `install-action` 的 `tool:` 清单（回退路径取 GitHub Releases 的预编译产物），
+因清单外那条回退路径没有校验和而回到 npm 包（`@ast-grep/cli@0.45.3`，有 registry 的 integrity）。
+`js-yaml` 解析通过、`just ready` 退出码 0 —— 最终判据仍是 runner 上的实际运行。
