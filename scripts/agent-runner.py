@@ -190,6 +190,12 @@ def load_policy(path):
     concurrent = policy.get("max_concurrent_actions", DEFAULT_MAX_CONCURRENT)
     if not isinstance(concurrent, int) or isinstance(concurrent, bool) or concurrent < 1:
         raise ValueError("policy.max_concurrent_actions 必须是 >= 1 的整数")
+    extra_env = policy.get("env", {})
+    if not isinstance(extra_env, dict):
+        raise ValueError("policy.env 必须是对象")
+    for key, value in extra_env.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError("policy.env 的键与值都必须是字符串")
     return policy
 
 
@@ -228,8 +234,37 @@ def describe(policy):
     print("控制字（无需登记，只减少能力）: %s" % ", ".join(CONTROL))
 
 
+def login_name():
+    """当前用户的登录名，**不读环境变量**。
+
+    环境变量的取值可以被任意改写（`USER` 只是个约定），而这一份要用在样板里 ——
+    取不到就退回环境变量，再取不到就不写这个键。
+    """
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        pass
+    for key in ("USER", "LOGNAME", "USERNAME"):
+        value = os.environ.get(key)
+        if value:
+            return value
+    return None
+
+
 def suggested_policy():
     just = shutil.which("just") or "/usr/bin/just"
+    # 动作只拿到 BASE_ENV 的最小环境（`PATH` 与 `HOME` 另接），所以"进程外面长什么样"
+    # 只在这里补得回来。两个都不是可选的：
+    #   * `TMPDIR` —— 子进程的 `std::env::temp_dir()` 在它缺席时退到平台默认值
+    #     （macOS 上是 confstr 那个私有目录），而 E2E 发现目录由它推导（问题 #171）；
+    #   * `USER` —— `~/.ssh/config` 导入用它补没写 `User` 的条目（`local_user()`），
+    #     没有它整个导入直接拒绝（问题 #172）。
+    env = {"TMPDIR": "/tmp"}
+    name = login_name()
+    if name:
+        env["USER"] = name
     return {
         "script_sha256": sha256(SELF),
         "workdir": REPO,
@@ -238,6 +273,7 @@ def suggested_policy():
         "action_timeout_sec": DEFAULT_ACTION_TIMEOUT,
         "max_concurrent_actions": DEFAULT_MAX_CONCURRENT,
         "result_ttl_sec": DEFAULT_RESULT_TTL,
+        "env": env,
         "actions": {
             "check": [just, "check"],
             "test": [just, "test"],

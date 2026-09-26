@@ -104,13 +104,14 @@ async fn round_trip(port: u16) -> Vec<u8> {
 fn seed(path: &Path, ssh_port: u16, echo_port: u16, occupied_port: u16) -> (i64, i64, u16) {
     let conn = open_vault(path);
 
-    // 先清干净（重跑）：主机行与规则行都按名字清。
-    forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
+    // 先清干净（重跑）：**规则先删、主机行后删** —— 规则的外键指着主机行，
+    // 反过来写会在"上一次留下了规则"时撞上 `FOREIGN KEY constraint failed`。
     for row in forwards::forwards(&conn).unwrap() {
         if row.name == FORWARD_NAME || row.name == OCCUPIED_NAME {
             forwards::delete_forward(&conn, row.id).unwrap();
         }
     }
+    forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
 
     let host_id = hosts::insert_host(
         &conn,
@@ -180,7 +181,7 @@ async fn a_forwarded_port_reaches_a_service_only_the_remote_side_can_name() {
     })
     .await;
     eprintln!(
-        "服务端：127.0.0.1:{}（回声服务在 {}）",
+        "构造: 服务端=127.0.0.1:{} 回声服务=127.0.0.1:{}",
         server.addr.port(),
         echo.port()
     );
@@ -223,7 +224,7 @@ async fn a_forwarded_port_reaches_a_service_only_the_remote_side_can_name() {
         connect_tunnel_through_prompts(&mut client, forward_rule, &server.fingerprint, PASSWORD)
             .await;
     assert!(handle > 0, "probe 里必须有 handle");
-    eprintln!("隧道已连接：handle={handle}，问到过 {asked:?}");
+    eprintln!("隧道: handle={handle} 提示数={}", asked.len());
 
     // 从 plan 0602 起「已连接」意味着**端口在监听** —— probe 里必须看得见它。
     let want = format!("127.0.0.1:{bind_port}");
@@ -265,7 +266,6 @@ async fn a_forwarded_port_reaches_a_service_only_the_remote_side_can_name() {
         server.shared.relayed_bytes() > 0,
         "中继应当搬过字节（对端那一侧的计数）"
     );
-    eprintln!("对端：{:?}", seen.direct_tcpip);
 
     // ── 5. 每条入站连接各开一条通道（不是"一条通道用到底"）───────────────────
     assert_eq!(round_trip(bind_port).await, PAYLOAD, "第二条连接也该通");
@@ -299,7 +299,7 @@ async fn a_forwarded_port_reaches_a_service_only_the_remote_side_can_name() {
         shown.contains(&format!("127.0.0.1:{occupied_port}")),
         "同一条失败里也要能看出是哪个地址（这一条是 127.0.0.1:{occupied_port}）：{shown:?}"
     );
-    eprintln!("端口被占用的那条：{shown}");
+    eprintln!("界面: 失败提示={shown}");
     assert!(
         !tunnel_entries(&mut client).await.iter().any(|entry| {
             entry.pointer("/ruleId").and_then(Value::as_i64) == Some(occupied_rule)
@@ -319,15 +319,9 @@ async fn a_forwarded_port_reaches_a_service_only_the_remote_side_can_name() {
 
     let deadline = Instant::now() + CLOSE_TIMEOUT;
     loop {
-        // 监听撤掉之后连过去是"连接被拒"，不是"超时"。
-        let refused = tokio::time::timeout(
-            Duration::from_secs(2),
-            TcpStream::connect(("127.0.0.1", bind_port)),
-        )
-        .await
-        .map(|result| result.is_err())
-        .unwrap_or(false);
-        if refused {
+        // 监听撤掉 = 连不上（用 `support::port_released` 探：tokio 的连接在 Windows 上
+        // 连一个已经关掉的端口只会超时，见那里的说明）。
+        if support::port_released(bind_port) {
             break;
         }
         assert!(
@@ -354,7 +348,7 @@ async fn a_forwarded_port_reaches_a_service_only_the_remote_side_can_name() {
     loop {
         let closed = support::observed(&server).connections_closed;
         if closed >= 1 {
-            eprintln!("停止：服务端看到 {closed} 条连接断开");
+            eprintln!("服务端: 断开连接={closed}");
             break;
         }
         assert!(

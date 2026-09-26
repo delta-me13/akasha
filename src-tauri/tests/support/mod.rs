@@ -11,6 +11,28 @@
 //! **不是测试目标**：`cargo` 只把 `tests/*.rs` 当目标，`tests/support/mod.rs` 是被各个目标
 //! `mod support;` 引进来的普通模块 —— 也因此不会撞上 `justfile` 里那条"没接进 test-e2e 的目标"的
 //! guard（它扫的是 `tests/*.rs`）。
+//!
+//! # 输出规范
+//!
+//! 用例以 `--nocapture` 执行，因此每一条 `eprintln!` 都会进入终端。输出只承担三件事，
+//! 每条都必须落在其中一类：
+//!
+//! 1. **观测**：`eprintln!("<主体>: <字段>=<值> …")`。主体是领域名词（`池` / `会话` /
+//!    `隧道` / `服务端` / `界面` / `报告` / `进程`），字段之间用单个空格分隔，
+//!    值是计数、时长、句柄、端口、路径或事件序列。
+//! 2. **跳过**：`eprintln!("跳过: <原因>")`。原因写平台或前提，一行写完。
+//! 3. **构造**：`eprintln!("构造: <字段>=<值> …")`。用例自己造出来的那些前提
+//!    （服务端地址、端口、指纹、库路径）。
+//!
+//! 以下内容不得输出 —— 它们只让日志变长，不增加信息：
+//!
+//! - **紧随其后的 `assert_eq!` 已经恰好固定其值的观测**：该断言已经把这件事说完；
+//! - **整个结构的 `Debug` 转储**（`{rows:?}` / `{listed:?}`）：改成计数或标识，改不动就删除；
+//! - **`✅ …` 成功横幅**：用例通过本身就是结论；
+//! - **复述断言结论或代码意图的旁白**，以及括号里的理由（理由写在注释里）。
+//!
+//! 措辞是正式书面语、无人称、无 emoji，且不出现口语词（`跑` / `起` / `关掉` /
+//! `拿不到` / `还活着` 之类）。
 
 #![allow(dead_code)] // 每个测试目标各取所需，用不到的辅助函数不该让 `-D warnings` 变红
 #![allow(clippy::unwrap_used)] // 测试里的 unwrap 是断言手段（root Cargo.toml 的 lints 约定）
@@ -40,7 +62,7 @@ pub const CONNECT_TIMEOUT_MS: u64 = 30_000;
 
 pub fn skip_unless_e2e() -> bool {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return true;
     }
     false
@@ -112,8 +134,7 @@ pub async fn connect_and_prepare() -> Option<(VictauriClient, Fixture, PathBuf)>
         "present" if is_ours(&path) => true, // 上一次跑留下的
         other => {
             eprintln!(
-                "跳过：{} 上已经有一个库（state={other}），而且它**不是**用这条用例的口令建的 —— \
-                 那是用户自己的数据，测试不许碰它",
+                "跳过: {} 上已有一个库（state={other}），且它不是这条用例的口令建的",
                 path.display()
             );
             return None;
@@ -189,17 +210,38 @@ pub fn text(value: &Value) -> String {
     payload(value).as_str().unwrap_or("?").to_string()
 }
 
+/// 超时的那一刻界面上"已经在说"的那句话（几条固定的错误面）。
+///
+/// 为什么要它：这条断言原来只报"某元素没出现"，而界面**可能已经把失败原因写在旁边那个
+/// 元素里**（`[data-import-problem]` / `[data-bw-import-failure]`）—— 那份原因正是排查要的
+/// 东西，让调用方再跑一次、再加一条断言才能看到它，等于把代价重复支付。
+async fn visible_failure(client: &mut VictauriClient) -> Option<String> {
+    let text = client
+        .eval_js(
+            "(() => { const sel = '[data-import-problem],[data-import-problems],\
+             [data-bw-import-failure],[data-serial-open-error]'; \
+             return Array.from(document.querySelectorAll(sel)).map((el) => el.textContent).join(' / '); })()",
+        )
+        .await
+        .ok()?;
+    let text = payload(&text).as_str()?.trim().to_owned();
+    (!text.is_empty()).then_some(text)
+}
+
 /// 等一个 JS 表达式为真（有截止时间的轮询，**不是** sleep 猜）。
 pub async fn wait_js(client: &mut VictauriClient, expression: &str, timeout_ms: u64, what: &str) {
     let waited = client
         .wait_for_expression(expression, None, Some(timeout_ms), None)
         .await
         .unwrap();
-    assert_eq!(
-        waited.get("ok").and_then(Value::as_bool),
-        Some(true),
-        "{what} 超时（{timeout_ms} ms）：{waited}"
-    );
+    if waited.get("ok").and_then(Value::as_bool) == Some(true) {
+        return;
+    }
+    let seen = match visible_failure(client).await {
+        Some(text) => format!("；界面上写着：{text}"),
+        None => String::new(),
+    };
+    panic!("{what} 超时（{timeout_ms} ms）：{waited}{seen}");
 }
 
 /// 点一下某个选择器选中的元素（点不到就断言失败 —— 那说明界面与用例对不上了）。
@@ -215,9 +257,13 @@ pub async fn click(client: &mut VictauriClient, selector: &str, what: &str) {
     );
 }
 
-/// 把当前活动标签页里的一行敲进终端（与 `tab_close` 同一手法）。
+/// 把当前活动标签页里的**一行**敲进终端（与 `tab_close` 同一手法）。
+///
+/// `line` 是行内容，**不带行尾**：末尾那个“回车”由本函数补成 CR（`0x0D`）—— 那是终端线上
+/// Enter 的字节。**不得改成 LF**：POSIX 的行规程用 `ICRNL` 把 CR 折成 NL，而 Windows 的
+/// ConPTY 只认 CR（本机实测：送 LF 时命令行停在屏幕上不动，送 CR 才执行）。
 pub async fn type_line(client: &mut VictauriClient, line: &str) {
-    let literal = serde_json::to_string(line).unwrap();
+    let literal = serde_json::to_string(&format!("{line}\r")).unwrap();
     let js = format!(
         r#"(() => {{
   const textarea = document.querySelector('.tab-pane.is-active .xterm-helper-textarea');
@@ -425,6 +471,24 @@ pub async fn wait_connected(client: &mut VictauriClient, tabs: usize, what: &str
 /// 服务端记下来的事实（观察点的另一半）。
 pub fn observed(server: &Running) -> Observed {
     server.shared.observed()
+}
+
+/// 这个回环端口**现在没有活的监听**了吗（隧道停止后的那条判据）。
+///
+/// ⚠️ 必须用**阻塞**的 `std` 连接探，不能用 tokio 的：Windows 上 `ConnectEx` 对
+/// "连接被拒"的回报是**永远不完成**（本机实测：tokio 连一个已经关掉的回环端口只会
+/// 超时，同一个端口用 `std::net` 连立刻得到"连接被拒"）。用 tokio 探会把"端口已经
+/// 还给系统"读成"还在接受连接"，于是那条断言永不成立。
+///
+/// 判据取"连不上"而不是"恰好是 ConnectionRefused"：回环上没有防火墙，握手成功就等于
+/// 有一方在监听（`accept` 是否被调用与握手无关），所以任何失败都意味着监听已经撤掉。
+pub fn port_released(port: u16) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+
+    let target: SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .expect("回环地址解析失败");
+    TcpStream::connect_timeout(&target, std::time::Duration::from_millis(500)).is_err()
 }
 
 /// 挑一个**当前空闲**的本地端口。
@@ -734,7 +798,7 @@ impl FakeSerialDevice {
         } else {
             (None, None)
         };
-        eprintln!("假串口设备：{path}（本进程持有主端，读主端={reads_master}）");
+        eprintln!("构造: 假串口设备={path} 本进程持有主端={reads_master}");
         Self {
             path,
             writer,

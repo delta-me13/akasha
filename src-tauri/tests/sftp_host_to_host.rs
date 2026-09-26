@@ -142,7 +142,7 @@ async fn two_hosts_go_through_the_tunnel_and_fall_back_to_the_relay() {
     let bastion_root = bastion.sftp_root().unwrap().to_path_buf();
     let far_root = far.sftp_root().unwrap().to_path_buf();
     eprintln!(
-        "跳板 127.0.0.1:{} · 目标 {ONLY_NAME}:{ONLY_PORT}（跳板表里指向 127.0.0.1:{}）",
+        "构造: 跳板=127.0.0.1:{} 目标={ONLY_NAME}:{ONLY_PORT} 目标地址=127.0.0.1:{}",
         bastion.addr.port(),
         far.addr.port()
     );
@@ -169,7 +169,7 @@ async fn two_hosts_go_through_the_tunnel_and_fall_back_to_the_relay() {
         &[(bastion.addr.port(), BASTION_PASSWORD)],
     )
     .await;
-    eprintln!("左栏连上跳板，问到过 {asked:?}");
+    eprintln!("会话: 侧=左 提示数={}", asked.len());
 
     choose_origin(&mut client, "right", &format!("host:{far_id}")).await;
     let asked = connect_side(
@@ -180,7 +180,7 @@ async fn two_hosts_go_through_the_tunnel_and_fall_back_to_the_relay() {
         &[(far.addr.port(), FAR_PASSWORD), (ONLY_PORT, FAR_PASSWORD)],
     )
     .await;
-    eprintln!("右栏经跳板连上目标，问到过 {asked:?}");
+    eprintln!("会话: 侧=右 提示数={}", asked.len());
     wait_js(
         &mut client,
         "!!document.querySelector('.sftp-pane[data-side=\"right\"] \
@@ -256,10 +256,7 @@ async fn two_hosts_go_through_the_tunnel_and_fall_back_to_the_relay() {
         Some(bastion_id.to_string().as_str()),
         "这次传输的记录里应当是经跳板直通"
     );
-    eprintln!(
-        "B 档：跳板收到 1 条 direct-tcpip → {ONLY_NAME}:{ONLY_PORT}，中继搬了 {} 字节；目标盘上 alpha.bin 的字节数与源一致",
-        bastion.shared.relayed_bytes()
-    );
+    eprintln!("服务端: 跳板中继字节={}", bastion.shared.relayed_bytes());
 
     // ── 3. 回退：右栏换成本机能直达的地址 —— 跳板对那条地址没有映射，于是拒转发 ──
     choose_origin(&mut client, "right", &format!("host:{near_id}")).await;
@@ -271,7 +268,7 @@ async fn two_hosts_go_through_the_tunnel_and_fall_back_to_the_relay() {
         &[(far.addr.port(), FAR_PASSWORD)],
     )
     .await;
-    eprintln!("右栏回退到本机直连，问到过 {asked:?}");
+    eprintln!("会话: 侧=右 提示数={}", asked.len());
 
     let right = side_info(&mut client, "right").await;
     assert_eq!(
@@ -303,7 +300,6 @@ async fn two_hosts_go_through_the_tunnel_and_fall_back_to_the_relay() {
         shown.contains(&failure),
         "界面上应当把这个原因说给用户：{shown:?}"
     );
-    eprintln!("回退：经跳板直通失败（{failure}），已改为本机直连");
 
     // 服务端那一半：跳板确实又被问了一次，而这次它没有认。
     let seen = support::observed(&bastion);
@@ -348,7 +344,6 @@ async fn two_hosts_go_through_the_tunnel_and_fall_back_to_the_relay() {
         None,
         "A 档的传输记录里 `via` 应当为空（本机内存中转）"
     );
-    eprintln!("A 档：回退之后 gamma.bin 同样落到了目标盘上，传输记录里没有直通那一项");
 
     // ── 5. 关会话：两侧都收干净（外部证据 —— 我们自己说"关了"不算） ─────────────
     click(&mut client, ".sftp-stop", "结束 SFTP 会话").await;

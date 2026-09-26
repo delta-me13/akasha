@@ -30,7 +30,7 @@ const VAULT_FILE: &str = "akasha.db";
 
 fn skip_unless_e2e() -> bool {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return true;
     }
     false
@@ -50,7 +50,6 @@ async fn vault_status_agrees_with_what_the_filesystem_says() {
         .invoke_command("vault_status", None)
         .await
         .expect("vault_status 调不通 —— 它登记进 bindings.rs 了吗？");
-    eprintln!("vault_status = {status}");
 
     let path = status
         .pointer("/path")
@@ -101,13 +100,10 @@ async fn vault_status_agrees_with_what_the_filesystem_says() {
                 path.display(),
                 exe_dir.display()
             );
-            eprintln!("落点是便携目录：{}", path.display());
+            eprintln!("报告: 落点=便携目录 路径={}", path.display());
         }
         // bin 同目录还没有 `akasha-data/` 时，app 按 `portable.md` §4 第 2 条退回 OS 数据目录。
         // 这是**环境**（那台机器上有没有那个目录），不是回归 —— 显式说出来，不假装验过。
-        other => eprintln!(
-            "这台机器上 app 走了 OS 数据目录那条路（父目录名 {other:?}）—— \
-             P2 的落点判据留给 `just test-e2e`（它会在 bin 同目录建出 akasha-data/）"
-        ),
+        other => eprintln!("报告: 落点=OS 数据目录 父目录={other:?}"),
     }
 }

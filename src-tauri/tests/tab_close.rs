@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use victauri_test::VictauriClient;
 
 /// 忽略 SIGHUP 的后台探针（与 `exit_residue` 取同一个最坏情况）。
-const PROBE: &str = "sh -c 'trap \"\" HUP; echo AKPROBE=$$; exec sleep 600' &\n";
+const PROBE: &str = "sh -c 'trap \"\" HUP; echo AKPROBE=$$; exec sleep 600' &";
 
 /// 当前标签页的标题。`aria-selected` 落在标签按钮上，所以"活动"这个类名是唯一的判据。
 const ACTIVE_TITLE: &str = "document.querySelector('.tab.is-active .tab-label')?.textContent ?? ''";
@@ -109,7 +109,10 @@ fn text(value: &serde_json::Value) -> String {
 /// 多标签之后"第一个 / 最后一个 textarea"都不再唯一 —— 只有活动面里的那个是确定的
 /// （`window.__akashaTerminal` 也跟着活动面走，两者必须指同一个终端）。
 fn type_js(line: &str) -> String {
-    let literal = serde_json::to_string(line).expect("文本无法转成 JS 字符串字面量");
+    // 行尾补 CR（0x0D）：终端线上的 Enter 就是这个字节 —— POSIX 的行规程用 `ICRNL` 把它
+    // 折成 NL，而 Windows 的 ConPTY 只认 CR（送 LF 在那边既不提交命令行也不回显）。
+    let literal =
+        serde_json::to_string(&format!("{line}\r")).expect("文本无法转成 JS 字符串字面量");
     format!(
         r#"(() => {{
   const textarea = document.querySelector('.tab-pane.is-active .xterm-helper-textarea');
@@ -126,6 +129,12 @@ async fn type_line(client: &mut VictauriClient, line: &str) {
     assert!(ok(&sent), "按键没能送进 xterm：{sent}");
 }
 
+/// 一个求值为数字的 JS 表达式（`null` / 非数字一律给 `None`）。
+async fn eval_js_u64(client: &mut VictauriClient, expression: &str) -> Option<u64> {
+    let value = client.eval_js(expression).await.ok()?;
+    payload(&value).as_u64()
+}
+
 /// 等一个 JS 表达式为真（有截止时间的轮询，**不是** sleep 猜）。
 async fn wait_js(client: &mut VictauriClient, expression: &str, timeout_ms: u64, what: &str) {
     let waited = client
@@ -139,11 +148,22 @@ async fn wait_js(client: &mut VictauriClient, expression: &str, timeout_ms: u64,
     );
 }
 
-/// 进程是否**真的**活着。
+/// 这个平台能不能看一个外部进程的存活。
 ///
-/// ⚠️ `/proc/<pid>` 存在 ≠ 活着：僵尸（`Z`）也有目录项（问题 #48）。而 SIGKILL 的投递
-/// 又是异步的（问题 #45）—— 所以判据一律是"**在截止时间内消失**"，不是"信号发过了"。
+/// ⚠️ **只有 Linux 能**：判据读的是 `/proc/<pid>/stat` 的 state（`/proc/<pid>` 存在 ≠ 活着：
+/// 僵尸 `Z` 也有目录项，问题 #48；而 SIGKILL 的投递又是异步的，问题 #45）。macOS / Windows
+/// 既没有 `/proc`，也没有等价的"这个 pid 现在是什么状态"读数 —— 那两处**显式跳过**并写明
+/// 原因，换成 `sessions` probe 那条与平台无关的断言（见 `live_sessions`）。
+fn process_death_visible() -> bool {
+    cfg!(target_os = "linux")
+}
+
+/// 进程是否**真的**活着。非 Linux 上没有这一档读数（见 `process_death_visible`）——
+/// 一律返回 `true`，让"活着"那几条断言退化成恒真，调用方不必写两份。
 fn alive(pid: u32) -> bool {
+    if !process_death_visible() {
+        return true;
+    }
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
     };
@@ -151,6 +171,21 @@ fn alive(pid: u32) -> bool {
         return false;
     };
     !matches!(rest.split_whitespace().next(), None | Some("Z"))
+}
+
+/// 会话注册表里现在登记着几个会话（`sessions` probe 的 `registered`）。
+///
+/// 这是"关标签页 = 丢弃它自己的会话"那条判据**与平台无关**的一半：`alive()` 那半只有 Linux
+/// 看得到（见 `process_death_visible`），而注册表这件事在每个平台的 app 里都一样 ——
+/// 会话没被注销掉的话，它在这里就多出来一个。
+async fn registered_sessions(client: &mut VictauriClient) -> u64 {
+    client
+        .app_state(Some("sessions"))
+        .await
+        .expect("app_state { probe: \"sessions\" } 调不通 —— probe 注册上了吗？")
+        .pointer("/registered")
+        .and_then(serde_json::Value::as_u64)
+        .expect("sessions probe 的返回里必须有 registered")
 }
 
 fn waits_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
@@ -202,15 +237,43 @@ fn screen_has(needle: &str) -> String {
 #[tokio::test]
 async fn closing_a_terminal_tab_discards_only_its_own_session() {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return;
     }
+
+    // Windows 上跳过：这条用例的探针是一个 **POSIX shell 程序**
+    // （`sh -c 'trap "" HUP; echo AKPROBE=$$; exec sleep 600' &`）—— 那边的默认 shell 是
+    // cmd.exe，写不出"忽略 SIGHUP 的后台作业"；而"把它一起收走"这件事在 Windows 上依赖
+    // 会话级回收（Job Object），尚未实现（见 `docs/STATUS.md` 的 Windows 会话回收缺口）。
+    // 平台无法运行的用例显式跳过并写明原因（`AGENTS.md` §7）——留在这里的其余断言也
+    // 一并跳过，不为它们另立一份弱判据。
+    if cfg!(windows) {
+        eprintln!("跳过: 探针是 POSIX shell 程序，且 Windows 的会话级回收（Job Object）尚未实现");
+        return;
+    }
+
     let mut client = VictauriClient::discover()
         .await
         .expect("连不上 app —— 配方起了吗？");
 
     // ── 0. 起点：一个标签页，终端渲染出来 ───────────────────────────────────
+    // ⚠️ **先前目标可能留下标签页**（上一个目标失败时它自己启的标签页不会被收；app 是
+    // **所有目标共用的那一个**）。这一条判据是"注册表读数回到起点"，而起点必须是确定的 ——
+    // 所以先把现有的标签页全关掉，再按下 '+' 开一个，从**已知**状态开始。
+    // 不这么做的话：起点被算成 2，而关完最后一个只剩 1，断言就会报"还有会话没注销干净"。
+    while !matches!(eval_js_u64(&mut client, COUNT_TABS).await, Some(0)) {
+        let closed = client.eval_js(&close_tab_js(0)).await.unwrap();
+        if !ok(&closed) {
+            break;
+        }
+        wait_js(&mut client, &tabs_eq(0), 10_000, "清掉先前目标留下的标签页").await;
+    }
+    assert!(
+        ok(&client.eval_js(NEW_TAB).await.unwrap()),
+        "找不到新建标签页的按钮"
+    );
     wait_js(&mut client, &tabs_eq(1), 30_000, "初始只有一个标签页").await;
+    let sessions_at_start = registered_sessions(&mut client).await;
     wait_js(
         &mut client,
         "!!window.__akashaTerminal && window.__akashaTerminal.renderer !== 'none'",
@@ -229,12 +292,9 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
             "丢上下文后退到 canvas",
         )
         .await;
-        eprintln!("已把标签页 1 的 WebGL 上下文丢掉（退到 canvas）");
+        eprintln!("构造: 标签页=1 渲染器=canvas");
     } else {
-        eprintln!(
-            "跳过丢上下文：当前不是 WebGL 渲染器（可能已经被前面的目标丢过了 —— 那也满足本用例的前提），\
-             或驱动不提供 WEBGL_lose_context"
-        );
+        eprintln!("跳过: 当前渲染器不是 WebGL 或驱动不提供 WEBGL_lose_context");
     }
 
     // ── 1. 标签页 1 里的探针 A ─────────────────────────────────────────────
@@ -257,6 +317,12 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "第二个终端渲染出来",
     )
     .await;
+    let sessions_two_tabs = registered_sessions(&mut client).await;
+    assert!(
+        sessions_two_tabs > sessions_at_start,
+        "开了第二个标签页，注册表里的会话数没有增加（{sessions_at_start} → {sessions_two_tabs}）—— \
+         两个标签页必须各有一个自己的会话"
+    );
     assert!(
         alive(probe_a),
         "开第二个标签页就把第一个的进程弄没了：{probe_a}"
@@ -268,7 +334,7 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         alive(probe_b) && probe_a != probe_b,
         "两个标签页必须是两个会话（探针 {probe_a} / {probe_b}）"
     );
-    eprintln!("标签页 1：探针 A = {probe_a}；标签页 2：探针 B = {probe_b}");
+    eprintln!("探针: 标签页1={probe_a} 标签页2={probe_b}");
 
     // ── 4. 切回标签页 1：**切换不是关闭** ──────────────────────────────────
     assert!(
@@ -285,10 +351,6 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
     assert!(
         alive(probe_a) && alive(probe_b),
         "切换标签页不该收掉任何会话（A {probe_a} / B {probe_b}）"
-    );
-    eprintln!(
-        "标签页数：1 → + → 2 → 切换（当前「{}」）→ 两个探针都还在",
-        text(&client.eval_js(ACTIVE_TITLE).await.unwrap())
     );
 
     // ── 5. 点 × 关闭标签页 1：**立刻丢弃** ─────────────────────────────────
@@ -316,14 +378,27 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "剩下的标签页接管",
     )
     .await;
+    // ⚠️ '进程真的没了'这一条只有 Linux 看得到（`process_death_visible()`）：非 Linux 上
+    // `alive()` 恒为 true，条件永远不成立 —— 所以整条用 `||` 短路掉，别让它空等满 15s。
     assert!(
-        waits_until(Duration::from_secs(15), || !alive(probe_a)),
+        !process_death_visible() || waits_until(Duration::from_secs(15), || !alive(probe_a)),
         "关闭标签页之后探针 A({probe_a}) 还活着 —— 这个会话没被丢弃"
     );
-    eprintln!(
-        "探针 A({probe_a}) 已随标签页消失（{} ms）",
-        clicked.elapsed().as_millis()
+    // 与平台无关的那一半：那个会话**必须从注册表里没掉**。只看进程的话，Linux 之外
+    // 这一条会整个跳过（`process_death_visible()`），而“没注销干净”正是最难看见的那种漏。
+    let sessions_after_close = registered_sessions(&mut client).await;
+    assert_eq!(
+        sessions_after_close, sessions_at_start,
+        "关掉标签页 1 之后注册表里的会话数没回到起点：{sessions_two_tabs} 到 {sessions_after_close}（起点 {sessions_at_start}）",
     );
+    if process_death_visible() {
+        eprintln!(
+            "会话: 关闭耗时_ms={} 探针={probe_a}",
+            clicked.elapsed().as_millis()
+        );
+    } else {
+        eprintln!("跳过: 非 Linux 平台，进程级判据不可用");
+    }
 
     // ── 6. **只丢它自己**：另一个标签页的进程与屏幕内容都要在 ───────────────
     assert!(
@@ -338,10 +413,9 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "剩下的标签页接管探针且屏幕内容仍在",
     )
     .await;
-    eprintln!("探针 B({probe_b}) 仍在，且它的屏幕内容还在");
 
     // 剩下的那个标签页**还能用** —— 关掉一个标签页不该把界面带坏。
-    type_line(&mut client, "printf 'akasha-tab-alive-%s\\n' ok\n").await;
+    type_line(&mut client, "printf 'akasha-tab-alive-%s\\n' ok").await;
     wait_js(
         &mut client,
         &screen_has("akasha-tab-alive-ok"),
@@ -359,8 +433,15 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
     );
     wait_js(&mut client, &tabs_eq(0), 10_000, "标签页全部关闭（空状态）").await;
     assert!(
-        waits_until(Duration::from_secs(15), || !alive(probe_b)),
+        !process_death_visible() || waits_until(Duration::from_secs(15), || !alive(probe_b)),
         "关掉最后一个标签页之后探针 B({probe_b}) 还活着 —— 这个会话没被丢弃"
+    );
+    // 与平台无关的那一半（同第 5 步）：空状态 = 一个会话都不剩（0 个标签页对应 0 个会话）。
+    // 比 0 多就是有会话没被注销干净 —— 这正是"关最后一个标签页"最容易漏的那一步。
+    let sessions_empty = registered_sessions(&mut client).await;
+    assert_eq!(
+        sessions_empty, 0,
+        "关掉最后一个标签页之后注册表里还剩着会话：{sessions_after_close} 到 {sessions_empty}",
     );
     let empty = text(
         &client
@@ -372,7 +453,6 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         empty.contains("没有打开的标签页"),
         "关掉最后一个标签页之后没有空状态（app 是不是被带崩了？）：{empty:?}"
     );
-    eprintln!("关掉最后一个标签页：空状态（app 仍在），探针 B({probe_b}) 也随会话被丢弃");
 
     // 空状态下还能再开一个 —— 界面是空的，进程不是。
     assert!(
@@ -387,7 +467,7 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "重开的终端渲染出来",
     )
     .await;
-    type_line(&mut client, "printf 'akasha-reopened-%s\\n' ok\n").await;
+    type_line(&mut client, "printf 'akasha-reopened-%s\\n' ok").await;
     wait_js(
         &mut client,
         &screen_has("akasha-reopened-ok"),
@@ -402,7 +482,7 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
     //
     // ⚠️ 必须在**干净**的标签页里敲：会话里若还有别的进程握着 PTY（例如忽略 SIGHUP 的
     // 后台作业），主端就读不到 EOF —— 那时真实终端的行为也是"标签页留着"，不是 bug。
-    type_line(&mut client, "exit\n").await;
+    type_line(&mut client, "exit").await;
     wait_js(
         &mut client,
         &tabs_eq(0),
@@ -410,7 +490,6 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "敲 exit 之后标签页自己关掉（会话结束 = 标签页关闭）",
     )
     .await;
-    eprintln!("在终端里敲 exit：标签页自己关掉（app 仍在）");
 
     // 会话结束了 ≠ app 退出：还能再开一个（也给后面的 `exit_residue` 留个能用的终端）。
     assert!(
@@ -425,7 +504,7 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "exit 之后新开的终端渲染出来",
     )
     .await;
-    type_line(&mut client, "printf 'akasha-after-exit-%s\\n' ok\n").await;
+    type_line(&mut client, "printf 'akasha-after-exit-%s\\n' ok").await;
     wait_js(
         &mut client,
         &screen_has("akasha-after-exit-ok"),
@@ -433,7 +512,4 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "exit 之后新开的标签页可交互",
     )
     .await;
-
-    eprintln!("✅ 关闭终端标签页 = 立刻丢弃该 Session，且只丢它自己（关掉最后一个也不退出应用）");
-    eprintln!("✅ 在终端里敲 exit：会话自己结束，标签页跟着关掉（app 仍在）");
 }

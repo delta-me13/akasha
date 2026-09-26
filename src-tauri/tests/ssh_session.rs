@@ -77,7 +77,7 @@ async fn an_ssh_session_flows_bytes_and_asks_for_a_credential_once() {
     // ── 1. 服务端（在**本进程**里）：随机端口 + 只认口令 ─────────────────────
     let server = start(ServerOptions::password(PASSWORD)).await;
     eprintln!(
-        "服务端：127.0.0.1:{} 指纹 {}",
+        "构造: 服务端=127.0.0.1:{} 指纹={}",
         server.addr.port(),
         server.fingerprint
     );
@@ -108,7 +108,6 @@ async fn an_ssh_session_flows_bytes_and_asks_for_a_credential_once() {
         None,
         "这一行没有跳板：jumpId 该是 null（有值的话说明池里那列被写进了别的东西）"
     );
-    eprintln!("主机池：{listed}");
 
     // ── 4. 界面：点 SSH → 选主机 ─────────────────────────────────────────────
     let before_tabs = text(
@@ -134,7 +133,7 @@ async fn an_ssh_session_flows_bytes_and_asks_for_a_credential_once() {
         "选这台主机",
     )
     .await;
-    eprintln!("界面：已从主机选择器里选中 id={host_id}（选之前 {before_tabs} 个标签页）");
+    eprintln!("界面: 主机id={host_id} 标签页数={before_tabs}");
 
     // ── 5. 未知主机密钥：**问**，而且给出的指纹要能核对 ──────────────────────
     wait_js(
@@ -149,7 +148,6 @@ async fn an_ssh_session_flows_bytes_and_asks_for_a_credential_once() {
         shown, server.fingerprint,
         "提示里那串指纹必须就是服务端的（用户拿它去核对，给错等于没给）"
     );
-    eprintln!("SSH 提示：hostKey 指纹与上面一致（{shown}）");
 
     // ── 6. 凭据：问到口令，填进去提交 ───────────────────────────────────────
     click(
@@ -165,7 +163,6 @@ async fn an_ssh_session_flows_bytes_and_asks_for_a_credential_once() {
         "主机密钥之后该问登录口令",
     )
     .await;
-    eprintln!("SSH 提示：credential（password）");
     fill_secret(&mut client, PASSWORD).await;
     click(
         &mut client,
@@ -185,7 +182,7 @@ async fn an_ssh_session_flows_bytes_and_asks_for_a_credential_once() {
     assert_eq!(title, HOST_NAME, "标签页标题该是池里那台主机的名字");
 
     // ── 8. 字节能双向流 ────────────────────────────────────────────────────
-    type_line(&mut client, "echo ssh-hello\n").await;
+    type_line(&mut client, "echo ssh-hello").await;
     wait_js(
         &mut client,
         "window.__akashaTerminal.screenText(200).includes('ssh-hello')",
@@ -198,7 +195,6 @@ async fn an_ssh_session_flows_bytes_and_asks_for_a_credential_once() {
         seen.contains("echo ssh-hello"),
         "服务端没收到那行字节（收到 {seen:?}）—— \"能发出去\"与\"对端收到了\"是两件事"
     );
-    eprintln!("终端回声：ssh-hello（服务端也收到了同一串）");
 
     // ── 9. 确认过的主机密钥真的进了**我们的库** ──────────────────────────────
     let recorded = recorded_host_keys(&path);
@@ -212,11 +208,10 @@ async fn an_ssh_session_flows_bytes_and_asks_for_a_credential_once() {
         "记的指纹该是服务端那把"
     );
     eprintln!(
-        "库里 known_hosts：{} 行（{}:{} {}）",
+        "池: known_hosts行数={} 主机={}:{}",
         recorded.len(),
         row.host,
-        row.port,
-        row.key_type
+        row.port
     );
 
     // ── 10. 凭据只问一次：第二个会话**一次都不问** ───────────────────────────
@@ -251,7 +246,6 @@ async fn an_ssh_session_flows_bytes_and_asks_for_a_credential_once() {
         "第二次认证用的必须还是同一句口令：{:?}",
         after.passwords
     );
-    eprintln!("第二个会话：0 次提示，服务端第 2 次收到同一句口令");
 
     // ── 11. 关标签页零残留 ────────────────────────────────────────────────
     // 关掉两个 SSH 标签页（它们排在本地终端后面），只留最开始那个。
@@ -294,14 +288,17 @@ async fn an_ssh_session_flows_bytes_and_asks_for_a_credential_once() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    eprintln!("关标签页：sessions probe = {sessions}");
+    eprintln!(
+        "会话: live={} registered={}",
+        sessions["live"], sessions["registered"]
+    );
 
     // 对端：服务端看到两条连接都断了（这是"连接真的没了"的唯一外部证据）。
     let deadline = std::time::Instant::now() + CLOSE_TIMEOUT;
     loop {
         let closed = observed(&server).sessions_closed;
         if closed >= 2 {
-            eprintln!("关标签页：服务端看到 {closed} 条连接断开");
+            eprintln!("服务端: 连接关闭={closed}");
             break;
         }
         assert!(

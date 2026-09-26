@@ -105,7 +105,7 @@ async fn the_panel_lists_the_ports_and_opens_what_the_form_says() {
         return;
     }
     if let Some(reason) = support::fake_serial_skip_reason() {
-        eprintln!("跳过 serial_ports_ui：{reason}");
+        eprintln!("跳过: {reason}");
         return;
     }
 
@@ -121,7 +121,7 @@ async fn the_panel_lists_the_ports_and_opens_what_the_form_says() {
         .expect("serial_ports 调不通 —— 它登记进 bindings.rs 了吗？");
     let ports = listed.as_array().cloned().unwrap_or_default();
     let expected = ports.len();
-    eprintln!("枚举：后端 {expected} 条：{listed}");
+    eprintln!("端口: 后端条数={expected}");
 
     let tabs_before = tab_count(&mut client).await;
     let sessions_before = sessions_probe(&mut client).await;
@@ -138,7 +138,6 @@ async fn the_panel_lists_the_ports_and_opens_what_the_form_says() {
     )
     .await;
     wait_text_contains(&mut client, "[data-pool-problem]", "先解锁").await;
-    eprintln!("界面：端口列表 {expected} 条（与后端一致）；池那一块显示先解锁，端口照常");
 
     // ── 3. 点一条枚举结果 → 它被填进"设备路径"那一栏 ─────────────────────────
     if expected > 0 {
@@ -152,10 +151,9 @@ async fn the_panel_lists_the_ports_and_opens_what_the_form_says() {
             first,
             "点一条端口该把它的路径填进那一栏"
         );
-        eprintln!("据此填路径：{first}");
     } else {
         // 显式跳过并写明原因，而不是悄悄少验一条（CI 上的 runner 就是这一类机器）。
-        eprintln!("跳过「点一条枚举结果」：本机枚举为空 —— 这一类机器上这是正常结果");
+        eprintln!("跳过: 本机枚举为空，这一类机器上属于正常结果");
     }
 
     // ── 4. 手输设备的路径 → 打开 → 双向字节（判据"或手输路径"的收口）──────────
@@ -186,9 +184,9 @@ async fn the_panel_lists_the_ports_and_opens_what_the_form_says() {
         "设备发来的字节出现在了终端上",
     )
     .await;
-    type_line(&mut client, &format!("{TO_DEVICE}\n")).await;
+    type_line(&mut client, TO_DEVICE).await;
     let got = device.wait_received(TO_DEVICE).await;
-    eprintln!("手输路径：{FROM_DEVICE} 到了界面、{got:?} 回到了设备");
+    eprintln!("会话: 设备字节={FROM_DEVICE} 主端收到={got:?}");
 
     click(&mut client, ".tab.is-active .tab-close", "关闭串口标签页").await;
     wait_js(
@@ -231,7 +229,6 @@ async fn the_panel_lists_the_ports_and_opens_what_the_form_says() {
         "data_bits = 9",
     )
     .await;
-    eprintln!("越界取值：那个面的报错行里写着 data_bits = 9");
     click(
         &mut client,
         ".tab.is-active .tab-close",
@@ -239,7 +236,10 @@ async fn the_panel_lists_the_ports_and_opens_what_the_form_says() {
     )
     .await;
     let back = wait_sessions(&mut client, &sessions_before).await;
-    eprintln!("越界取值：关掉之后 sessions probe = {back}（打开前 {sessions_before}）");
+    eprintln!(
+        "会话: live={} registered={}",
+        back["live"], back["registered"]
+    );
 
     // ── 6. 填不出来的值：**不开面**（这一档由面板自己拦，它不是取值域）─────────
     open_serial_panel(&mut client).await;
@@ -256,7 +256,6 @@ async fn the_panel_lists_the_ports_and_opens_what_the_form_says() {
         tabs_before,
         "寄不出去的参数不该开出一个面"
     );
-    eprintln!("填不出来的值：面板自己拦下了（没有开面）");
     click(&mut client, ".serial-picker-close", "关掉串口面板").await;
 
     // ── 7. 收尾：锁上（本来就没解锁）并删掉自己造的库（`_fixture` 的析构负责删）──

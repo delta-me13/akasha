@@ -174,13 +174,14 @@ async fn socks5_rep(port: u16, host: &str, target_port: u16) -> u8 {
 fn seed(path: &Path, ssh_port: u16) -> (i64, i64, u16) {
     let conn = open_vault(path);
 
-    // 先清干净（重跑）：主机行与规则行都按名字清。
-    forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
+    // 先清干净（重跑）：**规则先删、主机行后删** —— 规则的外键指着主机行，
+    // 反过来写会在"上一次留下了规则"时撞上 `FOREIGN KEY constraint failed`。
     for row in forwards::forwards(&conn).unwrap() {
         if row.name == FORWARD_NAME || row.name == EXPOSED_NAME {
             forwards::delete_forward(&conn, row.id).unwrap();
         }
     }
+    forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
 
     let host_id = hosts::insert_host(
         &conn,
@@ -262,7 +263,7 @@ async fn a_socks5_port_forwards_whatever_the_client_names() {
     })
     .await;
     eprintln!(
-        "服务端：127.0.0.1:{}（HTTP 服务在 {}）",
+        "构造: 服务端=127.0.0.1:{} HTTP服务=127.0.0.1:{}",
         server.addr.port(),
         http.port()
     );
@@ -298,7 +299,7 @@ async fn a_socks5_port_forwards_whatever_the_client_names() {
     let (handle, asked) =
         connect_tunnel_through_prompts(&mut client, open_rule, &server.fingerprint, PASSWORD).await;
     assert!(handle > 0, "probe 里必须有 handle");
-    eprintln!("隧道已连接：handle={handle}，问到过 {asked:?}");
+    eprintln!("隧道: handle={handle} 提示数={}", asked.len());
 
     let want = format!("127.0.0.1:{bind_port}");
     assert_eq!(
@@ -314,7 +315,6 @@ async fn a_socks5_port_forwards_whatever_the_client_names() {
             .expect("curl 那条阻塞任务没回话");
     assert!(ok, "curl 经 SOCKS5 取远端服务失败（stderr={stderr:?}）");
     assert_eq!(stdout, BODY, "curl 取回来的不是远端服务写的那一串字节");
-    eprintln!("curl --socks5-hostname 取回：{stdout:?}");
 
     // 对端那一半：它被要求连的**正是 curl 在握手里说的那个名字**，字节也真的搬过去了。
     let deadline = Instant::now() + CLOSE_TIMEOUT;
@@ -382,7 +382,7 @@ async fn a_socks5_port_forwards_whatever_the_client_names() {
         shown.contains("0.0.0.0"),
         "失败里要能看出是哪条地址（这一条是 0.0.0.0）：{shown:?}"
     );
-    eprintln!("非回环那条：{shown}");
+    eprintln!("界面: 失败提示={shown}");
     assert!(
         !tunnel_entries(&mut client)
             .await
@@ -403,15 +403,9 @@ async fn a_socks5_port_forwards_whatever_the_client_names() {
 
     let deadline = Instant::now() + CLOSE_TIMEOUT;
     loop {
-        // 监听撤掉之后连过去是"连接被拒"，不是"超时"。
-        let refused = tokio::time::timeout(
-            Duration::from_secs(2),
-            TcpStream::connect(("127.0.0.1", bind_port)),
-        )
-        .await
-        .map(|result| result.is_err())
-        .unwrap_or(false);
-        if refused {
+        // 监听撤掉 = 连不上（用 `support::port_released` 探：tokio 的连接在 Windows 上
+        // 连一个已经关掉的端口只会超时，见那里的说明）。
+        if support::port_released(bind_port) {
             break;
         }
         assert!(
@@ -438,7 +432,7 @@ async fn a_socks5_port_forwards_whatever_the_client_names() {
     loop {
         let closed = support::observed(&server).connections_closed;
         if closed >= 1 {
-            eprintln!("停止：服务端看到 {closed} 条连接断开");
+            eprintln!("服务端: 断开连接={closed}");
             break;
         }
         assert!(

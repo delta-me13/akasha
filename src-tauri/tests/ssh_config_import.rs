@@ -150,14 +150,15 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
     // ── 1. 两台服务端（都在**本进程**里）────────────────────────────────────
     let (jump, target) = two_hosts().await;
     eprintln!(
-        "跳板：127.0.0.1:{} 指纹 {}（口令 {JUMP_PASSWORD}）\n目标：{INNER_NAME}:{INNER_PORT} · \
-         真实地址 {} · 指纹 {}（口令 {TARGET_PASSWORD}）\nSSH_AUTH_SOCK={:?}（导入的条目按 \
-         publickey 落库，认证会先试 agent）",
+        "构造: 跳板=127.0.0.1:{} 跳板指纹={} 跳板口令={JUMP_PASSWORD} \
+         目标={INNER_NAME}:{INNER_PORT} 目标地址={} 目标指纹={} 目标口令={TARGET_PASSWORD} \
+         ssh_agent={}",
         jump.addr.port(),
         jump.fingerprint,
         target.addr,
         target.fingerprint,
-        std::env::var_os("SSH_AUTH_SOCK"),
+        std::env::var_os("SSH_AUTH_SOCK")
+            .map_or_else(|| "无".to_owned(), |v| v.to_string_lossy().into_owned()),
     );
 
     // ── 2. "只对跳板机可见"的那一半（与 `ssh_jump.rs` 同一条构造前提）──────
@@ -167,7 +168,7 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
         "那个目标名在本机解析得出来（{:?}）—— 这条用例的构造前提就不成立了",
         resolved.map(|mut addrs| addrs.next())
     );
-    eprintln!("构造前提：{INNER_NAME} 在本机解析失败（RFC 2606）—— 直连这条路不存在");
+    eprintln!("构造: 目标名={INNER_NAME} 本机解析=失败");
 
     // ── 3. 库 + 清干净 + 解锁 ───────────────────────────────────────────────
     let Some((mut client, _fixture, path)) = connect_and_prepare().await else {
@@ -209,7 +210,6 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
         supported, "Host,HostName,User,Port,IdentityFile,ProxyJump",
         "界面要把支持的六条列出来（后端 `sshconfig::supported()` 就是这六条）"
     );
-    eprintln!("界面：支持集 = {supported}");
 
     click(&mut client, ".config-import-summary", "展开导入面板").await;
     fill_input(&mut client, "[data-import-path]", &good.to_string_lossy()).await;
@@ -223,7 +223,7 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
     .await;
 
     let counts = text_of(&mut client, "[data-import-counts]").await;
-    eprintln!("导入报告：{counts}");
+    eprintln!("报告: 计数={counts}");
     assert!(
         counts.contains("新增 2")
             && counts.contains(&good.file_name().unwrap().to_string_lossy().to_string()),
@@ -236,10 +236,10 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
         ignored.contains("serveraliveinterval") && ignored.contains("identityfile"),
         "两条局部指令都要被列出来（拿到 {ignored:?}）"
     );
-    eprintln!("未生效：{ignored}");
+    eprintln!("报告: 未生效={ignored}");
 
     let rows = pool(&mut client).await;
-    eprintln!("主机池：{rows:?}");
+    eprintln!("池: 行数={}", rows.len());
     let jump_row = row(&rows, JUMP_NAME);
     let jump_id = jump_row.pointer("/id").and_then(Value::as_u64).unwrap();
     let target_row = row(&rows, TARGET_NAME);
@@ -277,7 +277,7 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
     )
     .await;
     let problems = text_of(&mut client, "[data-import-problems]").await;
-    eprintln!("整份被拒：{problems}");
+    eprintln!("报告: 拒绝原因={problems}");
     assert!(
         problems.contains("match"),
         "报错要点出是哪条指令（拿到 {problems:?}）"
@@ -321,7 +321,7 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
     )
     .await;
     let unreadable = text_of(&mut client, "[data-import-problem]").await;
-    eprintln!("读不到：{unreadable}");
+    eprintln!("报告: 读取失败={unreadable}");
     assert!(
         unreadable.contains("读不到") && unreadable.contains("does-not-exist.conf"),
         "要说清读不到哪个文件（拿到 {unreadable:?}）"
@@ -343,7 +343,7 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
         &format!(".host-picker-item[data-host-id=\"{jump_id}\"] .host-picker-target"),
     )
     .await;
-    eprintln!("界面：跳板那一行是 {badge}");
+    eprintln!("界面: 跳板={badge}");
     click(
         &mut client,
         &format!(
@@ -366,7 +366,7 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
         },
     )
     .await;
-    eprintln!("提示问答（按发生顺序）：{asked:?}");
+    eprintln!("界面: 提示数={}", asked.len());
     wait_connected(&mut client, 2, "由导入的配置开出来的 SSH 会话").await;
 
     // ── 7. 跳板那一半：它被要求连的正是那个只有它认识的名字 ─────────────────
@@ -378,13 +378,9 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
         jump_seen.direct_tcpip
     );
     assert_eq!(jump_seen.direct_tcpip[0].host, INNER_NAME);
-    eprintln!(
-        "跳板服务端：收到 1 条 direct-tcpip → {}:{}",
-        jump_seen.direct_tcpip[0].host, jump_seen.direct_tcpip[0].port
-    );
 
     // ── 8. 字节能双向流：到了**目标** ───────────────────────────────────────
-    type_line(&mut client, "echo via-imported-config\n").await;
+    type_line(&mut client, "echo via-imported-config").await;
     wait_js(
         &mut client,
         "window.__akashaTerminal.screenText(200).includes('via-imported-config')",
@@ -397,7 +393,6 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
         seen.contains("echo via-imported-config"),
         "目标服务端没收到那行字节（收到 {seen:?}）"
     );
-    eprintln!("终端回声：via-imported-config（目标收到了同一串）");
 
     // ── 9. 关标签页零残留（这条会话与别的会话同一个收尾路径）────────────────
     let closed = client
@@ -435,7 +430,10 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    eprintln!("关标签页：sessions probe = {sessions}");
+    eprintln!(
+        "会话: live={} registered={}",
+        sessions["live"], sessions["registered"]
+    );
 
     // ── 10. 收尾 ────────────────────────────────────────────────────────────
     let _ = client.invoke_command("vault_lock", None).await;

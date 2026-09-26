@@ -131,6 +131,14 @@ async fn bitwarden_login_unlock_and_lock_are_visible_in_the_panel() {
     if support::skip_unless_e2e() {
         return;
     }
+
+    // Windows 上跳过：这条用例的假 `bw` 是一份 POSIX shell 脚本（`#!/bin/sh`）—— 那边
+    // `CreateProcess` 不执行脚本，需要一个真的 `.exe`，而本仓库还没有这样的假 CLI。
+    // 平台无法运行的用例显式跳过并写明原因（`AGENTS.md` §7）。
+    if cfg!(windows) {
+        eprintln!("跳过: 假 bw 是 POSIX shell 脚本，Windows 上需要一个真的可执行文件");
+        return;
+    }
     let Some((mut client, _fixture, vault)) = connect_and_prepare().await else {
         return;
     };
@@ -151,15 +159,17 @@ async fn bitwarden_login_unlock_and_lock_are_visible_in_the_panel() {
     // 而它在只读家目录里跑不起来 —— 所以这里看到的多半是"跑不起来"而不是"找不到"。
     // 两种都算"这一轴用不了"，断言因此只要求**有一句可读的话、并且提到了 bw**；
     // 是哪一种由日志记下来（这条用例的输出会进 `just test-e2e` 的日志）。
-    eprintln!("host 轴上的话 = {host_problem:?}");
     match &host_problem {
-        Some(problem) => assert!(
-            problem.contains("bw"),
-            "`host` 轴用不了时，那句话要说清是这一件事：{problem}"
-        ),
+        Some(problem) => {
+            assert!(
+                problem.contains("bw"),
+                "`host` 轴用不了时，那句话要说清是这一件事：{problem}"
+            );
+            eprintln!("探针: host轴问题={problem}");
+        }
         None => eprintln!(
-            "注意：这台机器上 host 轴是可用的（版本 {:?}）—— 这一条的对照物因此弱一些",
-            host["cli"]["version"]
+            "探针: host轴=可用 版本={}",
+            host["cli"]["version"].as_str().unwrap_or("?")
         ),
     }
 

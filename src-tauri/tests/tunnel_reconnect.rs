@@ -154,13 +154,14 @@ fn assert_curl(port: u16, what: &str) {
 fn seed(path: &Path, ssh_port: u16, http_port: u16) -> (i64, i64, u16, u16) {
     let conn = open_vault(path);
 
-    // 先清干净（重跑）：主机行与规则行都按名字清。
-    forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
+    // 先清干净（重跑）：**规则先删、主机行后删** —— 规则的外键指着主机行，
+    // 反过来写会在"上一次留下了规则"时撞上 `FOREIGN KEY constraint failed`。
     for row in forwards::forwards(&conn).unwrap() {
         if row.name == LOCAL_NAME || row.name == REMOTE_NAME {
             forwards::delete_forward(&conn, row.id).unwrap();
         }
     }
+    forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
 
     let host_id = hosts::insert_host(
         &conn,
@@ -345,7 +346,7 @@ async fn a_lost_connection_is_retried_and_its_exhaustion_is_visible() {
     })
     .await;
     eprintln!(
-        "服务端：127.0.0.1:{}（本机 HTTP 服务在 {}）",
+        "构造: 服务端=127.0.0.1:{} HTTP服务=127.0.0.1:{}",
         server.addr.port(),
         http.port()
     );
@@ -388,12 +389,11 @@ async fn a_lost_connection_is_retried_and_its_exhaustion_is_visible() {
         shown.contains("第 1 次"),
         "面板要报出**第几次**（用户据此判断还要等多久）：{shown:?}"
     );
-    eprintln!("面板上那一刻：{shown}");
+    eprintln!("界面: 面板状态={shown}");
     wait_attempt(&mut client, remote_handle, 1).await;
 
     wait_reconnected(&mut client, local_handle).await;
     wait_reconnected(&mut client, remote_handle).await;
-    eprintln!("两条隧道都自己回来了");
 
     // **判据：连得回来** —— 两个转发端口都又能用（真实客户端）。
     assert_curl(local_port, "本机转发（重连之后）");
@@ -484,7 +484,6 @@ async fn a_lost_connection_is_retried_and_its_exhaustion_is_visible() {
         Some(true),
         "停止之后那条隧道又被重连循环拉起来了：{resumed}"
     );
-    eprintln!("停止之后 3 秒内没有新的 connected：重连循环真的停了");
 
     // ── 6. 耗尽次数 → 失败（probe / 面板 / 托盘三处都看得见）─────────────────
     // 远端那条先停掉：下面要让整个服务端消失，观察点只剩本机那条才干净。
@@ -505,7 +504,7 @@ async fn a_lost_connection_is_retried_and_its_exhaustion_is_visible() {
     assert!(gone >= 1, "服务端消失时该切掉那条连接（实际 {gone} 条）");
     wait_state(&mut client, handle, "failed").await;
     let elapsed = started.elapsed();
-    eprintln!("从服务端消失到「失败」用了 {elapsed:?}");
+    eprintln!("隧道: 失败耗时={elapsed:?}");
     assert!(
         elapsed >= BUDGET,
         "重连预算 1s + 2s + 4s 至少是 {BUDGET:?}，实际只用 {elapsed:?} —— 次数或退避不对"
@@ -578,11 +577,11 @@ async fn a_lost_connection_is_retried_and_its_exhaustion_is_visible() {
                 .any(|label| label.as_str() == Some(wanted.as_str())),
             "托盘菜单里该有一行写着「{wanted}」：{labels:?}"
         );
-        eprintln!("托盘：{labels:?}");
+        eprintln!("界面: 托盘菜单项数={}", labels.len());
     } else {
         // 没有托盘宿主的机器（只读 runtime dir / 容器 / 部分 Wayland 合成器）上，
         // 那几行文字没有去处 —— 显式说明，而不是把"没有托盘"当成"状态不可见"。
-        eprintln!("这台机器上建不起托盘，跳过托盘那一处断言（probe 里 ready = false）");
+        eprintln!("跳过: 本机没有托盘宿主（probe 里 ready = false）");
     }
 
     // ── 7. 耗尽之后仍可手动重试（D12）────────────────────────────────────────
@@ -606,7 +605,7 @@ async fn a_lost_connection_is_retried_and_its_exhaustion_is_visible() {
             && after_retry.contains(&"failed".to_owned()),
         "手动重试要**再走一遍**连接中 → 失败：{after_retry:?}"
     );
-    eprintln!("手动重试：{after_retry:?}");
+    eprintln!("隧道: 重试状态数={}", after_retry.len());
 
     // ── 8. 收尾 ──────────────────────────────────────────────────────────────
     client

@@ -1,11 +1,15 @@
 {
-  "script_sha256": "a8c2594a9890db703ac67531cf1f6eef5cb36c7e5b187a85304619605521bcd2",
+  "script_sha256": "bb884c58ef1a3394b1a1acdbbb284d7e08e545e048ac58d0848310383c946fd3",
   "workdir": "/Users/firefly/akasha",
   "idle_timeout_sec": 900,
   "max_lifetime_sec": 14400,
   "action_timeout_sec": 1800,
   "max_concurrent_actions": 4,
   "result_ttl_sec": 3600,
+  "env": {
+    "TMPDIR": "/tmp",
+    "USER": "firefly"
+  },
   "actions": {
     "check": [
       "/Users/firefly/.local/share/mise/installs/just/1.58.0/just",

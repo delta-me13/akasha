@@ -129,13 +129,13 @@ async fn sftp_transfers_never_leave_a_half_written_file() {
         .expect("这台服务端应当提供 SFTP")
         .to_path_buf();
     eprintln!(
-        "服务端 127.0.0.1:{} · 根目录 {}",
+        "构造: 服务端=127.0.0.1:{} 根目录={}",
         server.addr.port(),
         root.display()
     );
 
     let scratch = Scratch::new();
-    eprintln!("本机目标目录 {}", scratch.path().display());
+    eprintln!("构造: 本机目标目录={}", scratch.path().display());
 
     let Some((mut client, _fixture, vault)) = connect_and_prepare().await else {
         return;
@@ -171,7 +171,7 @@ async fn sftp_transfers_never_leave_a_half_written_file() {
 
     // 右栏连那台主机（要答主机密钥与口令两轮 —— 步数由用例自己数，不写死）。
     let asked = connect_side(&mut client, "right", &server.fingerprint).await;
-    eprintln!("右侧连上，问到过 {asked:?}");
+    eprintln!("会话: 侧=右 提示数={}", asked.len());
     wait_js(
         &mut client,
         "!!document.querySelector('.sftp-pane[data-side=\"right\"] \
@@ -208,8 +208,8 @@ async fn sftp_transfers_never_leave_a_half_written_file() {
         "传输中目标目录里只该有临时名"
     );
     eprintln!(
-        "取消之前：搬了 {done} / {total} 字节，目标目录 {:?}",
-        scratch.names()
+        "会话: 已搬字节={done} 总字节={total} 目标目录条目={}",
+        scratch.names().len()
     );
 
     click(&mut client, ".sftp-transfer-cancel", "取消这次传输").await;
@@ -231,10 +231,6 @@ async fn sftp_transfers_never_leave_a_half_written_file() {
         scratch.names().is_empty(),
         "取消之后目标目录必须是空的（既没有 big.bin，也没有临时名）：{:?}",
         scratch.names()
-    );
-    eprintln!(
-        "取消之后：目标目录里 {} 个条目（既没有 big.bin，也没有临时名）",
-        scratch.names().len()
     );
 
     // 探针那一半：后端自己记的也是"已取消"。
@@ -295,7 +291,6 @@ async fn sftp_transfers_never_leave_a_half_written_file() {
         ],
         "对端目录里不该多出临时名"
     );
-    eprintln!("上传之后：对端盘上 small.bin 的字节数与源一致");
 
     // ── 6. 判据三：关闭 Session 也清干净 ────────────────────────────────────
     click(

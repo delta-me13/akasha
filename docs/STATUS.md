@@ -18,6 +18,16 @@
 的放行点改为 `src-tauri/src/store/`，`no-ui-vocab-in-types` 收敛到 `src-tauri/src/**`。
 `src-tauri/Cargo.toml` 的注释按所有者要求删除。
 
+⚠️ **那次迁移漏看了两处**（2026-09-20 已修）：
+1. Linux 的 `just ready` 编译 `tests/unlock_lifecycle.rs` 时报 `E0432`（`use akasha_lib::common;`
+   —— `common` 是测试目标自己的模块，lib 里没有它）→ 问题 #169；
+2. plan 0109 第 6 步写着“`just test-e2e` 的目标清单一并改”，但 31 个迁进 `tests/` 的域集成测试
+   没有登记，`just test-e2e` 开头的 guard 对每一个都判红并 `exit 1`，E2E 用例一条都没执行
+   → 问题 #170。
+两处都在 `just ready` 的覆盖之外（前者被目标平台的 `cfg` 挡住，后者根本不在 `ready` 里），
+所以只有把两条路都真的执行一次才看得见。修后读数：Linux 侧 `just ready` **6/6**、
+`just test-e2e` 本机 **29 个目标 / 37 个用例全过**（见「已验证为通过」）。
+
 **读数**：`just check` / `just clippy`（`-D warnings`）/ `just lint`（clippy + ast-grep scan +
 ast-grep test，6 条规则）绿；成员集成测试 SSH **51/51**、store **114/114**、serial 两次配置通过。
 `just test` 在本沙箱里 4 个 `pty::local` 用例失败于 `openpty: PermissionDenied`
@@ -78,7 +88,9 @@ CI 的两个原生平台检查 job（`checks-macos` / `checks-windows`）执行�
 （#154 sccache、#155 `libudev-dev`、#156 msys perl、#157 缓存工作区）都已处置并在这次运行里验证。
 
 **"看起来像卡住"是两件事，都不是缺陷**（本会话实测）：第三次运行里 Windows 的 E2E 格子执行了
-**32 分钟**（前 14 分钟是全量构建）且 app 没能起来 —— 它确实是一个待查的问题（#162），
+**32 分钟**（前 14 分钟是全量构建）且 app 没能起来 —— 它是**配方自己的缺陷**（#162：`$!` 在
+Windows（MSYS）上是本 shell 的 PID，配方却拿它问 `tasklist` / `taskkill`，于是启动后 0.3 秒
+就判定"app 没起来"，收尾里 `wait` 又等一个没被杀掉的 `cargo run`），已修复；
 而紧随其后的那次运行一直停在 `pending`，那是 `main` 上的**排队**语义（#161），不是卡住。
 两条的判据与处置（`workflow_dispatch`、配方里"日志是空的"会明说、典型耗时表）分别是 #161 / #162。
 ⚠️ 推送之后本机已能读 Actions（`git credential fill` 可用），结论不再只能从网页看。
@@ -171,6 +183,12 @@ CI 的两个原生平台检查 job（`checks-macos` / `checks-windows`）执行�
 
 | 命令 / 检查 | 结果 |
 |---|---|
+| **`just test-e2e`（Windows 11 / MSVC，本机实测）** | 退出码 **0**，**全绿**：第一段 **28 个目标全部通过**（33 条用例，0 失败）、第二段 `exit_residue` **1/1**、第三段 `portable` **3/3**。整体跳过 4 个目标（`tab_close` / `window_close` / `bitwarden_login` / `bw_import`），另有 5 个目标里各 1 条用例按平台跳过（`vault_unlock` 的 `VmLck`、三条串口的设备节点、`single_instance` 的 `/proc` 实例计数），原因都在日志里逐条写明（见 #176）。走到这一步修掉的是四类**与平台绑定**的问题：`$!` 的 PID 命名空间与运行中覆盖 exe（#162）、ConPTY 启动时要求先答 `ESC[6n` 且行尾必须是 CR（#175）、tokio 的连接在 Windows 上读不出"连接被拒"（#173）、隧道用例清场时先删主机行后删规则行（#174）。⚠️ 仍被跳过的那两类就是**平台缺口的现状**：会话级的进程回收（Job Object，plan 0108 的遗留）与假 `bw` 的可执行形态 |
+| ↑ **同一配方在修复前的读数**（本机首次完整执行） | 退出码 **1**：第一段 28 个目标里 **13 个通过**（其中 5 个按平台显式跳过）、**15 个红**；第二段 `exit_residue` **1/1**；第三段 `portable` **3/3**。修复前停在第一段的 `app 未登记到 discovery 目录` 并挂到取消。那 15 个红灯当时被归成三类"平台缺口"（会话 / 隧道回收为空、ConPTY 下本地终端输出到不了 raw 通道、`bw` 的假 CLI 是 `#!/bin/sh`）；后续定位表明其中**大部分是判据自己与平台绑定**，真正剩下的只有后两类里的形态问题 |
+| **`just test-e2e`（Windows runner，CI）** | 六个 job 里 `E2E（Windows）` **通过**（run `36231407751` @ `afc3d11`）—— 本轮三轮读数：第一轮 4 个目标红（`terminal_render` ×2、`single_instance`、`windows_ports`、`portable`）、第二轮只剩 `portable`、第三轮 **0 个**。⚠️ 与 Windows 无关的两处仍在：Linux 的 E2E 红在 `vault_unlock`（`读不到 app 的 /proc/<pid>/status`，三轮都在、与本次改动无关），第三轮另有一次 `sftp_host_to_host` 的凭据超时（该目标前两轮都过、文件未被本次改动触碰）|
+| ↑ **CI 的第一、二轮 Windows 读数**（`36226121050` / `36228577977`） | 第一轮 4 个目标红、第二轮 1 个（`portable`）；性质与逐条处置见 #177 |
+| **`just test-e2e`（macOS 26.6.2 / arm64，经 `just runner-run test-e2e` 在沙箱外执行）** | 退出码 **0**，**全绿**：第一段 **28 个目标 / 37 个用例**全过（0 失败），第二段（`close_behavior=exit`）**1/1**，第三段（可搬迁性）**3/3**。⚠️ 走到这一步之前红过六处，全部是**"这条路径自己的前提"**：`tab_close` / `window_close` 的进程判活读 `/proc`（非 Linux 上门控，改用 `sessions` probe 那条与平台无关的断言）、`vault_unlock` 的 `VmLck` 同理、`tab_close` 关闭最后一个标签页之后注册表**就该是 0**（写成"回到起点"会让它必红，还把界面留在空状态，后续目标由此连带红）、E2E 发现目录的 `TMPDIR` 分叉（问题 #171）、导入要的 `USER`（问题 #172） |
+| **`just ready`（经 `just runner-run ready` 在沙箱外执行）** | **6/6 通过**（退出码 0，`test` 一步 254s）。此前同一环境上红过两次 `just test`：一次是 `pty::local` 的 `openpty`（沙箱内，见上），一次是 4 条 `bw::acquire`（回环假上游 `Connection reset by peer`）—— 后者与上面 `just test` 那行同一条已知偶发，紧接着重新执行**全绿** |
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
 | ↑ **CI 第三次运行的实际读数**（run `34989700283` @ `b7f6a62`） | **Linux 的 `just ready` 通过**（门禁六步全绿）、**E2E（ubuntu-latest）通过**、**检查（macos-latest）通过**；`检查（windows-latest）` 红在类型检查：`error[E0599]: no method named tty_name`（`tests/support/mod.rs`，问题 #160）；`E2E（macos-latest）` 红在三条串口目标（`串口打不开：/dev/ttys000（Not a typewriter）`）与连带的 `bw_import`，收尾时 bash 报 `unbound variable` 把退出码换成 **127**（问题 #158 / #159）；第五个 job（`E2E（windows-latest）`）在本机读到时仍在运行。⚠️ 这次运行里 `RUSTC_WRAPPER` 为空、编译真的开始 —— #154 的处置得到验证 |
 | ↑ **第三次运行验证了其中三处处置** | `RUSTC_WRAPPER` 为空且编译真的开始（#154）；Windows 走到了编译测试目标这一步、`openssl-sys` 的 vendored OpenSSL 已构建完（#156）；Linux 日志里 `could not find Cargo.toml` 的计数为 **0**、缓存键由 workspace 元数据给出（#157）。**E2E（ubuntu-latest）**：28 个目标全部执行完，`test result: ok` **29 条**、失败 **0 条**（唯一一处跳过是运行器不提供 `WEBGL_lose_context`，用例自己写明了原因）—— CI 上的 E2E 第一次完整执行 |
@@ -245,7 +263,7 @@ CI 的两个原生平台检查 job（`checks-macos` / `checks-windows`）执行�
 | ↑ **判据：大量小文件的吞吐显著优于串行请求**（plan 0704） | ✅ `sftp_pipelining` E2E（真实 app + 测试进程内一台服务端，主机行指向一条**每方向延后 10 ms** 的链路，**5.39 s**）：左栏本机、右栏那台主机 → **串行**（12 个文件逐个发、逐个等结束）**1.553 s**、探针 `peak = 1` → **并发**（一口气发完）**561 ms**、`limit = 8`、`live = 0`、`peak = 5` —— **2.8×**；两批之后对端**真盘**上 12 个文件的字节逐一相同、目录里没有临时名，链路共搬了 208 段。⚠️ 耗时与 `peak` 每次不同（另一轮实测串行 1.509 s / 并发 389 ms / `peak 8`），断言只有"并发明显更快"这一条 |
 | ↑ **上限真的在，且排队与取消都在并发下正确**（plan 0704，crate 层 6 条） | ✅ `akasha-ssh` 新增 `pipelining` 6 条：7 个文件 / 上限 3 时目标端点**同时**只见到 3 个 `begin_write`（第 4 个连闸门都进不去）、放行后 7 个都落地而 `peak` 停在 3 / 排队中被取消的那条**一个端点都没碰过**（它的路径从未被 `open`）、进去的那条走收尾、目标目录空 / 5 个文件中间那个写失败 → 另外 4 个字节正确落地 / 两条并发传输写**同一个最终名**时目标目录里是**两个**不同的临时名（放行后最终名的字节等于两条源之一）/ 上传一个文件：服务端记到的 `open` 恰好一次（`/.probe.bin.part`）且临时名没出现在 `stat` 里（"由对端保证的唯一性"在协议层就是少一次往返） |
 | ↑ **分档数字**（plan 0704，crate 层） | 12 个 1 KiB 文件在带时延链路上：上限 1 = **1.168 s**、2 = 1.159 s、4 = 563 ms、8 = 377 ms、16 = 211 ms（每个文件 97.3 → 17.6 ms）。⚠️ **上限 2 与串行一样慢**，那一段没有定位（见「进行中 / 下一步」）；默认值因此不按饱和点取 |
-| ↑ **`just test-e2e` 全部通过** | 退出码 **0**：第一段（默认收托盘）**27 个目标 / 32 个用例**（`bitwarden_login` **27.13 s**、`bw_import` **16.06 s** —— 见下面那条：本机 `host` 轴上的 `bw` 是发行版的 npm 包，报一次错要 13 秒）+ 第二段 `exit_residue` **1 个用例** = **27 个目标 / 32 个用例**、0 失败；第三段（可搬迁性）`portable` **3 passed**。⚠️ `E2E_NO_APP` 的 `session_watchdog` 不在第一段的目标清单里（另有入口），`E2E_SELF_APP` 的 `portable` 由第三段执行、不计在上面那个数里 |
+| ↑ **`just test-e2e` 全部通过**（2026-09-20 本机重新执行） | 退出码 **0**：第一段（默认收托盘）**28 个目标 / 33 个用例** + 第二段 `exit_residue` **1 个用例** + 第三段（可搬迁性）`portable` **3 个用例** = **29 个目标 / 37 个用例**、0 失败。三处跳过都写明了原因：`smoke` 的截图（Wayland 会话拿不到 Victauri 认的原生句柄）、`tab_close` 的丢上下文（当前不是 WebGL 渲染器）、`tunnel_reconnect` 的托盘断言（本机建不起托盘，probe 报 `ready = false` —— 走的正是 §3.3 那条“托盘起不来就降级”的路径）。⚠️ `E2E_NO_APP` 的成员不在第一段的目标清单里（`just test` 是它们的入口），`E2E_SELF_APP` 的 `portable` 由第三段执行 |
 | ↑ **判据：对着真实上游下载一次**（一次性探针，plan 0902；读完数即删） | ✅ `cargo test -p akasha-bw --test probe_real_upstream -- --nocapture`（**24.63 s**）：解析到上游最新 `cli-v2026.8.0` → 真的从 GitHub 拉下资产 → 落在 `<数据目录>/bitwarden/bw-2026.8.0/bw`、**141819984 字节** → crate 报的 SHA-256 是 `d8bbc213…b1b1704`，与 `sha256sum` 直接算那个 zip 的**逐字符相同** → `Cli::version()` 报 `2026.8.0`、`Cli::variant()` 报 `Oss`、`Cli::status()` 报 `Unauthenticated`。⚠️ 探针里那次**直接执行**（不设 `BITWARDENCLI_APPDATA_DIR`）输出为空：这个沙箱的家目录只读，`bw` 建不出它自己的 `data.json` —— 这正是"`managed` 那一轴有必要"的一个旁证 |
 | ↑ **一个把 IPC 占住 27 秒的问题（plan 0902 的实现期发现）** | ⚠️ 本机 `host` 轴上**确实有一个 `bw`**（发行版的 `bitwarden-cli` 把 `/usr/bin/bw` 指向 npm 包），而它在这个只读家目录里要 **13 秒**才报错。第一版每个快照都起三次进程（版本 / 帮助 / 状态），于是 `bw_cli_settings` 撞上 Victauri 的 30 秒 eval 上限。处置两条：**探测结果按"解析出来的程序路径"缓存**（版本与变体对一个给定的程序文件是不变的），并且**连 `--version` 都答不出来的那一份不再往下问状态**（那不是"状态读不出来"，是"这一份 `bw` 用不了"）。⇒ 正常机器上每个快照不再起进程；本机这个坏 `bw` 上每次切到它也只要一次 13 秒 |
 | ↑ **E2E 目标之间会互相影响**（plan 0903 的实现期发现） | 全部目标在**同一个 app 进程**里执行，所以上一个目标留下的界面状态也留着：`bitwarden_login` 结束时 Bitwarden 面板是**开着**的，而 `bw_import` 原先直接点 `.tab-new-bw`（那是个开关）→ 面板被关闭 → 下一步的判据等到超时。单独执行那一条时全绿，**全量执行才红**。处置：用 `support::open_bitwarden_panel`（它先关再开）。⚠️ 与 `ssh_config_import` 头部记的"名字撞上内存凭据缓存"是同一类问题：新加目标时要问一句"上一个目标留下的是什么状态" |
@@ -592,18 +610,23 @@ CI 的两个原生平台检查 job（`checks-macos` / `checks-windows`）执行�
       三个能本地核对的成员在 Windows 目标上退出码 0；第三次运行又暴露同一类的第二处
       （测试脚手架的 `tty_name`，问题 #160），已修、**判据要等下一次运行**。
       ⚠️ 它只解决**编译**这一面
-- [ ] **Windows 上的会话回收仍是空的**（plan 0108 留下的缺口）：POSIX 的会话 / 进程组在 Windows 上
+- [ ] **Windows 上的会话级回收仍是空的**（plan 0108 留下的缺口）：POSIX 的会话 / 进程组在 Windows 上
       不存在，等价物是 Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`：句柄一关，作业里的进程
-      全部结束），它还能替掉伴生看门狗在那条平台上的路径。本机没有 Windows 主机 —— 连"现在的行为
-      是什么样"（ConPTY 关闭时到底带走多少进程）都观测不到。展开时机是有 Windows 主机可执行 E2E 时；
-      届时先写 ADR（进程模型，与 ADR-0005 同源）
+      全部结束），它还能替掉伴生看门狗在那条平台上的路径。**本机现在有 Windows 主机与读数**（见
+      「已验证为通过」）：注册表那一半是对的 —— 关标签页 / 关窗 / 真退出之后 `live` 与 `registered`
+      都回到基线（`ssh_session` / `ssh_jump` / `ssh_config_import` 等的收尾断言都过）；缺的是"会话里
+      的其它进程"：`tab_close` / `window_close` 的探针是一个**忽略 SIGHUP 的后台作业**，cmd.exe 写
+      不出它、收它也要靠作业对象，于是这两条目标在 Windows 上显式跳过（#176）。
+      展开时先写 ADR（进程模型，与 ADR-0005 同源）
 - [~] **plan 0102（CI 平台矩阵）**：三次运行把红灯逐层换成了真实缺陷（#154 → #155 / #156 / #157
       → #158 / #159 / #160），每一处都已处置。现状：**Linux 的完整门禁与 Linux 的 E2E 通过**，
       macOS 的类型检查通过；Windows 的类型检查与 macOS 的 E2E 待下一次运行验证，
-      Windows 的 E2E 另有一个待查的问题（#162：app 起不来）
+      Windows 的 E2E 已修掉 #162 的两处配方缺陷（`$!` 的 PID 命名空间、运行中覆盖 exe），
+      本机首次完整执行（见「已验证为通过」）
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：CI 上三个平台都真的执行起来了 ——
-      ubuntu 格**通过**（28 个目标全部执行完，xvfb 下的原生窗口句柄路径第一次走通），macOS 格的三处
-      修正待验证，Windows 格卡在"app 起不来"（#162）
+      ubuntu 格**通过**（28 个目标全部执行完，xvfb 下的原生窗口句柄路径第一次走通），macOS 格**全绿**，
+      Windows 格在本机 `just test-e2e` **退出码 0**、28 个目标全部通过（见「已验证为通过」，
+      跳过的四类目标与原因见 #176）；**CI 的 Windows runner 上也通过了**（run `36231407751`，见「已验证为通过」）
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
 
 ## 结构现状（容易找错地方）
@@ -1151,3 +1174,144 @@ CI 的两个原生平台检查 job（`checks-macos` / `checks-windows`）执行�
       前缀是 `ssh/local.rs` 的 `tidy` 刻意要做的，红的是对照物）。⚠️ 这三条都要一台 Windows
       主机才能定位与验证：完整一遍 `cargo nextest run --workspace --no-fail-fast` 现在
       **423 条全过**，而 Linux 门禁看不到它们。
+
+ 169. **按 crate 名的重写会连带改掉测试目标自己的本地模块**（本会话实测，**已修**）：
+      plan 0109 把引用从 `akasha_store::…` 改成 `akasha_lib::store::…` 时，
+      `tests/unlock_lifecycle.rs` 里的 `use crate::common;` 被一并扫成 `use akasha_lib::common;`
+      —— 而 `common` 是该测试目标自己的模块（`#[path = "store_common/mod.rs"] mod common;`），
+      lib 里没有它。⚠️ **它整段在 `#[cfg(target_os = "linux")]` 内**：macOS 与 Windows 的
+      `just check` 连这一段都不编译，所以那两个平台的作业全绿，红的只有 Linux，失败点是
+      `test` 之前的编译（`E0432`：no `common` in the root），并且 `e2e-linux`
+      因 `needs: checks-linux` 整格跳过 —— 于是链路上真正执行过那条分支的作业一个都没有。
+      由此的教训：**平台门控的代码只有那一个平台的作业能证伪**；按旧名重写之后，要在会编译该
+      分支的目标上执行一次 `cargo check --workspace --all-targets`。处置：改回 `crate::common`，
+      Linux 侧 `just ready` 6/6 通过（修复前同一条命令报 `E0432`）。
+
+ 170. **归属清单不跟着文件迁移走，E2E 会在第一步判红**（本会话实测，**已修**）：
+      plan 0109 第 6 步要求迁移成员的 `tests/*.rs` 时"`just test-e2e` 的目标清单一并改"，
+      实际只改了 `just test` 那一侧 —— 31 个迁进来的域集成测试（store / ssh / sftp / pty / bw）
+      既不在 `E2E_TARGETS`，也不在 `E2E_NO_APP`，于是 `just test-e2e` 开头的 guard
+      （问题 #36：生成物无人执行）对每一个都报错并 `exit 1`：**一条 E2E 用例都没执行**。
+      ⚠️ 那个 guard 只看 `tests/*.rs`，与平台无关 —— 三个平台的 E2E 作业都会停在这里，
+      而它不在 `just ready` 里，所以门禁全绿也发现不了：判据只能来自真的执行一次
+      `just test-e2e`。处置：把 31 个目标按字典序登记进 `E2E_NO_APP`（它们的入口本来就是
+      `just test` 的 nextest 全量运行），并把"迁移这类文件必须同步登记"写进那段注释。
+
+ 171. **发现目录由 `std::env::temp_dir()` 推导，而它在 `TMPDIR` 缺席时不取 `/tmp`**（本会话实测，
+      **已修**）：victauri 的发现目录是 `<temp>/victauri/<pid>/`，两侧各自算一遍 —— app 用
+      `std::env::temp_dir()`，`just test-e2e` 用 `${TMPDIR:-/tmp}`。执行器只给动作
+      `BASE_ENV` 的最小环境（不含 `TMPDIR`），于是本机（macOS）上两侧分叉：app 落到
+      `confstr` 给的那个私有目录（`/var/folders/…/T/victauri/`）、配方去找 `/tmp/victauri`，
+      症状是 **app 已启动、进程确实活着，配方却报"app 没起来（日志：…）"**，E2E 在这里停 120 秒后
+      `exit 1`，一条用例都没执行。定位读数：执行器里打印 `TMPDIR=[unset] tmp=[/tmp]`，
+      而 app 的日志与 `<系统临时目录>/victauri/<pid>/metadata.json` 都在。
+      处置两条 —— **① 样板给一个确定的 `TMPDIR`**（`policy.env`，见 `agent-runner.md` §3 / §6，
+      这是让两侧取同一个值的那条）；**② 配方按候选目录逐个找**（`/tmp` 与 `$TMPDIR` 各算一个），
+      对"app 由别的进程启动、两边 temp 目录不同"也成立（`test-e2e` / `portable` 都是）。
+      ⚠️ 教训：**`rm -rf` 式的"临时目录"不能在两侧各推一遍** —— 要推就取同一个来源。
+
+ 172. **"本机用户名"取自环境变量，而执行器的最小环境里没有它**（本会话实测，**已修**）：
+      `~/.ssh/config` 导入（`import_ssh_config`）在没写 `User` 的条目上要补本机用户名，
+      `local_user()` 读的是 `USER` / `USERNAME`；而执行器的 `BASE_ENV` 不含 `USER`
+      （`PATH` 与 `HOME` 另接），于是 `ssh_config_import` 与 `bw_import` 两条 E2E 目标
+      **在点完导入之后一起等满超时**：界面上那句话是"取不到本机用户名（`USER` / `USERNAME`
+      都没有）"，而断言只报"导入报告出现了 超时" —— 那句话是逐步缩小范围之后才看见的
+      （`support::wait_js` 现在会把界面上"已经在说"的那句话一起打进 panic 消息）。
+      处置同 #171：样板 `policy.env` 里补 `USER`（值由 `pwd.getpwuid(getuid())` 取，
+      **不读环境变量** —— 环境变量的取值可以被任意改写，而它要写进样板）。
+      ⚠️ 教训：**"进程外面长什么样"是 E2E 的一条隐式前提**，最小环境把前提抽走时，
+      症状出现在最远处（界面等超时），而不是在环境那一层。
+ 173. **Windows 上 tokio 的连接对"连接被拒"只报超时，于是"端口已释放"那条判据永不成立**（本会话实测，
+      **已修**）：`tunnel_local_forward` / `tunnel_dynamic_forward` 在停止隧道之后要等"端口不再接受连接"，
+      判据是 `timeout(2s, TcpStream::connect(…))` 落在 `Err` 一侧。本机实测：**同一个已经关闭的回环端口**，
+      `std::net::TcpStream::connect` 立刻给 `ConnectionRefused`（os error 10061），而 tokio 的连接三次全部
+      **超时** —— 于是"端口已经还给系统"被读成"还在接受连接"，用例等满 20 秒判红。
+      app 侧的证据与它相反：`netstat` 里那个监听只在停止后的**前 3 个采样**里出现过（实时采样 20 余次），
+      `app_state` 的 `tunnels` 也早已没有那条规则。处置：新增 `support::port_released(port)`，改用**阻塞**的
+      `std::net::TcpStream::connect_timeout` 探（判据取"连不上"，不取"恰好是 ConnectionRefused"——回环上没有
+      防火墙，握手成功就等于有一方在监听）。⚠️ 教训：**"连不上"这件事在 Windows 上不能用 tokio 的连接来问**。
+      同一个形状还在 `tests/local_forward.rs` 里（它把超时也算进"连不上"，因此在 Windows 上是过的 —— 但过的
+      理由不是它想验的那条）。
+
+ 174. **隧道用例的 `seed` 先删主机行、后删规则行，同一个数据目录上再执行一次必撞外键**（本会话实测，**已修**）：
+      六条隧道目标（`tunnel_state` / `tunnel_local_forward` / `tunnel_dynamic_forward` / `tunnel_remote_forward` /
+      `tunnel_reconnect` / `tunnel_teardown`）的 `seed` 都按"先 `forget(主机)`、再删转发规则"清场，而规则的
+      外键指着主机行：上一次留下的规则还在时，删主机行当场报
+      `Conflict { pool: "hosts", detail: "FOREIGN KEY constraint failed" }`。CI 每个作业只执行一遍、碰不到它，
+      本机反复执行才暴露 —— 而仓库明确要求"这些用例不依赖上一次执行干净了"
+      （`support::forget` 的注释里写着这条）。处置：六个 `seed` 一律改成**先删规则、再删主机行**，顺序的理由
+      写进注释。
+
+ 175. **ConPTY 的启动握手与"Enter 是 CR"**（本会话实测，**已修**）：Windows 上本地终端在最初 20 秒里
+      **一个字节都读不到**，两条原因都不在 app 的业务逻辑里 ——
+      ① **ConPTY 启动时先问一次光标位置**（`ESC[6n`），**没等到回答之前不出任何输出**（cmd.exe 的版本横幅
+      与提示符都压着）。真实界面里回答它的是 xterm（xterm.js 的 `deviceStatus` 对 `CSI 6 n` 回
+      `ESC[<row>;<col>R`），所以"界面上看得到"这条路本来就是好的；而 `session_channel` 的 raw 通道探针是
+      **哑的**（只统计字节），于是它什么都等不到。处置：只在 Windows 上补一条记录（`write_session` 发
+      `ESC[1;1R`），并在那里写明"POSIX 的 PTY 没有这个握手，往那边写就是往 shell 的输入里塞转义序列"。
+      ② **行尾必须是 CR**：POSIX 的行规程用 `ICRNL` 把 CR 折成 NL，所以送 LF 也能提交；**ConPTY 只认 CR**
+      —— 送 LF 时命令行停在屏幕上不动（实测：`echo X` + LF 只回显、不执行，改 CR 立刻执行）。处置：E2E 的
+      "敲一行"辅助函数改成**由函数补 CR**（`type_line` 的 `line` 参数因此不带行尾），15 处调用点去掉自己写的
+      `\n`。⚠️ 教训：**"终端线上的一组字节"在三个平台上不是同一件事**，这类差异不会在类型检查或
+      `just ready` 里露头，只在真的驱动一次终端时出现。
+
+ 176. **Windows 上仍有两类 E2E 目标被显式跳过，各自缺的东西不同**（本会话实测）：修掉 #162 / #173 / #174
+      与上面那两条平台差异之后，剩下的红灯一律改成显式跳过并在日志里写明原因（`AGENTS.md` §7）——
+      - `tab_close` / `window_close`：探针是一个 **POSIX shell 程序**（`sh -c 'trap "" HUP; …' &`），
+        Windows 的默认 shell 是 cmd.exe，写不出"忽略 SIGHUP 的后台作业"；而"关标签页 / 关窗把它一起收走"
+        在那边要靠**作业对象（Job Object）**，尚未实现（plan 0108 留下的缺口）。
+      - `bitwarden_login` / `bw_import`：假 `bw` 是一份 `#!/bin/sh` 脚本，Windows 上 `CreateProcess` 不执行
+        脚本 —— 需要一个真的 `.exe`，本仓库还没有（`install_fake_bw` 在那边写出来的文件名已经是 `bw.exe`）。
+      ⚠️ 这两类都**不是"执行不了"，是判据本身在那边还不成立**；显式跳过只是把这件事说清楚，缺口仍在。
+
+ 177. **CI 的 Windows runner 上暴露出来的一类差异**（本会话实测，**已修**）：一次真的 CI 运行
+      （`36226121050`）把本机的全绿换成了四处红；第二次运行（`36228577977`）只剩 `portable` 一处。
+      逐条如下 ——
+      - **WebView2 的用户数据目录被上一份实例握着**（与本次改动无关，**两次运行都红**）：结束这一份 app 之后
+        它的 WebView2 还握着 `%LOCALAPPDATA%\fans.cyrene.akasha-terminal` 一小会儿，于是**下一份** app
+        起不来 webview：`failed to create webview: WebView2 error ... "The requested resource is in use."`
+        （第二段的 `exit_residue` 不看界面所以照过；第三段的 `portable::data_survives_the_move` 等到
+        60 秒超时）。处置两条：收 app 时带 `/T`（连同子进程一起收），**并在收完之后等那个目录放开** ——
+        判据取"它能改名"（有活进程握着时改名失败），本机上通常立刻就能改，代价接近零。
+        ⚠️ 只带 `/T` 不够（第二次运行仍红在同一处）：握着它的不一定还挂在 app 的进程树上。
+      - **`windows_ports` 在一台"有端口、注册表里却没有描述"的机器上必红**（与本次改动无关）：
+        runner 上枚举出 1 条 `{"kind":"unknown","path":"COM2"}` —— 固件留下的端口在 `SERIALCOMM` 里、
+        `Enum` 下没有对应的 PnP 项，app 无从描述它（`unknown` 是**如实**的）。原判据把"这台机器本来
+        就没有描述"与"注册表里有、而枚举没带出来"当成同一件事，只有后者才是链断。处置：这一档改成
+        显式跳过并把枚举结果原样输出；真正的负对照留给有真实串口设备的主机（plan 0803 的那一层）。
+      - **`terminal_render` / `single_instance` 的终端驱动**：两条用例都只做一件事 —— 把一行敲进**界面
+        上的**终端等结果。它们红在"屏幕上始终没有那串字"。两条线索合起来指向**输入路径**：句柄到手
+        之前，xterm 生成的数据（最要紧的是它给 ConPTY 的 DSR 回答）被 `onInput` 直接丢弃，于是那条
+        会话永远不出提示符。处置两条：**①** 会话开起来之前把 xterm 生成的数据按序攒下、开了再补发
+        （`src/terminal/attach.ts`，上限 64 KiB）；**②** 同时修掉 #175 留下的那个自相矛盾 —— `echo_marker` 把
+        求值结果写进了**文件名**，而命令行会被回显，光靠回显就能让断言命中（本机当时就是这样"过"的）；
+        现在只让**文件内容**带结果，文件名只用不构成结果的那一部分。失败信息也跟着补上屏幕原文，
+        下一次红能直接看出"没送到 / 没提示符 / 没执行"。⚠️ **第二次运行（`36228577977`）里这两条都过了**
+        —— 处置有效（同一轮里 `windows_ports` 按新口径显式跳过）。**第三次运行（`36231407751`）Windows 的 E2E 全绿**，
+        `portable` 那一处也随"等目录放开"这一步消失。
+      - Linux 的 `vault_unlock` 与上一次运行**同一处、同一句话**（`读不到 app 的 /proc/<pid>/status`），
+        与本轮改动无关，仍记在「进行中」里；第三次运行另有一次 `sftp_host_to_host` 的凭据超时
+        （`right 这一侧连接失败：认证失败：… 上没有可用的方式`）—— 该目标前两轮都过、文件未被本次
+        改动触碰，记为偶发。
+
+ 178. **vendored OpenSSL 的 `LNK4099` 把 Windows 的构建日志冲散**（本会话实测，**已修**）：
+      `openssl-src` 在 MSVC 下用 `/Zi /Fdossl_static.pdb` 编译，而那份 PDB 不随
+      `libopenssl_sys-*.rlib` 发到 `deps/` 下 —— 链接器于是对**每一个** .obj 各输出一行
+      `warning LNK4099: PDB 'ossl_static.pdb' was not found ...`。本机实测：链接一个测试目标
+      **1618 行**，全量 `cargo test --no-run`（65 个目标）上万行，把真正的报错冲到看不见。
+      处置：`src-tauri/build.rs` 在 Windows + MSVC 上补一条链接器开关 `/IGNORE:4099`（复测：
+      65 个目标、**0 行**）。另一条路是 `.cargo/config.toml` 里的 `rustflags`，**没有**选它：
+      那会让整棵依赖树重编（含从源码构建的 OpenSSL，而本机只有 MSYS 的 perl，重建当场失败在
+      `perl reported failure with exit code: 2`），而 `rustc-link-arg` 只影响本包自己的
+      bin / test / example 链接。⚠️ 仍有的那一行 `linker stdout: 正在创建库 ...` 是 cdylib 链接的
+      正常输出（rustc 的 `linker_messages` lint），一行而已，不关。顺带：`no-println` 规则给
+      `**/build.rs` 开了豁免 —— 构建脚本的 stdout 就是它的 API（cargo 从那里读指令）。
+
+ 179. **前端把每一次隧道状态变化记了两次，`tunnel_reconnect` 因此偶发红**（CI 运行 `36234483861` 的
+      macOS 格实测，**未修**）：`subscribeTunnelStates` 每订阅一次就把事件写进
+      `window.__akashaTunnels.events`（测试接口），而退订是**异步**的
+      （`void stop.then((unlisten) => unlisten())`）；面板在 StrictMode 下挂载两次时，第二次订阅
+      可能赶在第一次退订生效之前，于是同一条事件被记两遍。症状是 `attempts` 断言拿到
+      `[1, 1, 2, 2, 3, 3]`（期望 `[1, 2, 3]`）—— 同一份代码在之前三轮（macOS / Linux / Windows）
+      都过，说明触发要看挂载时序。判据本身没错（后端确实各发了一次），错在这份测试日志的记录方式。
+      处置方向：只让**第一个**订阅记录，或把记录挪到一条与订阅次数无关的通道上。

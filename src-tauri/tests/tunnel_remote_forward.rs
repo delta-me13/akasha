@@ -152,13 +152,14 @@ fn dead_port() -> u16 {
 fn seed(path: &Path, ssh_port: u16, local_port: u16, taken_port: u16) -> (i64, i64, i64, u16) {
     let conn = open_vault(path);
 
-    // 先清干净（重跑）：主机行与规则行都按名字清。
-    forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
+    // 先清干净（重跑）：**规则先删、主机行后删** —— 规则的外键指着主机行，
+    // 反过来写会在"上一次留下了规则"时撞上 `FOREIGN KEY constraint failed`。
     for row in forwards::forwards(&conn).unwrap() {
         if row.name == FORWARD_NAME || row.name == DEAD_NAME || row.name == TAKEN_NAME {
             forwards::delete_forward(&conn, row.id).unwrap();
         }
     }
+    forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
 
     let host_id = hosts::insert_host(
         &conn,
@@ -237,15 +238,9 @@ async fn open_tunnel_for(client: &mut VictauriClient, rule_id: i64, fingerprint:
 async fn wait_refused(port: u16, what: &str) {
     let deadline = Instant::now() + CLOSE_TIMEOUT;
     loop {
-        // 监听撤掉之后连过去是"连接被拒"，不是"超时"。
-        let refused = tokio::time::timeout(
-            Duration::from_secs(2),
-            TcpStream::connect(("127.0.0.1", port)),
-        )
-        .await
-        .map(|result| result.is_err())
-        .unwrap_or(false);
-        if refused {
+        // 监听撤掉 = 连不上（用 `support::port_released` 探：tokio 的连接在 Windows 上
+        // 连一个已经关掉的端口只会超时，见那里的说明）。
+        if support::port_released(port) {
             return;
         }
         assert!(
@@ -276,7 +271,7 @@ async fn a_remote_port_forwards_back_to_a_service_on_this_side() {
     let (http, hits) = start_http().await;
     let server = start(ServerOptions::password(PASSWORD)).await;
     eprintln!(
-        "服务端：127.0.0.1:{}（本机 HTTP 服务在 127.0.0.1:{}）",
+        "构造: 服务端=127.0.0.1:{} HTTP服务=127.0.0.1:{}",
         server.addr.port(),
         http.port()
     );
@@ -296,7 +291,7 @@ async fn a_remote_port_forwards_back_to_a_service_on_this_side() {
     // ── 3. 界面：打开隧道面板 → 打开那条规则 → 答完提示 ──────────────────────
     open_tunnel_panel(&mut client).await;
     let handle = open_tunnel_for(&mut client, open_id, &server.fingerprint).await;
-    eprintln!("隧道已连接：handle={handle}");
+    eprintln!("隧道: handle={handle}");
 
     // "已连接" = **服务端那边**端口在听。探针里的 `bind` 报的就是服务端那一侧。
     let want = format!("127.0.0.1:{bind_port}");
@@ -320,7 +315,6 @@ async fn a_remote_port_forwards_back_to_a_service_on_this_side() {
         .expect("curl 那条阻塞任务没回话");
     assert!(ok, "curl 经远端端口取本机服务失败（stderr={stderr:?}）");
     assert_eq!(stdout, BODY, "curl 取回来的不是本机服务写的那一串字节");
-    eprintln!("curl 取回：{stdout:?}");
 
     // 通道是**服务端发起**的，字节也真的搬过去了；本机服务确实被连过。
     let deadline = Instant::now() + CLOSE_TIMEOUT;
@@ -429,7 +423,7 @@ async fn a_remote_port_forwards_back_to_a_service_on_this_side() {
         shown.contains(&taken_port.to_string()),
         "失败里要能看出是**哪个端口**没拿到：{shown:?}"
     );
-    eprintln!("远端端口拿不到那条：{shown}");
+    eprintln!("界面: 失败提示={shown}");
     assert!(
         support::tunnel_events(&mut client)
             .await
@@ -471,7 +465,7 @@ async fn a_remote_port_forwards_back_to_a_service_on_this_side() {
                 Some(want.as_str()),
                 "撤销请求要用规则里那个地址与端口：{cancels:?}"
             );
-            eprintln!("停止：服务端收到撤销 {cancels:?}");
+            eprintln!("服务端: 撤销请求数={}", cancels.len());
             break;
         }
         assert!(
@@ -510,7 +504,7 @@ async fn a_remote_port_forwards_back_to_a_service_on_this_side() {
     loop {
         let closed = support::observed(&server).connections_closed;
         if closed >= 2 {
-            eprintln!("停止：服务端看到 {closed} 条连接断开");
+            eprintln!("服务端: 断开连接={closed}");
             break;
         }
         assert!(

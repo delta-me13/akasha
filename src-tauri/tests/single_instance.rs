@@ -46,9 +46,38 @@ fn ok(value: &serde_json::Value) -> bool {
     payload(value).as_bool().unwrap_or(false)
 }
 
+/// `eval_js` 的字符串结果（拿不到就给 `?`）。
+fn text(value: &serde_json::Value) -> String {
+    payload(value).as_str().unwrap_or("?").to_string()
+}
+
+/// 让 `{head}-{arg}` 出现在屏幕上，而**命令行里看不出它**。
+///
+/// 判据是"shell 真的执行了这条命令"，不是"按键被回显了"：命令行里若已经写着结果，
+/// 光靠 PTY 的回显就能命中。POSIX 用 `printf` 的格式串把命令行与结果拆开（命令行里是
+/// `%s`）；Windows 的默认 shell（cmd.exe）没有 `printf`，改用内建的 `type` 倒一份文件
+/// —— 命令行里只有路径，屏幕上的字只可能来自文件内容。
+#[cfg(unix)]
+fn echo_marker(head: &str, arg: &str) -> String {
+    format!("printf '{head}-%s\\n' {arg}")
+}
+
+#[cfg(windows)]
+fn echo_marker(head: &str, arg: &str) -> String {
+    // ⚠️ 文件名里**不得**出现 `{head}-{arg}`：命令行会被 PTY 回显，回显里若已经有求值结果，
+    // 光靠回显就能让断言命中 —— 这条用例就什么都没验（正是上面说的那条判据）。
+    let marker = format!("{head}-{arg}");
+    let path = std::env::temp_dir().join(format!("akasha-e2e-{head}.txt"));
+    std::fs::write(&path, format!("{marker}\n")).expect("造探针文件失败");
+    format!("type \"{}\"", path.display())
+}
+
 /// 把一行敲进**当前活动标签页**的终端（真实输入路径：见 `terminal_render.rs` 的说明）。
 fn type_js(line: &str) -> String {
-    let literal = serde_json::to_string(line).expect("文本无法转成 JS 字符串字面量");
+    // 行尾补 CR（0x0D）：终端线上的 Enter 就是这个字节 —— POSIX 的行规程用 `ICRNL` 把它
+    // 折成 NL，而 Windows 的 ConPTY 只认 CR（送 LF 在那边既不提交命令行也不回显）。
+    let literal =
+        serde_json::to_string(&format!("{line}\r")).expect("文本无法转成 JS 字符串字面量");
     format!(
         r#"(() => {{
   const textarea = document.querySelector('.tab-pane.is-active .xterm-helper-textarea');
@@ -74,16 +103,23 @@ fn screen_has(needle: &str) -> String {
 }
 
 /// 等一个 JS 表达式为真（有截止时间的轮询，**不是** sleep 猜）。
+///
+/// 超时的时候把**终端屏幕上的原文**一起报出来（理由与 `terminal_render::wait_for_screen` 相同）。
 async fn wait_js(client: &mut VictauriClient, expression: &str, timeout_ms: u64, what: &str) {
     let waited = client
         .wait_for_expression(expression, None, Some(timeout_ms), None)
         .await
         .unwrap();
-    assert_eq!(
-        waited.get("ok").and_then(serde_json::Value::as_bool),
-        Some(true),
-        "{what} 超时（{timeout_ms} ms）：{waited}"
+    if waited.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        return;
+    }
+    let screen = text(
+        &client
+            .eval_js("window.__akashaTerminal.screenText()")
+            .await
+            .unwrap_or(serde_json::Value::Null),
     );
+    panic!("{what} 超时（{timeout_ms} ms）：{waited} —— 屏幕上是 {screen:?}");
 }
 
 /// app 自己的 pid：discovery 目录的名字就是它（问题 #40）。
@@ -238,7 +274,7 @@ fn a_rebuilt_binary_is_still_recognised() {
 #[tokio::test]
 async fn a_second_instance_activates_the_hidden_window_of_the_first() {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return;
     }
 
@@ -250,14 +286,9 @@ async fn a_second_instance_activates_the_hidden_window_of_the_first() {
 
     // ── 0. 前提：这台机器上真的注册上了单实例机制 ───────────────────────────
     let state = single_instance(&mut client).await;
-    eprintln!("single_instance = {state}");
 
     if state.get("registered").and_then(serde_json::Value::as_bool) != Some(true) {
-        eprintln!(
-            "Skipping: 本机没有注册单实例机制（{state}）—— \n\
-             Linux 上它需要 D-Bus 会话总线（容器 / CI 的 xvfb 里没有），app 于是降级为\n\
-             「可以多开」。本用例只验注册上了的那条路，判据是 app 自己上报的状态，不猜。"
-        );
+        eprintln!("跳过: 本机没有注册单实例机制，Linux 上它需要 D-Bus 会话总线");
         return;
     }
     let before = state
@@ -273,7 +304,7 @@ async fn a_second_instance_activates_the_hidden_window_of_the_first() {
         "终端渲染出来",
     )
     .await;
-    type_line(&mut client, "printf 'akasha-single-%s\\n' marker\n").await;
+    type_line(&mut client, &echo_marker("akasha-single", "marker")).await;
     wait_js(
         &mut client,
         &screen_has("akasha-single-marker"),
@@ -290,7 +321,7 @@ async fn a_second_instance_activates_the_hidden_window_of_the_first() {
         .await
         .expect("隐藏窗口失败");
     wait_visible(&mut client, false, "起第二个实例之前窗口是藏着的").await;
-    eprintln!("app = {app_pid}；窗口已藏起来，activations = {before}");
+    eprintln!("进程: app={app_pid} activations={before}");
 
     // ── 2. 起第二个实例（就是**同一个可执行文件**再跑一次）──────────────────
     let log_path = std::env::temp_dir().join("akasha-e2e-second-instance.log");
@@ -319,12 +350,11 @@ async fn a_second_instance_activates_the_hidden_window_of_the_first() {
             std::fs::read_to_string(&log_path).unwrap_or_default()
         ),
     }
-    eprintln!("第二个实例 {elapsed:?} 后以 {status:?} 退出");
+    eprintln!("进程: 第二个实例退出耗时={elapsed:?}");
 
     // ── 4. 话带到了 + 窗口回到屏幕上 ────────────────────────────────────────
     wait_activations(&mut client, before + 1).await;
     wait_visible(&mut client, true, "第二个实例唤起之后窗口可见").await;
-    eprintln!("唤起之后：activations = {}，窗口可见", before + 1);
 
     // ── 5. 还是同一个窗口 / 同一个会话：藏之前的内容照旧读得到 ──────────────
     wait_js(
@@ -347,7 +377,5 @@ async fn a_second_instance_activates_the_hidden_window_of_the_first() {
         );
     }
     #[cfg(not(target_os = "linux"))]
-    eprintln!("（非 Linux：跳过「只有一个 app 进程」那层判据 —— 它靠 /proc 数进程）");
-
-    eprintln!("✅ 第二个实例唤起已有窗口（窗口当时是藏着的）：一个进程、一套会话");
+    eprintln!("跳过: 非 Linux 平台，进程实例计数依赖 /proc");
 }

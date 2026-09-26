@@ -28,11 +28,49 @@ const RENDERED: &str = r#"(() => {
   return document.querySelectorAll('.xterm-screen canvas').length >= 1;
 })()"#;
 
+/// 让 `{head}-{arg}` 出现在屏幕上，而**命令行里看不出它**。
+///
+/// 判据是"shell 真的执行了这条命令"，不是"按键被回显了"：命令行里若已经写着结果，
+/// 光靠 PTY 的回显就能命中，这条用例就什么都没验。POSIX 用 `printf` 的格式串把命令行
+/// 与结果拆开（命令行里是 `%s`）；Windows 的默认 shell（cmd.exe）没有 `printf`，改用
+/// 内建的 `type` 倒一份文件 —— 命令行里只有路径，屏幕上的字只可能来自文件内容。
+/// 两个平台的判据因此完全一致，差的只是这一条命令。
+#[cfg(unix)]
+fn echo_marker(head: &str, arg: &str) -> String {
+    format!("printf '{head}-%s\\n' {arg}")
+}
+
+#[cfg(windows)]
+fn echo_marker(head: &str, arg: &str) -> String {
+    // ⚠️ 文件名里**不得**出现 `{head}-{arg}`：命令行会被 PTY 回显，回显里若已经有求值结果，
+    // 光靠回显就能让断言命中 —— 这条用例就什么都没验（正是上面说的那条判据）。
+    let marker = format!("{head}-{arg}");
+    let path = std::env::temp_dir().join(format!("akasha-e2e-{head}.txt"));
+    std::fs::write(&path, format!("{marker}\n")).expect("造探针文件失败");
+    format!("type \"{}\"", path.display())
+}
+
 /// 灌一大坨输出，末尾挂一个"排空哨兵"。
 ///
 /// 哨兵走的是**同一条流**，所以它出现在屏幕上就意味着它前面的 8 MB 全被消费过了 ——
-/// 这比"等一会儿再看字节数"强得多。
-const FLOOD: &str = "yes akasha | head -c 8000000; printf 'akasha-drained-%s\\n' ok\n";
+/// 这比"等一会儿再看字节数"强得多。POSIX 上是一条管道；Windows 上是一份 8 MB 文件
+/// （内容与管道那一条等价：同样是 8 MB 的 `akasha` 行，末尾一行是哨兵）。
+#[cfg(unix)]
+fn flood_command() -> String {
+    "yes akasha | head -c 8000000; printf 'akasha-drained-%s\\n' ok".to_string()
+}
+
+#[cfg(windows)]
+fn flood_command() -> String {
+    let path = std::env::temp_dir().join("akasha-e2e-flood.txt");
+    let mut body = String::new();
+    while body.len() < 8_000_000 {
+        body.push_str("akasha\n");
+    }
+    body.push_str("akasha-drained-ok\n");
+    std::fs::write(&path, &body).expect("造灌流文件失败");
+    format!("type \"{}\"", path.display())
+}
 
 /// 强制丢掉 WebGL 上下文 —— 真实世界里驱动重启 / 显存不足就是这么发生的。
 ///
@@ -53,7 +91,7 @@ const LOSE_WEBGL_CONTEXT: &str = r#"(() => {
 
 fn skip_unless_e2e() -> bool {
     if !victauri_test::is_e2e() {
-        eprintln!("Skipping: set VICTAURI_E2E=1 with your Tauri dev server running");
+        eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return true;
     }
     false
@@ -85,7 +123,10 @@ fn text(value: &serde_json::Value) -> String {
 /// ⚠️ 取的是**当前活动标签页**里的那个 textarea（plan 0305）：多标签之后"第一个"
 /// 不再唯一，而活动面里那个才与 `window.__akashaTerminal` 指同一个终端。
 fn type_js(line: &str) -> String {
-    let literal = serde_json::to_string(line).expect("文本无法转成 JS 字符串字面量");
+    // 行尾补 CR（0x0D）：终端线上的 Enter 就是这个字节 —— POSIX 的行规程用 `ICRNL` 把它
+    // 折成 NL，而 Windows 的 ConPTY 只认 CR（送 LF 在那边既不提交命令行也不回显）。
+    let literal =
+        serde_json::to_string(&format!("{line}\r")).expect("文本无法转成 JS 字符串字面量");
     format!(
         r#"(() => {{
   const textarea = document.querySelector('.tab-pane.is-active .xterm-helper-textarea');
@@ -103,6 +144,9 @@ async fn type_line(client: &mut VictauriClient, line: &str) {
 }
 
 /// 等屏幕上出现 `needle`（`wait_for` 轮询，**不是** sleep 猜）。
+///
+/// 超时的时候把**屏幕上的原文**一起报出来：这条用例红在 CI 上过一次，只带 `{waited}`
+/// 的报错分不清"命令没送到"、"提示符都没出来"与"到了但没执行"（`AGENTS.md` §7 的观测规范）。
 async fn wait_for_screen(client: &mut VictauriClient, needle: &str, timeout_ms: u64, what: &str) {
     let needle = serde_json::to_string(needle).unwrap();
     let waited = client
@@ -114,11 +158,16 @@ async fn wait_for_screen(client: &mut VictauriClient, needle: &str, timeout_ms: 
         )
         .await
         .unwrap();
-    assert_eq!(
-        waited.get("ok").and_then(serde_json::Value::as_bool),
-        Some(true),
-        "{what} 超时（{timeout_ms} ms）：{waited}"
+    if waited.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        return;
+    }
+    let screen = text(
+        &client
+            .eval_js("window.__akashaTerminal.screenText()")
+            .await
+            .unwrap_or(serde_json::Value::Null),
     );
+    panic!("{what} 超时（{timeout_ms} ms）：{waited} —— 屏幕上是 {screen:?}");
 }
 
 #[tokio::test]
@@ -159,7 +208,7 @@ async fn terminal_renders_on_canvas_and_survives_a_flood() {
             .await
             .unwrap(),
     );
-    eprintln!("渲染器：{renderer}；canvas {canvases} 块；DOM 行容器 {dom_rows} 个");
+    eprintln!("界面: 渲染器={renderer} 画布={canvases}");
     assert!(
         renderer == "webgl" || renderer == "canvas",
         "渲染器必须是 webgl 或 canvas，实际是 {renderer} —— 静默落到 DOM 是禁止的"
@@ -168,9 +217,9 @@ async fn terminal_renders_on_canvas_and_survives_a_flood() {
     assert_eq!(dom_rows, 0, "DOM 渲染器的行容器还在 —— 它不该在渲染路径上");
 
     // ── 2. 一个完整的来回：按键 → PTY → 回显到屏幕 ───────────────────────────
-    // 断言的是 `akasha-probe-42` 这个**求值结果**：命令行里只有 `%s`，
+    // 断言的是 `akasha-probe-42` 这个**求值结果**：命令行里看不出它（见 `echo_marker`），
     // 所以屏幕上出现它只可能来自 shell 真的执行了这条命令。
-    type_line(&mut client, "printf 'akasha-probe-%s\\n' 42\n").await;
+    type_line(&mut client, &echo_marker("akasha-probe", "42")).await;
     wait_for_screen(&mut client, "akasha-probe-42", 30_000, "命令求值后的输出").await;
 
     // ── 3. 大流量：不卡死 = 排空 + 哨兵 + 之后还能用 ─────────────────────────
@@ -180,7 +229,7 @@ async fn terminal_renders_on_canvas_and_survives_a_flood() {
             .await
             .unwrap(),
     );
-    type_line(&mut client, FLOOD).await;
+    type_line(&mut client, &flood_command()).await;
 
     wait_for_screen(
         &mut client,
@@ -205,7 +254,7 @@ async fn terminal_renders_on_canvas_and_survives_a_flood() {
         )
         .await
         .unwrap();
-    eprintln!("8 MB 分 {} 批送达；哨兵已现", after - before);
+    eprintln!("界面: 批次增量={}", after - before);
     assert_eq!(
         pending.get("ok").and_then(serde_json::Value::as_bool),
         Some(true),
@@ -213,7 +262,7 @@ async fn terminal_renders_on_canvas_and_survives_a_flood() {
     );
 
     // 灌完之后还能再敲一条命令 —— 这才是"输出暂停"而不是"卡死"的判据。
-    type_line(&mut client, "printf 'akasha-alive-%s\\n' yes\n").await;
+    type_line(&mut client, &echo_marker("akasha-alive", "yes")).await;
     wait_for_screen(
         &mut client,
         "akasha-alive-yes",
@@ -221,8 +270,6 @@ async fn terminal_renders_on_canvas_and_survives_a_flood() {
         "大流量之后的新命令",
     )
     .await;
-
-    eprintln!("✅ 画布渲染 + 按键来回 + 8 MB 灌流后仍可交互");
 }
 
 /// WebGL 上下文丢失 → **必须**退到 canvas，而且**不重建终端**（屏幕内容还在）。
@@ -249,7 +296,7 @@ async fn webgl_context_loss_falls_back_to_canvas() {
     );
 
     // 先在屏幕上留个"降级前后应当还在"的痕迹。
-    type_line(&mut client, "printf 'akasha-pre-loss-%s\\n' ok\n").await;
+    type_line(&mut client, &echo_marker("akasha-pre-loss", "ok")).await;
     wait_for_screen(
         &mut client,
         "akasha-pre-loss-ok",
@@ -266,7 +313,7 @@ async fn webgl_context_loss_falls_back_to_canvas() {
     );
     let lost = client.eval_js(LOSE_WEBGL_CONTEXT).await.unwrap();
     if !ok(&lost) {
-        eprintln!("跳过：当前渲染器是 {before}，或这个驱动不提供 WEBGL_lose_context");
+        eprintln!("跳过: 当前渲染器是 {before}，或该驱动不提供 WEBGL_lose_context");
         return;
     }
 
@@ -298,7 +345,7 @@ async fn webgl_context_loss_falls_back_to_canvas() {
     );
 
     // 降级之后还能用。
-    type_line(&mut client, "printf 'akasha-fallback-%s\\n' ok\n").await;
+    type_line(&mut client, &echo_marker("akasha-fallback", "ok")).await;
     wait_for_screen(
         &mut client,
         "akasha-fallback-ok",
@@ -313,5 +360,5 @@ async fn webgl_context_loss_falls_back_to_canvas() {
             .await
             .unwrap(),
     );
-    eprintln!("✅ WebGL → canvas 降级成功（现有 canvas {canvases} 块，屏幕内容保留）");
+    eprintln!("界面: 画布={canvases}");
 }

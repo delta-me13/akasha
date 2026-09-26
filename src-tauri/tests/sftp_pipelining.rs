@@ -135,7 +135,7 @@ async fn many_small_files_are_faster_when_they_are_in_flight() {
         .to_path_buf();
     let link = slow_link(server.addr, Duration::from_millis(10)).await;
     eprintln!(
-        "服务端 127.0.0.1:{} · 链路 127.0.0.1:{}（每段延后 {:?}）· 根目录 {}",
+        "构造: 服务端=127.0.0.1:{} 链路=127.0.0.1:{} 每段延后={:?} 根目录={}",
         server.addr.port(),
         link.addr.port(),
         link.delay,
@@ -157,7 +157,7 @@ async fn many_small_files_are_faster_when_they_are_in_flight() {
         payloads.push(content.clone());
         scratch.write(&file_name(index), &content);
     }
-    eprintln!("本机源目录 {}", scratch.path().display());
+    eprintln!("构造: 本机源目录={}", scratch.path().display());
 
     let Some((mut client, _fixture, vault)) = connect_and_prepare().await else {
         return;
@@ -199,7 +199,7 @@ async fn many_small_files_are_faster_when_they_are_in_flight() {
     .await;
 
     let asked = connect_side(&mut client, "right", &server.fingerprint).await;
-    eprintln!("右栏经链路连上，问到过 {asked:?}");
+    eprintln!("会话: 侧=右 提示数={}", asked.len());
     wait_js(
         &mut client,
         "document.querySelector('.sftp-pane[data-side=\"right\"]')?.dataset.sftpState === 'connected'",
@@ -243,7 +243,7 @@ async fn many_small_files_are_faster_when_they_are_in_flight() {
         serial_peak, 1,
         "逐个等结束的那一批里，最多只能有 1 个文件同时在搬"
     );
-    eprintln!("串行：{FILES} 个文件 {serial:.3?}（peak 1）");
+    eprintln!("报告: 档=串行 文件数={FILES} 耗时={serial:.3?}");
 
     // ── 5. 并发：一口气全发出去 ─────────────────────────────────────────────
     let concurrent = Instant::now();
@@ -261,7 +261,9 @@ async fn many_small_files_are_faster_when_they_are_in_flight() {
     wait_transfer_settled(&mut client, FILES * 2).await;
     let concurrent = concurrent.elapsed();
     let (limit, live, peak) = in_flight(&mut client).await;
-    eprintln!("并发：{FILES} 个文件 {concurrent:.3?}（limit {limit}，live {live}，peak {peak}）");
+    eprintln!(
+        "报告: 档=并发 文件数={FILES} 耗时={concurrent:.3?} limit={limit} live={live} peak={peak}"
+    );
 
     assert!(live <= limit, "在搬的个数不该超过上限");
     assert!(
@@ -295,10 +297,7 @@ async fn many_small_files_are_faster_when_they_are_in_flight() {
             "第 {index} 个文件的字节必须与源相同"
         );
     }
-    eprintln!(
-        "对端真盘：{FILES} 个文件，字节逐一相同，链路共搬了 {} 段",
-        link.chunks()
-    );
+    eprintln!("服务端: 链路搬动段数={}", link.chunks());
 
     // ── 7. 收尾：结束会话（两侧断开、清理落地） ─────────────────────────────
     click(&mut client, ".sftp-stop", "结束 SFTP 会话").await;

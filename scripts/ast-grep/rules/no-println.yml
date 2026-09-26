@@ -7,12 +7,16 @@ note: |
   库代码（纯逻辑模块）不要直接输出，把事件返回给调用方；
   app 层由 tauri-plugin-log 落盘并轮转。
 
-  豁免：tests/ 目录。测试用 eprintln! 输出诊断信息是正当用法，
-  且它不进入产物；生产代码无豁免。
+  豁免两处：
+  * tests/ 目录：测试用 eprintln! 输出诊断信息是正当用法，且它不进入产物；
+  * build.rs：构建脚本的 stdout **就是**它的 API（cargo 从那里读 `cargo:...` 指令，
+    而表达式只有 println! 一种形态）。本规则管的是**运行期**日志，构建脚本不在其中。
+  生产代码（含 app 侧的 bin / lib）无豁免。
 files:
   - "**/*.rs"
 ignores:
   - "**/tests/**"
+  - "**/build.rs"
 rule:
   any:
     - pattern: println!($$$ARGS)

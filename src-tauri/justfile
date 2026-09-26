@@ -94,13 +94,19 @@ E2E_TARGETS := "smoke integration session_channel terminal_render tab_close wind
 # 需要 `close_behavior=exit` 的目标：**只能**在第二段跑（见上）。
 E2E_TARGETS_EXIT := "exit_residue"
 
-# **不需要真 app** 的集成测试（显式清单，理由写在各自的文件头）。
+# **不需要真 app** 的集成测试（显式清单，两类的归属见下）。
 #
 # 为什么要有这个清单：下面的 guard 会把"tests/ 里没接进 `test-e2e` 的目标"判红
-# （问题 #36：生成了但没人跑），但有些集成测试本来就**不碰 app** —— 例如
-# `session_watchdog`：它只把 app 二进制以看门狗身份再跑一次（没有窗口、没有 IPC、
-# 不碰 Victauri），进 E2E 只会白起一套 Vite + app，而 `just test` 才是它该在的地方。
-E2E_NO_APP := "session_watchdog"
+# （问题 #36：生成了但没人跑），但有些集成测试本来就**不碰 app**，进 E2E 只会白起一套
+# Vite + app，而 `just test`（nextest 覆盖 workspace 全部目标）才是它该在的地方：
+#   * 只把 app 二进制当子进程用的：`session_watchdog`（以看门狗身份再跑一次那个
+#     二进制，没有窗口、没有 IPC、不碰 Victauri）；
+#   * 域模块自己的集成测试：plan 0109 把 6 个成员的 `tests/*.rs` 迁进 `src-tauri/tests/`
+#     之后它们与 app 级 E2E 同住一个目录（各自起进程内的服务端、只调域函数）。
+# ⚠️ **迁移这一类文件时必须同步登记**：漏一个，guard 会让 `just test-e2e` 连第一段都
+# 执行不到（问题 #170 —— 迁移时清单没跟着改，E2E 作业在三个平台上都停在 guard 上）。
+# 本清单的成员不需要排序，故按字典序排列，便于与 `ls tests/*.rs` 对账。
+E2E_NO_APP := "bw_import_pool cancellable_connect connect_auth connection_count credential_protection enumeration export_contract fake_cli format_migration host_to_host hosts_import jump_host key_page_protection known_hosts known_hosts_roundtrip local_forward no_absolute_paths passphrase_contract passphrase_on_disk pipelining pools_roundtrip pty_roundtrip remote_forward schema_contract session_protection session_watchdog sftp_session socks5_forward sqlcipher_contract sshconfig_parse transfer_atomic unlock_lifecycle"
 
 # **自己起 app** 的集成测试（同样只登记，不放进 `test-e2e` 的目标清单）。
 #
@@ -116,6 +122,14 @@ E2E_SELF_APP := "portable"
 #   * 前端必须走 Vite dev（1420）：`window.__akashaTerminal` 探针只在 dev 构建里注册，
 #     生产构建会把它整段摇掉；
 #   * 后端用 debug 构建（`cfg(dev)` → 走 `devUrl`）。
+#
+# ⚠️ **app 二进制由 `cargo test --no-run` 预编译、直接执行，不经 `cargo run`**：
+# 本包的测试目标都引用 `CARGO_BIN_EXE_akasha`，于是每条 `cargo test --test <t>` 都会把
+# `target/debug/akasha.exe` 重建为 `test` profile，而 Windows 不允许删除 / 覆盖正在运行的
+# 可执行文件 —— app 一旦从那里启动，之后的 `cargo test` 全部红在
+# `failed to remove file ... akasha.exe (os error 5)`。
+# 预先 `cargo test --no-run` 之后指纹已一致、运行期不再重链，直接执行该二进制即可；
+# Linux / macOS 允许替换运行中的文件，这条差异只在 Windows 上成立。
 # 为什么要自包含：这个配方不能假设"上一秒有别的进程在跑"（受限环境每次调用一个新
 # 命名空间，问题 #33），而"请你自己先起 app"的入口最后就是没人跑（问题 #36）。
 # 平台能力差异由用例自己**显式跳过并写明原因**（Wayland 截不了窗口等），
@@ -141,15 +155,46 @@ E2E_SELF_APP := "portable"
 # 按 `portable.md` §4 第 2 条退回 **OS 数据目录** —— 于是两段其实跑在不同的数据目录里，
 # 而第二段写进去的 `close_behavior` 也就读不到；更糟的是第一段会读到 OS 目录里**上一次**
 # 留下的配置（"关窗即退出"），让 `window_close` 莫名其妙地红。
+#
+# ⚠️ **发现目录按候选逐个找**：它由**每个进程**的 `std::env::temp_dir()` 给出，而它读 `TMPDIR` ——
+# app 与本 shell 是**两个进程**，取值可能不同（执行器给动作的最小环境不含该变量，于是本 shell
+# 退到 `/tmp`，而 app 取平台默认值）。只看一个候选时，症状是"app 起来了但没登记到 discovery
+# 目录"（问题 #171）。样板 policy 现在给了确定的 `TMPDIR`，但"app 由别人启动"这条路上
+# 两侧仍可能不同 —— 所以候选逐个找留着。
+#
+# ⚠️ **Windows 上收 app 要连它的子进程一起收（`taskkill /T`）**：app 的 WebView2 子进程握着
+# `%LOCALAPPDATA%` 下那份用户数据目录，只杀 app 自己会让**下一份实例的 webview 建不起来**：
+# `failed to create webview: WebView2 error ... "The requested resource is in use."`，
+# 症状是那一段里的用例全都"JS bridge 不在"（第二段的 `exit_residue` 碰巧不看界面所以照过，
+# 第三段的 `portable` 直接红，CI 上实测 —— 见问题 #177）。
+#
+# ⚠️ **Windows 上杀掉 app 之后还要等它的 WebView2 放开用户数据目录**：`msedgewebview2` 还握着
+# `%LOCALAPPDATA%\fans.cyrene.akasha-terminal` 的那一小段时间里，下一份实例起不来 webview：
+# `failed to create webview: WebView2 error ... "The requested resource is in use."`（CI 上实测：
+# 第二段与 `portable` 那一段都撞上，问题 #177）。判据取"那个目录能改名" —— 有活进程握着时改名会
+# 失败，而本机上它通常立刻就能改，所以这一等的代价接近零（30 秒超时兜底）。
+#
+# ⚠️ **两种 PID 不是同一个数**：`$!`（`cargo` / `Vite` 的后台作业）给出的是**本 shell 的
+# PID** —— Windows（MSYS）上它与该进程自己的 Windows PID 不同，而 discovery 目录名正是后者。
+# 判活 / 终止 `$!` 只能用 shell 自己的信号接口（`job_alive` / `stop_job`）：拿 `$!` 去问
+# `tasklist` / `taskkill` 会永远找不到进程，症状是**刚启动就判定 app 起不来**（问题 #162），
+# 收尾里 `wait` 又等一个没被杀掉的 `cargo run`，作业一直挂到取消。
+# 输出规范见 `tests/support/mod.rs` 的模块文档：观测行是 `<主体>: <字段>=<值>`，
+# 跳过行是 `跳过: <原因>`，构造行是 `构造: <字段>=<值>`；断言已经恰好固定的值不重复输出，
+# 成功不打印横幅（用例通过本身就是结论）。
 test-e2e:
     @set -uo pipefail; \
     tmp="${TMPDIR:-${TEMP:-/tmp}}"; \
     disc="$tmp/victauri"; \
+    tmp_candidates="/tmp $tmp"; \
+    if [ -n "${TMPDIR:-}" ] && [ "$TMPDIR" != "$tmp" ]; then tmp_candidates="$tmp_candidates $TMPDIR"; fi; \
     vite_url="http://localhost:1420/"; \
     vite_pid=""; app_pid=""; cargo_pid=""; rc=0; \
     touched=0; made_dir=0; saved_cfg=""; \
     cfg_dir="${CARGO_TARGET_DIR:-target}/debug/akasha-data"; \
     cfg_file="$cfg_dir/config.json"; \
+    case "$(uname -s 2>/dev/null || echo unknown)" in MINGW*|MSYS*|CYGWIN*) app_ext=".exe" ;; *) app_ext="" ;; esac; \
+    app_bin="${CARGO_TARGET_DIR:-target}/debug/akasha${app_ext}"; \
     pid_alive() { \
       case "$(uname -s 2>/dev/null || echo unknown)" in \
         MINGW*|MSYS*|CYGWIN*) tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1" ;; \
@@ -158,9 +203,16 @@ test-e2e:
     }; \
     stop() { \
       case "$(uname -s 2>/dev/null || echo unknown)" in \
-        MINGW*|MSYS*|CYGWIN*) taskkill //F //PID "$1" >/dev/null 2>&1 || true ;; \
+        MINGW*|MSYS*|CYGWIN*) taskkill //F //T //PID "$1" >/dev/null 2>&1 || true ;; \
         *) kill "$1" 2>/dev/null || true ;; \
       esac; \
+    }; \
+    job_alive() { kill -0 "$1" 2>/dev/null; }; \
+    stop_job() { kill "$1" 2>/dev/null || true; }; \
+    reap_job() { \
+      i=0; \
+      while job_alive "$1" && [ "$i" -lt 20 ]; do sleep 0.5; i=$((i + 1)); done; \
+      return 0; \
     }; \
     reap() { \
       i=0; \
@@ -174,33 +226,53 @@ test-e2e:
       done; \
     }; \
     start_app() { \
-      cargo build --package akasha || exit 1; \
+      cargo test --no-run || exit 1; \
+      [ -f "$app_bin" ] || { echo "错误: app 二进制不存在（$app_bin）"; exit 1; }; \
       before=$(ls "$disc" 2>/dev/null | tr '\n' ' '); \
-      echo "→ 起 app（debug 构建，走 devUrl；日志 $1）"; \
-      cargo run --quiet --package akasha >"$1" 2>&1 & \
+      echo "启动 app: 日志=$1"; \
+      "$app_bin" >"$1" 2>&1 & \
       cargo_pid=$!; \
       app_pid=""; \
       for _ in $(seq 1 120); do \
-        for d in "$disc"/*/; do \
-          [ -f "${d}port" ] || continue; \
-          p=${d%/}; p=${p##*/}; \
-          case " $before " in *" $p "*) continue ;; esac; \
-          app_pid=$p; break; \
+        for root in $tmp_candidates; do \
+          for d in "$root/victauri"/*/; do \
+            [ -f "${d}port" ] || continue; \
+            p=${d%/}; p=${p##*/}; \
+            case " $before " in *" $p "*) continue ;; esac; \
+            app_pid=$p; break; \
+          done; \
+          [ -n "$app_pid" ] && break; \
         done; \
         [ -n "$app_pid" ] && break; \
-        pid_alive "$cargo_pid" || break; \
+        job_alive "$cargo_pid" || break; \
         sleep 1; \
       done; \
       if [ -z "$app_pid" ]; then \
-        echo "❌ app 没起来（日志：$1）"; \
-        if [ -s "$1" ]; then tail -n 20 "$1"; else echo "（日志是空的：那个进程一个字节都没写就结束了 —— Windows 上第一次读到的就是这个形状，见问题 #162）"; fi; \
-        pid_alive "$cargo_pid" && echo "（cargo 进程还在：app 只是没有登记到 discovery 目录）"; \
+        echo "错误: app 未登记到 discovery 目录（日志 $1）"; \
+        if [ -s "$1" ]; then tail -n 20 "$1"; else echo "日志为空: 进程在写出任何字节之前结束（Windows 首次读到的就是这个形状，见问题 #162）"; fi; \
+        job_alive "$cargo_pid" && echo "cargo 进程仍在: app 未登记到 discovery 目录"; \
         exit 1; \
       fi; \
     }; \
+    webview_dir() { printf '%s/fans.cyrene.akasha-terminal' "${LOCALAPPDATA:-}"; }; \
+    wait_webview_free() { \
+      d=$(webview_dir); \
+      [ -d "$d" ] || return 0; \
+      p="$d.e2e-probe.$$"; \
+      i=0; \
+      while [ "$i" -lt 30 ]; do \
+        if mv "$d" "$p" 2>/dev/null; then \
+          mv "$p" "$d" 2>/dev/null || true; \
+          return 0; \
+        fi; \
+        sleep 1; i=$((i + 1)); \
+      done; \
+      return 0; \
+    }; \
     stop_app() { \
-      [ -n "$cargo_pid" ] && { stop "$cargo_pid"; wait "$cargo_pid" 2>/dev/null; }; \
+      [ -n "$cargo_pid" ] && { stop_job "$cargo_pid"; wait "$cargo_pid" 2>/dev/null; }; \
       [ -n "$app_pid" ] && { stop "$app_pid"; reap "$app_pid"; }; \
+      case "$(uname -s 2>/dev/null || echo unknown)" in MINGW*|MSYS*|CYGWIN*) wait_webview_free ;; esac; \
       cargo_pid=""; app_pid=""; \
       return 0; \
     }; \
@@ -216,7 +288,7 @@ test-e2e:
     }; \
     cleanup() { \
       stop_app; \
-      [ -n "$vite_pid" ] && { stop "$vite_pid"; reap "$vite_pid"; }; \
+      [ -n "$vite_pid" ] && { stop_job "$vite_pid"; reap_job "$vite_pid"; }; \
       restore_config; \
       return 0; \
     }; \
@@ -228,66 +300,68 @@ test-e2e:
       case " {{E2E_TARGETS}} {{E2E_TARGETS_EXIT}} " in *" $t "*) known=1 ;; esac; \
       case " {{E2E_NO_APP}} {{E2E_SELF_APP}} " in *" $t "*) known=1 ;; esac; \
       if [ "$known" = 0 ]; then \
-        echo "❌ tests/$t.rs 不在 E2E_TARGETS / E2E_TARGETS_EXIT / E2E_NO_APP / E2E_SELF_APP 里 —— 加进其中一处，并写清理由"; rc=1; \
+        echo "错误: tests/$t.rs 未登记进 E2E_TARGETS / E2E_TARGETS_EXIT / E2E_NO_APP / E2E_SELF_APP —— 加进其中一处并写明理由"; rc=1; \
       fi; \
     done; \
     [ "$rc" = 0 ] || exit 1; \
     app_port() { \
-      [ -d "$disc" ] || return 1; \
-      for d in "$disc"/*/; do \
-        [ -f "${d}port" ] || continue; \
-        p=${d%/}; p=${p##*/}; \
-        case "$p" in ''|*[!0-9]*) continue ;; esac; \
-        pid_alive "$p" || continue; \
-        port=$(cat "${d}port" 2>/dev/null) || continue; \
-        curl -s -o /dev/null -m 2 "http://127.0.0.1:${port}/" || continue; \
-        printf '%s' "$port"; return 0; \
+      for root in $tmp_candidates; do \
+        [ -d "$root/victauri" ] || continue; \
+        for d in "$root/victauri"/*/; do \
+          [ -f "${d}port" ] || continue; \
+          p=${d%/}; p=${p##*/}; \
+          case "$p" in ''|*[!0-9]*) continue ;; esac; \
+          pid_alive "$p" || continue; \
+          port=$(cat "${d}port" 2>/dev/null) || continue; \
+          curl -s -o /dev/null -m 2 "http://127.0.0.1:${port}/" || continue; \
+          printf '%s' "$port"; return 0; \
+        done; \
       done; \
       return 1; \
     }; \
     if app_port >/dev/null 2>&1; then \
-      echo "→ 复用已在运行的 app（不启动、也不收尾；配置是它启动时读的那一份）"; \
+      echo "复用已运行的 app: 不启动、不收尾，配置取它启动时读的那一份"; \
       run_targets "{{E2E_TARGETS}} {{E2E_TARGETS_EXIT}}"; \
-      echo "→ 跳过第三段（可搬迁性）：那个复用的 app 还在跑，而本段要自己起第二份 ——"; \
-      echo "  单实例（plan 0304）会让它自己退掉。想验这条就单独跑 just portable（先把 app 关掉）。"; \
+      echo "跳过: 第三段（可搬迁性）—— 复用的 app 仍在运行，而这一段要自己启动第二份"; \
+      echo "  单实例（plan 0304）会让第二份自行退出；单独执行 just portable 验证这条（先关闭 app）"; \
     else \
       if curl -s -o /dev/null -m 2 "$vite_url"; then \
-        echo "→ 复用已在运行的 Vite（1420）"; \
+        echo "复用已运行的 Vite: 端口=1420"; \
       else \
-        echo "→ 起 Vite（1420）"; \
+        echo "启动 Vite: 端口=1420"; \
         ( cd .. && exec ./node_modules/.bin/vite ) >"$tmp/akasha-e2e-vite.log" 2>&1 & \
         vite_pid=$!; \
         for _ in $(seq 1 60); do curl -s -o /dev/null -m 1 "$vite_url" && break; sleep 1; done; \
         if ! curl -s -o /dev/null -m 2 "$vite_url"; then \
-          echo "❌ Vite 起不来（日志：$tmp/akasha-e2e-vite.log）"; exit 1; \
+          echo "错误: Vite 未就绪（日志 $tmp/akasha-e2e-vite.log）"; exit 1; \
         fi; \
       fi; \
       touched=1; \
       if [ -f "$cfg_file" ]; then \
         saved_cfg="$tmp/akasha-e2e-config.json"; \
         cp "$cfg_file" "$saved_cfg"; \
-        echo "→ 便携数据目录里已有配置，先备份（跑完还原）：$cfg_file"; \
+        echo "备份配置: $cfg_file（结束时还原）"; \
       fi; \
       [ -d "$cfg_dir" ] || made_dir=1; \
       mkdir -p "$cfg_dir" || exit 1; \
       rm -f "$cfg_file"; \
       export AKASHA_E2E_OWNS_APP=1; \
-      echo "── 第一段：默认配置（关窗 = 收托盘）"; \
+      echo "── 第一段: 默认配置（关窗 = 收托盘）"; \
       start_app "$tmp/akasha-e2e-app1.log"; \
       run_targets "{{E2E_TARGETS}}"; \
       stop_app; \
-      echo "── 第二段：close_behavior=exit（关窗 = 直接退出）"; \
+      echo "── 第二段: close_behavior=exit"; \
       mkdir -p "$cfg_dir" || exit 1; \
       printf '{"close_behavior":"exit"}\n' > "$cfg_file" || exit 1; \
       start_app "$tmp/akasha-e2e-app2.log"; \
       run_targets "{{E2E_TARGETS_EXIT}}"; \
       stop_app; \
-      echo "── 第三段：可搬迁性（把 bin 搬到别处之后，数据还在吗）"; \
+      echo "── 第三段: 可搬迁性"; \
       just portable || rc=1; \
     fi; \
     if [ "$rc" != 0 ]; then \
       for l in "$tmp/akasha-e2e-app1.log" "$tmp/akasha-e2e-app2.log" "$tmp/akasha-e2e-app.log"; do \
-        if [ -f "$l" ]; then echo "—— app 日志尾部（${l}）——"; tail -n 20 "$l"; fi; \
+        if [ -f "$l" ]; then echo "app 日志尾部: $l"; tail -n 20 "$l"; fi; \
       done; \
     fi; \
     exit $rc
@@ -309,10 +383,15 @@ test-e2e:
 # （`just test-e2e` 的自起分支在第三段调用本配方，那时它自己的 app 已经收掉了。）
 #
 # ⚠️ 用例各自起进程，**必须串行**（`--test-threads=1`）。
+#
+# ⚠️ `vite_pid` 是 `$!`（本 shell 的 PID），终止走 `stop_job` —— 理由与 `test-e2e` 的
+# 「两种 PID 不是同一个数」相同（问题 #162）。
 portable:
     @set -uo pipefail; \
     tmp="${TMPDIR:-${TEMP:-/tmp}}"; \
     disc="$tmp/victauri"; \
+    tmp_candidates="/tmp $tmp"; \
+    if [ -n "${TMPDIR:-}" ] && [ "$TMPDIR" != "$tmp" ]; then tmp_candidates="$tmp_candidates $TMPDIR"; fi; \
     vite_url="http://localhost:1420/"; \
     vite_pid=""; \
     pid_alive() { \
@@ -321,37 +400,33 @@ portable:
         *) kill -0 "$1" 2>/dev/null ;; \
       esac; \
     }; \
-    stop() { \
-      case "$(uname -s 2>/dev/null || echo unknown)" in \
-        MINGW*|MSYS*|CYGWIN*) taskkill //F //PID "$1" >/dev/null 2>&1 || true ;; \
-        *) kill "$1" 2>/dev/null || true ;; \
-      esac; \
-    }; \
+    stop_job() { kill "$1" 2>/dev/null || true; }; \
     cleanup() { \
-      if [ -n "$vite_pid" ]; then stop "$vite_pid"; wait "$vite_pid" 2>/dev/null; fi; \
+      if [ -n "$vite_pid" ]; then stop_job "$vite_pid"; wait "$vite_pid" 2>/dev/null; fi; \
       return 0; \
     }; \
     trap cleanup EXIT; \
-    if [ -d "$disc" ]; then \
-      for d in "$disc"/*/; do \
+    for root in $tmp_candidates; do \
+      [ -d "$root/victauri" ] || continue; \
+      for d in "$root/victauri"/*/; do \
         [ -f "${d}port" ] || continue; \
         p=${d%/}; p=${p##*/}; \
         pid_alive "$p" || continue; \
         curl -s -o /dev/null -m 2 "http://127.0.0.1:$(cat "${d}port" 2>/dev/null)/" || continue; \
-        echo "❌ 已经有一个 akasha 在跑（pid ${p}）——单实例（plan 0304）会让本配方起的第二份自己退掉，"; \
-        echo "   症状看起来像\"可搬迁性坏了\"。先把那个 app 关掉（just dev 起的也是它）再跑。"; \
+        echo "错误: 已有 akasha 在运行（pid ${p}）—— 单实例（plan 0304）会让本配方启动的第二份自行退出，"; \
+        echo "   症状看起来像可搬迁性损坏。先关闭那个 app（just dev 启动的也是它）再执行。"; \
         exit 1; \
       done; \
-    fi; \
+    done; \
     if curl -s -o /dev/null -m 2 "$vite_url"; then \
-      echo "→ 复用已在运行的 Vite（1420）"; \
+      echo "复用已运行的 Vite: 端口=1420"; \
     else \
-      echo "→ 起 Vite（1420）"; \
+      echo "启动 Vite: 端口=1420"; \
       ( cd .. && exec ./node_modules/.bin/vite ) >"$tmp/akasha-portable-vite.log" 2>&1 & \
       vite_pid=$!; \
       for _ in $(seq 1 60); do curl -s -o /dev/null -m 1 "$vite_url" && break; sleep 1; done; \
       if ! curl -s -o /dev/null -m 2 "$vite_url"; then \
-        echo "❌ Vite 起不来（日志：$tmp/akasha-portable-vite.log）"; exit 1; \
+        echo "错误: Vite 未就绪（日志 $tmp/akasha-portable-vite.log）"; exit 1; \
       fi; \
     fi; \
     VICTAURI_E2E=1 cargo test --test portable -- --test-threads=1 --nocapture
