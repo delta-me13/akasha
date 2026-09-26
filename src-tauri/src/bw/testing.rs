@@ -106,6 +106,12 @@ impl Stub {
                     match listener.accept() {
                         Ok((stream, _)) => {
                             requests.fetch_add(1, Ordering::Relaxed);
+                            // ⚠️ Windows 上**接受到的那条连接会继承监听套接字的非阻塞模式**
+                            // （Linux 上不会）—— 不还原成阻塞模式，`serve` 里第一句
+                            // `read_line` 就有可能在客户端的请求还没到时返回 `WouldBlock`
+                            // （os error 10035），这条连接随即被丢掉，而客户端读到的是
+                            // "连接被中止"（os error 10053 / `Peer disconnected`，问题 #165）。
+                            let _ = stream.set_nonblocking(false);
                             let _ = serve(stream, &json, &zip, &assets);
                         }
                         Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
