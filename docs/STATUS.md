@@ -1575,3 +1575,16 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
         与本轮改动无关，仍记在「进行中」里；第三次运行另有一次 `sftp_host_to_host` 的凭据超时
         （`right 这一侧连接失败：认证失败：… 上没有可用的方式`）—— 该目标前两轮都过、文件未被本次
         改动触碰，记为偶发。
+
+ 178. **vendored OpenSSL 的 `LNK4099` 把 Windows 的构建日志冲散**（本会话实测，**已修**）：
+      `openssl-src` 在 MSVC 下用 `/Zi /Fdossl_static.pdb` 编译，而那份 PDB 不随
+      `libopenssl_sys-*.rlib` 发到 `deps/` 下 —— 链接器于是对**每一个** .obj 各输出一行
+      `warning LNK4099: PDB 'ossl_static.pdb' was not found ...`。本机实测：链接一个测试目标
+      **1618 行**，全量 `cargo test --no-run`（65 个目标）上万行，把真正的报错冲到看不见。
+      处置：`src-tauri/build.rs` 在 Windows + MSVC 上补一条链接器开关 `/IGNORE:4099`（复测：
+      65 个目标、**0 行**）。另一条路是 `.cargo/config.toml` 里的 `rustflags`，**没有**选它：
+      那会让整棵依赖树重编（含从源码构建的 OpenSSL，而本机只有 MSYS 的 perl，重建当场失败在
+      `perl reported failure with exit code: 2`），而 `rustc-link-arg` 只影响本包自己的
+      bin / test / example 链接。⚠️ 仍有的那一行 `linker stdout: 正在创建库 ...` 是 cdylib 链接的
+      正常输出（rustc 的 `linker_messages` lint），一行而已，不关。顺带：`no-println` 规则给
+      `**/build.rs` 开了豁免 —— 构建脚本的 stdout 就是它的 API（cargo 从那里读指令）。
