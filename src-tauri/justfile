@@ -162,6 +162,12 @@ E2E_SELF_APP := "portable"
 # 目录"（问题 #171）。样板 policy 现在给了确定的 `TMPDIR`，但"app 由别人启动"这条路上
 # 两侧仍可能不同 —— 所以候选逐个找留着。
 #
+# ⚠️ **Windows 上收 app 要连它的子进程一起收（`taskkill /T`）**：app 的 WebView2 子进程握着
+# `%LOCALAPPDATA%` 下那份用户数据目录，只杀 app 自己会让**下一份实例的 webview 建不起来**：
+# `failed to create webview: WebView2 error ... "The requested resource is in use."`，
+# 症状是那一段里的用例全都"JS bridge 不在"（第二段的 `exit_residue` 碰巧不看界面所以照过，
+# 第三段的 `portable` 直接红，CI 上实测 —— 见问题 #177）。
+#
 # ⚠️ **两种 PID 不是同一个数**：`$!`（`cargo` / `Vite` 的后台作业）给出的是**本 shell 的
 # PID** —— Windows（MSYS）上它与该进程自己的 Windows PID 不同，而 discovery 目录名正是后者。
 # 判活 / 终止 `$!` 只能用 shell 自己的信号接口（`job_alive` / `stop_job`）：拿 `$!` 去问
@@ -191,7 +197,7 @@ test-e2e:
     }; \
     stop() { \
       case "$(uname -s 2>/dev/null || echo unknown)" in \
-        MINGW*|MSYS*|CYGWIN*) taskkill //F //PID "$1" >/dev/null 2>&1 || true ;; \
+        MINGW*|MSYS*|CYGWIN*) taskkill //F //T //PID "$1" >/dev/null 2>&1 || true ;; \
         *) kill "$1" 2>/dev/null || true ;; \
       esac; \
     }; \

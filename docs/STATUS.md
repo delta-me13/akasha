@@ -435,6 +435,8 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 |---|---|
 | **`just test-e2e`（Windows 11 / MSVC，本机实测）** | 退出码 **0**，**全绿**：第一段 **28 个目标全部通过**（33 条用例，0 失败）、第二段 `exit_residue` **1/1**、第三段 `portable` **3/3**。整体跳过 4 个目标（`tab_close` / `window_close` / `bitwarden_login` / `bw_import`），另有 5 个目标里各 1 条用例按平台跳过（`vault_unlock` 的 `VmLck`、三条串口的设备节点、`single_instance` 的 `/proc` 实例计数），原因都在日志里逐条写明（见 #176）。走到这一步修掉的是四类**与平台绑定**的问题：`$!` 的 PID 命名空间与运行中覆盖 exe（#162）、ConPTY 启动时要求先答 `ESC[6n` 且行尾必须是 CR（#175）、tokio 的连接在 Windows 上读不出"连接被拒"（#173）、隧道用例清场时先删主机行后删规则行（#174）。⚠️ 仍被跳过的那两类就是**平台缺口的现状**：会话级的进程回收（Job Object，plan 0108 的遗留）与假 `bw` 的可执行形态 |
 | ↑ **同一配方在修复前的读数**（本机首次完整执行） | 退出码 **1**：第一段 28 个目标里 **13 个通过**（其中 5 个按平台显式跳过）、**15 个红**；第二段 `exit_residue` **1/1**；第三段 `portable` **3/3**。修复前停在第一段的 `app 未登记到 discovery 目录` 并挂到取消。那 15 个红灯当时被归成三类"平台缺口"（会话 / 隧道回收为空、ConPTY 下本地终端输出到不了 raw 通道、`bw` 的假 CLI 是 `#!/bin/sh`）；后续定位表明其中**大部分是判据自己与平台绑定**，真正剩下的只有后两类里的形态问题 |
+| ↑ **同一提交在 CI 的 Windows runner 上**（run `36226121050`） | 4 个目标红：`terminal_render`（2 条）、`single_instance`（1 条）、`windows_ports`（1 条）、`portable::data_survives_the_move`。⚠️ 其中两条是**判据的前提在 runner 上不成立**（WebView2 的用户数据目录、`COM2` 没有描述），另两条指向**输入路径**（句柄到手之前 xterm 生成的数据被丢）—— 性质与处置见 #177 |
+| ↑ **CI 运行 `36226121050` 的六个 job** | **检查（Linux / Windows / macOS）三格全绿**（Windows 的类型检查这次也过了，问题 #160 的第二次读数）、**E2E（macOS）绿**；**E2E（Linux）红**在 `vault_unlock` 一条（`读不到 app 的 /proc/<pid>/status`，上一次运行同一处）、**E2E（Windows）红**在上述 4 个目标 |
 | **`just test-e2e`（macOS 26.6.2 / arm64，经 `just runner-run test-e2e` 在沙箱外执行）** | 退出码 **0**，**全绿**：第一段 **28 个目标 / 37 个用例**全过（0 失败），第二段（`close_behavior=exit`）**1/1**，第三段（可搬迁性）**3/3**。⚠️ 走到这一步之前红过六处，全部是**"这条路径自己的前提"**：`tab_close` / `window_close` 的进程判活读 `/proc`（非 Linux 上门控，改用 `sessions` probe 那条与平台无关的断言）、`vault_unlock` 的 `VmLck` 同理、`tab_close` 关闭最后一个标签页之后注册表**就该是 0**（写成"回到起点"会让它必红，还把界面留在空状态，后续目标由此连带红）、E2E 发现目录的 `TMPDIR` 分叉（问题 #171）、导入要的 `USER`（问题 #172） |
 | **`just ready`（经 `just runner-run ready` 在沙箱外执行）** | **6/6 通过**（退出码 0，`test` 一步 254s）。此前同一环境上红过两次 `just test`：一次是 `pty::local` 的 `openpty`（沙箱内，见上），一次是 4 条 `bw::acquire`（回环假上游 `Connection reset by peer`）—— 后者与上面 `just test` 那行同一条已知偶发，紧接着重新执行**全绿** |
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
@@ -1543,3 +1545,27 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       - `bitwarden_login` / `bw_import`：假 `bw` 是一份 `#!/bin/sh` 脚本，Windows 上 `CreateProcess` 不执行
         脚本 —— 需要一个真的 `.exe`，本仓库还没有（`install_fake_bw` 在那边写出来的文件名已经是 `bw.exe`）。
       ⚠️ 这两类都**不是"执行不了"，是判据本身在那边还不成立**；显式跳过只是把这件事说清楚，缺口仍在。
+
+ 177. **CI 的 Windows runner 上还有三处"这台机器与判据的前提不同"**（本会话实测，**已修**，
+      **待下一次运行验证**）：一次真的 CI 运行（`36226121050`）把本机的全绿换成了四处红，逐条如下 ——
+      - **WebView2 的用户数据目录被上一份实例握着**（与本次改动无关）：`stop_app` 只 `taskkill`
+        app 自己，它的 `msedgewebview2` 子进程还活着，于是**下一份** app 起不来 webview：
+        `failed to create webview: WebView2 error ... "The requested resource is in use."`，
+        那一段里的用例全部"JS bridge 不在"（第二段的 `exit_residue` 不看界面，所以照过；第三段的
+        `portable::data_survives_the_move` 等到 60 秒超时）。处置：收 app 时带 `/T`，连同子进程一起收。
+        ⚠️ 本机不复现（资源释放得快，下一段起来得及）。
+      - **`windows_ports` 在一台"有端口、注册表里却没有描述"的机器上必红**（与本次改动无关）：
+        runner 上枚举出 1 条 `{"kind":"unknown","path":"COM2"}` —— 固件留下的端口在 `SERIALCOMM` 里、
+        `Enum` 下没有对应的 PnP 项，app 无从描述它（`unknown` 是**如实**的）。原判据把"这台机器本来
+        就没有描述"与"注册表里有、而枚举没带出来"当成同一件事，只有后者才是链断。处置：这一档改成
+        显式跳过并把枚举结果原样输出；真正的负对照留给有真实串口设备的主机（plan 0803 的那一层）。
+      - **`terminal_render` / `single_instance` 的终端驱动**：两条用例都只做一件事 —— 把一行敲进**界面
+        上的**终端等结果。它们红在"屏幕上始终没有那串字"。两条线索合起来指向**输入路径**：句柄到手
+        之前，xterm 生成的数据（最要紧的是它给 ConPTY 的 DSR 回答）被 `onInput` 直接丢弃，于是那条
+        会话永远不出提示符。处置两条：**①** 会话开起来之前把 xterm 生成的数据按序攒下、开了再补发
+        （`src/terminal/attach.ts`，上限 64 KiB）；**②** 同时修掉 #175 留下的那个自相矛盾 —— `echo_marker` 把
+        求值结果写进了**文件名**，而命令行会被回显，光靠回显就能让断言命中（本机当时就是这样"过"的）；
+        现在只让**文件内容**带结果，文件名只用不构成结果的那一部分。失败信息也跟着补上屏幕原文，
+        下一次红能直接看出"没送到 / 没提示符 / 没执行"。
+      - Linux 的 `vault_unlock` 与上一次运行**同一处、同一句话**（`读不到 app 的 /proc/<pid>/status`），
+        与本轮改动无关，仍记在「进行中」里。

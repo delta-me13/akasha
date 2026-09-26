@@ -42,9 +42,11 @@ fn echo_marker(head: &str, arg: &str) -> String {
 
 #[cfg(windows)]
 fn echo_marker(head: &str, arg: &str) -> String {
+    // ⚠️ 文件名里**不得**出现 `{head}-{arg}`：命令行会被 PTY 回显，回显里若已经有求值结果，
+    // 光靠回显就能让断言命中 —— 这条用例就什么都没验（正是上面说的那条判据）。
     let marker = format!("{head}-{arg}");
-    let path = std::env::temp_dir().join(format!("akasha-e2e-{marker}.txt"));
-    std::fs::write(&path, format!("{marker}\\n")).expect("造探针文件失败");
+    let path = std::env::temp_dir().join(format!("akasha-e2e-{head}.txt"));
+    std::fs::write(&path, format!("{marker}\n")).expect("造探针文件失败");
     format!("type \"{}\"", path.display())
 }
 
@@ -63,9 +65,9 @@ fn flood_command() -> String {
     let path = std::env::temp_dir().join("akasha-e2e-flood.txt");
     let mut body = String::new();
     while body.len() < 8_000_000 {
-        body.push_str("akasha\\n");
+        body.push_str("akasha\n");
     }
-    body.push_str("akasha-drained-ok\\n");
+    body.push_str("akasha-drained-ok\n");
     std::fs::write(&path, &body).expect("造灌流文件失败");
     format!("type \"{}\"", path.display())
 }
@@ -142,6 +144,9 @@ async fn type_line(client: &mut VictauriClient, line: &str) {
 }
 
 /// 等屏幕上出现 `needle`（`wait_for` 轮询，**不是** sleep 猜）。
+///
+/// 超时的时候把**屏幕上的原文**一起报出来：这条用例红在 CI 上过一次，只带 `{waited}`
+/// 的报错分不清"命令没送到"、"提示符都没出来"与"到了但没执行"（`AGENTS.md` §7 的观测规范）。
 async fn wait_for_screen(client: &mut VictauriClient, needle: &str, timeout_ms: u64, what: &str) {
     let needle = serde_json::to_string(needle).unwrap();
     let waited = client
@@ -153,11 +158,16 @@ async fn wait_for_screen(client: &mut VictauriClient, needle: &str, timeout_ms: 
         )
         .await
         .unwrap();
-    assert_eq!(
-        waited.get("ok").and_then(serde_json::Value::as_bool),
-        Some(true),
-        "{what} 超时（{timeout_ms} ms）：{waited}"
+    if waited.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        return;
+    }
+    let screen = text(
+        &client
+            .eval_js("window.__akashaTerminal.screenText()")
+            .await
+            .unwrap_or(serde_json::Value::Null),
     );
+    panic!("{what} 超时（{timeout_ms} ms）：{waited} —— 屏幕上是 {screen:?}");
 }
 
 #[tokio::test]

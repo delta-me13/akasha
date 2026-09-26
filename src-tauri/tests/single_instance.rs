@@ -46,6 +46,11 @@ fn ok(value: &serde_json::Value) -> bool {
     payload(value).as_bool().unwrap_or(false)
 }
 
+/// `eval_js` 的字符串结果（拿不到就给 `?`）。
+fn text(value: &serde_json::Value) -> String {
+    payload(value).as_str().unwrap_or("?").to_string()
+}
+
 /// 让 `{head}-{arg}` 出现在屏幕上，而**命令行里看不出它**。
 ///
 /// 判据是"shell 真的执行了这条命令"，不是"按键被回显了"：命令行里若已经写着结果，
@@ -59,9 +64,11 @@ fn echo_marker(head: &str, arg: &str) -> String {
 
 #[cfg(windows)]
 fn echo_marker(head: &str, arg: &str) -> String {
+    // ⚠️ 文件名里**不得**出现 `{head}-{arg}`：命令行会被 PTY 回显，回显里若已经有求值结果，
+    // 光靠回显就能让断言命中 —— 这条用例就什么都没验（正是上面说的那条判据）。
     let marker = format!("{head}-{arg}");
-    let path = std::env::temp_dir().join(format!("akasha-e2e-{marker}.txt"));
-    std::fs::write(&path, format!("{marker}\\n")).expect("造探针文件失败");
+    let path = std::env::temp_dir().join(format!("akasha-e2e-{head}.txt"));
+    std::fs::write(&path, format!("{marker}\n")).expect("造探针文件失败");
     format!("type \"{}\"", path.display())
 }
 
@@ -96,16 +103,23 @@ fn screen_has(needle: &str) -> String {
 }
 
 /// 等一个 JS 表达式为真（有截止时间的轮询，**不是** sleep 猜）。
+///
+/// 超时的时候把**终端屏幕上的原文**一起报出来（理由与 `terminal_render::wait_for_screen` 相同）。
 async fn wait_js(client: &mut VictauriClient, expression: &str, timeout_ms: u64, what: &str) {
     let waited = client
         .wait_for_expression(expression, None, Some(timeout_ms), None)
         .await
         .unwrap();
-    assert_eq!(
-        waited.get("ok").and_then(serde_json::Value::as_bool),
-        Some(true),
-        "{what} 超时（{timeout_ms} ms）：{waited}"
+    if waited.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        return;
+    }
+    let screen = text(
+        &client
+            .eval_js("window.__akashaTerminal.screenText()")
+            .await
+            .unwrap_or(serde_json::Value::Null),
     );
+    panic!("{what} 超时（{timeout_ms} ms）：{waited} —— 屏幕上是 {screen:?}");
 }
 
 /// app 自己的 pid：discovery 目录的名字就是它（问题 #40）。

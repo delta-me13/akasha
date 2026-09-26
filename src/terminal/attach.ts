@@ -51,6 +51,17 @@ export function attachTerminal(
 ): () => void {
   let disposed = false;
   let session: TerminalSession | null = null;
+  /**
+   * 会话还没开起来时 xterm 生成的数据 —— 最要紧的是它给 ConPTY 的那条 DSR 回答。
+   *
+   * ⚠️ **不能丢**：ConPTY 在收到那条回答之前**一个字节都不吐**（Windows 上表现为"终端
+   * 永远不出提示符"），而句柄要在 `open_session` 返回之后才有。丢掉它等于这条会话废了。
+   * 用户在会话刚开时敲的键、粘贴、鼠标上报也走这里 —— 先按原顺序攒着，开了再补发。
+   */
+  const pending: Uint8Array[] = [];
+  let pendingBytes = 0;
+  /** 攒的上限：会话一直开不起来时输入不该无限增长（超出的部分丢掉）。 */
+  const PENDING_LIMIT = 64 * 1024;
   let frame = 0;
   let forceResize = false;
   let lastCols = 0;
@@ -68,9 +79,15 @@ export function attachTerminal(
   try {
     surface = mountTerminalSurface(host, {
       onInput(data) {
-        // 会话还没开起来时的按键直接丢掉：缓冲一段"半连接"的输入只会让语义变模糊。
-        if (!session) return;
-        void session.write(encoder.encode(data)).catch(fail);
+        const bytes = encoder.encode(data);
+        if (!session) {
+          if (pendingBytes + bytes.byteLength <= PENDING_LIMIT) {
+            pending.push(bytes);
+            pendingBytes += bytes.byteLength;
+          }
+          return;
+        }
+        void session.write(bytes).catch(fail);
       },
       onRenderer: handlers.onRenderer,
       onRendererUnavailable(message) {
@@ -161,6 +178,11 @@ export function attachTerminal(
         }
         session = opened;
         handlers.onStatus("open");
+        // 会话开起来之前攒下的输入按原顺序补发（见 `pending` 的说明）。
+        for (const bytes of pending.splice(0)) {
+          void session.write(bytes).catch(fail);
+        }
+        pendingBytes = 0;
         refit(true); // 把真实行列数补给载体（开会话时它只知道默认尺寸）
       })
       .catch(fail);
