@@ -6,7 +6,7 @@
 //! ROADMAP 的验收就是这么写的：「解锁 → 读一次池 → **锁定之后进程里不留机密**
 //! （判据：`VmLck` 回落到解锁前的水平）」。而这一段**只能在真 app 上**验证：
 //!
-//! ⚠️ **`VmLck` 这一档只有 Linux 有**（见 `locked_marks`）：macOS / Windows 上没有
+//! ⚠️ **`VmLck` 这一档只有 Linux 有**（见 `locked_now`）：macOS / Windows 上没有
 //! `/proc/<pid>/status`，也没有与之等价的"这个进程锁了多少常驻页"读数。那两个平台上
 //! 本用例仍然执行其余全部步骤（四套池的行数、前后端状态、错误口令、重新解锁），只把
 //! 三条 `VmLck` 断言整段跳过并打印原因 —— 不让它变成"换个平台就必红"。
@@ -153,24 +153,30 @@ fn locked_kb(pid: u32) -> Option<u64> {
         .and_then(|rest| rest.trim().trim_end_matches("kB").trim().parse().ok())
 }
 
-/// 三个读数（解锁前 / 解锁中 / 锁定后），单位 kB。
+/// 那一刻 app 进程**已经 `mlock` 住**的内存量（kB）—— 外部事实，不是它自报的。
 ///
 /// ⚠️ **Linux 之外没有这一档判据**：它读的是 `/proc/<pid>/status` 的 `VmLck` —— BSD 与
 /// Windows 都没有 `/proc`，macOS 也不给等价的"这个进程锁了多少常驻页"读数（Apple Silicon
-/// 的 `mach_vm_region` 里没有与之对应的字段）。所以非 Linux 上返回三个 `None`，那三条断言
+/// 的 `mach_vm_region` 里没有与之对应的字段）。所以非 Linux 上返回 `None`，那三条断言
 /// 随之跳过，**其余步骤（四套池 / 前后端状态 / 错误口令 / 重解锁）照常执行**。
-fn locked_marks(port: u16) -> (Option<u64>, Option<u64>, Option<u64>) {
+///
+/// ⚠️ 解锁前 / 解锁中 / 锁定后是**三次读数**，每次调用只回答"此刻是多少"（问题 #180：
+/// 曾经把它折成"一次返回三个槽位"，而只有第一个槽位被填 —— `.1` / `.2` 恒为 `None`）。
+fn locked_now(port: u16) -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
         let pid = app_pid(port).expect("找不到 app 的 discovery 目录 —— 拿不到 pid 就量不了 VmLck");
-        let before = locked_kb(pid).expect("读不到 app 的 /proc/<pid>/status");
-        eprintln!("进程: pid={pid} VmLck={before}");
-        (Some(before), None, None)
+        let kb = locked_kb(pid);
+        match kb {
+            Some(kb) => eprintln!("进程: pid={pid} VmLck={kb}"),
+            None => eprintln!("进程: pid={pid} 读不到 /proc/{pid}/status"),
+        }
+        kb
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = port;
-        (None, None, None)
+        None
     }
 }
 
@@ -242,7 +248,7 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
     };
 
     // ── 3. 解锁，并且真的读到四套池里那四行 ─────────────────────────────────
-    let (locked_before, _, _) = locked_marks(client.port());
+    let locked_before = locked_now(client.port());
 
     let contents = client
         .invoke_command("vault_unlock", Some(json!({ "passphrase": PASSPHRASE })))
@@ -253,7 +259,7 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
         json!({ "keys": 1, "hosts": 1, "serials": 1, "forwards": 1 }),
         "解锁返回的四套池行数与我们造的对不上 —— 库真的被解开、被读通了吗？"
     );
-    let locked_during = locked_marks(client.port()).1;
+    let locked_during = locked_now(client.port());
 
     // ── 4. 状态跟着走（前后端一致这条判据的对象）─────────────────────────────
     let unlocked_status = client.invoke_command("vault_status", None).await.unwrap();
@@ -275,9 +281,9 @@ async fn unlocking_reads_the_pools_and_locking_gives_the_locked_memory_back() {
         json!(true),
         "刚才明明解锁着，vault_lock 却说没锁到东西"
     );
-    let locked_after = locked_marks(client.port()).2;
+    let locked_after = locked_now(client.port());
 
-    // ⚠️ Linux 之外没有这一档读数（见 locked_marks）：那三条断言整段跳过并写明原因，
+    // ⚠️ Linux 之外没有这一档读数（见 locked_now）：那三条断言整段跳过并写明原因，
     // 不把它做成"用例本身在别的平台上必红"。
     #[cfg(target_os = "linux")]
     {
