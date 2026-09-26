@@ -168,6 +168,12 @@ E2E_SELF_APP := "portable"
 # 症状是那一段里的用例全都"JS bridge 不在"（第二段的 `exit_residue` 碰巧不看界面所以照过，
 # 第三段的 `portable` 直接红，CI 上实测 —— 见问题 #177）。
 #
+# ⚠️ **Windows 上杀掉 app 之后还要等它的 WebView2 放开用户数据目录**：`msedgewebview2` 还握着
+# `%LOCALAPPDATA%\fans.cyrene.akasha-terminal` 的那一小段时间里，下一份实例起不来 webview：
+# `failed to create webview: WebView2 error ... "The requested resource is in use."`（CI 上实测：
+# 第二段与 `portable` 那一段都撞上，问题 #177）。判据取"那个目录能改名" —— 有活进程握着时改名会
+# 失败，而本机上它通常立刻就能改，所以这一等的代价接近零（30 秒超时兜底）。
+#
 # ⚠️ **两种 PID 不是同一个数**：`$!`（`cargo` / `Vite` 的后台作业）给出的是**本 shell 的
 # PID** —— Windows（MSYS）上它与该进程自己的 Windows PID 不同，而 discovery 目录名正是后者。
 # 判活 / 终止 `$!` 只能用 shell 自己的信号接口（`job_alive` / `stop_job`）：拿 `$!` 去问
@@ -248,9 +254,25 @@ test-e2e:
         exit 1; \
       fi; \
     }; \
+    webview_dir() { printf '%s/fans.cyrene.akasha-terminal' "${LOCALAPPDATA:-}"; }; \
+    wait_webview_free() { \
+      d=$(webview_dir); \
+      [ -d "$d" ] || return 0; \
+      p="$d.e2e-probe.$$"; \
+      i=0; \
+      while [ "$i" -lt 30 ]; do \
+        if mv "$d" "$p" 2>/dev/null; then \
+          mv "$p" "$d" 2>/dev/null || true; \
+          return 0; \
+        fi; \
+        sleep 1; i=$((i + 1)); \
+      done; \
+      return 0; \
+    }; \
     stop_app() { \
       [ -n "$cargo_pid" ] && { stop_job "$cargo_pid"; wait "$cargo_pid" 2>/dev/null; }; \
       [ -n "$app_pid" ] && { stop "$app_pid"; reap "$app_pid"; }; \
+      case "$(uname -s 2>/dev/null || echo unknown)" in MINGW*|MSYS*|CYGWIN*) wait_webview_free ;; esac; \
       cargo_pid=""; app_pid=""; \
       return 0; \
     }; \

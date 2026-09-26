@@ -1546,14 +1546,16 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
         脚本 —— 需要一个真的 `.exe`，本仓库还没有（`install_fake_bw` 在那边写出来的文件名已经是 `bw.exe`）。
       ⚠️ 这两类都**不是"执行不了"，是判据本身在那边还不成立**；显式跳过只是把这件事说清楚，缺口仍在。
 
- 177. **CI 的 Windows runner 上还有三处"这台机器与判据的前提不同"**（本会话实测，**已修**，
-      **待下一次运行验证**）：一次真的 CI 运行（`36226121050`）把本机的全绿换成了四处红，逐条如下 ——
-      - **WebView2 的用户数据目录被上一份实例握着**（与本次改动无关）：`stop_app` 只 `taskkill`
-        app 自己，它的 `msedgewebview2` 子进程还活着，于是**下一份** app 起不来 webview：
-        `failed to create webview: WebView2 error ... "The requested resource is in use."`，
-        那一段里的用例全部"JS bridge 不在"（第二段的 `exit_residue` 不看界面，所以照过；第三段的
-        `portable::data_survives_the_move` 等到 60 秒超时）。处置：收 app 时带 `/T`，连同子进程一起收。
-        ⚠️ 本机不复现（资源释放得快，下一段起来得及）。
+ 177. **CI 的 Windows runner 上暴露出来的一类差异**（本会话实测，**已修**）：一次真的 CI 运行
+      （`36226121050`）把本机的全绿换成了四处红；第二次运行（`36228577977`）只剩 `portable` 一处。
+      逐条如下 ——
+      - **WebView2 的用户数据目录被上一份实例握着**（与本次改动无关，**两次运行都红**）：结束这一份 app 之后
+        它的 WebView2 还握着 `%LOCALAPPDATA%\fans.cyrene.akasha-terminal` 一小会儿，于是**下一份** app
+        起不来 webview：`failed to create webview: WebView2 error ... "The requested resource is in use."`
+        （第二段的 `exit_residue` 不看界面所以照过；第三段的 `portable::data_survives_the_move` 等到
+        60 秒超时）。处置两条：收 app 时带 `/T`（连同子进程一起收），**并在收完之后等那个目录放开** ——
+        判据取"它能改名"（有活进程握着时改名失败），本机上通常立刻就能改，代价接近零。
+        ⚠️ 只带 `/T` 不够（第二次运行仍红在同一处）：握着它的不一定还挂在 app 的进程树上。
       - **`windows_ports` 在一台"有端口、注册表里却没有描述"的机器上必红**（与本次改动无关）：
         runner 上枚举出 1 条 `{"kind":"unknown","path":"COM2"}` —— 固件留下的端口在 `SERIALCOMM` 里、
         `Enum` 下没有对应的 PnP 项，app 无从描述它（`unknown` 是**如实**的）。原判据把"这台机器本来
@@ -1566,6 +1568,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
         （`src/terminal/attach.ts`，上限 64 KiB）；**②** 同时修掉 #175 留下的那个自相矛盾 —— `echo_marker` 把
         求值结果写进了**文件名**，而命令行会被回显，光靠回显就能让断言命中（本机当时就是这样"过"的）；
         现在只让**文件内容**带结果，文件名只用不构成结果的那一部分。失败信息也跟着补上屏幕原文，
-        下一次红能直接看出"没送到 / 没提示符 / 没执行"。
+        下一次红能直接看出"没送到 / 没提示符 / 没执行"。⚠️ **第二次运行（`36228577977`）里这两条都过了**
+        —— 处置有效（同一轮里 `windows_ports` 按新口径显式跳过，只剩 `portable` 那一处）。
       - Linux 的 `vault_unlock` 与上一次运行**同一处、同一句话**（`读不到 app 的 /proc/<pid>/status`），
         与本轮改动无关，仍记在「进行中」里。
