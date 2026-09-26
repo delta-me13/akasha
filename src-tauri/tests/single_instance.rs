@@ -46,9 +46,31 @@ fn ok(value: &serde_json::Value) -> bool {
     payload(value).as_bool().unwrap_or(false)
 }
 
+/// 让 `{head}-{arg}` 出现在屏幕上，而**命令行里看不出它**。
+///
+/// 判据是"shell 真的执行了这条命令"，不是"按键被回显了"：命令行里若已经写着结果，
+/// 光靠 PTY 的回显就能命中。POSIX 用 `printf` 的格式串把命令行与结果拆开（命令行里是
+/// `%s`）；Windows 的默认 shell（cmd.exe）没有 `printf`，改用内建的 `type` 倒一份文件
+/// —— 命令行里只有路径，屏幕上的字只可能来自文件内容。
+#[cfg(unix)]
+fn echo_marker(head: &str, arg: &str) -> String {
+    format!("printf '{head}-%s\\n' {arg}")
+}
+
+#[cfg(windows)]
+fn echo_marker(head: &str, arg: &str) -> String {
+    let marker = format!("{head}-{arg}");
+    let path = std::env::temp_dir().join(format!("akasha-e2e-{marker}.txt"));
+    std::fs::write(&path, format!("{marker}\\n")).expect("造探针文件失败");
+    format!("type \"{}\"", path.display())
+}
+
 /// 把一行敲进**当前活动标签页**的终端（真实输入路径：见 `terminal_render.rs` 的说明）。
 fn type_js(line: &str) -> String {
-    let literal = serde_json::to_string(line).expect("文本无法转成 JS 字符串字面量");
+    // 行尾补 CR（0x0D）：终端线上的 Enter 就是这个字节 —— POSIX 的行规程用 `ICRNL` 把它
+    // 折成 NL，而 Windows 的 ConPTY 只认 CR（送 LF 在那边既不提交命令行也不回显）。
+    let literal =
+        serde_json::to_string(&format!("{line}\r")).expect("文本无法转成 JS 字符串字面量");
     format!(
         r#"(() => {{
   const textarea = document.querySelector('.tab-pane.is-active .xterm-helper-textarea');
@@ -268,7 +290,7 @@ async fn a_second_instance_activates_the_hidden_window_of_the_first() {
         "终端渲染出来",
     )
     .await;
-    type_line(&mut client, "printf 'akasha-single-%s\\n' marker\n").await;
+    type_line(&mut client, &echo_marker("akasha-single", "marker")).await;
     wait_js(
         &mut client,
         &screen_has("akasha-single-marker"),

@@ -220,14 +220,15 @@ fn assert_curl(port: u16, what: &str) {
 fn seed(path: &Path, ssh_port: u16, http_port: u16) -> Seeded {
     let conn = open_vault(path);
 
-    // 先清干净（重跑）：主机行与规则行都按名字清。
-    forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
+    // 先清干净（重跑）：**规则先删、主机行后删** —— 规则的外键指着主机行，
+    // 反过来写会在"上一次留下了规则"时撞上 `FOREIGN KEY constraint failed`。
     let names = [LOCAL_NAME, REMOTE_NAME, HANG_NAME];
     for row in forwards::forwards(&conn).unwrap() {
         if names.contains(&row.name.as_str()) {
             forwards::delete_forward(&conn, row.id).unwrap();
         }
     }
+    forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
 
     let host_id = hosts::insert_host(
         &conn,

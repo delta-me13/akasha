@@ -152,13 +152,14 @@ fn dead_port() -> u16 {
 fn seed(path: &Path, ssh_port: u16, local_port: u16, taken_port: u16) -> (i64, i64, i64, u16) {
     let conn = open_vault(path);
 
-    // 先清干净（重跑）：主机行与规则行都按名字清。
-    forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
+    // 先清干净（重跑）：**规则先删、主机行后删** —— 规则的外键指着主机行，
+    // 反过来写会在"上一次留下了规则"时撞上 `FOREIGN KEY constraint failed`。
     for row in forwards::forwards(&conn).unwrap() {
         if row.name == FORWARD_NAME || row.name == DEAD_NAME || row.name == TAKEN_NAME {
             forwards::delete_forward(&conn, row.id).unwrap();
         }
     }
+    forget(&conn, HOST_NAME, "127.0.0.1", ssh_port);
 
     let host_id = hosts::insert_host(
         &conn,
@@ -237,15 +238,9 @@ async fn open_tunnel_for(client: &mut VictauriClient, rule_id: i64, fingerprint:
 async fn wait_refused(port: u16, what: &str) {
     let deadline = Instant::now() + CLOSE_TIMEOUT;
     loop {
-        // 监听撤掉之后连过去是"连接被拒"，不是"超时"。
-        let refused = tokio::time::timeout(
-            Duration::from_secs(2),
-            TcpStream::connect(("127.0.0.1", port)),
-        )
-        .await
-        .map(|result| result.is_err())
-        .unwrap_or(false);
-        if refused {
+        // 监听撤掉 = 连不上（用 `support::port_released` 探：tokio 的连接在 Windows 上
+        // 连一个已经关掉的端口只会超时，见那里的说明）。
+        if support::port_released(port) {
             return;
         }
         assert!(

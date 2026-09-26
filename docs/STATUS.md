@@ -433,7 +433,8 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 
 | 命令 / 检查 | 结果 |
 |---|---|
-| **`just test-e2e`（Windows 11 / MSVC，本机实测）** | 修掉 #162 的两处配方缺陷之后**首次完整执行**（退出码 1）：第一段 28 个目标里 **13 个通过**（其中 5 个按平台显式跳过）、**15 个红**；第二段 `exit_residue` **1/1**；第三段 `portable` **3/3**。修复前停在第一段的 `app 未登记到 discovery 目录` 并挂到取消。剩余红灯与本次修复无关，是三类**平台缺口**：Windows 上的会话 / 隧道回收仍是空的（标签页关闭之后后端仍登记着会话、隧道停止后端口仍在接受连接）、ConPTY 下本地终端的输出没有到达 raw 通道、`bw` 的假 CLI 写成了 `#!/bin/sh` 脚本（`bw.exe` 在 Windows 上不可执行）。⚠️ 第二类与第三类此前从未有过读数 —— Windows 的 E2E 在这次之前一步都没走进去
+| **`just test-e2e`（Windows 11 / MSVC，本机实测）** | 退出码 **0**，**全绿**：第一段 **28 个目标全部通过**（33 条用例，0 失败）、第二段 `exit_residue` **1/1**、第三段 `portable` **3/3**。整体跳过 4 个目标（`tab_close` / `window_close` / `bitwarden_login` / `bw_import`），另有 5 个目标里各 1 条用例按平台跳过（`vault_unlock` 的 `VmLck`、三条串口的设备节点、`single_instance` 的 `/proc` 实例计数），原因都在日志里逐条写明（见 #176）。走到这一步修掉的是四类**与平台绑定**的问题：`$!` 的 PID 命名空间与运行中覆盖 exe（#162）、ConPTY 启动时要求先答 `ESC[6n` 且行尾必须是 CR（#175）、tokio 的连接在 Windows 上读不出"连接被拒"（#173）、隧道用例清场时先删主机行后删规则行（#174）。⚠️ 仍被跳过的那两类就是**平台缺口的现状**：会话级的进程回收（Job Object，plan 0108 的遗留）与假 `bw` 的可执行形态 |
+| ↑ **同一配方在修复前的读数**（本机首次完整执行） | 退出码 **1**：第一段 28 个目标里 **13 个通过**（其中 5 个按平台显式跳过）、**15 个红**；第二段 `exit_residue` **1/1**；第三段 `portable` **3/3**。修复前停在第一段的 `app 未登记到 discovery 目录` 并挂到取消。那 15 个红灯当时被归成三类"平台缺口"（会话 / 隧道回收为空、ConPTY 下本地终端输出到不了 raw 通道、`bw` 的假 CLI 是 `#!/bin/sh`）；后续定位表明其中**大部分是判据自己与平台绑定**，真正剩下的只有后两类里的形态问题 |
 | **`just test-e2e`（macOS 26.6.2 / arm64，经 `just runner-run test-e2e` 在沙箱外执行）** | 退出码 **0**，**全绿**：第一段 **28 个目标 / 37 个用例**全过（0 失败），第二段（`close_behavior=exit`）**1/1**，第三段（可搬迁性）**3/3**。⚠️ 走到这一步之前红过六处，全部是**"这条路径自己的前提"**：`tab_close` / `window_close` 的进程判活读 `/proc`（非 Linux 上门控，改用 `sessions` probe 那条与平台无关的断言）、`vault_unlock` 的 `VmLck` 同理、`tab_close` 关闭最后一个标签页之后注册表**就该是 0**（写成"回到起点"会让它必红，还把界面留在空状态，后续目标由此连带红）、E2E 发现目录的 `TMPDIR` 分叉（问题 #171）、导入要的 `USER`（问题 #172） |
 | **`just ready`（经 `just runner-run ready` 在沙箱外执行）** | **6/6 通过**（退出码 0，`test` 一步 254s）。此前同一环境上红过两次 `just test`：一次是 `pty::local` 的 `openpty`（沙箱内，见上），一次是 4 条 `bw::acquire`（回环假上游 `Connection reset by peer`）—— 后者与上面 `just test` 那行同一条已知偶发，紧接着重新执行**全绿** |
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
@@ -857,19 +858,23 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       三个能本地核对的成员在 Windows 目标上退出码 0；第三次运行又暴露同一类的第二处
       （测试脚手架的 `tty_name`，问题 #160），已修、**判据要等下一次运行**。
       ⚠️ 它只解决**编译**这一面
-- [ ] **Windows 上的会话回收仍是空的**（plan 0108 留下的缺口）：POSIX 的会话 / 进程组在 Windows 上
+- [ ] **Windows 上的会话级回收仍是空的**（plan 0108 留下的缺口）：POSIX 的会话 / 进程组在 Windows 上
       不存在，等价物是 Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`：句柄一关，作业里的进程
-      全部结束），它还能替掉伴生看门狗在那条平台上的路径。本机没有 Windows 主机 —— 连"现在的行为
-      是什么样"（ConPTY 关闭时到底带走多少进程）都观测不到。展开时机是有 Windows 主机可执行 E2E 时；
-      届时先写 ADR（进程模型，与 ADR-0005 同源）
+      全部结束），它还能替掉伴生看门狗在那条平台上的路径。**本机现在有 Windows 主机与读数**（见
+      「已验证为通过」）：注册表那一半是对的 —— 关标签页 / 关窗 / 真退出之后 `live` 与 `registered`
+      都回到基线（`ssh_session` / `ssh_jump` / `ssh_config_import` 等的收尾断言都过）；缺的是"会话里
+      的其它进程"：`tab_close` / `window_close` 的探针是一个**忽略 SIGHUP 的后台作业**，cmd.exe 写
+      不出它、收它也要靠作业对象，于是这两条目标在 Windows 上显式跳过（#176）。
+      展开时先写 ADR（进程模型，与 ADR-0005 同源）
 - [~] **plan 0102（CI 平台矩阵）**：三次运行把红灯逐层换成了真实缺陷（#154 → #155 / #156 / #157
       → #158 / #159 / #160），每一处都已处置。现状：**Linux 的完整门禁与 Linux 的 E2E 通过**，
       macOS 的类型检查通过；Windows 的类型检查与 macOS 的 E2E 待下一次运行验证，
       Windows 的 E2E 已修掉 #162 的两处配方缺陷（`$!` 的 PID 命名空间、运行中覆盖 exe），
       本机首次完整执行（见「已验证为通过」）
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：CI 上三个平台都真的执行起来了 ——
-      ubuntu 格**通过**（28 个目标全部执行完，xvfb 下的原生窗口句柄路径第一次走通），macOS 格的三处
-      修正待验证，Windows 格已修掉 #162 的两处配方缺陷并能完整执行（剩余红灯是平台缺口）
+      ubuntu 格**通过**（28 个目标全部执行完，xvfb 下的原生窗口句柄路径第一次走通），macOS 格**全绿**，
+      Windows 格在本机 `just test-e2e` **退出码 0**、28 个目标全部通过（见「已验证为通过」，
+      跳过的四类目标与原因见 #176）；待验证的只剩"CI 的 Windows runner 上是否同样成立"
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
 
 ### 各轮（已完成，plan 0603–1103）
@@ -1496,3 +1501,45 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       **不读环境变量** —— 环境变量的取值可以被任意改写，而它要写进样板）。
       ⚠️ 教训：**"进程外面长什么样"是 E2E 的一条隐式前提**，最小环境把前提抽走时，
       症状出现在最远处（界面等超时），而不是在环境那一层。
+ 173. **Windows 上 tokio 的连接对"连接被拒"只报超时，于是"端口已释放"那条判据永不成立**（本会话实测，
+      **已修**）：`tunnel_local_forward` / `tunnel_dynamic_forward` 在停止隧道之后要等"端口不再接受连接"，
+      判据是 `timeout(2s, TcpStream::connect(…))` 落在 `Err` 一侧。本机实测：**同一个已经关闭的回环端口**，
+      `std::net::TcpStream::connect` 立刻给 `ConnectionRefused`（os error 10061），而 tokio 的连接三次全部
+      **超时** —— 于是"端口已经还给系统"被读成"还在接受连接"，用例等满 20 秒判红。
+      app 侧的证据与它相反：`netstat` 里那个监听只在停止后的**前 3 个采样**里出现过（实时采样 20 余次），
+      `app_state` 的 `tunnels` 也早已没有那条规则。处置：新增 `support::port_released(port)`，改用**阻塞**的
+      `std::net::TcpStream::connect_timeout` 探（判据取"连不上"，不取"恰好是 ConnectionRefused"——回环上没有
+      防火墙，握手成功就等于有一方在监听）。⚠️ 教训：**"连不上"这件事在 Windows 上不能用 tokio 的连接来问**。
+      同一个形状还在 `tests/local_forward.rs` 里（它把超时也算进"连不上"，因此在 Windows 上是过的 —— 但过的
+      理由不是它想验的那条）。
+
+ 174. **隧道用例的 `seed` 先删主机行、后删规则行，同一个数据目录上再执行一次必撞外键**（本会话实测，**已修**）：
+      六条隧道目标（`tunnel_state` / `tunnel_local_forward` / `tunnel_dynamic_forward` / `tunnel_remote_forward` /
+      `tunnel_reconnect` / `tunnel_teardown`）的 `seed` 都按"先 `forget(主机)`、再删转发规则"清场，而规则的
+      外键指着主机行：上一次留下的规则还在时，删主机行当场报
+      `Conflict { pool: "hosts", detail: "FOREIGN KEY constraint failed" }`。CI 每个作业只执行一遍、碰不到它，
+      本机反复执行才暴露 —— 而仓库明确要求"这些用例不依赖上一次执行干净了"
+      （`support::forget` 的注释里写着这条）。处置：六个 `seed` 一律改成**先删规则、再删主机行**，顺序的理由
+      写进注释。
+
+ 175. **ConPTY 的启动握手与"Enter 是 CR"**（本会话实测，**已修**）：Windows 上本地终端在最初 20 秒里
+      **一个字节都读不到**，两条原因都不在 app 的业务逻辑里 ——
+      ① **ConPTY 启动时先问一次光标位置**（`ESC[6n`），**没等到回答之前不出任何输出**（cmd.exe 的版本横幅
+      与提示符都压着）。真实界面里回答它的是 xterm（xterm.js 的 `deviceStatus` 对 `CSI 6 n` 回
+      `ESC[<row>;<col>R`），所以"界面上看得到"这条路本来就是好的；而 `session_channel` 的 raw 通道探针是
+      **哑的**（只统计字节），于是它什么都等不到。处置：只在 Windows 上补一条记录（`write_session` 发
+      `ESC[1;1R`），并在那里写明"POSIX 的 PTY 没有这个握手，往那边写就是往 shell 的输入里塞转义序列"。
+      ② **行尾必须是 CR**：POSIX 的行规程用 `ICRNL` 把 CR 折成 NL，所以送 LF 也能提交；**ConPTY 只认 CR**
+      —— 送 LF 时命令行停在屏幕上不动（实测：`echo X` + LF 只回显、不执行，改 CR 立刻执行）。处置：E2E 的
+      "敲一行"辅助函数改成**由函数补 CR**（`type_line` 的 `line` 参数因此不带行尾），15 处调用点去掉自己写的
+      `\n`。⚠️ 教训：**"终端线上的一组字节"在三个平台上不是同一件事**，这类差异不会在类型检查或
+      `just ready` 里露头，只在真的驱动一次终端时出现。
+
+ 176. **Windows 上仍有两类 E2E 目标被显式跳过，各自缺的东西不同**（本会话实测）：修掉 #162 / #173 / #174
+      与上面那两条平台差异之后，剩下的红灯一律改成显式跳过并在日志里写明原因（`AGENTS.md` §7）——
+      - `tab_close` / `window_close`：探针是一个 **POSIX shell 程序**（`sh -c 'trap "" HUP; …' &`），
+        Windows 的默认 shell 是 cmd.exe，写不出"忽略 SIGHUP 的后台作业"；而"关标签页 / 关窗把它一起收走"
+        在那边要靠**作业对象（Job Object）**，尚未实现（plan 0108 留下的缺口）。
+      - `bitwarden_login` / `bw_import`：假 `bw` 是一份 `#!/bin/sh` 脚本，Windows 上 `CreateProcess` 不执行
+        脚本 —— 需要一个真的 `.exe`，本仓库还没有（`install_fake_bw` 在那边写出来的文件名已经是 `bw.exe`）。
+      ⚠️ 这两类都**不是"执行不了"，是判据本身在那边还不成立**；显式跳过只是把这件事说清楚，缺口仍在。

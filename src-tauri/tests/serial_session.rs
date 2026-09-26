@@ -192,7 +192,7 @@ async fn a_serial_session_flows_bytes_both_ways_and_closes_clean() {
     eprintln!("界面: 设备字节={FROM_DEVICE}");
 
     // ── 6. 界面 → 设备（另一组字节，所以主端读到的那一串只可能来自 app）────────
-    type_line(&mut client, &format!("{TO_DEVICE}\n")).await;
+    type_line(&mut client, TO_DEVICE).await;
     let got = device.wait_received(TO_DEVICE).await;
     eprintln!("设备: 主端收到={got:?}");
 

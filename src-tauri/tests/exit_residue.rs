@@ -62,7 +62,10 @@ fn text(value: &serde_json::Value) -> String {
 /// ⚠️ 取的是**当前活动标签页**里的那个 textarea（plan 0305）：多标签之后"最后一个"
 /// 不再唯一，而活动面里那个才与 `window.__akashaTerminal` 指同一个终端。
 fn type_js(line: &str) -> String {
-    let literal = serde_json::to_string(line).expect("文本无法转成 JS 字符串字面量");
+    // 行尾补 CR（0x0D）：终端线上的 Enter 就是这个字节 —— POSIX 的行规程用 `ICRNL` 把它
+    // 折成 NL，而 Windows 的 ConPTY 只认 CR（送 LF 在那边既不提交命令行也不回显）。
+    let literal =
+        serde_json::to_string(&format!("{line}\r")).expect("文本无法转成 JS 字符串字面量");
     format!(
         r#"(() => {{
   const textarea = document.querySelector('.tab-pane.is-active .xterm-helper-textarea');
@@ -151,7 +154,7 @@ async fn start_ignorant_probe(client: &mut VictauriClient) -> u32 {
 
     let typed = client
         .eval_js(&type_js(
-            "sh -c 'trap \"\" HUP; echo AKPROBE=$$; exec sleep 600' &\n",
+            "sh -c 'trap \"\" HUP; echo AKPROBE=$$; exec sleep 600' &",
         ))
         .await
         .unwrap();

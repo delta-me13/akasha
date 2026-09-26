@@ -257,9 +257,13 @@ pub async fn click(client: &mut VictauriClient, selector: &str, what: &str) {
     );
 }
 
-/// 把当前活动标签页里的一行敲进终端（与 `tab_close` 同一手法）。
+/// 把当前活动标签页里的**一行**敲进终端（与 `tab_close` 同一手法）。
+///
+/// `line` 是行内容，**不带行尾**：末尾那个“回车”由本函数补成 CR（`0x0D`）—— 那是终端线上
+/// Enter 的字节。**不得改成 LF**：POSIX 的行规程用 `ICRNL` 把 CR 折成 NL，而 Windows 的
+/// ConPTY 只认 CR（本机实测：送 LF 时命令行停在屏幕上不动，送 CR 才执行）。
 pub async fn type_line(client: &mut VictauriClient, line: &str) {
-    let literal = serde_json::to_string(line).unwrap();
+    let literal = serde_json::to_string(&format!("{line}\r")).unwrap();
     let js = format!(
         r#"(() => {{
   const textarea = document.querySelector('.tab-pane.is-active .xterm-helper-textarea');
@@ -467,6 +471,24 @@ pub async fn wait_connected(client: &mut VictauriClient, tabs: usize, what: &str
 /// 服务端记下来的事实（观察点的另一半）。
 pub fn observed(server: &Running) -> Observed {
     server.shared.observed()
+}
+
+/// 这个回环端口**现在没有活的监听**了吗（隧道停止后的那条判据）。
+///
+/// ⚠️ 必须用**阻塞**的 `std` 连接探，不能用 tokio 的：Windows 上 `ConnectEx` 对
+/// "连接被拒"的回报是**永远不完成**（本机实测：tokio 连一个已经关掉的回环端口只会
+/// 超时，同一个端口用 `std::net` 连立刻得到"连接被拒"）。用 tokio 探会把"端口已经
+/// 还给系统"读成"还在接受连接"，于是那条断言永不成立。
+///
+/// 判据取"连不上"而不是"恰好是 ConnectionRefused"：回环上没有防火墙，握手成功就等于
+/// 有一方在监听（`accept` 是否被调用与握手无关），所以任何失败都意味着监听已经撤掉。
+pub fn port_released(port: u16) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+
+    let target: SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .expect("回环地址解析失败");
+    TcpStream::connect_timeout(&target, std::time::Duration::from_millis(500)).is_err()
 }
 
 /// 挑一个**当前空闲**的本地端口。

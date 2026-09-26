@@ -22,6 +22,35 @@ fn skip_unless_e2e() -> bool {
     false
 }
 
+/// 灌进 raw 通道的目标字节数（判据是"扛得住十兆"）。
+const FLOOD_BYTES: usize = 10_000_000;
+
+/// 十兆字节从哪来。
+///
+/// POSIX 上是一条管道（`yes | head`）；Windows 的默认 shell 是 cmd.exe，没有这条表达式，
+/// 改用 cmd 内建的 `type` 把一份文件倒出来 —— 同样是十兆字节、同样走同一条流，判据
+/// （raw 通道扛得住十兆）一个字都不用改。文件按行写（每行 78 字符 + CRLF），
+/// 免得在 ConPTY 上排成一条百万字符的长行。
+fn flood_command() -> String {
+    if cfg!(windows) {
+        use std::io::Write as _;
+
+        let path = std::env::temp_dir().join("akasha-e2e-raw-flood.txt");
+        let block = format!("{}\r\n", "x".repeat(78)).repeat(64);
+        let mut file =
+            std::io::BufWriter::new(std::fs::File::create(&path).expect("造灌流文件失败"));
+        let mut written = 0usize;
+        while written < FLOOD_BYTES {
+            file.write_all(block.as_bytes()).expect("写灌流文件失败");
+            written += block.len();
+        }
+        file.flush().expect("刷灌流文件失败");
+        format!("type \"{}\"\r", path.display())
+    } else {
+        format!("yes akasha | head -c {FLOOD_BYTES}\r")
+    }
+}
+
 /// 打开会话的探针脚本：**手工**按线上格式建频道，统计收到的字节与批次数。
 ///
 /// 统计放在 `window.__akashaProbe` 上，后续用 `wait_for` 轮询 —— 这是"等异步真正完成"
@@ -126,9 +155,16 @@ async fn raw_channel_carries_ten_megabytes() {
         "open_session 报错了"
     );
 
+    // 1.5 Windows 的 ConPTY 在启动时先问一次光标位置（`ESC[6n`），**没等到回答之前
+    // 一个字节都不出**：这一条就是它的回答。POSIX 的 PTY 没有这个握手，所以只在 Windows
+    // 上补 —— 在那边把 CPR 写进去就是往 shell 的输入里塞转义序列。
+    if cfg!(windows) {
+        client.eval_js(&write_js("\u{1b}[1;1R")).await.unwrap();
+    }
+
     // 2. 写一条命令，并等**回显真的出现**（不是 sleep 猜）。
     client
-        .eval_js(&write_js("echo akasha-raw-probe\n"))
+        .eval_js(&write_js("echo akasha-raw-probe\r"))
         .await
         .unwrap();
     let echoed = client
@@ -148,10 +184,7 @@ async fn raw_channel_carries_ten_megabytes() {
 
     // 3. 大输出：raw 通道必须扛得住（这一条才是本 plan 的判据）。
     let before = number(&client.eval_js("window.__akashaProbe.bytes").await.unwrap());
-    let wrote = client
-        .eval_js(&write_js("yes akasha | head -c 10000000\n"))
-        .await
-        .unwrap();
+    let wrote = client.eval_js(&write_js(&flood_command())).await.unwrap();
     eprintln!("会话: 写入成功={}", ok(&wrote));
 
     let flooded = client

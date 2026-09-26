@@ -182,7 +182,7 @@ async fn an_ssh_session_flows_bytes_and_asks_for_a_credential_once() {
     assert_eq!(title, HOST_NAME, "标签页标题该是池里那台主机的名字");
 
     // ── 8. 字节能双向流 ────────────────────────────────────────────────────
-    type_line(&mut client, "echo ssh-hello\n").await;
+    type_line(&mut client, "echo ssh-hello").await;
     wait_js(
         &mut client,
         "window.__akashaTerminal.screenText(200).includes('ssh-hello')",

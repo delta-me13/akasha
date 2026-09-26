@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use victauri_test::VictauriClient;
 
 /// 忽略 SIGHUP 的后台探针（与 `exit_residue` 取同一个最坏情况）。
-const PROBE: &str = "sh -c 'trap \"\" HUP; echo AKPROBE=$$; exec sleep 600' &\n";
+const PROBE: &str = "sh -c 'trap \"\" HUP; echo AKPROBE=$$; exec sleep 600' &";
 
 /// 当前标签页的标题。`aria-selected` 落在标签按钮上，所以"活动"这个类名是唯一的判据。
 const ACTIVE_TITLE: &str = "document.querySelector('.tab.is-active .tab-label')?.textContent ?? ''";
@@ -109,7 +109,10 @@ fn text(value: &serde_json::Value) -> String {
 /// 多标签之后"第一个 / 最后一个 textarea"都不再唯一 —— 只有活动面里的那个是确定的
 /// （`window.__akashaTerminal` 也跟着活动面走，两者必须指同一个终端）。
 fn type_js(line: &str) -> String {
-    let literal = serde_json::to_string(line).expect("文本无法转成 JS 字符串字面量");
+    // 行尾补 CR（0x0D）：终端线上的 Enter 就是这个字节 —— POSIX 的行规程用 `ICRNL` 把它
+    // 折成 NL，而 Windows 的 ConPTY 只认 CR（送 LF 在那边既不提交命令行也不回显）。
+    let literal =
+        serde_json::to_string(&format!("{line}\r")).expect("文本无法转成 JS 字符串字面量");
     format!(
         r#"(() => {{
   const textarea = document.querySelector('.tab-pane.is-active .xterm-helper-textarea');
@@ -237,6 +240,18 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         eprintln!("跳过: 未设置 VICTAURI_E2E=1（该变量由 just test-e2e 设置）");
         return;
     }
+
+    // Windows 上跳过：这条用例的探针是一个 **POSIX shell 程序**
+    // （`sh -c 'trap "" HUP; echo AKPROBE=$$; exec sleep 600' &`）—— 那边的默认 shell 是
+    // cmd.exe，写不出"忽略 SIGHUP 的后台作业"；而"把它一起收走"这件事在 Windows 上依赖
+    // 会话级回收（Job Object），尚未实现（见 `docs/STATUS.md` 的 Windows 会话回收缺口）。
+    // 平台无法运行的用例显式跳过并写明原因（`AGENTS.md` §7）——留在这里的其余断言也
+    // 一并跳过，不为它们另立一份弱判据。
+    if cfg!(windows) {
+        eprintln!("跳过: 探针是 POSIX shell 程序，且 Windows 的会话级回收（Job Object）尚未实现");
+        return;
+    }
+
     let mut client = VictauriClient::discover()
         .await
         .expect("连不上 app —— 配方起了吗？");
@@ -400,7 +415,7 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
     .await;
 
     // 剩下的那个标签页**还能用** —— 关掉一个标签页不该把界面带坏。
-    type_line(&mut client, "printf 'akasha-tab-alive-%s\\n' ok\n").await;
+    type_line(&mut client, "printf 'akasha-tab-alive-%s\\n' ok").await;
     wait_js(
         &mut client,
         &screen_has("akasha-tab-alive-ok"),
@@ -452,7 +467,7 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "重开的终端渲染出来",
     )
     .await;
-    type_line(&mut client, "printf 'akasha-reopened-%s\\n' ok\n").await;
+    type_line(&mut client, "printf 'akasha-reopened-%s\\n' ok").await;
     wait_js(
         &mut client,
         &screen_has("akasha-reopened-ok"),
@@ -467,7 +482,7 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
     //
     // ⚠️ 必须在**干净**的标签页里敲：会话里若还有别的进程握着 PTY（例如忽略 SIGHUP 的
     // 后台作业），主端就读不到 EOF —— 那时真实终端的行为也是"标签页留着"，不是 bug。
-    type_line(&mut client, "exit\n").await;
+    type_line(&mut client, "exit").await;
     wait_js(
         &mut client,
         &tabs_eq(0),
@@ -489,7 +504,7 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "exit 之后新开的终端渲染出来",
     )
     .await;
-    type_line(&mut client, "printf 'akasha-after-exit-%s\\n' ok\n").await;
+    type_line(&mut client, "printf 'akasha-after-exit-%s\\n' ok").await;
     wait_js(
         &mut client,
         &screen_has("akasha-after-exit-ok"),

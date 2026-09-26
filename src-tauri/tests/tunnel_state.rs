@@ -66,14 +66,15 @@ const UNREACHABLE_PORT: u16 = 1;
 fn seed(path: &Path, port: u16) -> (i64, i64, u16) {
     let conn = open_vault(path);
 
-    // 先清干净（重跑）：主机行与规则行都按名字清。
-    forget(&conn, HOST_NAME, "127.0.0.1", port);
-    forget(&conn, BROKEN_HOST_NAME, "127.0.0.1", UNREACHABLE_PORT);
+    // 先清干净（重跑）：**规则先删、主机行后删** —— 规则的外键指着主机行，
+    // 反过来写会在"上一次留下了规则"时撞上 `FOREIGN KEY constraint failed`。
     for row in forwards::forwards(&conn).unwrap() {
         if row.name == TUNNEL_NAME || row.name == BROKEN_NAME {
             forwards::delete_forward(&conn, row.id).unwrap();
         }
     }
+    forget(&conn, HOST_NAME, "127.0.0.1", port);
+    forget(&conn, BROKEN_HOST_NAME, "127.0.0.1", UNREACHABLE_PORT);
 
     let host_id = hosts::insert_host(
         &conn,

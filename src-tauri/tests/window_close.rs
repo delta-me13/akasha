@@ -29,7 +29,7 @@ use victauri_test::VictauriClient;
 
 /// 忽略 SIGHUP 的后台探针（与 `tab_close` / `exit_residue` 取同一个最坏情况）：
 /// 会话真被收掉时它必须消失，只是"窗口藏起来"时它必须活着。
-const PROBE: &str = "sh -c 'trap \"\" HUP; echo AKPROBE=$$; exec sleep 600' &\n";
+const PROBE: &str = "sh -c 'trap \"\" HUP; echo AKPROBE=$$; exec sleep 600' &";
 
 /// `eval_js` 的返回可能把结果包在 `result` 里，也可能就是裸值 —— 两种都认。
 fn payload(value: &serde_json::Value) -> &serde_json::Value {
@@ -46,7 +46,10 @@ fn text(value: &serde_json::Value) -> String {
 
 /// 把一行敲进**当前活动标签页**的终端（真实输入路径：见 `terminal_render.rs` 的说明）。
 fn type_js(line: &str) -> String {
-    let literal = serde_json::to_string(line).expect("文本无法转成 JS 字符串字面量");
+    // 行尾补 CR（0x0D）：终端线上的 Enter 就是这个字节 —— POSIX 的行规程用 `ICRNL` 把它
+    // 折成 NL，而 Windows 的 ConPTY 只认 CR（送 LF 在那边既不提交命令行也不回显）。
+    let literal =
+        serde_json::to_string(&format!("{line}\r")).expect("文本无法转成 JS 字符串字面量");
     format!(
         r#"(() => {{
   const textarea = document.querySelector('.tab-pane.is-active .xterm-helper-textarea');
@@ -235,6 +238,17 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
         return;
     }
 
+    // Windows 上跳过：这条用例的探针是一个 **POSIX shell 程序**
+    // （`sh -c 'trap "" HUP; echo AKPROBE=$$; exec sleep 600' &`）—— 那边的默认 shell 是
+    // cmd.exe，写不出"忽略 SIGHUP 的后台作业"；而"把它一起收走"这件事在 Windows 上依赖
+    // 会话级回收（Job Object），尚未实现（见 `docs/STATUS.md` 的 Windows 会话回收缺口）。
+    // 平台无法运行的用例显式跳过并写明原因（`AGENTS.md` §7）——留在这里的其余断言也
+    // 一并跳过，不为它们另立一份弱判据。
+    if cfg!(windows) {
+        eprintln!("跳过: 探针是 POSIX shell 程序，且 Windows 的会话级回收（Job Object）尚未实现");
+        return;
+    }
+
     let mut client = VictauriClient::discover()
         .await
         .expect("连不上 app —— 配方起了吗？");
@@ -261,7 +275,7 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
         "终端渲染出来",
     )
     .await;
-    type_line(&mut client, "printf 'akasha-hidden-%s\\n' marker\n").await;
+    type_line(&mut client, "printf 'akasha-hidden-%s\\n' marker").await;
     wait_js(
         &mut client,
         &screen_has("akasha-hidden-marker"),
@@ -336,7 +350,7 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
         .expect("显示窗口失败");
     wait_visible(&mut client, true, "显示之后窗口可见").await;
 
-    type_line(&mut client, "printf 'akasha-after-hide-%s\\n' ok\n").await;
+    type_line(&mut client, "printf 'akasha-after-hide-%s\\n' ok").await;
     wait_js(
         &mut client,
         &screen_has("akasha-after-hide-ok"),
@@ -346,7 +360,7 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
     .await;
 
     // 收掉自己起的后台进程：别把 `sleep 600` 留在（可能是别人的）会话里。
-    type_line(&mut client, &format!("kill {probe}\n")).await;
+    type_line(&mut client, &format!("kill {probe}")).await;
     // ⚠️ 同 `tab_close`：非 Linux 上 `alive()` 恒为 true，这一条整段跳过（`||` 短路）。
     assert!(
         !process_death_visible() || waits_until(Duration::from_secs(15), || !alive(probe)),

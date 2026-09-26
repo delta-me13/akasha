@@ -266,7 +266,7 @@ async fn a_session_through_a_bastion_reaches_a_host_only_it_can_see() {
     assert!(jump_seen.shell_data.is_empty(), "跳板上不该有终端数据");
 
     // ── 7. 字节能双向流：到了**目标**，而目标在客户端解析不出来的地址上 ───────
-    type_line(&mut client, "echo via-the-bastion\n").await;
+    type_line(&mut client, "echo via-the-bastion").await;
     wait_js(
         &mut client,
         "window.__akashaTerminal.screenText(200).includes('via-the-bastion')",

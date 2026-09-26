@@ -184,7 +184,7 @@ async fn the_panel_lists_the_ports_and_opens_what_the_form_says() {
         "设备发来的字节出现在了终端上",
     )
     .await;
-    type_line(&mut client, &format!("{TO_DEVICE}\n")).await;
+    type_line(&mut client, TO_DEVICE).await;
     let got = device.wait_received(TO_DEVICE).await;
     eprintln!("会话: 设备字节={FROM_DEVICE} 主端收到={got:?}");
 

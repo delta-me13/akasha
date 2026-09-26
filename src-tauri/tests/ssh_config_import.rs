@@ -380,7 +380,7 @@ async fn an_imported_config_reaches_a_host_only_the_bastion_can_see() {
     assert_eq!(jump_seen.direct_tcpip[0].host, INNER_NAME);
 
     // ── 8. 字节能双向流：到了**目标** ───────────────────────────────────────
-    type_line(&mut client, "echo via-imported-config\n").await;
+    type_line(&mut client, "echo via-imported-config").await;
     wait_js(
         &mut client,
         "window.__akashaTerminal.screenText(200).includes('via-imported-config')",

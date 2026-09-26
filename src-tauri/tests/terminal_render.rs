@@ -28,11 +28,47 @@ const RENDERED: &str = r#"(() => {
   return document.querySelectorAll('.xterm-screen canvas').length >= 1;
 })()"#;
 
+/// 让 `{head}-{arg}` 出现在屏幕上，而**命令行里看不出它**。
+///
+/// 判据是"shell 真的执行了这条命令"，不是"按键被回显了"：命令行里若已经写着结果，
+/// 光靠 PTY 的回显就能命中，这条用例就什么都没验。POSIX 用 `printf` 的格式串把命令行
+/// 与结果拆开（命令行里是 `%s`）；Windows 的默认 shell（cmd.exe）没有 `printf`，改用
+/// 内建的 `type` 倒一份文件 —— 命令行里只有路径，屏幕上的字只可能来自文件内容。
+/// 两个平台的判据因此完全一致，差的只是这一条命令。
+#[cfg(unix)]
+fn echo_marker(head: &str, arg: &str) -> String {
+    format!("printf '{head}-%s\\n' {arg}")
+}
+
+#[cfg(windows)]
+fn echo_marker(head: &str, arg: &str) -> String {
+    let marker = format!("{head}-{arg}");
+    let path = std::env::temp_dir().join(format!("akasha-e2e-{marker}.txt"));
+    std::fs::write(&path, format!("{marker}\\n")).expect("造探针文件失败");
+    format!("type \"{}\"", path.display())
+}
+
 /// 灌一大坨输出，末尾挂一个"排空哨兵"。
 ///
 /// 哨兵走的是**同一条流**，所以它出现在屏幕上就意味着它前面的 8 MB 全被消费过了 ——
-/// 这比"等一会儿再看字节数"强得多。
-const FLOOD: &str = "yes akasha | head -c 8000000; printf 'akasha-drained-%s\\n' ok\n";
+/// 这比"等一会儿再看字节数"强得多。POSIX 上是一条管道；Windows 上是一份 8 MB 文件
+/// （内容与管道那一条等价：同样是 8 MB 的 `akasha` 行，末尾一行是哨兵）。
+#[cfg(unix)]
+fn flood_command() -> String {
+    "yes akasha | head -c 8000000; printf 'akasha-drained-%s\\n' ok".to_string()
+}
+
+#[cfg(windows)]
+fn flood_command() -> String {
+    let path = std::env::temp_dir().join("akasha-e2e-flood.txt");
+    let mut body = String::new();
+    while body.len() < 8_000_000 {
+        body.push_str("akasha\\n");
+    }
+    body.push_str("akasha-drained-ok\\n");
+    std::fs::write(&path, &body).expect("造灌流文件失败");
+    format!("type \"{}\"", path.display())
+}
 
 /// 强制丢掉 WebGL 上下文 —— 真实世界里驱动重启 / 显存不足就是这么发生的。
 ///
@@ -85,7 +121,10 @@ fn text(value: &serde_json::Value) -> String {
 /// ⚠️ 取的是**当前活动标签页**里的那个 textarea（plan 0305）：多标签之后"第一个"
 /// 不再唯一，而活动面里那个才与 `window.__akashaTerminal` 指同一个终端。
 fn type_js(line: &str) -> String {
-    let literal = serde_json::to_string(line).expect("文本无法转成 JS 字符串字面量");
+    // 行尾补 CR（0x0D）：终端线上的 Enter 就是这个字节 —— POSIX 的行规程用 `ICRNL` 把它
+    // 折成 NL，而 Windows 的 ConPTY 只认 CR（送 LF 在那边既不提交命令行也不回显）。
+    let literal =
+        serde_json::to_string(&format!("{line}\r")).expect("文本无法转成 JS 字符串字面量");
     format!(
         r#"(() => {{
   const textarea = document.querySelector('.tab-pane.is-active .xterm-helper-textarea');
@@ -168,9 +207,9 @@ async fn terminal_renders_on_canvas_and_survives_a_flood() {
     assert_eq!(dom_rows, 0, "DOM 渲染器的行容器还在 —— 它不该在渲染路径上");
 
     // ── 2. 一个完整的来回：按键 → PTY → 回显到屏幕 ───────────────────────────
-    // 断言的是 `akasha-probe-42` 这个**求值结果**：命令行里只有 `%s`，
+    // 断言的是 `akasha-probe-42` 这个**求值结果**：命令行里看不出它（见 `echo_marker`），
     // 所以屏幕上出现它只可能来自 shell 真的执行了这条命令。
-    type_line(&mut client, "printf 'akasha-probe-%s\\n' 42\n").await;
+    type_line(&mut client, &echo_marker("akasha-probe", "42")).await;
     wait_for_screen(&mut client, "akasha-probe-42", 30_000, "命令求值后的输出").await;
 
     // ── 3. 大流量：不卡死 = 排空 + 哨兵 + 之后还能用 ─────────────────────────
@@ -180,7 +219,7 @@ async fn terminal_renders_on_canvas_and_survives_a_flood() {
             .await
             .unwrap(),
     );
-    type_line(&mut client, FLOOD).await;
+    type_line(&mut client, &flood_command()).await;
 
     wait_for_screen(
         &mut client,
@@ -213,7 +252,7 @@ async fn terminal_renders_on_canvas_and_survives_a_flood() {
     );
 
     // 灌完之后还能再敲一条命令 —— 这才是"输出暂停"而不是"卡死"的判据。
-    type_line(&mut client, "printf 'akasha-alive-%s\\n' yes\n").await;
+    type_line(&mut client, &echo_marker("akasha-alive", "yes")).await;
     wait_for_screen(
         &mut client,
         "akasha-alive-yes",
@@ -247,7 +286,7 @@ async fn webgl_context_loss_falls_back_to_canvas() {
     );
 
     // 先在屏幕上留个"降级前后应当还在"的痕迹。
-    type_line(&mut client, "printf 'akasha-pre-loss-%s\\n' ok\n").await;
+    type_line(&mut client, &echo_marker("akasha-pre-loss", "ok")).await;
     wait_for_screen(
         &mut client,
         "akasha-pre-loss-ok",
@@ -296,7 +335,7 @@ async fn webgl_context_loss_falls_back_to_canvas() {
     );
 
     // 降级之后还能用。
-    type_line(&mut client, "printf 'akasha-fallback-%s\\n' ok\n").await;
+    type_line(&mut client, &echo_marker("akasha-fallback", "ok")).await;
     wait_for_screen(
         &mut client,
         "akasha-fallback-ok",

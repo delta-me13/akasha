@@ -131,6 +131,14 @@ async fn bitwarden_login_unlock_and_lock_are_visible_in_the_panel() {
     if support::skip_unless_e2e() {
         return;
     }
+
+    // Windows 上跳过：这条用例的假 `bw` 是一份 POSIX shell 脚本（`#!/bin/sh`）—— 那边
+    // `CreateProcess` 不执行脚本，需要一个真的 `.exe`，而本仓库还没有这样的假 CLI。
+    // 平台无法运行的用例显式跳过并写明原因（`AGENTS.md` §7）。
+    if cfg!(windows) {
+        eprintln!("跳过: 假 bw 是 POSIX shell 脚本，Windows 上需要一个真的可执行文件");
+        return;
+    }
     let Some((mut client, _fixture, vault)) = connect_and_prepare().await else {
         return;
     };
