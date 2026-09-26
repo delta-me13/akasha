@@ -44,18 +44,18 @@
 
 ---
 
-## 1. 开发循环（先读这一节，可省去最多的无效劳作）
+## 1. 开发循环（先读这一节）
 
-### 热重载的真相
+### 热重载
 
-**Tauri 没有 Rust 热重载。** `tauri dev` 本身就是开发主控进程，它只做两件事：
+Tauri 没有 Rust 热重载：`tauri dev` 本身就是开发主控进程，它只做两件事：
 
 | 改动 | 行为 | 代价 |
 |---|---|---|
 | 前端 (`src/**`) | Vite HMR | 毫秒级，**不重启 app** |
 | Rust (`src-tauri/**`) | 增量重编译 + **重启 app** | 秒～分钟级，**唯一路径** |
 
-**Victauri 不提供热重载。** 它是在*已运行*进程内嵌的 MCP 服务，35 个工具全部是
+Victauri 不提供热重载。它是在*已运行*进程内嵌的 MCP 服务，35 个工具全部是
 检查/驱动（DOM、IPC、后端状态、数据库、窗口）。它的价值不是"不用重启"，而是
 **"不重启也能验证"**：不需要加临时调试 UI、不需要重新执行场景，就能 `eval_js`、
 `invoke_command`、`dom_snapshot` 直接观察并驱动运行中的 app。
@@ -85,7 +85,7 @@
 | `just deny` | `failed to acquire advisory database lock: ... failed to create parent directories` | `~/.cargo/advisory-dbs` |
 | `just dev` / `just test`（macOS） | `spawn /bin/sh 失败: failed to openpty: ... PermissionDenied` —— 与登录 shell 是 zsh 还是 bash 无关 | `/dev/ptmx`（pty 设备：Seatbelt 的 `file-write*` 白名单只放行 `/dev/null` 与工作区，pty 设备从未列入） |
 
-**这些是环境权限，不是项目 bug** —— 同一份代码在完整权限下实测正常启动、正常检查
+**这些是环境权限，不是项目 bug** —— 同一份代码在完整权限下正常启动、正常检查
 （基线见 `docs/STATUS.md`）。
 
 **遇到时的正确动作（按顺序）**：
@@ -224,14 +224,14 @@ src-tauri/src/
 - 有一条路径**进程里没有任何代码会执行**（`tauri dev` 重载的 SIGKILL、`kill -9`），
   所以还有**进程外**的一道兜底：伴生看门狗读一条管道，EOF 即回收已登记的会话。
   决定与边界见 [ADR-0005](./docs/adr/0005-sigkill-exit-watchdog.md)。
-- **新增载体必须回答 `Transport::session_leader()`**（没有本地进程就 `None`）——
+- **新增载体必须回答 `Transport::session_leader()`**（没有本地进程就 `None`）：
   看门狗依靠它识别会话。答错/漏答的表现是"这条路径上无法回收"，而其它三条路径仍然通过。
 - 验收方式：用 Victauri `introspect { action: "processes" }` 在**真正退出之后**确认零残留。
   在"收托盘"状态下**存在子进程是预期行为，不是泄漏** —— 不要把存活误报成 bug。
 - 托盘行为**可配置**，所以回收逻辑必须**读配置**，不能硬编码"关窗即杀"。
 - **启动路径上的可选能力失败不得挡住启动**：日志目录（`TargetKind::LogDir`）与托盘
   （Linux 上图标要写 `$XDG_RUNTIME_DIR/tray-icon`）都可能在只读环境里建不起来。
-  处理方式固定：**降级 + 一条 `warn`**，并且连**降级之后的行为**一起定下来 ——
+  处理方式固定：**降级 + 一条 `warn`**，并且连**降级之后的行为**一起定下来：
   没有托盘就不能只把窗口藏起来（否则用户将无法再次唤出窗口），只能维持"关窗即退出"。
 - 默认不继承不必要的 fd / 环境变量；shell 启动参数集中管理，不散落。
 
@@ -257,7 +257,7 @@ src-tauri/src/
   ⚠️ 它的防护**有明确边界**（Windows 静止只读、macOS 没有 `dd`/`wf`、`/proc/self/mem` 仍读得到），
   所以**新增一个用途就要按 ADR-0002 D13 那张判据表重验一遍**，不得只说"已使用 memsafe"。
 - `unsafe`：默认禁止；**只有存储模块（`src-tauri/src/store/`）允许出现它** —— 由
-  `scripts/ast-grep/rules/no-unsafe-outside-store.yml` 强制，放宽它等于改架构。目前两处：
+  `scripts/ast-grep/rules/no-unsafe-outside-store.yml` 强制，放宽它等于改架构。两处：
   **①** 把口令送进 SQLCipher 的 C API（ADR-0002 D4）；**②** Windows 上把进程的工作集抬到够
   锁住受保护页（ADR-0009：`VirtualLock` 能锁多少页等于进程的最小工作集，而它与 SQLCipher 的
   `cipher_memory_security` 共用这一份）。⚠️ 上一条（机密的防护交给 `memsafe`）仍是这条能守住的
@@ -288,12 +288,12 @@ src-tauri/src/
 
 ### 4.0 ⚠️ 当前前端是**功能验证壳层**，不是设计稿
 
-**正式 UI 的布局 / 视觉 / 交互尚未有设计稿。** `src/**` 现有的界面（标签栏、状态栏、
+正式 UI 的布局 / 视觉 / 交互尚未有设计稿。`src/**` 现有的界面（标签栏、状态栏、
 配色、空状态文案……）只有一个用途：**让后端行为能被看见、能被验证**。因此：
 
 - **不要**把当前界面当成产品约束或"既有风格"：不得照其推导设计系统，也不得为
   "和现有 UI 一致"而保留一个本应修改的交互；
-- **不要**在其上做视觉/版式打磨（该界面会被整体替换，此类细节投入无意义）——
+- **不要**在其上做视觉/版式打磨（该界面会被整体替换，此类细节投入无意义）；
   需要修改就修改**能让某条后端行为被验证**的部分；
 - 评审前端改动时，判据是"**这条后端行为能否被验证**"，而非视觉效果；
 - 后端**不得**依赖前端的呈现方式（§3.1 的命名规则、`docs/scope.md` §1.2 / §1.3）：
@@ -426,10 +426,10 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 改过 command/event 时额外一条：新 command 应在 `get_registry` 中可见，
 `detect_ghost_commands` 无新增 `confirmed_ghosts`；生成物必须已提交
 （`gen-types-check` 已纳入 `ready`，见 §5）。
-> ⚠️ **本仓库的 `get_registry` 目前是空的**（实测 `{"result":[]}`）：注册表只收录标了
-> `#[inspectable]` 的命令，而本仓库的命令均未标注。所以这一条**暂时只能用替代证据**：
-> 真路径上 `invoke_command` 调用成功。要让注册表真的镜像命令集，得单独给命令加
-> `#[inspectable]`（不得混在功能改动里）——现状与实测见 `docs/STATUS.md` 的问题 #82。
+> ⚠️ **本仓库的命令均未标 `#[inspectable]`，`get_registry` 不镜像命令集**：注册表只收录
+> 标了该属性的命令，所以这一条只能用替代证据 —— 真路径上 `invoke_command` 调用成功。
+> 要让注册表真的镜像命令集，得单独给命令加 `#[inspectable]`（不得混在功能改动里），
+> 见 `docs/STATUS.md` 的问题 #82。
 涉及终端输出解析时，补一个 `insta` 快照。
 
 ### Victauri 使用纪律
@@ -460,7 +460,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 
 - **不要把状态、进度、待办写进本文件** —— 那会让本文件每天都要改，
   而后人无法分辨哪条还是现行规则。
-- **本文件已经偏长。** 再要往里加东西时，先判断："这是规则，还是参考资料？"
+- 再要往里加东西时，先判断："这是规则，还是参考资料？"
   参考资料（如命令的详细用法、排错步骤）应下沉到 `docs/` 并在本文件留一句指针。
 - 终端领域选型（PTY 库、VT 解析器、渲染器、序列化协议）**必须**有 ADR：
   这类决定日后被反复推翻的成本最高。
@@ -581,11 +581,11 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 `"cargo:xxx"` 后端，首次安装会从源码编译（较慢）；**node / pnpm 也钉在这里**
 （前端运行时与 CLI 工具收敛到同一个机制，`just tools` 一次装齐）。
 
-> 注意：这些工具目前已通过 `cargo install` 装在 `~/.cargo/bin`。`just tools`
-> 会用 mise 再装一份并让 shim 优先。若不需要两份，删除 `mise.toml` 即可 ——
-> 它退化为一份文档，不影响现有工具可用性。
+> 这些工具装在 `~/.cargo/bin` 的那一套由 `cargo install` 提供；`just tools` 会用 mise
+> 再装一份并让 shim 优先。若不需要两份，删除 `mise.toml` 即可：它退化为一份文档，
+> 不影响现有工具可用性。
 
-> **当前装了什么、哪些门禁是绿的、还剩哪些待办 —— 见 [`docs/STATUS.md`](./docs/STATUS.md)。**
+> 当前装了什么、哪些门禁是绿的、还剩哪些待办，见 [`docs/STATUS.md`](./docs/STATUS.md)。
 > 状态不写在本文件里（见 §8）。
 
 ---
@@ -595,8 +595,8 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 **命令体只写一处**，按归属分两个文件：
 
 - **项目级**（dev / ready / lint / 环境检查）→ 根 `justfile`
-- **crate 级**（cargo / nextest / bacon / cargo-deny）→ `src-tauri/justfile`
-  —— just 用 **justfile 所在目录**作为配方工作目录，所以那里 `cargo check` 可直接找到
+- **crate 级**（cargo / nextest / bacon / cargo-deny）→ `src-tauri/justfile`：
+  just 用 **justfile 所在目录**作为配方工作目录，所以那里 `cargo check` 可直接找到
   manifest，**不需要任何 `--manifest-path`**
 - 根 `justfile` 对 crate 级命令**只做转发**，不复制命令体
 - **非临时脚本一律做成 just 配方**，不要在仓库里散落 `.sh`：配方是唯一被 `docs-check`
@@ -624,9 +624,8 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 ## 12. CI：只维护 GitHub Actions 一份
 
 `.github/workflows/ci.yml` 是**唯一**的工作流文件（**每个平台一条流水线**：检查 → E2E 两段串行，
-共六个 job）。**不要为别的 forge 加兼容层** ——
-曾做过"一份工作流同时供 Gitea 与 GitHub 使用"的实现，代价是整份工作流被限制在两边
-**共有的子集**内；2026-09-11 评估后放弃，那份约束清单与放弃理由见
+共六个 job）。**不要为别的 forge 加兼容层**：兼容层的代价是整份工作流被限制在两边
+**共有的子集**内，那份约束清单与理由见
 [`docs/plans/0102`](./docs/plans/0102-ci-platform-matrix.md)。
 
 - **门禁只有一处定义**：CI 中执行的必须**就是**本地那一条 `just ready`，不要在 workflow 里
@@ -647,5 +646,5 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
   **不要再手写"按平台选资产 + curl + 追加 `GITHUB_PATH`"的脚本** —— 那是兼容层的遗留物，
   它的存在理由（"不能用 `${{ runner.arch }}`"）已经消失。
 
-> 改了 workflow 先在本机执行 `just ready` —— 但它只证明"命令链可执行"：
+> 改了 workflow 先在本机执行 `just ready`，但它只证明"命令链可执行"：
 > **CI 的真实行为以 runner 上的实际执行结果为准**（状态见 `docs/STATUS.md`）。
