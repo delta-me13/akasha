@@ -435,8 +435,8 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 |---|---|
 | **`just test-e2e`（Windows 11 / MSVC，本机实测）** | 退出码 **0**，**全绿**：第一段 **28 个目标全部通过**（33 条用例，0 失败）、第二段 `exit_residue` **1/1**、第三段 `portable` **3/3**。整体跳过 4 个目标（`tab_close` / `window_close` / `bitwarden_login` / `bw_import`），另有 5 个目标里各 1 条用例按平台跳过（`vault_unlock` 的 `VmLck`、三条串口的设备节点、`single_instance` 的 `/proc` 实例计数），原因都在日志里逐条写明（见 #176）。走到这一步修掉的是四类**与平台绑定**的问题：`$!` 的 PID 命名空间与运行中覆盖 exe（#162）、ConPTY 启动时要求先答 `ESC[6n` 且行尾必须是 CR（#175）、tokio 的连接在 Windows 上读不出"连接被拒"（#173）、隧道用例清场时先删主机行后删规则行（#174）。⚠️ 仍被跳过的那两类就是**平台缺口的现状**：会话级的进程回收（Job Object，plan 0108 的遗留）与假 `bw` 的可执行形态 |
 | ↑ **同一配方在修复前的读数**（本机首次完整执行） | 退出码 **1**：第一段 28 个目标里 **13 个通过**（其中 5 个按平台显式跳过）、**15 个红**；第二段 `exit_residue` **1/1**；第三段 `portable` **3/3**。修复前停在第一段的 `app 未登记到 discovery 目录` 并挂到取消。那 15 个红灯当时被归成三类"平台缺口"（会话 / 隧道回收为空、ConPTY 下本地终端输出到不了 raw 通道、`bw` 的假 CLI 是 `#!/bin/sh`）；后续定位表明其中**大部分是判据自己与平台绑定**，真正剩下的只有后两类里的形态问题 |
-| ↑ **同一提交在 CI 的 Windows runner 上**（run `36226121050`） | 4 个目标红：`terminal_render`（2 条）、`single_instance`（1 条）、`windows_ports`（1 条）、`portable::data_survives_the_move`。⚠️ 其中两条是**判据的前提在 runner 上不成立**（WebView2 的用户数据目录、`COM2` 没有描述），另两条指向**输入路径**（句柄到手之前 xterm 生成的数据被丢）—— 性质与处置见 #177 |
-| ↑ **CI 运行 `36226121050` 的六个 job** | **检查（Linux / Windows / macOS）三格全绿**（Windows 的类型检查这次也过了，问题 #160 的第二次读数）、**E2E（macOS）绿**；**E2E（Linux）红**在 `vault_unlock` 一条（`读不到 app 的 /proc/<pid>/status`，上一次运行同一处）、**E2E（Windows）红**在上述 4 个目标 |
+| **`just test-e2e`（Windows runner，CI）** | 六个 job 里 `E2E（Windows）` **通过**（run `36231407751` @ `afc3d11`）—— 本轮三轮读数：第一轮 4 个目标红（`terminal_render` ×2、`single_instance`、`windows_ports`、`portable`）、第二轮只剩 `portable`、第三轮 **0 个**。⚠️ 与 Windows 无关的两处仍在：Linux 的 E2E 红在 `vault_unlock`（`读不到 app 的 /proc/<pid>/status`，三轮都在、与本次改动无关），第三轮另有一次 `sftp_host_to_host` 的凭据超时（该目标前两轮都过、文件未被本次改动触碰）|
+| ↑ **CI 的第一、二轮 Windows 读数**（`36226121050` / `36228577977`） | 第一轮 4 个目标红、第二轮 1 个（`portable`）；性质与逐条处置见 #177 |
 | **`just test-e2e`（macOS 26.6.2 / arm64，经 `just runner-run test-e2e` 在沙箱外执行）** | 退出码 **0**，**全绿**：第一段 **28 个目标 / 37 个用例**全过（0 失败），第二段（`close_behavior=exit`）**1/1**，第三段（可搬迁性）**3/3**。⚠️ 走到这一步之前红过六处，全部是**"这条路径自己的前提"**：`tab_close` / `window_close` 的进程判活读 `/proc`（非 Linux 上门控，改用 `sessions` probe 那条与平台无关的断言）、`vault_unlock` 的 `VmLck` 同理、`tab_close` 关闭最后一个标签页之后注册表**就该是 0**（写成"回到起点"会让它必红，还把界面留在空状态，后续目标由此连带红）、E2E 发现目录的 `TMPDIR` 分叉（问题 #171）、导入要的 `USER`（问题 #172） |
 | **`just ready`（经 `just runner-run ready` 在沙箱外执行）** | **6/6 通过**（退出码 0，`test` 一步 254s）。此前同一环境上红过两次 `just test`：一次是 `pty::local` 的 `openpty`（沙箱内，见上），一次是 4 条 `bw::acquire`（回环假上游 `Connection reset by peer`）—— 后者与上面 `just test` 那行同一条已知偶发，紧接着重新执行**全绿** |
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
@@ -876,7 +876,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：CI 上三个平台都真的执行起来了 ——
       ubuntu 格**通过**（28 个目标全部执行完，xvfb 下的原生窗口句柄路径第一次走通），macOS 格**全绿**，
       Windows 格在本机 `just test-e2e` **退出码 0**、28 个目标全部通过（见「已验证为通过」，
-      跳过的四类目标与原因见 #176）；待验证的只剩"CI 的 Windows runner 上是否同样成立"
+      跳过的四类目标与原因见 #176）；**CI 的 Windows runner 上也通过了**（run `36231407751`，见「已验证为通过」）
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
 
 ### 各轮（已完成，plan 0603–1103）
@@ -1569,6 +1569,9 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
         求值结果写进了**文件名**，而命令行会被回显，光靠回显就能让断言命中（本机当时就是这样"过"的）；
         现在只让**文件内容**带结果，文件名只用不构成结果的那一部分。失败信息也跟着补上屏幕原文，
         下一次红能直接看出"没送到 / 没提示符 / 没执行"。⚠️ **第二次运行（`36228577977`）里这两条都过了**
-        —— 处置有效（同一轮里 `windows_ports` 按新口径显式跳过，只剩 `portable` 那一处）。
+        —— 处置有效（同一轮里 `windows_ports` 按新口径显式跳过）。**第三次运行（`36231407751`）Windows 的 E2E 全绿**，
+        `portable` 那一处也随"等目录放开"这一步消失。
       - Linux 的 `vault_unlock` 与上一次运行**同一处、同一句话**（`读不到 app 的 /proc/<pid>/status`），
-        与本轮改动无关，仍记在「进行中」里。
+        与本轮改动无关，仍记在「进行中」里；第三次运行另有一次 `sftp_host_to_host` 的凭据超时
+        （`right 这一侧连接失败：认证失败：… 上没有可用的方式`）—— 该目标前两轮都过、文件未被本次
+        改动触碰，记为偶发。
