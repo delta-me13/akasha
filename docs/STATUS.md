@@ -1588,3 +1588,12 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       bin / test / example 链接。⚠️ 仍有的那一行 `linker stdout: 正在创建库 ...` 是 cdylib 链接的
       正常输出（rustc 的 `linker_messages` lint），一行而已，不关。顺带：`no-println` 规则给
       `**/build.rs` 开了豁免 —— 构建脚本的 stdout 就是它的 API（cargo 从那里读指令）。
+
+ 179. **前端把每一次隧道状态变化记了两次，`tunnel_reconnect` 因此偶发红**（CI 运行 `36234483861` 的
+      macOS 格实测，**未修**）：`subscribeTunnelStates` 每订阅一次就把事件写进
+      `window.__akashaTunnels.events`（测试接口），而退订是**异步**的
+      （`void stop.then((unlisten) => unlisten())`）；面板在 StrictMode 下挂载两次时，第二次订阅
+      可能赶在第一次退订生效之前，于是同一条事件被记两遍。症状是 `attempts` 断言拿到
+      `[1, 1, 2, 2, 3, 3]`（期望 `[1, 2, 3]`）—— 同一份代码在之前三轮（macOS / Linux / Windows）
+      都过，说明触发要看挂载时序。判据本身没错（后端确实各发了一次），错在这份测试日志的记录方式。
+      处置方向：只让**第一个**订阅记录，或把记录挪到一条与订阅次数无关的通道上。
