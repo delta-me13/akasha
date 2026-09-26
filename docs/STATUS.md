@@ -88,7 +88,9 @@ CI 的两个原生平台检查 job（`checks-macos` / `checks-windows`）执行�
 （#154 sccache、#155 `libudev-dev`、#156 msys perl、#157 缓存工作区）都已处置并在这次运行里验证。
 
 **"看起来像卡住"是两件事，都不是缺陷**（本会话实测）：第三次运行里 Windows 的 E2E 格子执行了
-**32 分钟**（前 14 分钟是全量构建）且 app 没能起来 —— 它确实是一个待查的问题（#162），
+**32 分钟**（前 14 分钟是全量构建）且 app 没能起来 —— 它是**配方自己的缺陷**（#162：`$!` 在
+Windows（MSYS）上是本 shell 的 PID，配方却拿它问 `tasklist` / `taskkill`，于是启动后 0.3 秒
+就判定"app 没起来"，收尾里 `wait` 又等一个没被杀掉的 `cargo run`），已修复；
 而紧随其后的那次运行一直停在 `pending`，那是 `main` 上的**排队**语义（#161），不是卡住。
 两条的判据与处置（`workflow_dispatch`、配方里"日志是空的"会明说、典型耗时表）分别是 #161 / #162。
 ⚠️ 推送之后本机已能读 Actions（`git credential fill` 可用），结论不再只能从网页看。
@@ -431,6 +433,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 
 | 命令 / 检查 | 结果 |
 |---|---|
+| **`just test-e2e`（Windows 11 / MSVC，本机实测）** | 修掉 #162 的两处配方缺陷之后**首次完整执行**（退出码 1）：第一段 28 个目标里 **13 个通过**（其中 5 个按平台显式跳过）、**15 个红**；第二段 `exit_residue` **1/1**；第三段 `portable` **3/3**。修复前停在第一段的 `app 未登记到 discovery 目录` 并挂到取消。剩余红灯与本次修复无关，是三类**平台缺口**：Windows 上的会话 / 隧道回收仍是空的（标签页关闭之后后端仍登记着会话、隧道停止后端口仍在接受连接）、ConPTY 下本地终端的输出没有到达 raw 通道、`bw` 的假 CLI 写成了 `#!/bin/sh` 脚本（`bw.exe` 在 Windows 上不可执行）。⚠️ 第二类与第三类此前从未有过读数 —— Windows 的 E2E 在这次之前一步都没走进去
 | **`just test-e2e`（macOS 26.6.2 / arm64，经 `just runner-run test-e2e` 在沙箱外执行）** | 退出码 **0**，**全绿**：第一段 **28 个目标 / 37 个用例**全过（0 失败），第二段（`close_behavior=exit`）**1/1**，第三段（可搬迁性）**3/3**。⚠️ 走到这一步之前红过六处，全部是**"这条路径自己的前提"**：`tab_close` / `window_close` 的进程判活读 `/proc`（非 Linux 上门控，改用 `sessions` probe 那条与平台无关的断言）、`vault_unlock` 的 `VmLck` 同理、`tab_close` 关闭最后一个标签页之后注册表**就该是 0**（写成"回到起点"会让它必红，还把界面留在空状态，后续目标由此连带红）、E2E 发现目录的 `TMPDIR` 分叉（问题 #171）、导入要的 `USER`（问题 #172） |
 | **`just ready`（经 `just runner-run ready` 在沙箱外执行）** | **6/6 通过**（退出码 0，`test` 一步 254s）。此前同一环境上红过两次 `just test`：一次是 `pty::local` 的 `openpty`（沙箱内，见上），一次是 4 条 `bw::acquire`（回环假上游 `Connection reset by peer`）—— 后者与上面 `just test` 那行同一条已知偶发，紧接着重新执行**全绿** |
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
@@ -862,10 +865,11 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 - [~] **plan 0102（CI 平台矩阵）**：三次运行把红灯逐层换成了真实缺陷（#154 → #155 / #156 / #157
       → #158 / #159 / #160），每一处都已处置。现状：**Linux 的完整门禁与 Linux 的 E2E 通过**，
       macOS 的类型检查通过；Windows 的类型检查与 macOS 的 E2E 待下一次运行验证，
-      Windows 的 E2E 另有一个待查的问题（#162：app 起不来）
+      Windows 的 E2E 已修掉 #162 的两处配方缺陷（`$!` 的 PID 命名空间、运行中覆盖 exe），
+      本机首次完整执行（见「已验证为通过」）
 - [~] **E2E 入口**（[plan 0107](./plans/0107-e2e-entry.md)）：CI 上三个平台都真的执行起来了 ——
       ubuntu 格**通过**（28 个目标全部执行完，xvfb 下的原生窗口句柄路径第一次走通），macOS 格的三处
-      修正待验证，Windows 格卡在"app 起不来"（#162）
+      修正待验证，Windows 格已修掉 #162 的两处配方缺陷并能完整执行（剩余红灯是平台缺口）
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
 
 ### 各轮（已完成，plan 0603–1103）

@@ -122,6 +122,14 @@ E2E_SELF_APP := "portable"
 #   * 前端必须走 Vite dev（1420）：`window.__akashaTerminal` 探针只在 dev 构建里注册，
 #     生产构建会把它整段摇掉；
 #   * 后端用 debug 构建（`cfg(dev)` → 走 `devUrl`）。
+#
+# ⚠️ **app 二进制由 `cargo test --no-run` 预编译、直接执行，不经 `cargo run`**：
+# 本包的测试目标都引用 `CARGO_BIN_EXE_akasha`，于是每条 `cargo test --test <t>` 都会把
+# `target/debug/akasha.exe` 重建为 `test` profile，而 Windows 不允许删除 / 覆盖正在运行的
+# 可执行文件 —— app 一旦从那里启动，之后的 `cargo test` 全部红在
+# `failed to remove file ... akasha.exe (os error 5)`。
+# 预先 `cargo test --no-run` 之后指纹已一致、运行期不再重链，直接执行该二进制即可；
+# Linux / macOS 允许替换运行中的文件，这条差异只在 Windows 上成立。
 # 为什么要自包含：这个配方不能假设"上一秒有别的进程在跑"（受限环境每次调用一个新
 # 命名空间，问题 #33），而"请你自己先起 app"的入口最后就是没人跑（问题 #36）。
 # 平台能力差异由用例自己**显式跳过并写明原因**（Wayland 截不了窗口等），
@@ -153,6 +161,12 @@ E2E_SELF_APP := "portable"
 # 退到 `/tmp`，而 app 取平台默认值）。只看一个候选时，症状是"app 起来了但没登记到 discovery
 # 目录"（问题 #171）。样板 policy 现在给了确定的 `TMPDIR`，但"app 由别人启动"这条路上
 # 两侧仍可能不同 —— 所以候选逐个找留着。
+#
+# ⚠️ **两种 PID 不是同一个数**：`$!`（`cargo` / `Vite` 的后台作业）给出的是**本 shell 的
+# PID** —— Windows（MSYS）上它与该进程自己的 Windows PID 不同，而 discovery 目录名正是后者。
+# 判活 / 终止 `$!` 只能用 shell 自己的信号接口（`job_alive` / `stop_job`）：拿 `$!` 去问
+# `tasklist` / `taskkill` 会永远找不到进程，症状是**刚启动就判定 app 起不来**（问题 #162），
+# 收尾里 `wait` 又等一个没被杀掉的 `cargo run`，作业一直挂到取消。
 # 输出规范见 `tests/support/mod.rs` 的模块文档：观测行是 `<主体>: <字段>=<值>`，
 # 跳过行是 `跳过: <原因>`，构造行是 `构造: <字段>=<值>`；断言已经恰好固定的值不重复输出，
 # 成功不打印横幅（用例通过本身就是结论）。
@@ -167,6 +181,8 @@ test-e2e:
     touched=0; made_dir=0; saved_cfg=""; \
     cfg_dir="${CARGO_TARGET_DIR:-target}/debug/akasha-data"; \
     cfg_file="$cfg_dir/config.json"; \
+    case "$(uname -s 2>/dev/null || echo unknown)" in MINGW*|MSYS*|CYGWIN*) app_ext=".exe" ;; *) app_ext="" ;; esac; \
+    app_bin="${CARGO_TARGET_DIR:-target}/debug/akasha${app_ext}"; \
     pid_alive() { \
       case "$(uname -s 2>/dev/null || echo unknown)" in \
         MINGW*|MSYS*|CYGWIN*) tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1" ;; \
@@ -178,6 +194,13 @@ test-e2e:
         MINGW*|MSYS*|CYGWIN*) taskkill //F //PID "$1" >/dev/null 2>&1 || true ;; \
         *) kill "$1" 2>/dev/null || true ;; \
       esac; \
+    }; \
+    job_alive() { kill -0 "$1" 2>/dev/null; }; \
+    stop_job() { kill "$1" 2>/dev/null || true; }; \
+    reap_job() { \
+      i=0; \
+      while job_alive "$1" && [ "$i" -lt 20 ]; do sleep 0.5; i=$((i + 1)); done; \
+      return 0; \
     }; \
     reap() { \
       i=0; \
@@ -191,10 +214,11 @@ test-e2e:
       done; \
     }; \
     start_app() { \
-      cargo build --package akasha || exit 1; \
+      cargo test --no-run || exit 1; \
+      [ -f "$app_bin" ] || { echo "错误: app 二进制不存在（$app_bin）"; exit 1; }; \
       before=$(ls "$disc" 2>/dev/null | tr '\n' ' '); \
       echo "启动 app: 日志=$1"; \
-      cargo run --quiet --package akasha >"$1" 2>&1 & \
+      "$app_bin" >"$1" 2>&1 & \
       cargo_pid=$!; \
       app_pid=""; \
       for _ in $(seq 1 120); do \
@@ -208,18 +232,18 @@ test-e2e:
           [ -n "$app_pid" ] && break; \
         done; \
         [ -n "$app_pid" ] && break; \
-        pid_alive "$cargo_pid" || break; \
+        job_alive "$cargo_pid" || break; \
         sleep 1; \
       done; \
       if [ -z "$app_pid" ]; then \
         echo "错误: app 未登记到 discovery 目录（日志 $1）"; \
         if [ -s "$1" ]; then tail -n 20 "$1"; else echo "日志为空: 进程在写出任何字节之前结束（Windows 首次读到的就是这个形状，见问题 #162）"; fi; \
-        pid_alive "$cargo_pid" && echo "cargo 进程仍在: app 未登记到 discovery 目录"; \
+        job_alive "$cargo_pid" && echo "cargo 进程仍在: app 未登记到 discovery 目录"; \
         exit 1; \
       fi; \
     }; \
     stop_app() { \
-      [ -n "$cargo_pid" ] && { stop "$cargo_pid"; wait "$cargo_pid" 2>/dev/null; }; \
+      [ -n "$cargo_pid" ] && { stop_job "$cargo_pid"; wait "$cargo_pid" 2>/dev/null; }; \
       [ -n "$app_pid" ] && { stop "$app_pid"; reap "$app_pid"; }; \
       cargo_pid=""; app_pid=""; \
       return 0; \
@@ -236,7 +260,7 @@ test-e2e:
     }; \
     cleanup() { \
       stop_app; \
-      [ -n "$vite_pid" ] && { stop "$vite_pid"; reap "$vite_pid"; }; \
+      [ -n "$vite_pid" ] && { stop_job "$vite_pid"; reap_job "$vite_pid"; }; \
       restore_config; \
       return 0; \
     }; \
@@ -331,6 +355,9 @@ test-e2e:
 # （`just test-e2e` 的自起分支在第三段调用本配方，那时它自己的 app 已经收掉了。）
 #
 # ⚠️ 用例各自起进程，**必须串行**（`--test-threads=1`）。
+#
+# ⚠️ `vite_pid` 是 `$!`（本 shell 的 PID），终止走 `stop_job` —— 理由与 `test-e2e` 的
+# 「两种 PID 不是同一个数」相同（问题 #162）。
 portable:
     @set -uo pipefail; \
     tmp="${TMPDIR:-${TEMP:-/tmp}}"; \
@@ -345,14 +372,9 @@ portable:
         *) kill -0 "$1" 2>/dev/null ;; \
       esac; \
     }; \
-    stop() { \
-      case "$(uname -s 2>/dev/null || echo unknown)" in \
-        MINGW*|MSYS*|CYGWIN*) taskkill //F //PID "$1" >/dev/null 2>&1 || true ;; \
-        *) kill "$1" 2>/dev/null || true ;; \
-      esac; \
-    }; \
+    stop_job() { kill "$1" 2>/dev/null || true; }; \
     cleanup() { \
-      if [ -n "$vite_pid" ]; then stop "$vite_pid"; wait "$vite_pid" 2>/dev/null; fi; \
+      if [ -n "$vite_pid" ]; then stop_job "$vite_pid"; wait "$vite_pid" 2>/dev/null; fi; \
       return 0; \
     }; \
     trap cleanup EXIT; \
