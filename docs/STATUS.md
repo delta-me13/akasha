@@ -8,6 +8,14 @@
 
 ## 摘要
 
+**2026-09-26：`fix/win-e2e-162` 合入 `main`（合并提交 `bc1fda3`）** —— 分支的 7 个提交与本地
+`main` 上那两份文档整理提交都在；三处冲突（`docs/STATUS.md` / `agent-runner.md` / `just.md`）
+按"整理后的措辞 + 分支的新事实"逐条合并。合并之后又处置了三处：**#165**（Windows 上假上游接受到的
+连接继承了非阻塞模式，连续执行 10 次里 7 次红 → **已修**，复测 10 次全过）、**#179**（前端把同一条
+隧道事件记两遍，macOS 的 CI 上因此偶发红 → **已修**）、**#180**（Linux 的 `vault_unlock` 三次读数
+被折成一个只填首槽的元组，Linux 上必红 → **已修**）。本机 `just ready` **6/6**、
+`just test-e2e` **退出码 0**（见「已验证为通过」）。
+
 **2026-09-19：布局重排（ADR-0008）** —— 6 个 workspace 成员（`akasha-core` / `akasha-pty` /
 `akasha-ssh` / `akasha-serial` / `akasha-store` / `akasha-bw`）全部并入 `src-tauri/src/`
 的域模块：`session/` `config/` `tunnel/` `pty/` `ssh/` `serial/` `store/` `bw/`。
@@ -183,6 +191,8 @@ Windows（MSYS）上是本 shell 的 PID，配方却拿它问 `tasklist` / `task
 
 | 命令 / 检查 | 结果 |
 |---|---|
+| **`just ready`（合并后，本机 Windows 11 / MSVC）** | **6/6**：`fmt-check` 1s · `lint` 3s · `test` **18s**（前一轮同配方 139s，差别只在缓存）· `deny-offline` 3s · `gen-types-check` 28s · `docs-check` 40s。⚠️ 在此之前同一个配方在本机红了三轮，三次都停在那条已知偶发（`bw::acquire` 的 install 用例，连续执行 10 次里 7 次红）—— 定位与处置见问题 #165，修后复测 10 次全过 |
+| **`just test-e2e`（合并后，本机）** | 退出码 **0**：第一段 **28 个目标 / 33 条用例**、第二段 `exit_residue` **1/1**、第三段 `portable` **3/3**；跳过的目标与原因不变（见 #176）。`tunnel_reconnect` **27.69 s** 通过 —— #179 是在 macOS 的 CI 上红的，本机一直过，处置是否消掉那次红要等 CI |
 | **`just test-e2e`（Windows 11 / MSVC，本机实测）** | 退出码 **0**，**全绿**：第一段 **28 个目标全部通过**（33 条用例，0 失败）、第二段 `exit_residue` **1/1**、第三段 `portable` **3/3**。整体跳过 4 个目标（`tab_close` / `window_close` / `bitwarden_login` / `bw_import`），另有 5 个目标里各 1 条用例按平台跳过（`vault_unlock` 的 `VmLck`、三条串口的设备节点、`single_instance` 的 `/proc` 实例计数），原因都在日志里逐条写明（见 #176）。走到这一步修掉的是四类**与平台绑定**的问题：`$!` 的 PID 命名空间与运行中覆盖 exe（#162）、ConPTY 启动时要求先答 `ESC[6n` 且行尾必须是 CR（#175）、tokio 的连接在 Windows 上读不出"连接被拒"（#173）、隧道用例清场时先删主机行后删规则行（#174）。⚠️ 仍被跳过的那两类就是**平台缺口的现状**：会话级的进程回收（Job Object，plan 0108 的遗留）与假 `bw` 的可执行形态 |
 | ↑ **同一配方在修复前的读数**（本机首次完整执行） | 退出码 **1**：第一段 28 个目标里 **13 个通过**（其中 5 个按平台显式跳过）、**15 个红**；第二段 `exit_residue` **1/1**；第三段 `portable` **3/3**。修复前停在第一段的 `app 未登记到 discovery 目录` 并挂到取消。那 15 个红灯当时被归成三类"平台缺口"（会话 / 隧道回收为空、ConPTY 下本地终端输出到不了 raw 通道、`bw` 的假 CLI 是 `#!/bin/sh`）；后续定位表明其中**大部分是判据自己与平台绑定**，真正剩下的只有后两类里的形态问题 |
 | **`just test-e2e`（Windows runner，CI）** | 六个 job 里 `E2E（Windows）` **通过**（run `36231407751` @ `afc3d11`）—— 本轮三轮读数：第一轮 4 个目标红（`terminal_render` ×2、`single_instance`、`windows_ports`、`portable`）、第二轮只剩 `portable`、第三轮 **0 个**。⚠️ 与 Windows 无关的两处仍在：Linux 的 E2E 红在 `vault_unlock`（`读不到 app 的 /proc/<pid>/status`，三轮都在、与本次改动无关），第三轮另有一次 `sftp_host_to_host` 的凭据超时（该目标前两轮都过、文件未被本次改动触碰）|
@@ -1116,12 +1126,17 @@ Windows（MSYS）上是本 shell 的 PID，配方却拿它问 `tasklist` / `task
       主端（`master` 因此变成 `Option`）。⚠️ 这不是清理动作而是**结束条件** ——
       少了它，关标签页会无限阻塞（`just test` 里两条最普通的 shutdown 用例就是这么红的）。
       判别口径：Linux 上同样的顺序不出这个问题，所以它只在 macOS 的读数上现形。
- 165. **`akasha-bw` 的 `install_takes_the_newest_release…` 偶发 `Peer disconnected`**（本会话
-      实测一次，macOS）：该用例在测试进程内起一台 HTTP 服务端供 `acquire` 下载一个 zip，
-      那次失败发生在 **0.049 s**，报 `Network { message: "…io: Peer disconnected" }`；
-      随后两次完整的 `just test` 都通过（458/458）。**没有定位**：它只在五次运行里出现过一次，
-      而失败点在测试自己的脚手架里（服务端与客户端的时序），不在 e2e 目标之列。
-      下次再出现时先记下同一个用例的连续失败次数与失败前的服务端日志，再决定要不要查。
+ 165. **`akasha-bw` 的 `install_takes_the_newest_release…` 偶发失败：Windows 上接受到的那条连接
+      继承了非阻塞模式**（**已修**，本会话定位）：`Stub` 的接受循环把**监听套接字**设成非阻塞（它要能
+      轮询停止标志），而 **Windows 的 `accept` 返回的连接会继承这个非阻塞模式**（Linux 上按 POSIX
+      返回阻塞套接字）—— 于是 `serve` 里第一句 `read_line` 在客户端的请求还没到时返回 `WouldBlock`
+      （os error 10035），这条连接被丢掉，客户端读到的是"连接被中止"（os error 10053；macOS 上曾记成
+      `Peer disconnected`，同一条用例、同一处时序，未单独定位）。**本机基线：同一个用例连续执行 10 次，
+      7 次红**；把 `max_idle_connections(0)` 当变量试过（排除连接复用），仍 9/10 红。定位靠给假上游加
+      一次性探针（已完成即删）：失败那次服务端只记到"接入一条连接 → 这条连接结束"，中间没有任何请求行，
+      错误正是 `WouldBlock`。处置：接受到之后 `stream.set_nonblocking(false)` 再交给 `serve`
+      （**复测：10 次全过**）。⚠️ 它只在 Windows 上现形，Linux 的 CI 一直是绿的；同形状的问题要一起问：
+      "把监听套接字设成非阻塞之后，接受到的那条连接在这个平台上是什么模式"。
 
  166. **`clippy::result_large_err` 只在"别的 crate"看那个错误类型时才报**（本会话实测，**已修**）：
       `tests/known_hosts.rs:134` 与 `tests/pipelining.rs:771` 返回 `Result<_, SshError>`，曾被它命中
@@ -1290,7 +1305,8 @@ Windows（MSYS）上是本 shell 的 PID，配方却拿它问 `tasklist` / `task
         —— 处置有效（同一轮里 `windows_ports` 按新口径显式跳过）。**第三次运行（`36231407751`）Windows 的 E2E 全绿**，
         `portable` 那一处也随"等目录放开"这一步消失。
       - Linux 的 `vault_unlock` 与上一次运行**同一处、同一句话**（`读不到 app 的 /proc/<pid>/status`），
-        与本轮改动无关，仍记在「进行中」里；第三次运行另有一次 `sftp_host_to_host` 的凭据超时
+        当时记在「进行中」，现已定位并修掉 —— 那是这条判据自己的缺陷（问题 #180）；
+         第三次运行另有一次 `sftp_host_to_host` 的凭据超时
         （`right 这一侧连接失败：认证失败：… 上没有可用的方式`）—— 该目标前两轮都过、文件未被本次
         改动触碰，记为偶发。
 
@@ -1308,10 +1324,28 @@ Windows（MSYS）上是本 shell 的 PID，配方却拿它问 `tasklist` / `task
       `**/build.rs` 开了豁免 —— 构建脚本的 stdout 就是它的 API（cargo 从那里读指令）。
 
  179. **前端把每一次隧道状态变化记了两次，`tunnel_reconnect` 因此偶发红**（CI 运行 `36234483861` 的
-      macOS 格实测，**未修**）：`subscribeTunnelStates` 每订阅一次就把事件写进
-      `window.__akashaTunnels.events`（测试接口），而退订是**异步**的
-      （`void stop.then((unlisten) => unlisten())`）；面板在 StrictMode 下挂载两次时，第二次订阅
-      可能赶在第一次退订生效之前，于是同一条事件被记两遍。症状是 `attempts` 断言拿到
-      `[1, 1, 2, 2, 3, 3]`（期望 `[1, 2, 3]`）—— 同一份代码在之前三轮（macOS / Linux / Windows）
-      都过，说明触发要看挂载时序。判据本身没错（后端确实各发了一次），错在这份测试日志的记录方式。
-      处置方向：只让**第一个**订阅记录，或把记录挪到一条与订阅次数无关的通道上。
+      macOS 格实测，**已修**）：`subscribeTunnelStates` 原来**每订阅一次就 `listen` 一次**，并把事件
+      写进 `window.__akashaTunnels.events`（测试接口），而退订是**异步**的（`listen` 返回 Promise，
+      `void stop.then((unlisten) => unlisten())`）。面板被卸下再挂上时（`open_tunnel_panel` 正是
+      "先关再开"），或 StrictMode 把 effect 走两遍时，上一份订阅可能还没摘掉 —— 同一条事件于是被记两遍。
+      ⚠️ 那次红的形状是**成对**而不是"事件变多"：序列
+      `[reconnecting, reconnecting, connecting, connecting, …, failed, failed]`、`attempts` 拿到
+      `[1,1,2,2,3,3]`（期望 `[1,2,3]`）。同一份 app 里前一条隧道目标（`tunnel_state`）读到的
+      `状态数` 仍是 **2**（不是 4）—— 所以是**订阅漏摘、监听器多了一个**，不是后端重复发事件。
+      哪一次挂载漏掉了退订没有定位（本机 Windows 上三轮都过，复现不出来），因此处置不追那次时序：
+      改成 `session.ts` 的 `ensureListening` 那个形状 —— **一条常驻监听**先记一次日志、再分发给当前
+      订阅者（`Set`），退订只把自己从名单里摘掉。事件日志因此与"订阅过几次"无关。
+
+ 180. **Linux 的 `vault_unlock` 必红：三次读数被折成一个只填了第一个槽位的元组**（CI 运行
+      `36234483861` 的 Linux 格实测，**已修**）：`3d6ebd7` 把"解锁前 / 解锁中 / 锁定后"三次
+      `locked_kb(pid)` 读数折成 `locked_marks(port) -> (Option<u64>, Option<u64>, Option<u64>)`，
+      而它只填第一个槽位（`(Some(before), None, None)`），调用点却分别取 `.0` / `.1` / `.2`
+      —— 于是 `.1` / `.2` 恒为 `None`，那句 `expect("读不到 app 的 /proc/<pid>/status")` 在
+      Linux 上必然 panic。⚠️ 它**只**在 Linux 上红：那三条断言整段在 `#[cfg(target_os = "linux")]`
+      里，macOS / Windows 的格子连这段都不编译，而本机没有 Linux 主机 —— 三轮本机 E2E 全绿也看不见它。
+      判据是 CI 日志的逐字读数：`VmLck` 打印了 **0 / 160 / 0** 之后紧跟 panic —— 读数本身是好的，
+      丢掉后两次的是那个包装函数。处置：恢复成"一次调用取一次读数"的 `locked_now(port)`，三个调用点
+      各取一次，并让每次读数各输出一行（`进程: pid=… VmLck=…`）。
+      验证：本机把该文件里的 `target_os = "linux"` 临时翻成 `"windows"` 执行一次
+      `cargo check --test vault_unlock`（退出码 0，那段 cfg 分支编译得过）后还原；
+      **它是否真的在 Linux 上转绿由 CI 的 Linux 格给出**（本机没有 Linux 主机）。
