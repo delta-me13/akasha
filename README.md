@@ -1,6 +1,6 @@
 # akasha
 
-Tauri 2 桌面应用：**可搬迁的、常驻托盘的多协议终端与文件传输客户端**，
+Tauri 2 桌面应用：可搬迁的、常驻托盘的多协议终端与文件传输客户端，
 identifier `fans.cyrene.akasha-terminal`。
 
 能力：本地 PTY / SSH / 串口三个终端后端，以及在此之上的 SFTP 文件传输、
@@ -11,9 +11,9 @@ SSH 端口转发（本地 / 远程 / 动态）、凭据池与系统托盘（窗�
 
 | 需要的信息 | 文档 |
 |---|---|
-| 规则：可做什么、不可做什么、命令入口 | [`AGENTS.md`](./AGENTS.md) —— 唯一规范入口 |
+| 规则：可做什么、不可做什么、命令入口 | [`AGENTS.md`](./AGENTS.md)：唯一规范入口 |
 | 下一步做什么 | [`ROADMAP.md`](./ROADMAP.md) |
-| 当前进度与已知问题 | [`docs/STATUS.md`](./docs/STATUS.md) |
+| 进度与已知问题 | [`docs/STATUS.md`](./docs/STATUS.md) |
 | 某项决定的依据 | [`docs/adr/`](./docs/adr/) |
 | 某个工作项怎么做 | [`docs/plans/`](./docs/plans/) |
 | 命令清单、工作流与排错 | [`docs/just.md`](./docs/just.md) |

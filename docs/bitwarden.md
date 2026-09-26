@@ -1,16 +1,13 @@
 # Bitwarden 集成（参考资料）
 
-> 本文是 [`scope.md`](./scope.md) §7 的**展开**。
-> **结论在 `scope.md` 与 [`adr/0007`](./adr/0007-bitwarden-cli-acquisition.md)，条款原文、
-> 命令面与实测过程在这里** —— 分开是因为两者时效不同：结论偶尔变，上游条款、命令与
-> 字段会随版本变。
->
-> 之所以单独成文：这些内容一度放在 `scope.md` 里，使它增长到 600 行以上，
-> 而"能力清单"不该装条款原文。规则见 `AGENTS.md` §8.1。
+本文是 [`scope.md`](./scope.md) §7 的展开：结论在 `scope.md` 与
+[`adr/0007`](./adr/0007-bitwarden-cli-acquisition.md)，条款原文、命令面与实测过程在这里。
+分开是因为两者时效不同：结论偶尔变，上游条款、命令与字段会随版本变。
+规则见 `AGENTS.md` §8.1。
 
 **本集成使用 `bw` 的主依据是官方文档**：<https://bitwarden.com/help/cli/>。
 CLI 自称"self-documented"（`bw --help` 与 `bw <command> --help` 覆盖同一份内容），
-因此文档与 `--help` 可以互相核对；本文记录的是**我们用到的那些**命令与实测输出。
+因此文档与 `--help` 可以互相核对。本文记录本项目用到的那些命令与实测输出。
 
 ---
 
@@ -30,11 +27,11 @@ npm `@bitwarden/cli`、snap、Flatpak（随桌面端一起）、或 GitHub Relea
 - **`host` 轴上找不到 `bw` 时不静默切换**：界面说清"这台机器上没有 `bw`"并给出一个显式的
   下载动作（ADR-0007 D5）。
 - **默认取 `host` 是用户当次指令**：CLI 的状态里有 access token，让它在系统默认位置不动，
-  比随本项目的便携目录迁移的风险低。
+  风险低于随本项目的便携目录迁移。
 
 ---
 
-## 2. ⚠️ 许可证：这是"不打包"的硬约束，不是省体积的偏好
+## 2. ⚠️ 许可证：打包分发的硬约束
 
 `bw` 从 **v2024.6.1** 起分叉成两个许可证不同的变体。Bitwarden 仓库里同时存在
 `LICENSE_BITWARDEN.txt` 与 `LICENSE_GPL.txt`：
@@ -66,11 +63,11 @@ transfer the Commercial Modules to any third party"*，以及
 
 | 方案 | 评价 |
 |---|---|
-| **运行时下载 `bw-oss-*`**（**当前定案**，ADR-0007 D1） | ✅ 本项目**不分发**二进制（下载发生在用户机器上、来源是上游自己的 release），因此 GPL 义务不落到本项目；GPL-3.0-only 对使用者没有用途限制。代价：缺 device approval 一类企业管理命令（本项目范围不需要） |
+| **运行时下载 `bw-oss-*`**（**当前定案**，ADR-0007 D1） | ✅ 本项目**不分发**二进制（下载发生在用户机器上、来源是上游自己的 release），因此 GPL 义务不落到本项目；GPL-3.0-only 对使用者没有用途限制。代价：缺 device approval 一类企业管理命令，本项目范围不需要 |
 | 打包 `bw-oss-*` | 合法，但把 GPL-3.0-only 义务带进我们的分发（许可证文本 + 源码获取途径），并要自己承担下载 / 校验 / 更新 |
 | 打包或下载**专有**变体 | ❌ 2.3(i) 禁分发；2.1 禁生产使用。**"不打包"是法律要求，不是取舍** |
 
-### 2.2 变体的**可执行**判据（实测）
+### 2.2 变体的可执行判据
 
 上游不随二进制附带许可证文本（两份 `cli-v2026.8.0` 产物里都搜不到 `LICENSE_*` 字样），
 版本号也分辨不出（两版都输出 `2026.8.0`）。可用的判据是**命令表**：
@@ -83,7 +80,7 @@ transfer the Commercial Modules to any third party"*，以及
 ```
 
 因此判定 = **读 `bw --help` 的命令表里有没有 `device-approval`**。
-⚠️ 它依赖上游保留这个命令名；读不出来时**报"判不出变体"**，不默认成 OSS
+它依赖上游保留这个命令名；读不出来时**报"判不出变体"**，不默认成 OSS
 （ADR-0007 §5）。
 
 ### 2.3 因此 `host` 轴上仍要做前置检查
@@ -95,18 +92,18 @@ transfer the Commercial Modules to any third party"*，以及
 
 ## 3. 为什么不用 `rbw` 或官方 Rust SDK
 
-四条路都核实过，留档避免以后重新论证：
+四条替代路都核实过，留档以免重新论证：
 
 | 方案 | SSH key 条目 | 依赖 | 问题 |
 |---|---|---|---|
 | **`bw` CLI**（官方） | ✅ 支持 | 自包含二进制，约 100 MB | 无状态模型（须自己管 `BW_SESSION`）；写自己的 appdata |
-| **`rbw`**（纯 Rust 非官方） | ❓ 未确认支持新条目类型 | **需外部 `pinentry`** | 作者声明"功能上已对我是完整的"，**只修回归不添功能**；SSH key 是较新的条目类型 |
+| **`rbw`**（纯 Rust 非官方） | ❓ 未确认支持新条目类型 | **需外部 `pinentry`** | 作者声明功能上已完整，**只修回归不添功能**；SSH key 是较新的条目类型 |
 | **Bitwarden 官方 Rust SDK** | — | — | 公开的 `bitwarden` crate 是 **Secrets Manager**；真正含 `SshKey` 的 `bitwarden-exporters` / `bitwarden-vault` 在 crates.io 上标注 **"Do not use"（internal）** —— 不是可依赖的公开面 |
 | 自实现 vault 密码学 | — | — | **已列为非目标**（`scope.md` §10） |
 
-**选 `bw` 的理由**：它是唯一**官方维护且可靠支持 SSH key 条目**的路径。
-`rbw` 更符合"纯 Rust"审美，但非官方、依赖外部 `pinentry`，且作者已声明不添功能 ——
-依赖它来支持新条目类型的风险过高。
+**选 `bw` 的理由**：它是唯一官方维护且可靠支持 SSH key 条目的路径。
+`rbw` 更符合纯 Rust 的审美，但非官方、依赖外部 `pinentry`，且作者已声明不添功能，
+依赖它支持新条目类型的风险过高。
 
 ---
 
@@ -122,8 +119,8 @@ pub struct SshKey {
 }
 ```
 
-**先明确 fingerprint 的定义**：它是**公钥的 SHA-256**。
-不得与 SHA-512 混淆 —— Bitwarden SSH agent 对 RSA 密钥一律用 sha512 **签名**
+**先明确 fingerprint 的定义**：它是公钥的 SHA-256，不得与 SHA-512 混淆。
+Bitwarden SSH agent 对 RSA 密钥一律用 sha512 **签名**
 （[clients#16681](https://github.com/bitwarden/clients/issues/16681)），
 那是**签名哈希**，与指纹是两个不同的概念。
 
@@ -142,20 +139,20 @@ pub struct SshKey {
     "sshKey": {
       "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\n…",
       "publicKey": "ssh-ed25519 AAAA… me",
-      "fingerprint": "SHA256:…"       // ⚠️ 见下：上游两处写法不一致
+      "fingerprint": "SHA256:…"
     }
   }
 ]
 ```
 
-四条从**上游实现**（本机 `@bitwarden/cli` 2026.2.0 的构建产物，路径带 `bw.js` 里的
-`CipherExport` / `SshKeyExport` / `CipherType`）读出来的事实：
+四条从上游实现（本机 `@bitwarden/cli` 2026.2.0 的构建产物 `bw.js` 里的
+`CipherExport` / `SshKeyExport` / `CipherType`）读出的事实：
 
 | 事实 | 出处（上游实现里的位置） |
 |---|---|
 | `type` 的 SSH key 取值是 **5**（1 登录 / 2 安全笔记 / 3 卡 / 4 身份） | `CipherType` |
 | 条目模板里 `sshKey` 默认是 `null`。**`type = 5` 而 `sshKey: null` 是合法形状**，不是坏输出 | `CipherExport.template()` |
-| 指纹字段名**两处不一致**：导出模型（`bw get template` / 导入导出那一路）叫 `keyFingerprint`，SDK 与官方文档叫 `fingerprint`（视图层做的正是 `view.keyFingerprint = obj.fingerprint`） | `SshKeyExport.template()` 与 `SshKeyView.fromSdkSshKeyView()` |
+| 指纹字段名**两处不一致**：导出模型（`bw get template` / 导入导出那一路）叫 `keyFingerprint`，SDK 与官方文档叫 `fingerprint`；视图层写的正是 `view.keyFingerprint = obj.fingerprint` | `SshKeyExport.template()` 与 `SshKeyView.fromSdkSshKeyView()` |
 | 三个字段**缺一即抛**：`SshKeyExport.toView` 对空 `privateKey` / `publicKey` / `keyFingerprint` 直接抛错 | `SshKeyExport.toView()` |
 
 ⚠️ 因此解析**两版字段名都认**（`fingerprint` + `keyFingerprint`），并允许 `sshKey` 缺失
@@ -167,11 +164,10 @@ pub struct SshKey {
 folder / collection / organization / search / trash / archived，没有按类型过滤。
 于是每一处登录口令都会从这次调用的 stdout 里经过一趟。本集成的处置：
 
-- 只反序列化上面那几个字段，其余（`login.password` 之类）**不落进任何类型**；
+- 只反序列化上面那几个字段，其余（`login.password` 之类）不进任何类型；
 - 那段 stdout 包在 `zeroize::Zeroizing` 里，读完即擦零；**不落盘、不进日志、不进事件载荷**；
 - 解析失败时错误消息只带 serde 的位置信息，**不带原文**；
 - 报告与界面上只出现条目名与上游给的指纹，**私钥一个字符都不出现**。
-
 
 ---
 
@@ -191,7 +187,7 @@ folder / collection / organization / search / trash / archived，没有按类型
 用缓存里的私钥推导出公钥 → 算 SHA-256 → 与存的指纹比对。
 **完全不需要网络** —— 这正是"Bitwarden 离线也要能用"这条需求最需要的保障。
 
-### 5.2 但它不能替代 `revision_date`
+### 5.2 `fingerprint` 不能替代 `revision_date`
 
 它有明确的**盲区**：**私钥变了而公钥没变**时指纹不变（例如重新导入一对不匹配的
 密钥），而 `revision_date` 会变。元数据改动（备注、关联主机）同理。
@@ -212,29 +208,25 @@ folder / collection / organization / search / trash / archived，没有按类型
 - **会话**：由本程序驱动 `bw unlock` / `bw login`（向用户索取主密码），拿到 session key 后
   **仅在内存中持有**，且住在受保护页里（ADR-0007 D7，`akasha_store::protected::Protected`）；
   **不落盘、不写进任何环境文件、不进日志与事件载荷**。
-- **主密码**经 `--passwordenv` 交给子进程（ADR-0007 D8）—— 不用位置参数（argv 对同机进程
+- **主密码**经 `--passwordenv` 交给子进程（ADR-0007 D8） —— 不用位置参数（argv 对同机进程
   可见），不用 `--passwordfile`（会把主密码落盘）。
 - **`bw` 自己的状态**（access token、`data.json`）由 CLI 管理，落点取决于状态目录那一轴：
   `host` = CLI 默认目录，`managed` = 数据目录下的 `bitwarden/appdata/`。
   ⚠️ 它是**上游的状态**，不是本项目的机密：状态目录取 `host` 时它不随便携目录迁移。
-- **v1 没有任何 `bw create` / `bw edit` 调用**。这避开了上游写入的并发/冲突/回滚问题，
-  也避开了"Bitwarden 不接受某密钥格式"的分支。
+- **v1 没有任何 `bw create` / `bw edit` 调用**，因此不涉及上游写入的并发/冲突/回滚问题，
+  也不涉及"Bitwarden 不接受某密钥格式"的分支。
 - 双向移动/复制明确推迟（`scope.md` §10）。
-
-> **变更记录**：最初设想是"两池之间允许移动或复制（双向）"。现已缩小为
-> **v1 只读导入**。理由：写回上游引入并发/冲突/格式兼容三类问题，
-> 而"从 Bitwarden 导入到本地池"已覆盖主要使用场景。
 
 ---
 
-## 7. 本集成用到的命令面（含实测输出）
+## 7. 本集成用到的命令面
 
 全局选项（`bw --help`）：`--raw`（只输出裸值）、`--nointeraction`（禁止交互提问）、
 `--session <key>`、`--pretty`、`--quiet`。
 
-| 用途 | 命令 | 实测要点 |
+| 用途 | 命令 | 要点 |
 |---|---|---|
-| 版本 | `bw --version` | 输出 `2026.8.0`（**两版变体同值**，分辨变体要用 §2.2） |
+| 版本 | `bw --version` | 输出 `2026.8.0`；两版变体同值，分辨变体用 §2.2 |
 | 变体判定 | `bw --help` | 命令表里 `device-approval` 一行是否存在 |
 | 状态 | `bw status --raw` | 恒定退出码 0；形状见 §7.1 |
 | 服务器 | `bw config server` / `bw config server <url>` | 无参数 = 读回当前服务器，输出**不带换行**；带值 = 写入。官方文档注明后续任何一次 `config` 调用会覆盖此前全部取值 |
@@ -248,7 +240,7 @@ folder / collection / organization / search / trash / archived，没有按类型
 
 ### 7.1 `bw status --raw` 的形状
 
-未登录（**实测**）：
+未登录：
 
 ```json
 {"serverUrl":null,"lastSync":null,"status":"unauthenticated"}
@@ -269,7 +261,7 @@ folder / collection / organization / search / trash / archived，没有按类型
 `status` 三个取值：`unlocked`（已登录且解锁）/ `locked`（已登录未解锁）/
 `unauthenticated`（未登录，此时 `userEmail` 与 `userId` 不存在）。
 
-### 7.2 失败长什么样（实测）
+### 7.2 失败长什么样
 
 | 场景 | 输出 | 退出码 | 写到哪条流 |
 |---|---|---|---|
@@ -280,26 +272,20 @@ folder / collection / organization / search / trash / archived，没有按类型
 | 服务器连不上 | `Unable to fetch ServerConfig from <url>/api FetchError: ... errno: 'ETIMEDOUT'` | 1 | stderr |
 | 自签证书未被信任 | `... reason: self-signed certificate` | 1 | stderr |
 
-**因此"命令成功"不能只看退出码为 0 这一件事**：`bw status` 在未登录时也返回 0。
-
-> **更正（2026-09-15，plan 0903）**：本节此前写的是"查询类命令把错误写在 **stdout**"，
-> 那个说法**没有留下可复现的记录**。本轮在本机 `@bitwarden/cli` 2026.2.0（发行版的
-> `/usr/bin/bw`）上逐条量了一遍，两条错误都在 **stderr**（`2>/dev/null` 时一个字都不剩，
-> `1>/dev/null` 时原话还在）。`Vault is locked.` 那一句只有上游实现可依（本机没有可解锁的
-> vault），它与前一条共用上游同一个 `errorIfLocked` 出口。
->
-> **行为不受影响**：`akasha-bw` 的失败分类**两条流都读**（stdout 非空时优先，否则用 stderr），
-> 所以"写在哪一条"这一版差异不会让任何一档认错。这也是当初两边都读的理由。
+未登录时 `bw status` 也返回 0，因此"命令成功"不能只看退出码。
+`Vault is locked.` 只有上游实现可依，它与 `You are not logged in.` 共用上游同一个
+`errorIfLocked` 出口。`akasha-bw` 的失败分类**两条流都读**（stdout 非空时优先，否则用 stderr），
+因此"写在哪一条流"的版本差异不会让任何一档认错。
 
 ### 7.3 自签证书（自托管常见）
 
 官方文档的做法：设 `NODE_EXTRA_CA_CERTS` 指向证书 PEM。
-**实测有效**：指向自签证书之后，`bw login` 真的向本地桩发出了
-`GET /api/config` 与 `POST /identity/accounts/prelogin/password`。
+指向自签证书之后，`bw login` 向本地桩发出 `GET /api/config` 与
+`POST /identity/accounts/prelogin/password`。
 
-### 7.4 导入：只读、快照、怎么被用上（plan 0903）
+### 7.4 导入：只读、快照、怎么被用上
 
-- **只读**：一次 `bw list items --raw`，别的什么都不做。v1 **没有任何** `bw create` / `edit`。
+- **只读**：一次 `bw list items --raw`。v1 **没有任何** `bw create` / `edit`。
 - **快照**：私钥进本地密钥池（受保护页那一条路），另外记一行**来历**（上游条目 id、
   `revisionDate`、上游给的 `fingerprint`）。来历表就是 `scope.md` §7 的"导入池"，
   也是"离线自检 / 联网刷新"的落点（§5.3）。**没有任何自动回流**：再导一次是一次用户动作。
@@ -313,25 +299,22 @@ folder / collection / organization / search / trash / archived，没有按类型
 
 ---
 
-## 8. 实现前必须实测的四项：结论
+## 8. 必须实测的四项：结论
 
-⚠️ **"实测"与"读上游实现"是两种不同强度的证据**，下表把两者分开写 ——
-真实输出需要一个真实 vault，而这一版**没有**（桩服务器要造出登录态就得自己实现
-Bitwarden 的密钥派生与加密，那是 `scope.md` §10 的非目标）。
+⚠️ **"实测"与"读上游实现"是两种不同强度的证据**，下表把两者分开写。
+真实输出需要一个真实 vault，而本仓库没有：桩服务器要造出登录态就得自己实现
+Bitwarden 的密钥派生与加密，那是 `scope.md` §10 的非目标。
 
 | # | 问题 | 结论 | 证据强度 | 状态 |
 |---|---|---|---|---|
-| 1 | 未登录时的报错形态 | `You are not logged in.` + **退出码 1**，写 **stderr**（§7.2） | **实测**（本机 `@bitwarden/cli` 2026.2.0） | ✅ |
+| 1 | 未登录时的报错形态 | `You are not logged in.` + **退出码 1**，写 **stderr** | **实测**（本机 `@bitwarden/cli` 2026.2.0） | ✅ |
 | 1b | **未解锁**（已登录但无 session key）时的报错形态 | 上游 `errorIfLocked` 给的是 `Vault is locked.`，与上一条**同一个出口**；本集成据此单开一档（`BwError::Locked`），界面说的是"先解锁"而不是"先登录" | 上游实现（本机 `bw.js` 里那段 `errorIfLocked` 与字面量） | ⚠️ 无真实输出 |
 | 2 | `bw list items --raw` 的 JSON 形状（`sshKey` 的嵌套） | 见 §4.1：条目数组、`type = 5`、`sshKey` 三个字段、两版指纹字段名 | 上游实现（同一份构建产物里的 `CipherExport` / `SshKeyExport` / `CipherType`）+ 官方公开的导出结构（§4 开头那段 SDK 类型） | ⚠️ 无真实输出 |
 | 3 | 条目是否**稳定可见**（离线 / 未同步时） | `bw list items` 走的是 `getAllDecrypted(userId)` —— 读**本地**已解密的那一份，不是每次去问服务器；因此"登录 + 同步过之后离线也看得到"在下游成立。反面照实记：一个企业策略（restricted item types）会把某些类型的条目从列举结果里过滤掉 | 上游实现 | ❌ 仍需真实 vault 复核 |
-| 4 | 如何分辨专有变体与 OSS 变体 | **已定判据**：读 `bw --help` 的命令表里有没有 `device-approval`（§2.2）。⚠️ 它是启发式（上游改命令表即失效），且读不出来时要报"判不出" | **实测**（两份 `cli-v2026.8.0` 资产对比） | ✅ |
+| 4 | 如何分辨专有变体与 OSS 变体 | **已定判据**：读 `bw --help` 的命令表里有没有 `device-approval`。⚠️ 它是启发式，上游改命令表即失效；读不出来时要报"判不出" | **实测**（两份 `cli-v2026.8.0` 资产对比） | ✅ |
 
-> #1b / #2 / #3 剩下的缺口是同一件事：**把它们在真实 vault 上执行一遍、把原文抄回来**。
-> 现在每一档都有一条可依据的实现事实（上游那份构建产物就在本机，`bw.js` 里读得到），
-> 于是代码不必等 vault；但"上游实现是这么写的"与"我看到了它这样输出"仍是两句话，
-> 不许混着说。真机那一次要执行什么见 plan 0901。
->
-> ⚠️ 本轮**没能**在运行时下载的那一份（`cli-v2026.8.0`）上复核 #1：下载在本沙箱里超时了
-> （此前那次 24.63 s 完成），所以上表 #1 的证据明确限定在本机 npm 那份 2026.2.0 上。
+#1b / #2 / #3 剩下的缺口是同一件事：**把它们在真实 vault 上执行一遍、把原文抄回来**。
+每一档都有一条可依据的实现事实（上游那份构建产物就在本机，`bw.js` 里读得到），
+因此代码不必等 vault；但"上游实现是这么写的"与"看到了它这样输出"仍是两句话，
+不许混着说。真机那一次要执行什么见 plan 0901。
 

@@ -4,7 +4,7 @@
 > 会话结束前必须更新 —— 下一个会话（或另一个 agent）只读这个文件 + 相关 plan 就能接手，
 > 不需要回溯对话历史。规则见 [`docs/README.md`](./README.md)。
 
-**最后更新**：2026-09-19
+**最后更新**：2026-09-26
 
 ## 摘要
 
@@ -57,12 +57,12 @@ plan 0903 只读导入、plan 0904 离线缓存，四条都已归档）：口径
 / `fingerprint`）—— 那行来历就是 plan 0904 要用的缓存。库格式因此到 **v3**（`bw_items`，
 v2 → v3 只加表）。**离线缓存**那一条把 plan 0903 记下的 `fingerprint` / `revisionDate` 用起来：
 自检**不联网、不起 `bw`**（断网也能用），与上游比对只报不改。剩下的一条是
-**0901 那三项真实输出**（需要一个真实 vault）。形状与判据见下文「阶段 9 的形状」。
+**0901 那三项真实输出**（需要一个真实 vault）；形状与判据见 [`adr/0007`](./adr/0007-bitwarden-cli-acquisition.md)。
 
 **阶段 8 的两条都完成（plan 0801 / 0802）、阶段 11 的三条也已完成（plan 1101 / 1102 / 1103）**：
 `akasha-serial` 落地（`Transport` 的串口实现 + `ports()` 枚举 + 参数校验，零 Tauri 依赖、
 `libudev` 只在 Linux），一条串口 `Session` 接着接进 app —— 从界面打开、字节双向流动、关标签页即回收、
-取值越界当场看到字段与取值、设备被拔掉时以可读原因结束并关闭标签页。判据与读数见下文「串口的形状」。
+取值越界当场看到字段与取值、设备被拔掉时以可读原因结束并关闭标签页。判据与读数见下文「已验证为通过」。
 
 **阶段 1 补了一条：Windows 目标的类型检查**（plan 0108）。`akasha-pty` 里的 `rustix::process`
 （收会话用的 SIGKILL 封装）原本没有 `cfg` 守卫，于是 Windows 目标编译不过（问题 #149）——
@@ -113,257 +113,7 @@ CI 的两个原生平台检查 job（`checks-macos` / `checks-windows`）执行�
 **目录迁移后数据仍在且可用**（0405）、**便携目录不可写时拒绝启动**（退出码 2）。
 **阶段 5 的四块**依次是**连接 + 认证**（0502）、**主机密钥的信任策略 + 本仓库首次库格式迁移**
 （0503）、**接入 IPC 与前端**（0504）、**`direct-tcpip` 原语 + 跳板（ProxyJump）**（0505），
-最后是 `~/.ssh/config` 导入（0506）—— 逐条落点见下表。
-
-### 阶段 5 完成情况（按依赖顺序）
-
-| plan | 完成内容 | 判据落点 |
-|---|---|---|
-| 0501 | ADR-0003（D1–D16，带出处的调研 + 资源模型） | `docs/adr/0003`，状态「已定案」（2026-09-15，随阶段 6 收尾） |
-| 0502 | `akasha-ssh` 连接 + 认证（D7 的顺序、D8 的内存凭据缓存） | **crate 层**：进程内 SSH 服务端，三个连接共享一次凭据询问 |
-| 0503 | known_hosts 三态判定（D11）+ 库格式 v2 与首次迁移 | **crate 层**：策略 + 库契约；迁移用真实 v1 库 |
-| 0504 | SSH 接入 IPC / 前端：带目标的会话命令、提问往返、提示界面 | **真实 app**（`ssh_session` E2E + 测试进程内的服务端） |
-| **0505** | **`direct-tcpip` 原语**（D9 的形状 = 一条流）+ **跳板链**（池中的 `jump_id` 生效） | **crate 层**（两个真实服务端 + 负控）+ **真实 app**（`ssh_jump` E2E） |
-| **0506** | **`~/.ssh/config` 受限子集导入**（三档边界：六条导入 / 局部指令警告 / 其余整份报错）+ 池的**第一条写路径** | **crate 层**（29 条解析 + 5 条落库，纯函数）+ **真实 app**（`ssh_config_import` E2E：导入的条目经跳板真实连通） |
-
-### 阶段 6 的形状（0601 的实体 + 0602 的 `-L` + 0603 的 `-D` + 0604 的 `-R` + 0605 的重连 + 0606 的关闭）
-
-**隧道是一个独立的 `Session`**（ADR-0003 D5 / D6，`scope.md` §2.2）：一条转发规则一个
-`Session`，它自持有一条连接。三种转发机制**全部落地** —— `-L` / `-D`（plan 0602 / 0603，
-共用"本机监听 + 每条入站连接一条 `direct_tcpip` 通道"）与 `-R`（plan 0604，ADR-0003 **D10**：
-请服务端监听 + 服务端发起的 `forwarded-tcpip` 通道，**不复用那个原语**）。
-
-| 事 | 落在哪 |
-|---|---|
-| 五态与转移表 | `akasha-core::TunnelState`（纯逻辑、零 Tauri；同态与"重连直达 `已连接`"都是非法边） |
-| 实体表与注册表 | `src-tauri/src/session.rs` 的 `Sessions` —— **同一张注册表、同一把锁**（D6），不另立第二份 |
-| 连接 | `SshConnection`（D9 的类型：已认证、**没有通道**）+ 同步门面 `connect_via`（它会持有自己的跳板链） |
-| **转发（`-L` / `-D`）** | `akasha-ssh::relay`：`LocalListener`（**先绑**）→ `LocalForward`（接受循环 + 每条入站连接一条 `direct_tcpip` 通道 + `copy_bidirectional`）。两条路的差别是 `Ingress`：`Fixed`（规则里的目标）/ `Socks5`（目标由客户端说，协议在 `akasha-ssh::socks5`） |
-| **转发（`-R`）** | `akasha-ssh::remote`：`SshConnection::remote_listen`（发 `tcpip_forward`，`port = 0` 时用服务端回报的端口）→ `RemoteForward`（路由表 `Inbound` + 每条入站通道**先连本机目标再接受** + `copy_bidirectional`）。停止 = 撤路由 → 收在途连接 → `cancel_tcpip_forward` → 断开连接 |
-| **重连（三个方向共用）** | app 侧 `src-tauri/src/tunnel.rs` 的**看护任务**：首次连上之后每条隧道起一条任务 —— 等那次转发结束（`akasha-ssh::ending` 的 `ForwardEnd`：被停止 / 连接没了）→ **只有实体仍在 `已连接`** 才重连 → 按 `akasha_core::Reconnect::delay` 退避 → `重连中(n)` → `连接中` → 再走一遍"准备 + 连接 + 起转发"。停止 / 重试 / 退出经**实体自己持有的一对 `watch`**（`TunnelStop` / `TunnelStopSignal`，plan 0606 换掉了 0605 的 `oneshot`）让它退出 |
-| **`-D` 的协议** | `akasha-ssh::socks5`（RFC 1928）：**只做无认证的 `CONNECT`** —— `BIND` 回 `0x07`、不认的 `ATYP` 回 `0x08`、没有 `0x00` 方法回 `05 FF`、版本不对什么都不回；成功 `REP` 在通道开出来**之后**才回，`BND.ADDR` 是占位 `0.0.0.0:0`（SSH 的通道确认里没有对端的绑定地址） |
-| 命令 | `tunnel_open(forwardId)` · `tunnel_retry(handle)` · `tunnel_stop(handle)` · 只读 `vault_forwards()` |
-| 事件 | `tunnel_state`（载荷 `{handle, state, attempt}`）—— 按 `SessionId` 路由 |
-| **关闭（0606）** | `tunnel_stop`：`已停止`（发事件）→ 停下手上的动作（`TunnelStop` 那对 `watch`：在途的尝试与看护循环各订一份）→ `Tunnel::reclaim()`（停转发 + 断连接）→ 注销注册。`shutdown_all` 走**同一份**回收 |
-| probe | `tunnels` → `[{handle, ruleId, name, state, attempt, bind}]`（与托盘菜单同源；`bind` = 实际监听地址）· `residue` → `{sshConnections, watchTasks}`（判据"两个计数都归零"的读数口） |
-| 失败分档 | `TunnelError`：`locked` / `noSuchForward` / `noSuchHost` / `notATunnel` / **`bind`（本机端口没拿到）** / **`remoteBind`（服务端那个端口没拿到：被它占着 / 它不允许远端转发）** / **`notLoopback`（SOCKS5 绑了非回环地址）** / `failed {kind,message}` / `transition` / `internal`。⚠️ 从 plan 0604 起**没有 `unsupported` 这一档**：三个方向都支持了，留着一个永远出不来的错误档就是在文档里留一句假话 |
-
-⚠️ **`重连中(n)` 的前提是"曾经连上过"**：`3 次 + 1s/2s/4s` 的预算只花在**已连接之后掉线**
-这条路上；**首次连接失败不自动重试** —— 那次失败是同步报给用户的（命令返回里带原因，
-下一步动作在用户手上），而 D13 的表说的是"传输层**断开**"。
-⚠️ **"断开"怎么认**：转发任务按 **500 ms** 看一眼 `Handle::is_closed()`（上游 0.x 只给了这个
-同步问法，见问题 #141）—— 连接真的结束时**秒级**发现，而"半死"（TCP 没断、对端不回话）要等
-保活耗尽（30 s × 3 ≈ 90 s = `keepalive_interval × keepalive_max`）。
-⚠️ **重连 = 重新走一遍"准备 + 连接 + 起转发"**：连接是那条转发的命根子，所以 `-R` 会**重新发
-一次 `tcpip_forward`**（远端监听是服务端那条连接的资源，断连即撤销）—— 不重新请求就是"重连成功
-了、端口却不在听"。规则里写 `port = 0` 的 `-R` 重连后**可能换一个端口**（服务端重新挑）。
-⚠️ **失败分档决定要不要重试**（`TunnelError::retryable`，D13 的表）：传输层（`connect` / `jump`）
-与**端口没拿到**（本机 / 服务端）会重试；认证、主机密钥、配置与内部状态**不重试** —— 以错误的
-口令连续尝试三次正是账号锁定的经典成因。
-⚠️ **状态变化会重推托盘菜单**（`set_tunnel_state` → `Sessions::notify_changed`，问题 #135）：
-菜单是一份快照，不重推它就永远停在隧道刚登记时那一行 —— 而 `scope.md` §5.2 把"失败必须可见"
-的落点放在托盘上。
-⚠️ **看护任务是"停止 / 重试 / 退出"三处共用的一个中止入口**：`tunnel_stop` / `tunnel_retry` /
-`shutdown_all` 都让它退出，而它在**每一个 `await`** 上回应它（停止因此不必等一次握手的 10 秒）。
-⚠️ **`tunnel_retry` 只认终态，且这条检查排在绑定之前**（D12）：`重连中` 也在等下一次尝试，但那是
-看护任务的事。先问状态机（纯判断）再动资源，与问题 #131 同一条纪律。
-⚠️ **停止 = 停止 + 注销**：`tunnel_stop` 先把状态推到 `已停止`（发事件），再摘掉那个 `Session`
-并让转发收尾 —— 收尾（停监听 → 收在途连接 → 礼貌断开连接）**在 runtime 上做**，命令发完信号即返回。
-⚠️ **"关闭转发 `Session`"就是 `tunnel_stop`**（plan 0606）：`close_session` 是终端那条
-（kill + wait），对隧道句柄答 `NotFound` —— 转发是**仅渲染**的视图，它的停止必须是它自己的显式动作
-（`scope.md` §5.6）。这条边界看起来像缺口（隧道在 `Sessions` 里同样是 `Session`），所以写下来。
-⚠️ **判据里的两个计数**（plan 0606）：`residue` 报的是 `SshConnection` 对象与看护任务本身，
-**不是**注册表里的实体 —— 关闭命令自己就会把实体摘掉，"表里没了"只是那条命令的效果。
-⚠️ **"立刻断连"要靠取消信号送到握手那一层**（plan 0606）：建立连接发生在**阻塞线程**上
-（app 侧的 `spawn_sync`），而扔掉 `await` 那一侧取消不了它 —— 那条 socket 会一直开到
-`connect_timeout`（D15 的 10 s）。所以 `SshConnection::connect_via_until(…, cancel)` 让
-**那次调用自己**结束；实测停止到对端读到 EOF **7.5 ms**。
-⚠️ **停止信号是"实体自己持有的一对 `watch`"**（plan 0606，替掉 plan 0605 的 `oneshot`）：
-`oneshot` 的发送端被替换（看护任务挂上自己那一份）时接收端会立刻醒，于是 `select!` 的两个分支
-同时就绪，而 `tokio::select!` 这时**随机挑一个** —— 一次**成功**的连接因此有约一半的机会被报成
-"已停止"。实体持有发送端之后，只有"真的被要求停止"或"实体没了"才会唤醒等待方。
-⚠️ **先绑定、后连接**：端口被占用是本类功能最常见的一类失败，它必须在"用户答凭据"**之前**失败 ——
-绑定失败 = **没登记成**（`Err`），与"登记了但连不上"（`Ok(TunnelAttempt{failure})`，仍在册可重试）分开。
-⚠️ **`target_host` / `target_port` 从 plan 0602 起参与**：`-L` 里它们被原样送进
-`direct_tcpip`，由**对端**解析（在本地解析等于绕开跳板机）；`-R` 里它们说的是**本机**服务，
-由**本机**解析 —— 两侧的角色正好相反。`-D` 没有目标（库的 `CHECK` 拦着），
-客户端在握手报文里给的域名同样**不做本机解析**。
-⚠️ **`-R` 的绑定地址不做回环限制**（与 `-D` 相反）：那个端口开在**服务端**，
-能不能开在非回环地址上是**它的**策略（`sshd` 的 `GatewayPorts` 默认只允许回环）。规则里写什么
-就请求什么，不替对端做决定。
-⚠️ **`-R` 的"绑定"发生在连接之后**：那个端口在服务端，要先有连接才能发请求 ——
-所以"先绑定、后连接"那条只对 `-L` / `-D` 成立。端口拿不到时它**仍然登记着**（`失败` 态、可重试），
-与"本机端口没拿到"（`Err`，没登记成）不同。
-⚠️ **`-R` 的入站通道按端口认**：服务端回报的 `connected_address` 是"它认为在听的地址"
-（与它的配置有关），按地址字符串认会在真实服务端上静默失配；没登记过的端口一律**拒绝**
-（drop `reply`）。
-⚠️ **`-D` 只允许绑回环地址**（plan 0603 的安全项）：SOCKS5 这一侧无认证（`0x00` 是唯一接受的
-方法），绑 `0.0.0.0` 等于把"经这台跳板机访问远端网络"的能力交给同网段的所有人。检查在**绑定
-之前**（`SshError::NotLoopback`），因此那样一条监听根本建不出来 —— **本版本没有"我确定要开放"
-的选择项**（取得明确同意的那一轮询问是 D16 的凭据往返，它不覆盖这件事）。
-⚠️ **SOCKS5 客户端只收到一个 `REP` 字节**：通道开不出来时它必须**分类**（`0x02` 对端不允许转发 /
-`0x05` 目标拒绝连接 / `0x07` 命令不支持），类别取自上游结构化的 `ChannelOpenFailure`
-（`SshError::Forward` 的 `class`），不从错误字符串里猜。
-
-### 阶段 7 的形状（plan 0701 的实体 + 0702 的引擎 + 0703 的两档 + 0704 的并发上限）
-
-**形状先固化在 [ADR-0006](./adr/0006-sftp-stack-and-transfer-engine.md)（状态「实现中」）**：
-SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRead + AsyncWrite` 流**上，
-与 D9 的 `SshStream` 对齐，且它**不依赖 `russh`**）；传输引擎只认"两个端点"，
-**"临时名 + 原子重命名"是目标端点的职责**（0702 已落地）。
-
-| 事 | 落在哪 |
-|---|---|
-| 实体与两侧 | `src-tauri/src/sftp.rs`：`Sftp { id, sides: [Side; 2], transfers, next_transfer }`；每侧 = `{来源, 名字, 状态, 失败原因, 当前目录, 连接 + 会话句柄}` |
-| 实体表与注册表 | `src-tauri/src/session.rs` 的 `Sessions` —— **第三张表 `sftps`**，与 `live` / `tunnels` 共用同一张注册表与同一把锁（ADR-0003 D6 的纪律） |
-| 连接 | `crate::ssh::connect_connection` —— 与终端、隧道**同一条**建链路径（含跳板链与主机密钥校验）；差别只在连上之后开的是 `sftp` 子系统。**本机那一档不建连接**（没有握手、没有认证，也就没有会失败的地方） |
-| 会话 | `akasha-ssh/src/sftp.rs` 的 `SftpClient`：`SshConnection::sftp()` 开子系统会话；`list(path)` 先 `canonicalize` 再 `read_dir`，条目**按名字排序**；plan 0702 起它同时是 [`Endpoint`]（`open_read` / `begin_write`） |
-| 传输引擎 | `akasha-ssh/src/transfer.rs`：`Endpoint` + `PendingWrite` + `Cancel` + `Progress` + `transfer()`。**两个端点**是唯一的输入，临时名与原子重命名在**目标端点**里 —— 于是本机 ↔ 主机、以及 host ↔ host 的两档共用同一个引擎 |
-| 并发上限 | `akasha-ssh/src/in_flight.rs`：`InFlight { limit, permits, live, peak }` + 有界入口 `transfer`（`select!` 带 `biased` 地等空位，取消那一支先看）。默认值在 `akasha_core::Transfer::in_flight`（8） |
-| 两档 | `src-tauri/src/ssh.rs` 的 `connect_connection_via`：`hops` = A 那一行自己的跳板链 ++ `[A]` ++ B 那一行自己的跳板链，终点是 B —— 交给**已有的** `connect_via_until`（plan 0505 的"只实现一次"）。`src-tauri/src/sftp.rs` 的 `sftp_connect` 在连 B 之前先看另一栏：它已连上一台**不同的**主机就试这条链（B 档），失败则本机直连（A 档） |
-| 本机端点 | `akasha-ssh/src/local.rs`：`LocalEndpoint`（**无字段**：没有连接要持有，路径每条命令带进来）。`.name.part` 同目录写完再 `rename`（POSIX 与 Windows 都原子） |
-| 传输的记账 | 实体的 `transfers`（新的在前）+ 每条一个 `Arc<Tracked>`：进度是 `AtomicU64`、状态与失败原因是短锁 —— **搬字节的任务不去抢会话表那把锁** |
-| 命令 | `sftp_open` · `sftp_connect(handle, side, origin)` · `sftp_list` · **`sftp_transfer` / `sftp_transfer_cancel` / `sftp_transfers`** · `sftp_sides` · `sftp_sessions` · `sftp_close` |
-| probe | `sftp` → `[{handle, sides:[{side, origin, name, state, failure, path, through, throughFailure}], transfers:[{id, from, fromPath, to, toPath, state, done, total, failure, via}], inFlight:{limit, live, peak}}]`（两侧永远两项、`left` 在前；传输新的在前） |
-| 失败分档 | `akasha-ssh` 新增 `SshError::Sftp`（"会话建不起来 / 用不了"，用户要看的是**对端有没有开 SFTP**）与 **`SshError::File { path, reason }`**（plan 0702：**端点上的一个文件操作**失败 —— 用户要去看的是**那个路径**，用会话那一档报一次重命名失败会把排查方向整个带偏）；app 侧 `SftpError`：`locked` / `noSuchHost` / `notAnSftp` / **`notConnected`（这一侧还没连）** / **`noSuchTransfer`** / `failed {kind,message}` / `internal`（plan 0703 删掉了 `unsupported`：host ↔ host 不再是"还没做"） |
-
-⚠️ **"两侧独立"有可断言的形式**：两侧各持各的连接，失败只落在**那一侧**
-（`state = failed` + `failure` 里那句话），另一侧照样可用；换主机时**上一次那条连接会被交出来**
-在锁外回收（两条连接同时挂着就是漏掉一条没有主人的连接）。
-⚠️ **`side` 是唯一进入契约的呈现概念**（ADR-0006 D7）：后端不给它别的含义 ——
-资源归那个 `Session`，不归某一侧。
-⚠️ **关面板不等于结束会话**（`scope.md` §5.6 的"仅渲染的视图"）：所以有一条 `sftp_sessions`
-让面板重新打开时**接回**已有会话 —— 否则"关前端不影响后端执行"就变成了"关前端等于失控"。
-⚠️ **上游的 `request_subsystem` 只发送、不等回复**（`russh` 的 `channels/mod.rs` 走 `send_msg`）：
-对端没开 SFTP 时它不回 `VERSION`，于是"它拒绝了"表现为**初始化会话等满期限**。
-所以错误消息里说明"多半是对端没开 SFTP"，且期限可调（`sftp_with_timeout`）——
-否则一条"这里会失败"的负例只能靠等满默认的 10 秒来证明。
-⚠️ **落盘不变量是引擎的出口条件**（plan 0702，`scope.md` §4.2）：成功的定义是**目标端点已经把
-临时名换成了最终名**，其余每一条退出路径（取消 / 读失败 / 写失败 / 重命名失败）都先把临时名
-删掉再返回 —— "用户看到最终名就等于成功"因此成立。
-⚠️ **取消只有一条路径**（ADR-0006 D4）：用户点「取消」与关闭 `Session` 推的是**同一个**
-`Cancel`，清理由目标端点的 `abort` 完成。于是 `sftp_close` 的顺序不能换 ——
-**先中止、等清理落地，再断连接**（临时文件是用那条连接删的）。
-⚠️ **临时名的取名规则在引擎那一层，抢占由端点做**（`.name.part`，被占时退到 `.name.N.part`，
-最多试 16 个）。plan 0704 起抢占是**一次**调用（本机 `create_new` = `O_EXCL`，远端
-`WRITE|CREATE|EXCLUDE`）—— "先查存在、再创建"那道缝正是两个同名文件并发传输会踩进去、
-双双写同一个临时文件的地方。
-⚠️ **远端分不清"名字被占"与别的通用失败**：SFTP v3 的状态码只有 8 个取值，没有"已存在"这一档
-（那是 v4 才补的）。所以只有通用的 `Failure` 换下一个候选，权限 / 超时 / 断连当场报出去 ——
-后者换 16 个候选只是把同一次失败问 16 遍。
-⚠️ **上限约束的是整个会话**（ADR-0006 D6）：一个 SFTP 会话持一个 `InFlight`，"每一条传输一条
-命令"的形状因此不会各自为政。排队中的传输在传输记录里与"正在搬"长得一样（状态只有"还没结束"
-这一档），分辨它们靠 `live` 比"还没结束的条数"少。
-⚠️ **上限的默认值不按"饱和点"取**：分档实测里 16 仍在明显更快，取 8 是占用与吞吐的折中
-（上限同时是对端打开句柄数与本机缓冲数的上界）。分档曲线里**上限 2 与串行一样慢**那一段
-还没有定位 —— 见待验证与 plan 0704 的实施记录。
-⚠️ **档位在"连接那一刻"定，定的是目标那一栏的端点**（ADR-0006 D5）：那条链建链尝试的
-**任何**失败都算"B 不可用" —— 不分类（对"要不要回退"这个问题它们没有区别），但**必须留下证据**：
-`through`（经哪台直通）/ `throughFailure`（回退原因）/ 传输的 `via`。于是"这次传输走的是哪一档"
-是**端点怎么来的**的后果，`sftp_transfer` 与传输引擎都不做档位判断（引擎一行都没改）。
-⚠️ **"优先 B"的收益是可直达性，不是字节数**：两档下文件都要过一次本机（读源一遍、写目标一遍），
-`scope.md` §4.1 原来的"带宽减半"按字面不成立，已按这个口径更正。
-⚠️ **隧道那条链是独立的一条**（本机 → A → B），**不复用另一栏的连接对象**：另一栏换主机 /
-断开都不会带走这一栏 —— ADR-0006 D3 的"不复用同一条连接"因此仍然成立。
-
-### 串口的形状（阶段 8 的 crate 与 feature + 阶段 11 的接线与结束原因）
-
-**串口与 local / SSH 是同一种东西**：一条 `Transport` 装进 `Sessions` 的 `live` 表 ——
-没有第四张表、没有新的会话模型、没有新的收尾路径。变的只有"载体从哪来"。
-
-| 事 | 落在哪 |
-|---|---|
-| crate | `src-tauri/crates/akasha-serial`：零 Tauri 依赖，对外只认 `akasha_pty::Transport`（与 `akasha-ssh` 同一条边界） |
-| 载体 | `transport.rs` 的 `SerialTransport::open(&SerialSettings)` + `Transport` 实现。**能力位是 `Capabilities::NONE`**：`resize` 答 `Unsupported`、`exited()` 恒为 `Ok(None)`、`session_leader()` 是 `None`（没有窗口尺寸、没有结局、没有本地进程）；`shutdown` 幂等（立停止标志 + 尽力 flush） |
-| 参数 | `settings.rs` 的 `SerialSettings`：六个字段（路径 + 波特率 / 数据位 / 停止位 / 校验 / 流控），取值域与 serial 池的 `CHECK` 对齐（数据位 5..=8、停止位 1..=2），`serialport` 的类型只出现在 crate 内部；`DataBits::try_from` / `StopBits::try_from` 越界报出字段与取值，`validate()` 查空路径与 `baud == 0` |
-| 枚举（plan 0802） | `enumerate.rs` 的 `ports()`：上游四种类别映射成 `PortKind`（USB 带 vid / pid / 序列号 / 厂商 / 产品名五项），输出**按路径排序、同一路径只留信息量最大的一档**。**空表是正常结果**；⚠️ **列出来的端口不保证能打开**（问题 #150） |
-| 错误分域 | `error.rs` 把四组失败分开：`Enumerate`（列不出来）/ `Settings` · `NoPath`（参数不合法，报**字段与取值**）/ `Open` · `Handle`（这一个设备打不开，报**路径**）/ `DeviceGone`（设备消失，报**路径与 OS 原因**） |
-| feature | `libudev = ["serialport/libudev"]`、`default = ["libudev"]`，且 `serialport` 以 `default-features = false` 引入 —— 链不链 libudev 是 manifest 上看得见的事。**平台差异由上游的 target 段承担**：那个 optional 依赖只在 `cfg(all(target_os = "linux", not(target_env = "musl")))` 下存在，Windows / macOS 上打开这个 feature 什么都不编译 |
-| 读数口（crate 层） | `just libudev-check`（按目标核对依赖图，两条负例验过）与 `just serial-check`（两条枚举实现各执行一遍，负例验过）—— 数字见「已验证为通过」与「各轮」 |
-| libudev 缺失时的降级 | Linux 上关闭该 feature（`default-features = false`）**仍能枚举** —— 上游另有一支 sysfs 实现；运行期拿不到 `libudev::Context` 时它返回**空表**而不是错误。发行版缺 libudev 的开发包**不是硬失败** |
-| app 侧接线（plan 1101 / 1102） | `src-tauri/src/serial.rs`：三条命令 = `vault_serials`（列池里的行）· `serial_ports`（列本机端口）· `open_serial_session(channel, params)`（**同步**）；形状 = `SerialEntry` / `SerialPort` / `SerialPortKind` / `SerialParams`（六个字段）与 `SerialIpcError`（`settings{field,value}` / `open{path,message}` / `enumerate{message}` / `internal`，**没有 `locked`**） |
-| 取值域两侧的映射 | `SerialParity` / `SerialFlow` 两个 IPC 枚举 → `akasha_store::pools::serial` 与 `akasha_serial` **各一个穷尽 `match`**；`data_bits` / `stop_bits` 保持库里的原始数值，越界由 crate 的 `TryFrom` 报字段与取值 |
-| 载体从哪来 | **参数显式，不是池行 id**：打开一个设备不碰库（没有秘密），所以这条路径**不需要解锁**；`locked` 只挡"列出池里有哪些"。于是 plan 1102 的"手输路径 + 参数可编辑"复用**同一条**命令 |
-| 三条并列的输入 | 枚举到的端口 / 手输的设备路径 / 池里的一行 —— **谁都不挡谁**：枚举那一块读不出来（`enumerate`）时只有它自己显示那句，手输照常；库锁着时只有池那一块说"先解锁"。点一条枚举结果**只是把路径填进表单**（不试开、不标可用） |
-| 表单与报错 | `src/serial/SerialPicker.tsx`：六个字段（数值三栏是**文本框** —— 越界取值要能从界面产生）、`data-serial-field` 与 `[data-serial-open]`。⚠️ **范围那一档仍归后端**（`settings{field,value}`）：前端只拦"寄不出去"（空串 / 非数字 / 超出 `u32`·`u8` 的宽度），那一条是 JSON 边界的必答项，不是第二份取值域 |
-| 前端 | `SessionTarget` 的 `serial` 变体、`TabKind` 加 `"serial"` 并进 `CLOSABLE`、`src/ipc/serials.ts`（两个只读入口：池 + 端口） |
-| 读数口（会话侧） | `app_state { probe: "sessions" }`（串口**没有本地进程**，"关闭零残留"只能看注册表 —— 同 ADR-0003 D4）；E2E `tests/serial_session.rs` / `serial_ports_ui.rs` / `serial_device_gone.rs` 各自造一对 PTY（脚手架 `tests/support/` 的 `FakeSerialDevice`），把**从端的路径**当设备 |
-| 结束原因从哪来（plan 1103） | `akasha-pty` 的 `Transport::stream_error`（默认 `None`）：`shutdown()` 报"结局是什么"（退出码 / 信号），这一条报"输出流为什么不是正常结束"。串口读端遇到**真实**读错误时把它渲染成 `SerialError::DeviceGone`（带设备路径）记在同读端共享的那一格里；会话层在收尾**之后**读它，算"结局优先、原因次之"进 `SessionEnded.status`（`PTY` / `SSH` 照旧报结局） |
-| 那句话怎么到界面 | `session_ended` 的 `status` 逐层交到 `App.tsx`（此前整个被丢掉），由它先写进应用级通知行 `[data-session-notice]` 再关闭标签页 —— 说出这句话的那个面随即被卸载，所以那句话只能留在壳层。顺带补上一条：本地终端的"退出码 N"从此也看得见 |
-
-⚠️ **手动指定路径不依赖枚举**：`SerialTransport::open` 收的就是一个设备路径
-（`/dev/ttyUSB0` / `COM3`），"端口列表为空"或"libudev 整个不在"都不影响打开一个已知端口。
-
-⚠️ **两种枚举实现给出不同的结果**：默认配置（libudev）列出 32 条 `/dev/ttyS*`，
-`--no-default-features`（sysfs）列出 0 条（它要求 `/dev/<名字>` 存在）—— 读数与教训见问题 #150。
-
-⚠️ **枚举结果不代表可用**（plan 1102 的呈现纪律）：udev 报 devnode 时不检查它在 `/dev` 下是否存在，
-所以那一块不标"可用 / 不可用"、也不禁用别的输入 —— 能不能开只有点「打开」之后才知道。
-
-⚠️ **Windows / macOS 的原生编译证据还差一层**（问题 #149）：`akasha-pty` 里的
-`rustix::process` 挡住那个目标，本地证据是依赖图与一次一次性探针。
-
-⚠️ **`resize` 的 `Unsupported` 不是失败**（plan 1101）：`Sessions::resize` 现在**先看能力位**
-（`Transport::resize` 的契约本来就要求调用方这么做）。不改的话串口标签页一打开就是红的 ——
-前端每次 `fit()` 都发一次 `resize_session`，而串口的能力位是 `Capabilities::NONE`。
-
-⚠️ **`serialport` 默认独占打开**（`TIOCEXCL` + 独占 `flock`，上游 `posix/tty.rs`）：
-同一台设备被第二个会话打开会当场得到 `EBUSY`。这对真实设备是对的（两个进程抢一个串口本来
-就不该成功），**不要**为了绕开它去关独占。⚠️ 它与 **React StrictMode 的两次挂载**撞上过一次：
-被丢弃的那次挂载真的把设备打开了，于是活下来的那次收到 `Device or resource busy` ——
-处置是把"推迟一个微任务再开"从 SSH 扩到串口（`src/terminal/attach.ts`），
-**只有本地终端保持同步发出去**（它是这条路上唯一可以重复且无痕的东西）。
-
-⚠️ **设备消失是 `Err`，不是 `Ok(0)`**（plan 1103 的前置检查）：从端那一路的 `read` 立刻返回
-`BrokenPipe`（上游 `serialport` 的 `posix/poll.rs::wait_fd` 见到 `POLLHUP` / `POLLNVAL` 报
-`BrokenPipe`，否则报 `Other(EIO)`）。这一条是整条路的前提 —— `SerialReader` 把 `Ok(0)` 当
-"设备安静"继续等，若上游哪天改用 `Ok(0)` 表示消失，这条会话会**永远不结束**（而且忙等）。
-流结束之后与 local / SSH 走同一条：`retire` → `session_ended` → 标签页随之关闭。
-⚠️ **"我们自己收尾"不留原因**：收尾先立起停止标志，读端此后给的是 `Ok(0)`（单测两面都钉住）。
-
-⚠️ **打开失败的那句话由标签页说，不由面板说**（plan 1102）：会话是那个面自己发起的
-（`App.tsx` 只负责开一个面，见 `attachTerminal`），所以参数不合法（数据位 9）时**面已经开出来
-了**、它当场是出错态，报错行里是 `data_bits = 9` —— 与 SSH 连不上同一条路。面板自己显示的
-只有"读列表失败"与"参数填不出来"这两档（后者**不开面**）。
-
-### 阶段 9 的形状（plan 0902 的两个轴 + 运行时下载 + 登录会话 + plan 0903 的导入）
-
-**形状先固化在 [ADR-0007](./adr/0007-bitwarden-cli-acquisition.md)（状态「实现中」）**：
-`scope.md` §7 原来那条"用户自备系统前置"的口径被取代 —— CLI 可以由本程序在用户机器上
-从上游 release 下载，而本项目**仍然不分发任何二进制**。
-
-| 事 | 落在哪 |
-|---|---|
-| crate | `src-tauri/crates/akasha-bw`（零 Tauri 依赖）：`location` / `variant` / `status` / `cli` / `session` / `acquire` / `items` / `testing` |
-| 两个轴 | `BinarySource`（`host` / `managed`）× `AppData`（`host` / `managed`）—— **各自独立、默认都取 `host`**；选择记在 `config.json` 的 `bitwarden` 对象里 |
-| 落点 | 二进制 `<数据目录>/bitwarden/bw-<版本>/bw`；隔离状态目录 `<数据目录>/bitwarden/appdata/` |
-| 下载 | 运行时解析最新 `cli-v*` → `bw-oss-<os>[-<arch>]-<版本>.zip` → SHA-256 → 解包 → 落盘 → 清掉旧版本 |
-| 变体判定 | 读 `bw --help` 的命令表里有没有 `device-approval`（专有变体独有）；判不出来时报 `unknown`，**不默认成 OSS** |
-| 机密 | 主密码经 `--passwordenv`（不进 argv）；session key 经 `BW_SESSION`（不进 argv），且住在 `akasha_store::protected` 的受保护页里，**只在内存** |
-| 状态同步 | 三态的唯一真相是 `bw status --raw`；每次动作之后重读一次，`status` 说不是 `unlocked` 就丢掉手上的 key（D10） |
-| 导入（0903） | 一次 `bw list items --raw` → **只留 `type = 5`** → 私钥进 `keys`（受保护页）→ 来历进 `bw_items`（cipher_id / name / revision_date / fingerprint / key_id，`ON DELETE CASCADE`）。同名默认不动，`overwrite` 才替换 |
-| 导入的钥匙怎么被用上 | `~/.ssh/config` 导入时 `IdentityFile` 的 **basename** 与池里钥匙的 `name` **逐字符相同** → 把 `hosts.key_id` 接上并在报告里说明；不同名时行为与 plan 0506 完全一致 |
-| 缓存检查（0904） | `bw_cache_verify`（**离线**：逐行从密钥池取私钥 → 算公钥指纹 → 与记下的比；0 进程、0 网络）+ `bw_cache_check`（联网：按 `cipher_id` 比 `revisionDate`；**只报不改**，刷新仍是用户再点一次导入）。算指纹在 `akasha_ssh::fingerprint_of_private_key` |
-| 明文面 | `list items --raw` 交出**整个 vault 的解密后内容**（上游没有按类型过滤的开关）：只有上面那几个字段会进我们的类型，那段 stdout 包在 `zeroize::Zeroizing` 里读完即擦零，错误消息不带原文 |
-| 库格式 | **v3**：v2 + `bw_items`（只加表；`TABLES_V2` 留在 `tables_of` 里，否则真 v2 库会被当成"不认识的版本"） |
-| app 侧 | `src-tauri/src/bitwarden.rs`：同一时刻只放一个 `bw` 进程的那把锁 + 十一条命令 + `bitwarden` probe |
-| 命令 | `bw_cli_status` · `bw_cli_settings` · `bw_cli_install`（**async**，约 45 MB）· `bw_status` · `bw_server_set` · `bw_login` · `bw_unlock` · `bw_lock` · `bw_logout` · `bw_sync` · `bw_import_keys` · `bw_cache_verify` · `bw_cache_check`（**零个事件**） |
-| probe | `bitwarden` → 同一份快照（两个轴、可执行文件、版本、变体、许可证提示、三态、`hasSession`）；**不起进程** |
-| 前端 | `src/ipc/bitwarden.ts` + `src/bitwarden/BwPanel.tsx`（应用级浮层，关闭面板不改任何后端状态）；选择器 `[data-bw-*]`（导入那一块是 `[data-bw-import*]`） |
-
-⚠️ **`bw` 自己不是并发安全的**：它在 `data.json` 上没有任何互斥，所以 app 侧的全部动作都在
-一把 `Mutex` 上排队 —— 那把锁不是"为了并发安全"，而是因为被调用的那个程序不并发安全。
-
-⚠️ **上游不再发布校验文件**（自 `cli-v2025.6.0` 起）：`acquire` 算出的是"这次下载的那些字节的
-哈希"，进日志与界面供事后核对。**不得**说成"已按上游校验"，也不拿上一次的哈希去拦这一次
-（那会把一次上游更新变成一次"校验失败"）。
-
-⚠️ **两个轴默认都取 `host`**：CLI 的状态里有 access token，用户明确选择"让它在系统默认位置
-不动"（迁移风险高于收益）。代价是：隔离那一档之外，登录态不随便携目录迁移。
-
-⚠️ **只下载 OSS 变体**：资产名里 `bw-oss-` 那一段只有一处拼法（`asset_name`），按平台 / 架构
-逐个钉住；专有变体既不打包也不下载（许可证 2.1 / 2.3(i)）。`host` 那一轴上探到专有变体时，
-界面必须给出提示 —— 判据与那句话都在 `bitwarden.md` §2.2。
+最后是 `~/.ssh/config` 导入（0506）—— 逐条落点见对应 plan（索引在 `docs/plans/README.md`）。
 
 ### 阶段 5 之前那些跨阶段的结论（还在生效）
 
@@ -464,7 +214,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
 | ↑ **转发本身是库内可测的**（plan 0602，crate 层） | ✅ `akasha-ssh` 新增 **7 条**（`relay` 4 + `local_forward` 3）：端口 0 由内核分配并报回实际地址 / 端口被占用报 `Listen` 且带地址与原话 / 空绑定地址被拒 / 正例（本地端口 → 对端中继 → 回声服务，请求数 1→2、中继字节数 `> 0`）/ 停止后端口释放 + 连接断开 / **负控**（没人绑的端口连不上、被占端口是 `Listen` 而不是 `Connect`） |
 | ↑ **判据：五态可观测 + 状态变化发事件**（plan 0601） | ✅ `tunnel_state` E2E（真实 app + **测试进程内**一台服务端，**0.90 s**）：界面点开隧道面板 → 打开池里那条能连通的 → 主机密钥与口令各答一轮 → probe `tunnels` 的 `state = connected`、界面上 `data-tunnel-state="connected"`、事件序列 `["connecting","connected"]` 且 `handle` 与 probe 一致 |
 | ↑ **`→ 已停止`，以及"连接真的断了"**（plan 0601） | ✅ 点"停止" → probe 里那条消失、`sessions` 的 `live`/`registered` = **1/1**、**服务端看到 1 条连接断开**（plan 0601 新增的连接级计数 `connections_closed` —— 隧道没有通道，`sessions_closed` 在这条路上恒为 0）、事件里有 `stopped` |
-| ↑ **`连接中 → 失败` 可见，且能手动重试**（plan 0601） | ✅ 连不上的那条（规则指向一台**不可达主机**）：`tunnel_open` 回 `{handle, failure:{kind:"failed",…}}`、probe `state = failed`、事件里有 `failed`；`tunnel_retry` 再走一遍 `connecting → failed`；**全程没有 `reconnecting`** —— 首次连接失败不自动重试（plan 0605 的口径，见「阶段 6 的形状」） |
+| ↑ **`连接中 → 失败` 可见，且能手动重试**（plan 0601） | ✅ 连不上的那条（规则指向一台**不可达主机**）：`tunnel_open` 回 `{handle, failure:{kind:"failed",…}}`、probe `state = failed`、事件里有 `failed`；`tunnel_retry` 再走一遍 `connecting → failed`；**全程没有 `reconnecting`** —— 首次连接失败不自动重试（plan 0605 的口径） |
 | ↑ **状态机是纯逻辑**（plan 0601，crate 层） | ✅ `akasha-core` 新增 **12 条**：正例表 / 反例表（含同态全部被拒、重连直达 `已连接`）/ `attempt ≥ 1` / 重试面（只有 `失败`·`已停止` 可重试）/ **五态从 `连接中` 都走得到**；注册表侧新增 1 条按 `SessionId` 路由 |
 | ↑ **建链只留一份实现**（plan 0601，crate 层） | ✅ `hops_chain` 被 `SshTransport::connect_via` 与 `SshConnection::connect_via` 共用；`akasha-ssh` 既有用例（跳板正例 + 负控 + known_hosts 7 条）**行为未变** |
 | ↑ **判据：含 `Match` 的配置产生明确报错**（plan 0506） | ✅ `ssh_config_import` E2E（真实 app + 测试进程内两台服务端）：在界面导入一份含 `Match` 的配置 → **逐条**列出"第 4 行 `match`：条件块无法求值…"且**不产生导入报告** → `vault_hosts` 行数与导入前相同（一行未写） |
@@ -627,7 +377,7 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
   连不上目标时回 `ChannelOpenFailure(ConnectFailed)`，那一档才变成 `0x05`。该映射只有单元测试
   覆盖（`reply_for` 的表），**未在真实 sshd 上验证**。
 - **`0.0.0.0` 被拒这条判据验的是"拒绝"，不是"开放之后会怎样"**：本版本**没有**开放到同网段的
-  路径（见「阶段 6 的形状」的安全项），所以"同网段的人经它访问远端网络"这一风险**从未被构造过**
+  路径，所以"同网段的人经它访问远端网络"这一风险**从未被构造过**
   —— 用例只证明了那条监听起不来。
 - **`curl` 是 `tunnel_dynamic_forward` 的前置**：判据的客户端必须是**现成的** SOCKS5 客户端
   （手写客户端证不了"现成客户端认这个服务端"，库内用例已覆盖那一半）。因此该用例在
@@ -855,38 +605,6 @@ SFTP 协议实现取 `russh-sftp = "=3.0.0"`（会话定义在**一条 `AsyncRea
       ubuntu 格**通过**（28 个目标全部执行完，xvfb 下的原生窗口句柄路径第一次走通），macOS 格的三处
       修正待验证，Windows 格卡在"app 起不来"（#162）
 - [ ] **正式 UI**：等待设计稿（见上文「UI 现状」）—— 没有验收标准，因此**不进入 ROADMAP**
-
-### 各轮（已完成，plan 0603–1103）
-
-逐轮的步骤与实施记录随各自的 plan 归档（索引见 [`plans/README.md`](./plans/README.md)），
-**本节只留之后会被引用的事实**：各轮的判据与实测。
-
-| plan | 判据（ROADMAP 原文） | 实测 |
-|---|---|---|
-| 1103 | 把测试用的 PTY 主端关闭（等价于拔掉设备）时会话结束、没有残留注册 | `serial_device_gone` E2E **0.36 s**：拔掉设备（关闭唯一一份主端）→ 从端那一路的 `read` 报 `BrokenPipe`（**不是** `Ok(0)`）→ 会话自己结束、标签页跟着关；原因经 `Transport::stream_error` 进 `SessionEnded.status`（契约形状未变），crate 层 1 条 + app 层 1 条 + `akasha-pty` 1 条。⚠️ 真设备被拔掉时走的是 EIO 那一支，未实测 |
-| 1102 | 界面上看到本机枚举结果并据此（或手输路径）打开；取值越界时显示字段与取值 | `serial_ports_ui` E2E **1.46 s**：界面上的计数与后端枚举（32 条）相等；点第一条把路径填进那一栏；手输 PTY 从端打开并双向传字节；数据位填 9 → 那个面的报错行里是 `data_bits = 9`（面已开出来、当场是出错态）；填 `abc` → 面板自己拦下、**不开面**。⚠️ "点一条枚举结果"在枚举为空的机器上**显式跳过**（CI 的 runner 就是这一类） |
-| 1101 | 真实 app 上打开一个串口会话并双向传字节；关闭标签页后 `live` / `registered` 归零 | `serial_session` E2E **1.00 s**：设备是测试进程自己造的一对 PTY 的从端；**两个方向各一条独立证据**（`from-device-1101` 出现在屏幕上 / `to-device-1101` 被主端读到）；关标签页后注册表回到打开前的读数（"归零"的口径见 plan 1101 归档）。⚠️ 实测发现 `serialport` 默认**独占**打开与 StrictMode 的两次挂载相撞（第二遍 `EBUSY`）—— 处置是把"推迟一个微任务再开"从 SSH 扩到串口 |
-| 0802 | 枚举在本机列出真实端口；参数错误时给出可读报错 | `ports()` 在本机（libudev）列 **32 条**且顺序稳定无重复、路径非空；同一套用例在 sysfs 那套实现下返回 **0 条**且照常通过（"没有端口"与"枚举失败"因此是两种结果）；真 tty 上回读参数、越界取值报字段与取值。⚠️ 负例自检：去掉排序只红了手造输入的三条单测 —— **只在真实机器上执行的断言可能是永真的** |
-| 0801 | Windows / macOS 构建不链接 libudev | 依赖图核对（`just libudev-check`，两条负例验过）+ 一次性探针让 `serialport` 带该 feature 在三个目标上各编译一次；13 条用例全过（PTY 那 4 条带 `--nocapture` 重新执行过，确认没走跳过分支）。⚠️ 原生编译待问题 #149 |
-| 0704 | 大量小文件的吞吐显著优于串行请求 | 上限归**会话持有的** `InFlight`（`limit` / `live` / `peak`；等空位可取消），临时名改成**一次**原子占用（本机 `create_new`、远端 `CREATE|EXCLUDE`）；库内 6 条（7 个文件 / 上限 3 → 目标端点同时只见 3 个 `begin_write`）+ `sftp_pipelining` E2E：12 个 1 KiB 文件在每方向延后 10 ms 的链路上 **1.509 s → 389 ms**（`peak 8`） |
-| 0703 | A 无法直连 B 时自动走 A 档；两档均不落盘 | `sftp_host_to_host` E2E **5.29 s**：B 档经跳板直通（跳板记到 1 条 `direct-tcpip`、中继搬了 55776 字节、目标真盘字节相同且没有临时名、源那台一个条目都没多）；直通被拒（`AdministrativelyProhibited`）→ 自动回退本机直连、原因留在 `throughFailure`；第二个文件照样落地而 `via` 为空；库内 3 条含**两半负控** |
-| 0702 | 中断传输后目标目录里没有看似完整的文件 | `sftp_transfer_atomic` E2E **6.19 s**：取消前搬了 **2883441 / 4194304** 字节、目标目录实测 `[".big.bin.part"]` → 取消后 **0 个条目**；上传的 300 KiB 在对端真盘上与源逐字节相同；库内 6 条（两个可控假端点，连续执行 8 次全绿） |
-| 0701 | 直接打开 SFTP 即可用，无终端依赖 | `sftp_dual_pane` E2E **7.34 s**：不新建任何终端标签页；两栏各连一台服务端、各自列目录，左栏没有右栏的条目；两台服务端各记到 1 次 `sftp` 子系统请求；`live`/`registered` **1 → 2 → 1** |
-| 0606 | 关闭转发 `Session` 后连接数与重连任务数都归零 | `tunnel_teardown` E2E **5.48 s**：两条隧道 + `residue = (2, 2)` → 关闭 `-R` 得 `(1, 1)` 且服务端那个端口连不上 → 关闭 `-L` 得 `(0, 0)`；再停一次是 `Ok` 且 1.5 s 后仍是 `(0, 0)`；在途的握手被中止时对端 **7.5 ms** 内读到 EOF |
-| 0605 | 拔网线后进入"重连中"，耗尽次数后变"失败"**且托盘可见**；可手动重试 | `tunnel_reconnect` E2E **19.19 s**：服务端断开 → `reconnecting(1)` → 自行回到 `connected`；服务端消失 → `reconnecting(1)(2)(3) → failed`（实测 **7.55 s**，预算 ≥ **7 s**）；`-R` 重连**重新请求**监听且端口不变；重连途中停止能中止循环 |
-| 0604 | 远端监听端口可回连到本机服务 | `tunnel_remote_forward` E2E **7.01 s**：`curl http://127.0.0.1:<那个端口>/probe` 退出码 0 且响应体是本机 HTTP 服务写的那一串；服务端记到 `tcpip_forward`；本机目标不可达 → 它看到 `ConnectFailed` 且通道**没有**被接受 |
-| 0603 | 配置 SOCKS5 代理后能访问远端网络 | `tunnel_dynamic_forward` E2E **0.85 s**：`curl --socks5-hostname` 退出码 0 且取回远端服务的响应体；非回环绑定在**绑定之前**被拒（那条监听从未建起来） |
-
-未成文但**之后会被引用**的落地事实（各条都由上面的用例或 crate 用例钉住）：
-
-- `-R` 的入站通道**按端口认**（服务端回报的 `connected_address` 是它认为在听的地址，
-  按地址字符串认会在真实服务端上静默失配）；没登记过的端口一律拒绝。
-- 停止信号是**实体自己持有的一对 `watch`**（不是可替换的 `oneshot`）—— 换发送端会唤醒接收端，
-  让 `select!` 在两个分支同时就绪时**随机挑**，一次**成功**的连接因此约有一半机会被报成"已停止"。
-- 建链入口带取消信号（`connect_via_until`）：建立连接发生在阻塞线程上，丢掉 `await` 取消不了它。
-- SOCKS5 只允许绑回环（无认证 + 不可选）；`-R` 的绑定地址**不做**回环限制（那个端口开在服务端）。
-- 失败分档按"哪一层坏了"分（`retryable`）：传输层与端口没拿到会重试，认证 / 主机密钥 /
-  配置与内部状态**不重试**；`tunnel_retry` 只认终态，且这条检查排在绑定之前。
 
 ## 结构现状（容易找错地方）
 
