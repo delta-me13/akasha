@@ -123,20 +123,42 @@ export async function stopTunnel(handle: number): Promise<void> {
   if (result.status === "error") throw new TunnelFailed(result.error);
 }
 
+/** 此刻在听状态变化的回调。 */
+const stateHandlers = new Set<(event: TunnelStateChanged) => void>();
+
+let listening = false;
+
+/**
+ * 起**一个**常驻监听：先把这一次变化记进事件日志，再分发给当前的订阅者。
+ *
+ * 为什么不让每个订阅者各 `listen` 一次（同 `session.ts` 的 `ensureListening`）：
+ * "状态变化"属于那条隧道，与"此刻有几个面板在听"无关。而 `listen` 的退订是**异步**的
+ * （它返回 Promise），面板被卸下再挂上（`open_tunnel_panel` 正是先关再开）或 React 的
+ * StrictMode 把 effect 走两遍时，上一份订阅可能还没摘掉 —— 那时同一条事件会被记两遍，
+ * `tunnel_reconnect` 读到的重连次数就成了 `[1,1,2,2,3,3]`（问题 #179）。
+ */
+function ensureListening(): void {
+  if (listening) return;
+  listening = true;
+  void events.tunnelState.listen((event) => {
+    recordTunnelEvent(event.payload);
+    for (const handler of [...stateHandlers]) handler(event.payload);
+  });
+}
+
 /**
  * 订阅隧道状态事件，返回退订函数。
  *
- * ⚠️ 它同时把每一次状态变化记进 `window.__akashaTunnels` —— 那是**测试接口**
+ * ⚠️ 那个常驻监听同时把每一次状态变化记进 `window.__akashaTunnels` —— 那是**测试接口**
  * （`docs/scope.md` §1.3：探针可以有，但它们是测试的接口，不是 UI 规范）。
  * E2E 靠它断言"状态变化**真的发了事件**并到了前端"，而不是只看后端 probe 猜前端收没收到。
  */
 export function subscribeTunnelStates(onChange: (event: TunnelStateChanged) => void): () => void {
-  const stop = events.tunnelState.listen((event) => {
-    recordTunnelEvent(event.payload);
-    onChange(event.payload);
-  });
+  stateHandlers.add(onChange);
+  ensureListening();
+  // 退订只把**自己**从分发名单里摘掉：常驻监听留着，事件日志因此与订阅次数无关。
   return () => {
-    void stop.then((unlisten) => unlisten());
+    stateHandlers.delete(onChange);
   };
 }
 
