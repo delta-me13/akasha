@@ -12,7 +12,7 @@
 |---|---|
 | **规则**：什么能做什么不能做、命令入口 | 本文件 |
 | **下一步做什么** | [`ROADMAP.md`](./ROADMAP.md) |
-| **现在到哪了、有哪些已知问题** | [`docs/STATUS.md`](./docs/STATUS.md) |
+| **现在到哪了、有哪些已知问题** | [`docs/STATUS.md`](./docs/STATUS.md)（开放问题的索引）· [`docs/issues.md`](./docs/issues.md)（完整原文） |
 | **某个决定为什么这样定** | [`docs/adr/`](./docs/adr/) |
 | **某个工作项怎么做** | [`docs/plans/`](./docs/plans/) |
 | 文档索引与骨架 | [`docs/README.md`](./docs/README.md) |
@@ -454,7 +454,8 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 | `docs/bitwarden.md` | **Bitwarden 集成的展开**：许可证、条目字段、指纹语义 | 随上游版本与实测变 |
 | `docs/logging.md` | **日志怎么写**：消息形态（含反面例子）、字段词汇、级别 | 几乎不变 |
 | `docs/style.md` | **文档语体怎么执行**：禁用语表（`just docs-style` 的唯一数据源）+ 加词步骤 | 几乎不变 |
-| `docs/STATUS.md` | 现在在哪 | **每次会话覆盖写，不追加** |
+| `docs/STATUS.md` | 现在在哪（含**开放问题的索引**） | **每次会话覆盖写，不追加** |
+| `docs/issues.md` | 已知问题与教训的**完整原文**：编号永不复用，条目只增不改写 | 只增；新增条目写在这里，STATUS 的索引只列仍开放的那些 |
 | `docs/adr/NNNN-*.md` | 为什么这样定 | **三态**：提议中 → 实现中（**可改**，每次改动记一行）→ 已定案（**不可变**，只能被新 ADR 取代）。判据见 `docs/adr/README.md` |
 | `docs/plans/TTxx-*.md` | 这次怎么做（一个工作项一个文件） | 进行中就地修改；**完成后整份移入 `docs/plans/archive/`** |
 
@@ -482,7 +483,7 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 | 步骤、编号子步骤、代码块 | 怎么做 | `docs/plans/TTxx-*` |
 | "因为…"、"否则会…"、"之所以" | 为什么 | ADR；或 `scope.md` 能力条目的理由列 |
 | "用 `cargo tree` 可证"、具体 flag、测试内部结构 | 验证手段 | plan 的「验收命令」 |
-| 已知问题、排错步骤 | 参考资料 | `STATUS.md` 的已知问题；或专门文档（如 `portable.md`） |
+| 已知问题、排错步骤 | 参考资料 | [`issues.md`](./docs/issues.md)（完整原文）；仍开放的另在 `STATUS.md` 的索引里留一行；排错步骤见专门文档（如 `portable.md`） |
 | `scope.md` 里**某一节越写越长**（超过约一屏） | 参考资料 | 拆成专门文档（`portable.md` / `bitwarden.md` 即由此拆分而来），原处只留结论 + 指针 |
 
 **`ROADMAP.md` 的硬预算**（由 `just docs-check` 强制）：
@@ -549,19 +550,19 @@ just ready   # fmt-check + lint(clippy + ast-grep scan + ast-grep test) + test
 | 文件 | 只留 | 移入归档的 |
 |---|---|---|
 | `ROADMAP.md` | 未完成的条目（`- [ ]` / `- [~]` / `- [!]`） | 已完成的条目（`- [x]`）整条，连同它的验收行与 plan 指针 |
-| `docs/STATUS.md` | 最近一轮的摘要、当前读数、待验证、进行中 / 下一步、未处置的已知问题、结构现状 | 历史会话段、被取代的读数（表里以 `↑` 开头的行）、处置完的问题条目 |
+| `docs/STATUS.md` | 最近一轮的摘要、当前读数、待验证、进行中 / 下一步、**开放问题的索引**、结构现状 | 历史会话段、被取代的读数（表里以 `↑` 开头的行）、处置完的问题条目 |
 
 - 归档文件：`docs/archive/roadmap-completed.md`（按阶段分节）与
   `docs/archive/status-history.md`（按小节分类），两者在 [`docs/README.md`](./docs/README.md) 登记。
   归档**只移动与追加**，不改写原文 —— 它同时是"这条结论当时是怎么得出的"的唯一去处。
 - **引用键不随移动失效**：`问题 #N` 的编号**永不复用**，条目移走之后编号仍然有效，原文在归档里。
-  任何 `问题 #N` 的引用必须能在 `STATUS.md` 或归档里找到（`docs-check` 强制）。
+  任何 `问题 #N` 的引用必须能在 `STATUS.md`、`docs/issues.md` 或归档里找到（`docs-check` 强制）。
 - **执行**：`just docs-archive` 做移动（幂等，可反复执行）；会话结束前更新 `STATUS.md` 时一并执行，
   阶段完成时归档该阶段的条目。**新增条目不得让文件超出预算** —— `STATUS.md` 的行数预算写在根
   `justfile` 的 `STATUS_BUDGET` 里，**只降不升**：内容降到新的水平之后就把预算改小，
   下一次超预算即是一次新的归档。
 - **强制**：`just docs-check` 检查 `ROADMAP.md` 里没有 `- [x]`、`STATUS.md` 不超预算、
-  两个归档文件存在、以及 `问题 #N` 的引用可解析。
+  两个归档文件存在、以及 `问题 #N` 的引用可解析（`STATUS.md` / `docs/issues.md` / 归档）。
 
 ## 注释规范
 - 注释只解释 why、约束、副作用、边界条件、非显然决策，不复述代码。
