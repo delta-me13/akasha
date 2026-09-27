@@ -1,0 +1,12 @@
+{
+  "name": "shuorenhua",
+  "version": "2.5.0",
+  "description": "按用户要求审稿或去 AI 味，支持中英文，保留事实、关系与作者立场。",
+  "author": {
+    "name": "MrGeDiao"
+  },
+  "homepage": "https://github.com/MrGeDiao/shuorenhua",
+  "repository": "https://github.com/MrGeDiao/shuorenhua",
+  "license": "MIT",
+  "keywords": ["chinese", "writing", "de-ai", "ai-slop", "rewrite"]
+}

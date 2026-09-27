@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "skills": {
+    "awesome-code-cleanup": {
+      "source": "khasky/awesome-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/awesome-code-cleanup/SKILL.md",
+      "computedHash": "72fb12f57e28cd962429ff01200c2377a25bb672b8aa641acbfa1004a3067439"
+    },
+    "chinese-coding-guidelines": {
+      "source": "xumaxie/chinese-ai-coding-skills",
+      "sourceType": "github",
+      "skillPath": "skills/chinese-coding-guidelines/SKILL.md",
+      "computedHash": "ca69cf3058279262db760b6b80f36911a73c50ca60691ded1c26f04e7c4f3701"
+    },
+    "clean-ai-slop": {
+      "source": "tmdgusya/engineering-discipline",
+      "sourceType": "github",
+      "skillPath": "skills/clean-ai-slop/SKILL.md",
+      "computedHash": "b2ec1dd0589770b162389efb03c604b7a8c6dddef57978f802e55b269e7ce2e9"
+    },
+    "docstring-generator": {
+      "source": "espennilsen/pi",
+      "sourceType": "github",
+      "skillPath": "skills/docstring-generator/SKILL.md",
+      "computedHash": "a13040c09973d8518ef6623afe3caabc9ce243361b86e50af35f5c003bcb272d"
+    },
+    "logging-best-practices": {
+      "source": "aj-geddes/useful-ai-prompts",
+      "sourceType": "github",
+      "skillPath": "skills/logging-best-practices/SKILL.md",
+      "computedHash": "e7fd822c9e40d192715e3e82e3dd3cb9152a554f1bf323bc9aedffa3801d5ba4"
+    },
+    "shuorenhua": {
+      "source": "MrGeDiao/shuorenhua",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "a0d656f16baedbce82558836cdce827f4ebd6a510af2bb54b9bda39654caeab0"
+    },
+    "structured-logging": {
+      "source": "kimtth/agent-skill-100-lines-or-less",
+      "sourceType": "github",
+      "skillPath": "skills/structured-logging/SKILL.md",
+      "computedHash": "447f7833f7356aa9c07014cb546bfcf1c277e4d58732c71a15aa9c0cb850c618"
+    },
+    "technical-documentation": {
+      "source": "openclaw/openclaw",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/technical-documentation/SKILL.md",
+      "computedHash": "70b11b1a762b62cbaeb4c27bcd19dc7465f7616b2ad8a36c6f86130841c7864e"
+    }
+  }
+}
