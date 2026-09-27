@@ -53,7 +53,8 @@
 | `just tools` | 按 `mise.toml` 装齐全局 CLI 工具 | 根 |
 | `just tools-ls` | 看工具版本与来源 | 根 |
 | `just docs-style` | 文档语体：剥离代码块与行内代码后匹配禁用语表（第二人称、语气词、口语虚词、比喻与纯口语动词）。表在 [`style.md`](./style.md)，由 `just docs-check` 第一步调用（规则见 `AGENTS.md` §8.2）。非快速失败：逐份文档各查一遍，全部查完才汇总报错；单份文档命中超过 20 条时列出前 20 条并写明剩余条数 | 根 |
-| `just docs-check` | 文档纪律：① 文档语体（调用 `just docs-style`）② 命令未漂移 ③ ROADMAP 没长细节（每条 ≤3 行、无代码块、无命令调用）④ plan 预算（≤200 行）+ 索引一致 + 骨架不许开工。四部分每轮全部执行：第一类失败不终止其余三类，一轮给出全部待修项 | 根 |
+| `just docs-check` | 文档纪律：① 文档语体（调用 `just docs-style`）② 命令未漂移 ③ ROADMAP 没长细节（每条 ≤3 行、无代码块、无命令调用）④ plan 预算（≤200 行）+ 索引一致 + 骨架不许开工 ⑤ 归档强制（ROADMAP 无 `- [x]`、`STATUS.md` 不超 `STATUS_BUDGET`、两个归档文件在位、`问题 #N` 的引用可解析，见 `AGENTS.md` §8.3）。五部分每轮全部执行：第一类失败不终止其余四类，一轮给出全部待修项 | 根 |
+| `just docs-archive` | 归档：把已完成 / 已过时的内容从 `ROADMAP.md` 与 `docs/STATUS.md` 移入 `docs/archive/`（规则见 `AGENTS.md` §8.3）。机械判定四种：ROADMAP 的 `- [x]` 条目、STATUS 摘要里除最近一段之外的段落、`已验证为通过` 表里以 `↑` 开头的行、`已知问题与教训` 里标了 `已修` / `已放弃` / `已关闭` 的条目。**只移动、不改写**；幂等，可反复执行 | 根 |
 
 | `just runner-policy` | 生成 Agent 执行器的 policy 样板（含当前脚本哈希），并刷新 `docs/agent-runner.policy.json` | 根 |
 | `just runner-status` | 执行器的授权清单、在飞请求与 dev 状态（校验 policy 与脚本哈希，不需要提权） | 根 |
