@@ -12,7 +12,8 @@ SRC := "src-tauri"
 
 # docs/STATUS.md 的行数预算（规则与理由见 AGENTS.md §8.3）。**只降不升**：
 # 内容降到新的水平之后就把这个数改小，下一次超预算即是一次新的归档（just docs-archive）。
-STATUS_BUDGET := "950"
+# 2026-09-27：条目拆进 docs/issues.md 之后 913 → 496，预算随之 950 → 550。
+STATUS_BUDGET := "550"
 
 default:
     @just --list
@@ -298,7 +299,7 @@ docs-check:
       [ -f "$f" ] || { echo "❌ 归档文件不存在: ${f}（AGENTS.md §8.3）"; miss=1; }; \
     done; \
     for r in $(grep -rhoE '问题 #[0-9]+' AGENTS.md ROADMAP.md docs --include='*.md' | grep -oE '[0-9]+' | sort -u); do \
-      grep -qE "^ *$r\. " docs/STATUS.md docs/archive/status-history.md || { echo "❌ 问题 #$r 的引用在 docs/STATUS.md 与归档里都找不到（编号不复用，条目搬走之后原文在归档）"; miss=1; }; \
+      grep -qE "^ *$r\. " docs/STATUS.md docs/issues.md docs/archive/status-history.md || { echo "❌ 问题 #$r 的引用在 docs/STATUS.md 与归档里都找不到（编号不复用，条目搬走之后原文在归档）"; miss=1; }; \
     done; \
     if [ "$miss" = "1" ]; then echo "❌ 文档纪律未通过 —— 四部分均已执行完毕，上面列出的是本轮全部待修项"; echo "→ 命令类问题同步 docs/just.md §2；纪律类问题见 AGENTS.md §8.1 / §8.3；plan 类问题见 docs/plans/README.md"; exit 1; fi; \
     echo "✅ 文档纪律通过（语体符合 AGENTS.md §8.2；命令与 justfile 同步；ROADMAP $(grep -cE '^- \[[ x~!]\]' ROADMAP.md) 个条目均在 3 行内、无代码块、无已完成条目；plan $(printf '%s\n' "$plans" | grep -c . ) 份 ≤200 行且索引一致；STATUS $status_lines/{{STATUS_BUDGET}} 行）"
