@@ -12,6 +12,15 @@
 
 ## 摘要
 
+**2026-09-27：CI run #18（`83cf941`）—— 五绿一红，红因已修** —— 把 `staging` 合入 `main` 推上去之后，
+六个 job 里 `检查（Linux / Windows / macOS）`、`E2E（Linux）`、`E2E（Windows）` 全过，只有
+**`E2E（macOS）`** 红：失败落在第三段 `portable` 的 `without_a_portable_dir_it_starts_anyway`，
+报 `initialize returned 401 Unauthorized`。根因是**测试脚手架的就绪判据**：`tests/portable.rs` 的
+`discovery()` 只要 `port` 文件出现就返回，而 Victauri 的 `token` 是后落盘的 —— 客户端在两者之间
+连上去就没有令牌（本机三次运行都没撞上，CI 上撞上了）。处置：**两个文件都读出来才算就绪**，
+并给 `App::client()` 加有界重试（发现目录出现之后、MCP 真正 accept 之前还有一个很短的窗口）。
+本机重新执行第三段：`4 passed; 0 failed`（6.00 s）。
+
 **2026-09-27：macOS 上从 Dock 唤回窗口（plan 0307）** —— 窗口收进托盘（隐藏）之后，点 Dock 图标
 此前**没有任何行为**（全仓只处理 `RunEvent::Exit` / `Ready`，没有 `Reopen` 的处理点）。本轮在
 `app.run` 的闭包里加 macOS 分支：记一条 `window reopen requested`（带 `has_visible_windows`）后调
@@ -40,6 +49,7 @@
 
 | 命令 / 检查 | 结果 |
 |---|---|
+| **CI run #18（`83cf941`，GitHub `delta-me13/akasha`）** | 六格：`检查（Linux / Windows / macOS）` + `E2E（Linux）` + `E2E（Windows）` **全过**；`E2E（macOS）` **红** —— 失败在第三段 `portable` 的 `without_a_portable_dir_it_starts_anyway`（`initialize returned 401 Unauthorized`），根因与修复见本轮摘要 |
 | **plan 0307 的 Dock 唤回（macOS，dev 构建 + Victauri 无会话 REST 接口）** | `lifecycle` = `{close_action:"hide", tray_ready:true}`；隐藏后 `visible=false` → 点 Dock → `visible=true` / `focused=true`；`screenText` 里隐藏前的提示行时间戳与锚点都在（同一个终端缓冲）；`sessions` = `live=1 registered=1`；日志 `window reopen requested has_visible_windows=false` 与 `…=true`。`just ready` 6/6 |
 | **`just test-e2e`（macOS，经 runner）—— plan 0507 的新目标** | `known_hosts_manage` **1 passed; 0 failed**（2.37 s）：第一次连接 `["hostKey:…", "credential:e2e@127.0.0.1:57633"]` → 面板 `行数=1`（名字来自主机池、指纹逐字等于服务端）→ 删除后 `行数=0` 且库侧无那条记录 → 第二次连接 `["hostKey:…"]`（**重新询问**成立，口令走内存缓存）。⚠️ 该次运行整体退出码 1，原因见问题 #183 |
 | **`just portable`（macOS，`just test-e2e` 第三段）—— plan 0408** | `4 passed; 0 failed`（6.09 s）：`a_portable_dir_next_to_the_binary_is_adopted` 与 `without_a_portable_dir_it_starts_anyway` 通过；`data_survives_the_move` / `an_unwritable_portable_dir_refuses_to_start` 各打印一行「跳过: macOS 不做便携（安装形态是 dmg / .app，数据取 OS 标准目录，见 docs/portable.md §3）」。⚠️ 该次运行整体退出码 1，原因见问题 #183 |
