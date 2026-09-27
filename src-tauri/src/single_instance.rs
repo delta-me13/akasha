@@ -12,6 +12,10 @@
 //! 一个隐藏窗口是 `set_focus()` 不出来的 —— 用户看到的是"点了图标，什么都没发生"。
 //! 所以唤起 = **还原（若最小化）→ 显示 → 置前**，三步都做，见 [`activate`]。
 //!
+//! ⚠️ [`activate`] 现在有**两个**调用点：第二个实例来敲门（本模块）与 macOS 上点 Dock 图标
+//! （`lib.rs` 的 `RunEvent::Reopen`，plan 0307）。两处要的是同一件事 —— 唤回**同一个**窗口、
+//! 不新建、不重置终端缓冲，所以只留一份实现。
+//!
 //! # 注册交给插件，判据只有一条
 //!
 //! 机制按平台分（Linux = D-Bus 会话总线上的一个名字、Windows = 命名 mutex、
@@ -82,13 +86,16 @@ fn on_second_instance(app: &AppHandle<Wry>, _args: Vec<String>, _cwd: String) {
 
 /// 把已有窗口叫回来：**还原（若最小化）→ 显示 → 置前**。
 ///
+/// ⚠️ **两个调用点共用它**：第二个实例来敲门（[`on_second_instance`]）与 macOS 上点 Dock 图标
+/// （`lib.rs` 的 `RunEvent::Reopen`，plan 0307）—— 两者要的是同一件事，抄第二份就会分叉。
+///
 /// 三步**都做、不先问窗口的状态**：最小化的窗口 `is_visible()` 仍然为真，按可见性
 /// 分支就会漏掉"还原"；反过来，已经可见、已经置前时这三个调用本身就是空操作。
 /// 少一次状态判断，就少一处"状态读错了"的可能。
 ///
 /// 每一步失败只记一条日志：叫不回来的是用户面前那个窗口，而**正在跑的这个实例**
 /// 不该因为这一步失败再出别的问题。
-fn activate(app: &AppHandle<Wry>) {
+pub(crate) fn activate(app: &AppHandle<Wry>) {
     let Some(window) = app.get_webview_window(MAIN_LABEL) else {
         // 正常路径上不会发生：窗口是**隐藏**不是销毁（plan 0302），它一直在。
         tracing::warn!(window = MAIN_LABEL, "window activation target missing");

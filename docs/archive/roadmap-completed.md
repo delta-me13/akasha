@@ -78,6 +78,9 @@
 - [x] 会话自己结束（终端里输入 exit）= 回收它 + 关闭那个标签页（与 0305 反方向）
       验收：输入 exit 后标签页自己消失、进程零残留、app 不退出（标签页 ⇔ 会话同生命期）
       → [plan 0306](./docs/plans/archive/0306-session-ended-closes-tab.md)
+- [x] macOS 上从 Dock 唤回窗口（隐藏之后点 Dock 图标，窗口回到前台）
+      验收：唤回的是同一个窗口，终端缓冲与子进程原样在
+      → [plan 0307](./docs/plans/0307-macos-dock-reopen.md)
 
 ## 阶段 4 — 存储与凭据池
 - [x] ADR-0002 进入实现中（改动存储代码之前；同时纳入 Bitwarden 的机密来源）

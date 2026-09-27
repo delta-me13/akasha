@@ -96,7 +96,7 @@
 | 0304 | 单实例 | 已完成（第二个实例 150 ms 内退出并唤起**藏着的**窗口，E2E `single_instance`） | plan 0302 | [0304](./archive/0304-single-instance.md) |
 | 0305 | 关闭终端标签页 = 立刻丢弃该 Session | 已完成 | plan 0204 | [0305](./archive/0305-tab-close-discards-session.md) |
 | 0306 | 会话自己结束 = 回收它 + 关闭那个标签页 | 已完成 | plan 0305 | [0306](./archive/0306-session-ended-closes-tab.md) |
-| 0307 | macOS 上从 Dock 唤回窗口 | 未规划（骨架） | plan 0301 / 0302；展开前先实测一次 | [0307](./0307-macos-dock-reopen.md) |
+| 0307 | macOS 上从 Dock 唤回窗口 | 已完成（2026-09-27：`RunEvent::Reopen` 分支 + 与单实例共用同一个 `activate`；实测隐藏 → 点 Dock → 窗口回来且终端缓冲原样，日志两种 `has_visible_windows` 读数。⚠️ 该条验收含一次人工动作） | plan 0301 / 0302（托盘与「隐藏而非销毁」） | [0307](./archive/0307-macos-dock-reopen.md) |
 
 ### 阶段 4 — 存储与凭据池
 

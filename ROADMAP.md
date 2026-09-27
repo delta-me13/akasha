@@ -56,9 +56,6 @@
 目标：关闭窗口不退出；隧道与终端在窗口隐藏期间存活。
 
 > 已完成的条目（含验收行与 plan 指针）见 [归档](../archive/roadmap-completed.md)。
-- [ ] macOS 上从 Dock 唤回窗口（隐藏之后点 Dock 图标，窗口回到前台）
-      验收：唤回的是同一个窗口，终端缓冲与子进程原样在
-      → [plan 0307](./docs/plans/0307-macos-dock-reopen.md)
 
 ---
 

@@ -12,14 +12,15 @@
 
 ## 摘要
 
-**2026-09-27：主机指纹的可视与删除（plan 0507）** —— 库里的 `known_hosts` 缓存此前只有后端在写，
-界面上看不到也删不掉。本轮加两条命令（`known_hosts_list` / `known_hosts_forget`）与一个
-**主机指纹面板**：一行一条，给出主机池里的名字（可能是多个，因为 `(host, port)` 不唯一）、
-`host:port`、算法与指纹；每行一个"删除" = **遗忘**（下次连接重新询问）。添加与修改**不在面板里**
-—— 未知密钥由连接时的提问接受、密钥变化由写路径拒绝（ADR-0003 D11），面板里没有"信任新密钥"
-这类入口。读数：`just test-e2e` 的新目标 `known_hosts_manage` **1 passed**（2.37 s）：第一次连接
-问密钥与口令 → 面板出现那一行（指纹与服务端逐字相等）→ 删除后界面与库两侧都没有 → 第二次连接
-**重新问了密钥**（口令那一步走内存缓存，问题 #124）。
+**2026-09-27：macOS 上从 Dock 唤回窗口（plan 0307）** —— 窗口收进托盘（隐藏）之后，点 Dock 图标
+此前**没有任何行为**（全仓只处理 `RunEvent::Exit` / `Ready`，没有 `Reopen` 的处理点）。本轮在
+`app.run` 的闭包里加 macOS 分支：记一条 `window reopen requested`（带 `has_visible_windows`）后调
+`single_instance::activate` —— 与"第二个实例敲门"共用**同一份**唤回实现（还原 / 显示 / 置前），
+不新写一条路径。实测（dev 构建，托盘在这台机器上真的建成）：隐藏 → 点 Dock → `visible=true` 且
+`focused=true`，屏幕上的锚点与隐藏前那条提示行的时间戳都还在（同一个终端缓冲），
+`live=registered=1`（没有重启、没有新实例）；日志给出两种读数（隐藏时
+`has_visible_windows=false`，已显示时 `true`）。⚠️ 点 Dock 图标**没有可编程的等价物**：
+这一条验收里有一次人工动作。
 
 ## ⚠️ UI 现状：**当前界面是功能验证壳层，不是设计稿**
 
@@ -39,6 +40,7 @@
 
 | 命令 / 检查 | 结果 |
 |---|---|
+| **plan 0307 的 Dock 唤回（macOS，dev 构建 + Victauri 无会话 REST 接口）** | `lifecycle` = `{close_action:"hide", tray_ready:true}`；隐藏后 `visible=false` → 点 Dock → `visible=true` / `focused=true`；`screenText` 里隐藏前的提示行时间戳与锚点都在（同一个终端缓冲）；`sessions` = `live=1 registered=1`；日志 `window reopen requested has_visible_windows=false` 与 `…=true`。`just ready` 6/6 |
 | **`just test-e2e`（macOS，经 runner）—— plan 0507 的新目标** | `known_hosts_manage` **1 passed; 0 failed**（2.37 s）：第一次连接 `["hostKey:…", "credential:e2e@127.0.0.1:57633"]` → 面板 `行数=1`（名字来自主机池、指纹逐字等于服务端）→ 删除后 `行数=0` 且库侧无那条记录 → 第二次连接 `["hostKey:…"]`（**重新询问**成立，口令走内存缓存）。⚠️ 该次运行整体退出码 1，原因见问题 #183 |
 | **`just portable`（macOS，`just test-e2e` 第三段）—— plan 0408** | `4 passed; 0 failed`（6.09 s）：`a_portable_dir_next_to_the_binary_is_adopted` 与 `without_a_portable_dir_it_starts_anyway` 通过；`data_survives_the_move` / `an_unwritable_portable_dir_refuses_to_start` 各打印一行「跳过: macOS 不做便携（安装形态是 dmg / .app，数据取 OS 标准目录，见 docs/portable.md §3）」。⚠️ 该次运行整体退出码 1，原因见问题 #183 |
 | **`just test`（macOS 26.6.2 / arm64，经 `just runner-run test` 在沙箱外执行）** | 退出码 **0**：**463 tests run: 463 passed, 0 skipped**（333.4 s）；`akasha::session_watchdog a_sigkill_of_the_app_leaves_no_child_behind` **执行并通过**（3.18 s）—— plan 0112 之前它在 macOS 上直接 `Skipping:`。同一轮的 `just ready` **6/6**（fmt 1s · lint 21s · test 141s · deny 1s · gen-types 33s · docs 3s） |

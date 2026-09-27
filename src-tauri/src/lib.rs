@@ -221,7 +221,28 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(move |_handle, event| {
+    app.run(move |handle, event| {
+        // macOS 上点 Dock 图标：AppKit 的 `applicationShouldHandleReopen`，tauri 转成 `Reopen`
+        //（plan 0307）。窗口是**隐藏**不是销毁（plan 0302），所以这与"第二个实例敲门"是同一件事
+        // —— 复用同一个 `activate`，不新写一条唤回路径（多一条路径就多一处"没唤回来"）。
+        //
+        // ⚠️ 不看 `has_visible_windows`：点 Dock 图标在 macOS 上的既有语义就是"把窗口带到前面"
+        //（可见时也一样），而 `activate` 的三步在已经可见、已经置前时都是空操作。
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } = event
+        {
+            // 这条记录是判据的一半：Dock 图标点下去时**事件到没到**只有它能说清
+            // （`has_visible_windows` 是 AppKit 给的读数，窗口隐藏时该是 `false`）。
+            tracing::info!(has_visible_windows, "window reopen requested");
+            single_instance::activate(handle);
+        }
+        // 其余平台上没有 `Reopen`（那个变体是 macOS 专有的），参数因此用不到。
+        #[cfg(not(target_os = "macos"))]
+        let _ = handle;
+
         // ⚠️ 只挂 `Exit`（**不可回头**的那一刻），**不挂** `ExitRequested`：
         //
         //   * 在 `ExitRequested` 里收会话是错的：那一刻**还可能被 `prevent_exit` 拦回来**
