@@ -2,7 +2,7 @@
 
 - **关联**：ROADMAP 阶段 4 ·「可搬迁性的平台口径分档」
 - **前置**：plan 0405（可搬迁性验证，三平台同一套判据）；plan 0112（它的 macOS 验收依赖本条不动配置注入）
-- **状态**：未开始
+- **状态**：已完成（2026-09-27）
 - **影响面**：`docs/portable.md`、`docs/scope.md`、`src-tauri/tests/portable.rs`、
   `docs/STATUS.md`、`ROADMAP.md`、`docs/plans/README.md`
 
@@ -84,4 +84,22 @@ just runner-run ready        # 期望：六步全绿（含 docs-check 对 portab
 
 ## 实施记录
 
-（边做边追加：macOS 上两段配置注入的读数、`portable` 第三段在 macOS 与 Linux 上的实际输出。）
+**2026-09-27（macOS 26.6.2 / arm64；`just test-e2e` 经 `just runner-run` 在沙箱外执行）**
+
+1. `docs/portable.md`：§1 加平台范围（Windows / Linux 适用，macOS 不适用）；§3 的平台表 macOS 行改成
+   「不适用」并写明理由，同处注明**开发布局（裸二进制）仍然生效**；新增 §3.2「待定：Linux 的分发形态」
+   （发行版包与 AppImage 两行）；§4 / §5 各加一句平台限定。
+2. `docs/scope.md`：P2 条目补平台范围；§9 平台矩阵的 macOS 行去掉「数据目录在 `.app` 旁边」。
+   §509 那句（"数据存在 bin 所在文件夹"在 macOS `.app` 上会失败）保留。
+3. `src-tauri/tests/portable.rs`：新增 `product_scoped_skip_reason()`，`data_survives_the_move` 与
+   `an_unwritable_portable_dir_refuses_to_start` 在 macOS 上打印原因后返回；新增正例
+   `a_portable_dir_next_to_the_binary_is_adopted`（标记目录被采用、配置真的从那里读到）——
+   它**在哪个平台都执行**，因为 `just test-e2e` 前两段的配置注入依赖这一档；
+   `without_a_portable_dir_it_starts_anyway` 的判据从"没被拒"加强成"库路径落在布局之外"；
+   文件头补平台范围一节。
+4. **读数**（macOS，`just test-e2e` 第三段）：`4 passed; 0 failed`（6.09 s）——正例与反例通过，
+   另两条各打印一行「跳过: macOS 不做便携（安装形态是 dmg / .app，数据取 OS 标准目录，见
+   docs/portable.md §3）」。⚠️ 该次运行的整体退出码仍是 1：`ssh_session` / `ssh_jump` 的回声判据
+   超时（问题 #183，原始工作区同样复现），与本 plan 无关。
+5. `docs/STATUS.md`：问题 #182 标为已修；补第三段的读数行；「待验证」里 macOS 打包那条按新口径改写。
+6. Linux / Windows 的四条判据不变（那两个平台上没有跳过分支），读数由 CI 对应格子给出。

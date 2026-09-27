@@ -22,6 +22,17 @@
 //! * **库侧**：搬完用同一口令打开，四行**内容**逐项一致 —— 只验行数不够，
 //!   "静默丢内容"才是这条判据要防的东西。
 //!
+//! ## 平台范围（plan 0408）
+//!
+//! 产品级的可搬迁只承诺 Windows 与 Linux（macOS 的安装形态是 dmg / `.app`，数据取 OS 标准目录，
+//! 见 [`docs/portable.md`](../../docs/portable.md) §3）。因此 macOS 上：
+//!
+//! * `data_survives_the_move` 与 `an_unwritable_portable_dir_refuses_to_start` **按平台跳过并写明
+//!   原因** —— 它们验的是产品级便携，而那一档在 macOS 上不成立；
+//! * 标记目录（`portable.md` §4 第 1 条）仍要守：`a_portable_dir_next_to_the_binary_is_adopted`
+//!   是正例、`without_a_portable_dir_it_starts_anyway` 是反例 —— `just test-e2e` 前两段的
+//!   配置注入依赖前者，所以它**在哪个平台都执行**。
+//!
 //! ## 收尾
 //!
 //! 自己的临时布局自己删（`Layout` 的 `Drop`，断言失败也走得到）；app 进程也收掉。
@@ -51,6 +62,20 @@ fn skip_unless_e2e() -> bool {
         return true;
     }
     false
+}
+
+/// 产品级可搬迁在当前平台不适用时的跳过理由（`None` = 适用）。
+///
+/// macOS 的安装形态是 dmg / `.app`：可执行文件在 bundle 内部（`Foo.app/Contents/MacOS`），
+/// 那里不可写、写进去还会破坏代码签名，而标记目录放到 `.app` 旁边又推导不到 —— 所以
+/// "移动文件夹后数据仍在"与"便携目录不可写即拒绝启动"这两条**产品级**判据在 macOS 上不成立
+/// （口径见 `docs/portable.md` §3）。⚠️ **开发布局（裸二进制）仍然生效**：标记目录那两条照常执行。
+fn product_scoped_skip_reason() -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        Some("macOS 不做便携（安装形态是 dmg / .app，数据取 OS 标准目录，见 docs/portable.md §3）")
+    } else {
+        None
+    }
 }
 
 /// 临时布局：`<root>/<bin>`（被测二进制的一份**复制**）+ `<root>/akasha-data/`。
@@ -419,6 +444,11 @@ async fn data_survives_the_move() {
         return;
     }
 
+    if let Some(reason) = product_scoped_skip_reason() {
+        eprintln!("跳过: {reason}");
+        return;
+    }
+
     let a = Layout::new("a");
     // `config.json` 也放进数据目录：它是"数据目录挑对了"的第二个证据 ——
     // 读到 `exit` 才说明 app 读的就是**跟着搬走**的那一份，而不是在新位置上取了默认值。
@@ -504,6 +534,11 @@ async fn an_unwritable_portable_dir_refuses_to_start() {
         return;
     }
 
+    if let Some(reason) = product_scoped_skip_reason() {
+        eprintln!("跳过: {reason}");
+        return;
+    }
+
     let layout = Layout::new("ro");
     make_read_only(&layout.data());
 
@@ -526,9 +561,42 @@ async fn an_unwritable_portable_dir_refuses_to_start() {
     );
 }
 
-/// 另一半：**没有**便携目录时不许拒绝（`portable.md` §4 第 2 条：退回 OS 数据目录）。
+/// 正例：裸二进制同目录存在 `akasha-data/` 时**被采用**（`portable.md` §4 第 1 条）。
 ///
-/// 少了这一条，上面那条判据分不清"检查在工作"与"检查把谁都拒了"。
+/// ⚠️ 与 `data_survives_the_move` 的分工：那一条验的是**产品级**便携（搬走之后数据仍在），
+/// 在 macOS 上按平台跳过；本条验的是**标记目录本身**（`target/debug` 旁的 `akasha-data/`
+/// 被认出来），而 `just test-e2e` 前两段的配置注入正依赖它 —— 所以它在所有平台都要执行。
+#[tokio::test]
+async fn a_portable_dir_next_to_the_binary_is_adopted() {
+    if skip_unless_e2e() {
+        return;
+    }
+
+    let layout = Layout::new("adopt");
+    // 配置也放进标记目录：读到 `exit` 才说明 app 读的就是**同目录那份**，不是在新位置取了默认值。
+    fs::write(layout.config(), "{\"close_behavior\":\"exit\"}\n").expect("写配置");
+
+    let app = App::start(&layout);
+    let mut client = app.client().await;
+
+    assert_eq!(
+        close_behavior(&mut client).await,
+        "exit",
+        "app 读到的不是标记目录里那份 config.json —— 它挑的是别的数据目录？"
+    );
+    let status = app.status_ready(&mut client).await;
+    assert_eq!(
+        vault_path(&status),
+        layout.vault(),
+        "标记目录存在却没有被采用"
+    );
+    app.stop();
+}
+
+/// 反例：**没有**便携目录时不许拒绝（`portable.md` §4 第 2 条：退回 OS 数据目录）。
+///
+/// 少了这一条，上面那条正例分不清"检查在工作"与"检查把谁都拒了"。判据不只是"没被拒"：
+/// 库路径必须落在**布局之外**（= 真的退回了 OS 数据目录，而不是在标记目录缺失时另造一个）。
 #[tokio::test]
 async fn without_a_portable_dir_it_starts_anyway() {
     if skip_unless_e2e() {
@@ -536,8 +604,15 @@ async fn without_a_portable_dir_it_starts_anyway() {
     }
 
     let layout = Layout::without_data_dir("os");
-    // 起来了（发现目录写出来了）就是通过 —— 这里不碰 IPC，它的判据只是"没被拒"。
     let app = App::start(&layout);
+    let mut client = app.client().await;
+    let status = app.status_ready(&mut client).await;
+    let path = vault_path(&status);
+    assert!(
+        !path.starts_with(&layout.root),
+        "没有标记目录时库该落在 OS 数据目录，而它在这里：{}",
+        path.display()
+    );
     app.stop();
 }
 

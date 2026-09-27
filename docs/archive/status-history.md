@@ -180,6 +180,17 @@ Windows（MSYS）上是本 shell 的 PID，配方却拿它问 `tasklist` / `task
 **0307**（从 Dock 唤回窗口，骨架）、**0408**（可搬迁性的平台口径分档）。⚠️ **#181 是静默失效**：
 `exit_residue` 在 macOS 上 0.22 s 空过，此前"第二段 1/1"不能当作零残留判据成立。
 
+**2026-09-27：macOS 上的进程级判据真实化（plan 0112）** —— `exit_residue` / `session_watchdog` /
+`tab_close` / `window_close` 原先只在 Linux 上有真读数（`exit_residue` 的 `alive()` 读 `/proc`
+且无平台门控，macOS 上恒为 `false`，那一段 0.22 s 空过，问题 #181）。本轮把判活收进
+`tests/support/mod.rs` 的 `process_state_visible()` / `process_is_alive(pid)`：Linux 读
+`/proc/<pid>/stat` 的 state（`Z` = 已死），其他 unix 执行 `/bin/ps -o state= -p`（空输出 = 已回收），
+四个调用方改用它，剩下的平台门控只有 Windows 一档。读数：`just test` **463/463**（`session_watchdog`
+第一次真的执行并通过）、`just test-e2e` 第二段 `exit_residue` **真的走完**（探针真的启动、真的消失）；
+负例（非 Linux 的会话级回收临时失效）让 `session_watchdog` / `exit_residue` / `tab_close` 三条**同时变红**，
+还原后转绿。⚠️ `just test-e2e` 的整体退出码仍非 0：`ssh_session` 与 `ssh_config_import` 的回声判据超时，
+**在原始工作区上同样复现**（`git stash` 之后重新执行验证），记为新问题 #183，与本次改动无关。
+
 ## 被取代的读数
 | ↑ **同一份代码的下一次运行**（`36251661992` @ `08fffb2`，只改了文档） | ⚠️ 有两处红：Windows 的 `ssh_config_import`（"选择器里有导入面板"超时，底层的 eval 9 s 未返回）与 Linux 的 `ssh_session`（服务端回声 30 s 没出现在终端上）—— 两处都停在 `tests/support/mod.rs:244` 那个等待辅助上。**重新执行这两个 job 即绿**（六格全绿），因此记为**偶发**，与本次改动无关（那两条路径不碰隧道、也不碰 `vault_unlock`）|
 | ↑ **同一配方在修复前的读数**（本机首次完整执行） | 退出码 **1**：第一段 28 个目标里 **13 个通过**（其中 5 个按平台显式跳过）、**15 个红**；第二段 `exit_residue` **1/1**；第三段 `portable` **3/3**。修复前停在第一段的 `app 未登记到 discovery 目录` 并挂到取消。那 15 个红灯当时被归成三类"平台缺口"（会话 / 隧道回收为空、ConPTY 下本地终端输出到不了 raw 通道、`bw` 的假 CLI 是 `#!/bin/sh`）；后续定位表明其中**大部分是判据自己与平台绑定**，真正剩下的只有后两类里的形态问题 |
@@ -501,3 +512,4 @@ Windows（MSYS）上是本 shell 的 PID，配方却拿它问 `tasklist` / `task
       `cargo check --test vault_unlock`（退出码 0，那段 cfg 分支编译得过）后还原；
       **它是否真的在 Linux 上转绿由 CI 的 Linux 格给出**（本机没有 Linux 主机）。
 | 181 | macOS 上「真正退出零残留」的判据是空过的 | 已修（2026-09-27，plan 0112：判活收进 `tests/support/mod.rs`，四条用例改用它；负例让 `session_watchdog` / `exit_residue` / `tab_close` 各自变红） |
+| 182 | macOS 的便携数据目录：文档写的是 `.app` 旁边，实现落在 `.app` 内部 | 已修（2026-09-27，plan 0408：口径改成 macOS 不适用；`portable` 第三段的两条产品级用例在 macOS 上按平台跳过并写明原因，标记目录的正反例照常执行） |

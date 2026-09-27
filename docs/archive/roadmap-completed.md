@@ -106,6 +106,9 @@
       → [plan 0405](./docs/plans/archive/0405-portability-verify.md)
 - [x] ADR-0002 转「已定案」（阶段 4 落地完成之后）
       验收：状态为「已定案」，且 §10 修订记录里每次改动都有理由
+- [x] 可搬迁性的平台口径分档（macOS 不做便携；Linux 的分发形态待定）
+      验收：文档与实现口径一致，macOS 上不再承诺 `.app` 旁的便携目录
+      → [plan 0408](./docs/plans/0408-portable-platform-scope.md)
 
 ## 阶段 5 — SSH 栈（`russh`）
 - [x] ADR-0003（SSH 栈与资源模型）定稿，状态置「实现中」

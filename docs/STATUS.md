@@ -12,16 +12,14 @@
 
 ## 摘要
 
-**2026-09-27：macOS 上的进程级判据真实化（plan 0112）** —— `exit_residue` / `session_watchdog` /
-`tab_close` / `window_close` 原先只在 Linux 上有真读数（`exit_residue` 的 `alive()` 读 `/proc`
-且无平台门控，macOS 上恒为 `false`，那一段 0.22 s 空过，问题 #181）。本轮把判活收进
-`tests/support/mod.rs` 的 `process_state_visible()` / `process_is_alive(pid)`：Linux 读
-`/proc/<pid>/stat` 的 state（`Z` = 已死），其他 unix 执行 `/bin/ps -o state= -p`（空输出 = 已回收），
-四个调用方改用它，剩下的平台门控只有 Windows 一档。读数：`just test` **463/463**（`session_watchdog`
-第一次真的执行并通过）、`just test-e2e` 第二段 `exit_residue` **真的走完**（探针真的启动、真的消失）；
-负例（非 Linux 的会话级回收临时失效）让 `session_watchdog` / `exit_residue` / `tab_close` 三条**同时变红**，
-还原后转绿。⚠️ `just test-e2e` 的整体退出码仍非 0：`ssh_session` 与 `ssh_config_import` 的回声判据超时，
-**在原始工作区上同样复现**（`git stash` 之后重新执行验证），记为新问题 #183，与本次改动无关。
+**2026-09-27：可搬迁性的平台口径分档（plan 0408）** —— `portable.md` §3 与 `scope.md` §9 原先承诺
+macOS 的数据目录在 `.app` **旁边**，而 `exe_dir()` 取 `current_exe().parent()`：打包之后那是
+`Foo.app/Contents/MacOS`（不可写、写进去破坏签名），放到 `.app` 旁边又推导不到 —— 这条差异在 CI
+全绿时也不可见（问题 #182）。本轮裁定：**macOS 不做便携**（安装形态是 dmg / `.app`，数据取 OS
+标准目录），便携只保留 Windows 与 Linux；Linux 的分发形态（发行版包与 AppImage）在 `portable.md`
+§3.2 记为待定。`tests/portable.rs` 随之在 macOS 上按平台跳过那两条产品级用例（各打印一行原因），
+并补一条**标记目录被采用**的正例 —— `just test-e2e` 前两段的配置注入依赖它，所以它在哪个平台都执行。
+读数：`just test-e2e` 第三段 **4 passed / 0 failed**（6.09 s）。
 
 ## ⚠️ UI 现状：**当前界面是功能验证壳层，不是设计稿**
 
@@ -41,6 +39,7 @@
 
 | 命令 / 检查 | 结果 |
 |---|---|
+| **`just portable`（macOS，`just test-e2e` 第三段）—— plan 0408** | `4 passed; 0 failed`（6.09 s）：`a_portable_dir_next_to_the_binary_is_adopted` 与 `without_a_portable_dir_it_starts_anyway` 通过；`data_survives_the_move` / `an_unwritable_portable_dir_refuses_to_start` 各打印一行「跳过: macOS 不做便携（安装形态是 dmg / .app，数据取 OS 标准目录，见 docs/portable.md §3）」。⚠️ 该次运行整体退出码 1，原因见问题 #183 |
 | **`just test`（macOS 26.6.2 / arm64，经 `just runner-run test` 在沙箱外执行）** | 退出码 **0**：**463 tests run: 463 passed, 0 skipped**（333.4 s）；`akasha::session_watchdog a_sigkill_of_the_app_leaves_no_child_behind` **执行并通过**（3.18 s）—— plan 0112 之前它在 macOS 上直接 `Skipping:`。同一轮的 `just ready` **6/6**（fmt 1s · lint 21s · test 141s · deny 1s · gen-types 33s · docs 3s） |
 | **`just test-e2e`（macOS，经 runner）—— plan 0112 的判据部分** | 第二段 `exit_residue` 真的走完（0.28 s：探针 `Some(pid)` 真的启动、判活真的为真、关窗之后真的消失）；第一段 `tab_close` / `window_close` 的进程级断言同样是真的。⚠️ 该次运行**整体退出码 1**：`ssh_session` / `ssh_config_import` 的回声判据超时（问题 #183，原始工作区同样复现），其余目标与第三段 `portable` 3/3 照常通过 |
 | **负例（plan 0112 步骤 5：`pty/teardown.rs` 的非 Linux 分支临时改成 `let _ = leader; 0`）** | `just test`（临时给配方加 `--no-fail-fast`）：`463 tests run: 457 passed, 6 failed`，含 `akasha::session_watchdog a_sigkill_of_the_app_leaves_no_child_behind` **FAIL**（20.1 s）与 5 条 `pty` 用例；`just test-e2e`：`exit_residue` 报「退出后仍有残留：忽略 SIGHUP 的 74434 还活着」（15.3 s），`tab_close` 报「关闭标签页之后探针 A(72845) 还活着」。还原之后三条都转绿 |
@@ -245,7 +244,7 @@
   门控在 Linux —— 见问题 #158。
 - **macOS 上打包成 dmg / `.app` 之后的一切行为未验证**（2026-09-27 复核）：CI 不出包
   （`AGENTS.md` §12），`tauri.conf.json` 也没有 `bundle.macOS` 段。可搬迁性因此**不适用于 macOS**
-  （dmg 安装、数据在 OS 标准目录）—— 口径由 plan 0408 收口。
+  （dmg 安装、数据在 OS 标准目录）—— 口径已由 plan 0408 收口（`portable.md` §3 / `scope.md` §9）。
 - **前端类型检查不在任何门禁内**：`just ready` 只覆盖 Rust 与文档，`pnpm build`（tsc）需手动运行。
 - **`just dev-web` 的模拟后端未在真实浏览器中操作过**：SSH 两条命令在其中**显式报错**
   （"没有 SSH 客户端"），因此主机选择器在浏览器中只会显示该提示。
@@ -497,5 +496,4 @@
 | 150 | 枚举出来的端口不保证能打开 | 本机 `/dev/ttyS*` 全部打不开 |
 | 164 | macOS 上被 `SIGKILL` 的子进程停在「正在退出」，直到主端关闭 | 关标签页必须先关主端，否则 `shutdown` 阻塞 |
 | 176 | Windows 上仍有两类 E2E 目标被显式跳过（缺 Job Object / 假 `bw` 不是 `.exe`） | 缺口仍在 |
-| 182 | macOS 的便携数据目录：文档写的是 `.app` 旁边，实现落在 `.app` 内部 | 按口径变更收口；[plan 0408](./plans/0408-portable-platform-scope.md) |
-| 183 | macOS 上 `ssh_session` / `ssh_config_import` 的回声判据稳定超时（30 s） | 未定位；把全部改动 `git stash` 之后重新执行 `just test-e2e` 同样复现。它拦住了 `just test-e2e` 的退出码 0 |
+| 183 | macOS 上 SSH 目标的回声判据稳定超时（30 s；`ssh_session` / `ssh_jump` / `ssh_config_import` 里每次变红的不全相同） | 未定位；把 plan 0112 的全部改动 `git stash` 之后重新执行 `just test-e2e` 同样复现。它拦住了 `just test-e2e` 的退出码 0 |
