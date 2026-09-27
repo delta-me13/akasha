@@ -68,6 +68,68 @@ pub fn skip_unless_e2e() -> bool {
     false
 }
 
+// ── 进程判活（plan 0112：macOS 上同样看得到）──────────────────────────────
+
+/// 这个平台能不能读**外部进程**的状态。
+///
+/// Linux 读 `/proc/<pid>/stat`，其他 unix 问 `/bin/ps` —— 两边都给得出"这个 pid 现在是
+/// 什么状态"。Windows 为假：它没有 `/proc`，`tasklist` 的输出与 MSYS 的 pid 语义也不是
+/// 一回事（问题 #162），所以那几处进程级判据在 Windows 上**显式跳过并写明原因**，
+/// 不拿一个恒真的判据顶替。
+pub fn process_state_visible() -> bool {
+    cfg!(unix)
+}
+
+/// 某个 pid **现在是不是真的活着**。
+///
+/// ⚠️ `/proc/<pid>` 存在 ≠ 活着：僵尸 `Z` 也有目录项（问题 #48），而 SIGKILL 的投递又是
+/// **异步**的（问题 #45）。判据因此取进程**状态**，不是目录项：
+///
+/// - **Linux**：`/proc/<pid>/stat` 的 state 字段（`Z` = 僵尸 = 已死）；
+/// - **其他 unix**：`/bin/ps -o state= -p <pid>` —— **空输出 = 已经回收**，首字符 `Z` =
+///   僵尸，其余（含 `?E` 这类过渡态）算活着，让等待自然走完；
+/// - **Windows**：没有读数，一律 `false`；调用点在此之前已按平台跳过（见
+///   [`process_state_visible`]）。
+///
+/// 读不出来（进程刚没、`ps` 跑不起来）按**已死**算 —— 调用点都配了一条"探针起没起来"
+/// 的正向断言，所以判活失效只会让用例**红**，不会让它静默通过（那正是 plan 0112 要修的东西）。
+pub fn process_is_alive(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        // 格式：`pid (comm) state …` —— comm 里**可以**有空格与括号（`(sd-pam)` 这种），
+        // 所以只能从**最后一个** `)` 之后开始切，不能从头按空格切。
+        let Some((_, rest)) = stat.rsplit_once(')') else {
+            return false;
+        };
+        !matches!(rest.split_whitespace().next(), None | Some("Z"))
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        // 绝对路径：`PATH` 在打包 / 沙箱 / 服务化启动下不由我们掌控，而 `/bin/ps` 在这些
+        // unix 上都是系统自带的（`pty/teardown.rs` 用同一个）。
+        let Ok(output) = std::process::Command::new("/bin/ps")
+            .args(["-o", "state=", "-p", &pid.to_string()])
+            .output()
+        else {
+            return false;
+        };
+        match String::from_utf8_lossy(&output.stdout).trim() {
+            "" => false,
+            other => !other.starts_with('Z'),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// 这台**假串口设备**在当前平台能不能当串口用；不能就给出理由，由用例**显式跳过**。
 ///
 /// 判据是平台，不是探测：`serialport` 打开从端要走串口专属的 termios / ioctl，而 PTY

@@ -21,9 +21,10 @@
 //! 不碰 Victauri），让它在 E2E 里跑只会白起一套 Vite + app。清单在 `src-tauri/justfile`
 //! 的 `E2E_NO_APP` 里显式登记。
 //!
-//! 平台差异照实说：会话级回收目前只有 Linux 实现（`pty` 的 `teardown` 模块；
-//! Windows 要 Job Object，macOS 要 `proc_listpids` + `getsid`），所以强断言只在 Linux 上
-//! 跑，别处**显式跳过并打印原因** —— 不把弱判据说成强判据。
+//! 平台差异照实说：会话级回收在 Linux 上读 `/proc` 扫 session，在其他 unix 上由 `/bin/ps`
+//! 列 pid + `getsid` 判会话（`pty` 的 `teardown` 模块；Windows 要 Job Object，未实现）。
+//! 所以强断言在能读进程状态的平台上都执行（`support::process_state_visible()`），Windows 上
+//! **显式跳过并打印原因** —— 不把弱判据说成强判据。
 //!
 //! 本文件是测试，`unwrap` / `expect` 在这里就是断言手段。
 
@@ -37,26 +38,23 @@ use akasha_lib::pty::{
     Batch, BatchPolicy, PtyTransport, ShellLaunch, TerminalSize, Transport, spawn_batcher,
 };
 
+mod support;
+
 /// 看门狗模式的 argv 标志（`akasha_lib::pty::watchdog::FLAG` 的线上表示）。
 const FLAG: &str = "--akasha-session-watchdog";
 
-/// 进程是否还在。
-fn alive(pid: u32) -> bool {
-    std::path::Path::new(&format!("/proc/{pid}")).exists()
-}
-
-/// 在截止时间内等 `pid` 从 `/proc` 里消失。
+/// 在截止时间内等 `pid` 从进程表里消失（`support::process_is_alive`，见它那两档读数）。
 ///
 /// ⚠️ 不能发完信号立刻断言：**SIGKILL 的投递是异步的**，内核只是打上标记，真正消失
 /// 要等被调度（问题 #45）。
 ///
 /// ⚠️ 只对**父进程不是本用例**的那些进程成立：本用例起的会话首进程被收掉之后是
-/// **僵尸**（没人 `wait` 它），`/proc/<pid>` 会一直在。判它得走
-/// [`waits_until_exited`] —— "还在的过程项"不等于"还活着的进程"。
+/// **僵尸**（没人 `wait` 它），进程表里一直看得到它。判它得走 [`waits_until_exited`] ——
+/// "还在的过程项"不等于"还活着的进程"。
 fn waits_until_gone(pid: u32, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if !alive(pid) {
+        if !support::process_is_alive(pid) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -64,7 +62,7 @@ fn waits_until_gone(pid: u32, timeout: Duration) -> bool {
     false
 }
 
-/// 在截止时间内等某个子进程被 `wait` 掉（它一退出就是僵尸，`/proc` 判不出来）。
+/// 在截止时间内等某个子进程被 `wait` 掉（它一退出就是僵尸，进程判活判不出来）。
 fn waits_until_reaped(child: &mut Child, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -165,10 +163,8 @@ fn spawn_pipe_holder(leader: u32, watchdog_stdin: Stdio) -> (Child, std::process
 
 #[test]
 fn a_sigkill_of_the_app_leaves_no_child_behind() {
-    if !cfg!(target_os = "linux") {
-        eprintln!(
-            "Skipping: 会话级回收只有 Linux 实现（Windows 要 Job Object、macOS 要 proc_listpids）"
-        );
+    if !support::process_state_visible() {
+        eprintln!("跳过: Windows 上进程判活不可用（没有 /proc，tasklist 的 pid 语义也不是一回事）");
         return;
     }
 
@@ -204,8 +200,14 @@ fn a_sigkill_of_the_app_leaves_no_child_behind() {
     );
 
     // 诱饵必须原样活着：看门狗收的是**登记过的会话**，不是"所有像样的进程"。
-    assert!(alive(decoy_probe), "没登记过的探针不得被误杀");
-    assert!(alive(decoy_leader), "没登记过的会话首进程不得被误杀");
+    assert!(
+        support::process_is_alive(decoy_probe),
+        "没登记过的探针不得被误杀"
+    );
+    assert!(
+        support::process_is_alive(decoy_leader),
+        "没登记过的会话首进程不得被误杀"
+    );
     assert_eq!(
         decoy.exited().expect("exited 失败"),
         None,

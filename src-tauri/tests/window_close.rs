@@ -27,6 +27,9 @@ use std::time::{Duration, Instant};
 
 use victauri_test::VictauriClient;
 
+mod support;
+use support::{process_is_alive, process_state_visible};
+
 /// 忽略 SIGHUP 的后台探针（与 `tab_close` / `exit_residue` 取同一个最坏情况）：
 /// 会话真被收掉时它必须消失，只是"窗口藏起来"时它必须活着。
 const PROBE: &str = "sh -c 'trap \"\" HUP; echo AKPROBE=$$; exec sleep 600' &";
@@ -85,31 +88,6 @@ async fn wait_js(client: &mut VictauriClient, expression: &str, timeout_ms: u64,
         Some(true),
         "{what} 超时（{timeout_ms} ms）：{waited}"
     );
-}
-
-/// 这个平台能不能看一个外部进程的存活。
-///
-/// ⚠️ **只有 Linux 能**：判据读 `/proc/<pid>/stat` 的 state（`/proc/<pid>` 存在 ≠ 活着：
-/// 僵尸也有目录项，问题 #48）。macOS / Windows 没有 `/proc`，也没有等价的读数 ——
-/// 那两处显式跳过进程级判据，改用 `sessions` probe 那条与平台无关的断言（见
-/// `registered_sessions`）。
-fn process_death_visible() -> bool {
-    cfg!(target_os = "linux")
-}
-
-/// 进程是否**真的**活着。非 Linux 上没有这一档读数（见 `process_death_visible`）——
-/// 一律返回 `true`，让"活着"那几条断言退化成恒真，调用方不必写两份。
-fn alive(pid: u32) -> bool {
-    if !process_death_visible() {
-        return true;
-    }
-    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    let Some((_, rest)) = stat.rsplit_once(')') else {
-        return false;
-    };
-    !matches!(rest.split_whitespace().next(), None | Some("Z"))
 }
 
 /// 会话注册表里现在登记着几个会话（`sessions` probe 的 `registered`）。
@@ -284,7 +262,10 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
     )
     .await;
     let probe = start_probe(&mut client).await;
-    assert!(alive(probe), "探针 {probe} 没起来，这条用例就什么都没验");
+    assert!(
+        process_is_alive(probe),
+        "探针 {probe} 没起来，这条用例就什么都没验"
+    );
     wait_visible(&mut client, true, "关窗之前窗口是可见的").await;
     let sessions_before = registered_sessions(&mut client).await;
     assert!(
@@ -304,7 +285,7 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
 
     // ── 3. 进程还在 + 窗口不可见 ───────────────────────────────────────────
     assert!(
-        waits_until(Duration::from_secs(10), || alive(app_pid)),
+        waits_until(Duration::from_secs(10), || process_is_alive(app_pid)),
         "关窗之后 app（pid {app_pid}）退出了 —— 这不是「隐藏」。\
          若本机的托盘建不起来，第一步就该跳过；走到这里说明**隐藏那条路没有生效**"
     );
@@ -312,11 +293,11 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
 
     // ── 4. 会话还在：探针进程活着 + 注册表里的会话数不变（**预期行为**，不是泄漏 —— AGENTS.md §3.3）
     assert!(
-        alive(probe),
+        process_is_alive(probe),
         "关窗把会话收了：忽略 SIGHUP 的探针 {probe} 不在了 —— \
          窗口关闭**不是**回收时机（收托盘时终端与隧道必须存活）"
     );
-    // 与平台无关的那一半（进程级判据只有 Linux 看得到，见 `process_death_visible`）：
+    // 与平台无关的那一半（进程级判据在 unix 上都看得到，见 `process_state_visible`）：
     let sessions_after_hide = registered_sessions(&mut client).await;
     assert_eq!(
         sessions_after_hide, sessions_before,
@@ -361,9 +342,10 @@ async fn closing_the_window_hides_it_and_keeps_the_session() {
 
     // 收掉自己起的后台进程：别把 `sleep 600` 留在（可能是别人的）会话里。
     type_line(&mut client, &format!("kill {probe}")).await;
-    // ⚠️ 同 `tab_close`：非 Linux 上 `alive()` 恒为 true，这一条整段跳过（`||` 短路）。
+    // ⚠️ 同 `tab_close`：Windows 上 `process_is_alive()` 没有读数，这一条整段跳过（`||` 短路）。
     assert!(
-        !process_death_visible() || waits_until(Duration::from_secs(15), || !alive(probe)),
+        !process_state_visible()
+            || waits_until(Duration::from_secs(15), || !process_is_alive(probe)),
         "探针 {probe} 没被收掉 —— 隐藏过的会话不该失去作业控制"
     );
 }

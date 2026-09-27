@@ -20,18 +20,21 @@
 //! 那一行会把 shell 挂住直到 `sleep 600` 结束，后面所有"敲命令"的用例全部跟着超时。
 //! `sh -c '…' &` 是三种 shell 下语义相同的写法。
 //!
-//! 平台差异照实说：会话级回收目前只有 Linux 实现（Windows 要 Job Object，macOS 要
-//! `proc_listpids` + `getsid`，见 `pty` 的 `teardown` 模块）。非 Linux 上不起探针、
+//! 平台差异照实说：会话级回收在 Linux 上读 `/proc` 扫 session，在其他 unix 上由 `/bin/ps`
+//! 列 pid + `getsid` 判会话（见 `pty` 的 `teardown` 模块）；Windows 要 Job Object，未实现。
+//! 进程判活（`support::process_is_alive`）同样只在 unix 上有读数，所以 Windows 上不起探针、
 //! 只断言"关窗口 = app 真的退出"，并打印原因 —— 不把弱判据说成强判据。
 //!
 //! 本文件是测试，unwrap 在这里就是断言手段。
 
 #![allow(clippy::unwrap_used)]
 
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use victauri_test::VictauriClient;
+
+mod support;
+use support::{process_is_alive, process_state_visible};
 
 /// 启动这条用例的配方有没有把 app 一起起起来（见文件头）。
 const OWNS_APP_ENV: &str = "AKASHA_E2E_OWNS_APP";
@@ -87,10 +90,6 @@ fn waits_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(50));
     }
     condition()
-}
-
-fn alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
 }
 
 /// app 自己的 pid：discovery 目录的名字就是它（问题 #40）。
@@ -166,7 +165,10 @@ async fn start_ignorant_probe(client: &mut VictauriClient) -> u32 {
     let probe = wait_for_probe_pid(client, Duration::from_secs(30))
         .await
         .expect("屏幕上始终没出现 AKPROBE=<pid>");
-    assert!(alive(probe), "探针 {probe} 没起来，这条用例就什么都没验");
+    assert!(
+        process_is_alive(probe),
+        "探针 {probe} 没起来，这条用例就什么都没验"
+    );
     probe
 }
 
@@ -182,11 +184,11 @@ async fn closing_the_window_leaves_no_child_behind() {
     let port = client.port();
     let app_pid = app_pid_for_port(port).expect("找不到这个 app 的 discovery 目录（pid）");
 
-    // 探针只在 Linux 上起：会话级回收只有 Linux 有实现，而且 Windows 上没有 `sh`。
-    let probe = if cfg!(target_os = "linux") {
+    // 探针只在能读进程状态的平台上起：Windows 上既没有判活读数，也没有那个探针要的 `sh`。
+    let probe = if process_state_visible() {
         Some(start_ignorant_probe(&mut client).await)
     } else {
-        eprintln!("跳过: 会话级回收只有 Linux 实现，非 Linux 平台不启动探针");
+        eprintln!("跳过: 本平台没有进程判活读数（Windows），不启动探针");
         None
     };
     eprintln!("进程: pid={app_pid} 端口={port} 探针={probe:?}");
@@ -203,7 +205,7 @@ async fn closing_the_window_leaves_no_child_behind() {
     assert!(closed.is_ok(), "关窗口失败：{closed:?}");
 
     assert!(
-        waits_until(Duration::from_secs(30), || !alive(app_pid)),
+        waits_until(Duration::from_secs(30), || !process_is_alive(app_pid)),
         "app {app_pid} 在关窗口之后 30s 还活着 —— 要么这次运行的配置不是 close_behavior=exit\
          （关窗的默认语义是隐藏，plan 0302，那种情况配方会跳过本用例），\
          要么数据目录里的配置文件没被读到"
@@ -214,7 +216,7 @@ async fn closing_the_window_leaves_no_child_behind() {
         // SIGKILL 的投递是**异步**的（`pty` 的 teardown 用例里写过这件事），
         // 所以这里等的是"消失"，而不是"信号发过了"。
         assert!(
-            waits_until(Duration::from_secs(15), || !alive(probe)),
+            waits_until(Duration::from_secs(15), || !process_is_alive(probe)),
             "退出后仍有残留：忽略 SIGHUP 的 {probe} 还活着 —— \
              会话级回收没生效（只 kill 那个 shell 是收不走它的）"
         );

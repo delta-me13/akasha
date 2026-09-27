@@ -35,6 +35,9 @@ use std::time::{Duration, Instant};
 
 use victauri_test::VictauriClient;
 
+mod support;
+use support::{process_is_alive, process_state_visible};
+
 /// 忽略 SIGHUP 的后台探针（与 `exit_residue` 取同一个最坏情况）。
 const PROBE: &str = "sh -c 'trap \"\" HUP; echo AKPROBE=$$; exec sleep 600' &";
 
@@ -148,36 +151,11 @@ async fn wait_js(client: &mut VictauriClient, expression: &str, timeout_ms: u64,
     );
 }
 
-/// 这个平台能不能看一个外部进程的存活。
-///
-/// ⚠️ **只有 Linux 能**：判据读的是 `/proc/<pid>/stat` 的 state（`/proc/<pid>` 存在 ≠ 活着：
-/// 僵尸 `Z` 也有目录项，问题 #48；而 SIGKILL 的投递又是异步的，问题 #45）。macOS / Windows
-/// 既没有 `/proc`，也没有等价的"这个 pid 现在是什么状态"读数 —— 那两处**显式跳过**并写明
-/// 原因，换成 `sessions` probe 那条与平台无关的断言（见 `live_sessions`）。
-fn process_death_visible() -> bool {
-    cfg!(target_os = "linux")
-}
-
-/// 进程是否**真的**活着。非 Linux 上没有这一档读数（见 `process_death_visible`）——
-/// 一律返回 `true`，让"活着"那几条断言退化成恒真，调用方不必写两份。
-fn alive(pid: u32) -> bool {
-    if !process_death_visible() {
-        return true;
-    }
-    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    let Some((_, rest)) = stat.rsplit_once(')') else {
-        return false;
-    };
-    !matches!(rest.split_whitespace().next(), None | Some("Z"))
-}
-
 /// 会话注册表里现在登记着几个会话（`sessions` probe 的 `registered`）。
 ///
-/// 这是"关标签页 = 丢弃它自己的会话"那条判据**与平台无关**的一半：`alive()` 那半只有 Linux
-/// 看得到（见 `process_death_visible`），而注册表这件事在每个平台的 app 里都一样 ——
-/// 会话没被注销掉的话，它在这里就多出来一个。
+/// 这是"关标签页 = 丢弃它自己的会话"那条判据**与平台无关**的一半：`process_is_alive()` 那半
+/// 只有能读进程状态的平台看得到（见 `support::process_state_visible()`），而注册表这件事
+/// 在每个平台的 app 里都一样 —— 会话没被注销掉的话，它在这里就多出来一个。
 async fn registered_sessions(client: &mut VictauriClient) -> u64 {
     client
         .app_state(Some("sessions"))
@@ -300,7 +278,7 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
     // ── 1. 标签页 1 里的探针 A ─────────────────────────────────────────────
     let probe_a = start_probe(&mut client).await;
     assert!(
-        alive(probe_a),
+        process_is_alive(probe_a),
         "探针 A({probe_a}) 没起来，这条用例就什么都没验"
     );
 
@@ -324,14 +302,14 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
          两个标签页必须各有一个自己的会话"
     );
     assert!(
-        alive(probe_a),
+        process_is_alive(probe_a),
         "开第二个标签页就把第一个的进程弄没了：{probe_a}"
     );
 
     // ── 3. 标签页 2 里的探针 B ─────────────────────────────────────────────
     let probe_b = start_probe(&mut client).await;
     assert!(
-        alive(probe_b) && probe_a != probe_b,
+        process_is_alive(probe_b) && probe_a != probe_b,
         "两个标签页必须是两个会话（探针 {probe_a} / {probe_b}）"
     );
     eprintln!("探针: 标签页1={probe_a} 标签页2={probe_b}");
@@ -349,7 +327,7 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
     )
     .await;
     assert!(
-        alive(probe_a) && alive(probe_b),
+        process_is_alive(probe_a) && process_is_alive(probe_b),
         "切换标签页不该收掉任何会话（A {probe_a} / B {probe_b}）"
     );
 
@@ -378,31 +356,33 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
         "剩下的标签页接管",
     )
     .await;
-    // ⚠️ '进程真的没了'这一条只有 Linux 看得到（`process_death_visible()`）：非 Linux 上
-    // `alive()` 恒为 true，条件永远不成立 —— 所以整条用 `||` 短路掉，别让它空等满 15s。
+    // ⚠️ '进程真的没了'这一条在能读进程状态的平台上都真的断言（plan 0112 之前 macOS 上
+    // 恒为 true）；Windows 上读数不可用，用 `||` 短路掉，别让它空等满 15s（那条平台在
+    // 用例开头就已跳过）。
     assert!(
-        !process_death_visible() || waits_until(Duration::from_secs(15), || !alive(probe_a)),
+        !process_state_visible()
+            || waits_until(Duration::from_secs(15), || !process_is_alive(probe_a)),
         "关闭标签页之后探针 A({probe_a}) 还活着 —— 这个会话没被丢弃"
     );
-    // 与平台无关的那一半：那个会话**必须从注册表里没掉**。只看进程的话，Linux 之外
-    // 这一条会整个跳过（`process_death_visible()`），而“没注销干净”正是最难看见的那种漏。
+    // 与平台无关的那一半：那个会话**必须从注册表里没掉**。只看进程的话，Windows 上
+    // 这一条会整个跳过（`process_state_visible()`），而“没注销干净”正是最难看见的那种漏。
     let sessions_after_close = registered_sessions(&mut client).await;
     assert_eq!(
         sessions_after_close, sessions_at_start,
         "关掉标签页 1 之后注册表里的会话数没回到起点：{sessions_two_tabs} 到 {sessions_after_close}（起点 {sessions_at_start}）",
     );
-    if process_death_visible() {
+    if process_state_visible() {
         eprintln!(
             "会话: 关闭耗时_ms={} 探针={probe_a}",
             clicked.elapsed().as_millis()
         );
     } else {
-        eprintln!("跳过: 非 Linux 平台，进程级判据不可用");
+        eprintln!("跳过: 本平台没有进程判活读数，写不出关闭耗时");
     }
 
     // ── 6. **只丢它自己**：另一个标签页的进程与屏幕内容都要在 ───────────────
     assert!(
-        alive(probe_b),
+        process_is_alive(probe_b),
         "关掉标签页 1 把标签页 2 的进程一起收了：{probe_b}"
     );
     // 屏幕内容还在 = 那个面没有被卸载重建（重建会换掉会话，探针 B 的命运也就不可信了）。
@@ -433,7 +413,8 @@ async fn closing_a_terminal_tab_discards_only_its_own_session() {
     );
     wait_js(&mut client, &tabs_eq(0), 10_000, "标签页全部关闭（空状态）").await;
     assert!(
-        !process_death_visible() || waits_until(Duration::from_secs(15), || !alive(probe_b)),
+        !process_state_visible()
+            || waits_until(Duration::from_secs(15), || !process_is_alive(probe_b)),
         "关掉最后一个标签页之后探针 B({probe_b}) 还活着 —— 这个会话没被丢弃"
     );
     // 与平台无关的那一半（同第 5 步）：空状态 = 一个会话都不剩（0 个标签页对应 0 个会话）。
