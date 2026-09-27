@@ -9,7 +9,7 @@
 | `ROADMAP.md` | 条目以 `- [x]` 开头，连同它的验收行与 plan 指针 | `docs/archive/roadmap-completed.md`，按阶段分节 |
 | `docs/STATUS.md` 的「摘要」 | 除**第一段**（最近一轮）之外的所有段落 | `docs/archive/status-history.md` 的「摘要（历史）」 |
 | `docs/STATUS.md` 的「已验证为通过」 | 表格里以 `| ↑` 开头的行（被取代的读数） | 同上的「被取代的读数」 |
-| `docs/STATUS.md` 的「已知问题与教训」 | 条目里出现 `已修` / `已放弃` / `已关闭` | 同上的「已处置的问题」 |
+| `docs/STATUS.md` 的「已知问题与教训」/「已知问题（开放的）」 | 编号条目或索引表的行里出现 `已修` / `已放弃` / `已关闭` | 同上的「已处置的问题」 |
 
 **只移动，不改写**：每一段都按原文搬过去 —— 归档同时是"这条结论当时是怎么得出的"的唯一去处，
 改写它等于毁掉证据。`问题 #N` 的编号永不复用，条目移走之后编号仍然有效。
@@ -65,7 +65,10 @@ def append_into_section(path: pathlib.Path, preamble: str, section: str, moved: 
         head.pop()
     for index, (title, body) in enumerate(sections):
         if title == section:
-            sections[index] = (title, body.rstrip("\n").splitlines() + moved)
+            # `body` 已经是**行**的列表（`split_h2` 逐行追加），只需去掉尾部空行。
+            while body and body[-1].strip() == "":
+                body.pop()
+            sections[index] = (title, body + moved)
             break
     else:
         sections.append((section, moved))
@@ -200,7 +203,7 @@ def archive_status(today: str) -> dict[str, int]:
             moved_readings.extend([line for line in body if line.startswith("| ↑")])
             counts["读数"] = len(body) - len(kept_body)
             rebuilt.append((title, kept_body))
-        elif title.startswith("## 已知问题与教训"):
+        elif title.startswith("## 已知问题"):
             kept_body, taken = _split_issues(body)
             moved_issues.extend(taken)
             counts["问题"] = len(taken)
@@ -234,7 +237,7 @@ def _split_issues(body: list[str]) -> tuple[list[str], list[str]]:
     taken: list[str] = []
     current: list[str] | None = None
     for line in body:
-        if re.match(r"^ *\d+\. ", line):
+        if re.match(r"^ *\d+\. ", line) or re.match(r"^\| *\d+ *\|", line):
             if current is not None:
                 _dispatch(current, kept, taken)
             current = [line]
