@@ -1065,3 +1065,118 @@ body {
   color: #c8d2e0;
   word-break: break-all;
 }
+
+/* ── 主机指纹面板（plan 0507）─────────────────────────────────────────────── */
+/*
+ * 与隧道面板同一条要求：**能被 E2E 驱动**（`AGENTS.md` §4.0）。类名与 data 属性稳定
+ * （`.known-hosts-item[data-known-host-id]`、`[data-known-host-fingerprint]`），
+ * 没有动画、没有依赖布局时序的东西。
+ */
+
+.known-hosts-panel {
+  position: absolute;
+  top: 44px;
+  left: 12px;
+  z-index: 20;
+  min-width: 420px;
+  max-width: 720px;
+  padding: 12px;
+  background: #171b22;
+  border: 1px solid #2b3444;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+}
+
+.known-hosts-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #c3ccd8;
+}
+
+/* 标题里第一个元素占满剩余宽度，两个按钮因此靠右。 */
+.known-hosts-title > span:first-child {
+  margin-right: auto;
+}
+
+.known-hosts-refresh,
+.known-hosts-close {
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  color: #7b8794;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.known-hosts-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: #7b8794;
+}
+
+.known-hosts-problem {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #ffb4b4;
+}
+
+.known-hosts-notice {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #a3be8c;
+}
+
+.known-hosts-empty {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #8d99a8;
+}
+
+.known-hosts-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.known-hosts-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid #232a36;
+  font-size: 13px;
+  color: #d8dee9;
+}
+
+.known-hosts-names {
+  font-weight: 600;
+}
+
+.known-hosts-route {
+  font-size: 11px;
+  color: #7b8794;
+}
+
+.known-hosts-fingerprint {
+  margin-left: auto;
+  font-family: monospace;
+  font-size: 11px;
+  color: #8d99a8;
+  word-break: break-all;
+}
+
+.known-hosts-forget {
+  padding: 2px 8px;
+  background: #2b3444;
+  border: 1px solid #3b4658;
+  border-radius: 4px;
+  color: #d8dee9;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+

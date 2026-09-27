@@ -2,7 +2,7 @@
 
 - **关联**：ROADMAP 阶段 5 ·「主机指纹在前端可视与可删除」
 - **前置**：plan 0503（known_hosts 校验与缓存，已完成）· ADR-0003 **D11**（已定案）
-- **状态**：未开始
+- **状态**：已完成（2026-09-27）
 - **影响面**：`src-tauri/src/store/ipc/vault.rs`、`src-tauri/src/lib.rs`、
   `src/ipc/bindings.ts`（生成物）、`src/ipc/knownHosts.ts`（新）、
   `src/ssh/KnownHostsPanel.tsx`（新）、`src/App.tsx`、`src/tabs/TabStrip.tsx`、`src/App.css`、
@@ -118,4 +118,31 @@ just runner-run ready     # 期望：六步全绿（fmt / lint / test / deny / g
 
 ## 实施记录
 
-（边做边追加：两条命令的实际返回、面板在真实 app 上的读数、删除之后重新询问的那一次实测。）
+**2026-09-27（macOS 26.6.2 / arm64；`just test-e2e` 经 `just runner-run` 在沙箱外执行）**
+
+1. **两条命令**落在 `src-tauri/src/store/ipc/pools.rs`（与 `vault_hosts` 同一条借库路径）。
+   ⚠️ **与本文「影响面」的一处偏离**：那里写的是 `store/ipc/vault.rs`，而池的读取都在
+   `pools.rs` —— `known_hosts_list` 要与 `hosts::hosts` 并读（名字是 `LEFT JOIN` 的等价物），
+   放进 `pools.rs` 才不必把主机池的读取从一个不相干的模块里再引一次。
+   `KnownHostEntry`（`id` / `names` / `host` / `port` / `keyType` / `fingerprint`）**不带 `key_blob`**；
+   `names` 是列表（`hosts.name` 唯一而 `(host, port)` 不唯一），池里没有对应行时为空。
+2. `bindings.rs` 登记两条命令 + `just gen-types`：生成物新增 `knownHostsList` / `knownHostsForget`
+   与 `KnownHostEntry`（41 行）。`just gen-types-check` 通过。
+3. 前端：`src/ipc/knownHosts.ts`（`listKnownHosts` / `forgetKnownHost`，错误翻译照 `hosts.ts` 的形状）、
+   `src/ssh/KnownHostsPanel.tsx`（打开时读一次 + 删除后刷新 + 一个刷新按钮；**没有**新增 / 编辑控件）、
+   `TabStrip` 的 `.tab-new-known-hosts` 入口、`App.tsx` 的挂载点、`App.css` 的面板样式。
+   前端 `pnpm build`（tsc + vite）通过：**894.71 kB / gzip 246.23 kB**（+8.27 kB）。
+4. **读数**（`just test-e2e`，新目标 `known_hosts_manage`）：`1 passed; 0 failed`（2.37 s）。
+   日志里的四行观测：
+   * `提示: 第一次连接=["hostKey:SHA256:…", "credential:e2e@127.0.0.1:57633"]`
+   * `面板: 行数=1 名字=e2e-known-hosts-target 指纹=SHA256:…`（与 `server.fingerprint` 逐字相等）
+   * `删除: 面板行数=0 库侧=无那条记录`
+   * `提示: 第二次连接=["hostKey:SHA256:…"]` —— **重新询问**成立；口令那一步走的是内存缓存
+     （问题 #124），没有第二次询问凭据。
+   负例在同一目标里：面板中除 `known-hosts-forget` / `known-hosts-refresh` / `known-hosts-close`
+   之外没有任何按钮 / 输入控件（`eval_js` 的 `every(...)` 断言）。
+   ⚠️ 该次运行的整体退出码仍是 1：`ssh_session` / `ssh_jump` 的回声判据超时（问题 #183，
+   原始工作区同样复现），与本 plan 无关。
+5. 文档：`docs/scope.md` §5.6 的视图表加一行（指纹视图 = 仅渲染 + 显式删除动作），并补一条
+   "添加与修改只发生在连接过程中"；`docs/STATUS.md` 更新读数与「主机池的增删改查仍无界面」那条的
+   边界（**指纹的看与删有了**，主机池的增删改仍然没有）。

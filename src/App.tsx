@@ -6,6 +6,7 @@ import { BwPanel } from "./bitwarden/BwPanel";
 import { SerialPicker } from "./serial/SerialPicker";
 import { SftpPanel } from "./sftp/SftpPanel";
 import { HostPicker } from "./ssh/HostPicker";
+import { KnownHostsPanel } from "./ssh/KnownHostsPanel";
 import { PromptPanel } from "./ssh/PromptPanel";
 import { TabStrip, type TabKind, type TabView } from "./tabs/TabStrip";
 import { TerminalPane } from "./terminal/TerminalPane";
@@ -51,6 +52,8 @@ function App() {
   const [sftpOpen, setSftpOpen] = useState(false);
   /** Bitwarden 面板开着没有（plan 0902 / 0905）。同上：关掉面板什么后端状态都不变。 */
   const [bitwardenOpen, setBitwardenOpen] = useState(false);
+  /** 主机指纹面板开着没有（plan 0507）。同上：它只是库里缓存的**视图**，关掉什么也不变。 */
+  const [knownHostsOpen, setKnownHostsOpen] = useState(false);
   /**
    * 最近一次"会话自己结束"的那句话（plan 1103）。
    *
@@ -171,6 +174,7 @@ function App() {
         onNewTunnel={() => setTunnelsOpen((open) => !open)}
         onNewSftp={() => setSftpOpen((open) => !open)}
         onNewBitwarden={() => setBitwardenOpen((open) => !open)}
+        onNewKnownHosts={() => setKnownHostsOpen((open) => !open)}
       />
       {picking && <HostPicker onConnect={openSshTab} onClose={() => setPicking(false)} />}
       {/* 串口面板与主机选择器同类（plan 1101，plan 1102 起是一张三输入的表单）：应用级浮层。 */}
@@ -184,6 +188,9 @@ function App() {
       {sftpOpen && <SftpPanel onClose={() => setSftpOpen(false)} />}
       {/* Bitwarden 面板：既不是终端也不带关闭语义 —— 那几条命令都是显式动作。 */}
       {bitwardenOpen && <BwPanel onClose={() => setBitwardenOpen(false)} />}
+      {/* 主机指纹面板（plan 0507）：同一条理由 —— 看与删都在那一个显式动作里，
+          添加与修改发生在连接过程中（ADR-0003 D11）。 */}
+      {knownHostsOpen && <KnownHostsPanel onClose={() => setKnownHostsOpen(false)} />}
       {/* 提示面板是**应用级**的：提问发生在"会话开起来之前"，不属于任何一个标签页。 */}
       <PromptPanel />
       {/* 会话结束时的那句话（plan 1103）：它说的是**为什么**这个标签页没了，所以留在壳层。 */}

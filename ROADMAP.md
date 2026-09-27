@@ -75,9 +75,6 @@
 目标：纯 Rust SSH 实现，不调用系统 `ssh`。
 
 > 已完成的条目（含验收行与 plan 指针）见 [归档](../archive/roadmap-completed.md)。
-- [ ] 主机指纹在前端可视与可删除（添加与修改只在连接过程中触发）
-      验收：面板里看得到、删得掉，删除之后下一次连接重新询问
-      → [plan 0507](./docs/plans/0507-known-hosts-panel.md)
 
 ---
 

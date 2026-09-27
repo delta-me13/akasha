@@ -191,6 +191,15 @@ Windows（MSYS）上是本 shell 的 PID，配方却拿它问 `tasklist` / `task
 还原后转绿。⚠️ `just test-e2e` 的整体退出码仍非 0：`ssh_session` 与 `ssh_config_import` 的回声判据超时，
 **在原始工作区上同样复现**（`git stash` 之后重新执行验证），记为新问题 #183，与本次改动无关。
 
+**2026-09-27：可搬迁性的平台口径分档（plan 0408）** —— `portable.md` §3 与 `scope.md` §9 原先承诺
+macOS 的数据目录在 `.app` **旁边**，而 `exe_dir()` 取 `current_exe().parent()`：打包之后那是
+`Foo.app/Contents/MacOS`（不可写、写进去破坏签名），放到 `.app` 旁边又推导不到 —— 这条差异在 CI
+全绿时也不可见（问题 #182）。本轮裁定：**macOS 不做便携**（安装形态是 dmg / `.app`，数据取 OS
+标准目录），便携只保留 Windows 与 Linux；Linux 的分发形态（发行版包与 AppImage）在 `portable.md`
+§3.2 记为待定。`tests/portable.rs` 随之在 macOS 上按平台跳过那两条产品级用例（各打印一行原因），
+并补一条**标记目录被采用**的正例 —— `just test-e2e` 前两段的配置注入依赖它，所以它在哪个平台都执行。
+读数：`just test-e2e` 第三段 **4 passed / 0 failed**（6.09 s）。
+
 ## 被取代的读数
 | ↑ **同一份代码的下一次运行**（`36251661992` @ `08fffb2`，只改了文档） | ⚠️ 有两处红：Windows 的 `ssh_config_import`（"选择器里有导入面板"超时，底层的 eval 9 s 未返回）与 Linux 的 `ssh_session`（服务端回声 30 s 没出现在终端上）—— 两处都停在 `tests/support/mod.rs:244` 那个等待辅助上。**重新执行这两个 job 即绿**（六格全绿），因此记为**偶发**，与本次改动无关（那两条路径不碰隧道、也不碰 `vault_unlock`）|
 | ↑ **同一配方在修复前的读数**（本机首次完整执行） | 退出码 **1**：第一段 28 个目标里 **13 个通过**（其中 5 个按平台显式跳过）、**15 个红**；第二段 `exit_residue` **1/1**；第三段 `portable` **3/3**。修复前停在第一段的 `app 未登记到 discovery 目录` 并挂到取消。那 15 个红灯当时被归成三类"平台缺口"（会话 / 隧道回收为空、ConPTY 下本地终端输出到不了 raw 通道、`bw` 的假 CLI 是 `#!/bin/sh`）；后续定位表明其中**大部分是判据自己与平台绑定**，真正剩下的只有后两类里的形态问题 |

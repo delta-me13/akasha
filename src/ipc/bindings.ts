@@ -49,6 +49,24 @@ export const commands = {
 	 */
 	vaultHosts: () => typedError<HostEntry[], VaultError>(__TAURI_INVOKE("vault_hosts")),
 	/**
+	 *  库里记下的全部主机密钥（按 host / port / key_type 排序 —— 顺序确定，界面可复现）。
+	 * 
+	 *  库锁着 → [`VaultError::Locked`]。命令名不叫 `vault_*`：按 ADR-0003 **D11** 它是
+	 *  **缓存**，不是第 5 套池（与 `import_ssh_config` 同类，用动作命名）。
+	 */
+	knownHostsList: () => typedError<KnownHostEntry[], VaultError>(__TAURI_INVOKE("known_hosts_list")),
+	/**
+	 *  忘掉一把记下的主机密钥（按 id）—— 下一次连同一台会**重新询问**。
+	 * 
+	 *  这是 D11 里那个显式动作：界面**只有**它，没有"信任新密钥"的入口。密钥变化仍然在
+	 *  写路径上被拒（`remember` 对同一 `(host, port, key_type)` 上的另一把密钥返回 `Conflict`），
+	 *  要接受新密钥只能先删、再在连接过程中确认。
+	 * 
+	 *  行已经不在了 → `NoSuchRow`（界面上的那一项是过期的）：目标状态虽已达成，
+	 *  但"我点的是哪一行"这件事必须说得清。
+	 */
+	knownHostsForget: (id: number) => typedError<null, VaultError>(__TAURI_INVOKE("known_hosts_forget", { id })),
+	/**
 	 *  把一份 `~/.ssh/config`（或 `path` 指定的文件）导入 ssh 配置池。
 	 * 
 	 *  `path` 为 `None` → `~/.ssh/config`（家目录取不到时**明确报错**，不猜一个路径去读）。
@@ -649,6 +667,29 @@ export type IpcError =
 { kind: "internal"; detail: {
 	message: string,
 } };
+
+/**
+ *  界面看得见的一把主机密钥（**缓存**里的一行，不是第 5 套池）。
+ * 
+ *  ⚠️ **没有 `key_blob`**：它是判定材料（逐字节比），给人核对的是指纹。
+ */
+export type KnownHostEntry = {
+	/**  缓存里的行 id —— 删除按它。 */
+	id: number,
+	/**
+	 *  池里对应那几台主机的名字（按名字排序；空 = 池里没有这一台）。
+	 * 
+	 *  为什么是**列表**：`hosts.name` 唯一而 `(host, port)` 不唯一 —— 同一台机器可以有
+	 *  两行、名字不同。关联因此可能一对多。
+	 */
+	names: string[],
+	host: string,
+	port: number,
+	/**  密钥算法（`ssh-ed25519` 一类）。 */
+	keyType: string,
+	/**  给人核对的那串 `SHA256:…`（不参与判定）。 */
+	fingerprint: string,
+};
 
 /**
  *  口令 / 凭据**经 IPC 进来的形态**（`PassphraseInput`）。

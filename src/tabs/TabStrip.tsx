@@ -59,6 +59,13 @@ interface TabStripProps {
    * 面板关掉不改变任何后端状态（那几条命令都是显式动作）。
    */
   onNewBitwarden(): void;
+  /**
+   * 打开主机指纹面板（plan 0507）。
+   *
+   * 与上面几个同一条理由：它只是库里的缓存**视图**，关掉面板不改任何后端状态；
+   * 添加与修改指纹发生在连接过程中，不在这个面板里。
+   */
+  onNewKnownHosts(): void;
 }
 
 export function TabStrip({
@@ -72,6 +79,7 @@ export function TabStrip({
   onNewTunnel,
   onNewSftp,
   onNewBitwarden,
+  onNewKnownHosts,
 }: TabStripProps) {
   return (
     <div className="tab-strip" role="tablist" aria-label="终端标签页">
@@ -158,6 +166,15 @@ export function TabStrip({
         onClick={onNewBitwarden}
       >
         Bitwarden
+      </button>
+      <button
+        type="button"
+        className="tab-new tab-new-known-hosts"
+        title="主机指纹（打开面板：看 / 删除我们记下的主机密钥）"
+        aria-label="打开主机指纹面板"
+        onClick={onNewKnownHosts}
+      >
+        指纹
       </button>
     </div>
   );

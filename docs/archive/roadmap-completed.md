@@ -129,6 +129,9 @@
 - [x] `~/.ssh/config` 受限子集导入（`Match` / `Include` 显式报错）
       验收：含 `Match` 的配置产生明确报错，而非静默误解析
       → [plan 0506](./docs/plans/archive/0506-ssh-config-subset-import.md)
+- [x] 主机指纹在前端可视与可删除（添加与修改只在连接过程中触发）
+      验收：面板里看得到、删得掉，删除之后下一次连接重新询问
+      → [plan 0507](./docs/plans/0507-known-hosts-panel.md)
 
 ## 阶段 6 — SSH 端口转发
 - [x] 隧道实体（独立于终端 `Session`）+ 状态机

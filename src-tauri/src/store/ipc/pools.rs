@@ -115,6 +115,100 @@ pub fn vault_hosts(vault: State<'_, Vault>) -> Result<Vec<HostEntry>, VaultError
         .collect()
 }
 
+// ── 记下来的主机密钥（plan 0507）─────────────────────────────────────────────
+
+/// known_hosts 缓存里的行 id（过 IPC 的表示）。
+///
+/// 与 [`HostId`] 同一手法：生成器**拒绝**把 64 位整数导出成 TS（问题 #32），所以用
+/// `u32` 代理并 checked 转换 —— 截断会把"要删的那一行"变成**另一行**。
+pub type KnownHostId = u32;
+
+/// 行 id → 过 IPC 的表示。装不下就报错，**绝不截断**。
+fn known_host_id(id: i64) -> Result<KnownHostId, VaultError> {
+    KnownHostId::try_from(id).map_err(|_| VaultError::Unusable {
+        message: format!("known_hosts 的行 id 超出可表示范围（{id}）"),
+    })
+}
+
+/// 界面看得见的一把主机密钥（**缓存**里的一行，不是第 5 套池）。
+///
+/// ⚠️ **没有 `key_blob`**：它是判定材料（逐字节比），给人核对的是指纹。
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownHostEntry {
+    /// 缓存里的行 id —— 删除按它。
+    pub id: KnownHostId,
+    /// 池里对应那几台主机的名字（按名字排序；空 = 池里没有这一台）。
+    ///
+    /// 为什么是**列表**：`hosts.name` 唯一而 `(host, port)` 不唯一 —— 同一台机器可以有
+    /// 两行、名字不同。关联因此可能一对多。
+    pub names: Vec<String>,
+    pub host: String,
+    pub port: u16,
+    /// 密钥算法（`ssh-ed25519` 一类）。
+    pub key_type: String,
+    /// 给人核对的那串 `SHA256:…`（不参与判定）。
+    pub fingerprint: String,
+}
+
+/// 库里记下的全部主机密钥（按 host / port / key_type 排序 —— 顺序确定，界面可复现）。
+///
+/// 库锁着 → [`VaultError::Locked`]。命令名不叫 `vault_*`：按 ADR-0003 **D11** 它是
+/// **缓存**，不是第 5 套池（与 `import_ssh_config` 同类，用动作命名）。
+#[tauri::command]
+#[specta::specta]
+pub fn known_hosts_list(vault: State<'_, Vault>) -> Result<Vec<KnownHostEntry>, VaultError> {
+    let (cached, hosts) = vault
+        .with_conn(|conn| {
+            // 短借一次、两条查询：缓存与主机池各自读一遍，都不慢。
+            Ok((
+                crate::store::pools::known_hosts::known_hosts(conn)?,
+                crate::store::pools::hosts::hosts(conn)?,
+            ))
+        })
+        .map_err(VaultError::from_conn)?;
+    cached
+        .into_iter()
+        .map(|row| {
+            Ok(KnownHostEntry {
+                id: known_host_id(row.id)?,
+                names: names_for(&hosts, &row.host, row.port),
+                host: row.host,
+                port: row.port,
+                key_type: row.key_type,
+                fingerprint: row.fingerprint,
+            })
+        })
+        .collect()
+}
+
+/// 这个 `(host, port)` 在主机池里对应哪几个名字（按名字排序 —— 界面可复现）。
+fn names_for(hosts: &[crate::store::pools::hosts::Host], host: &str, port: u16) -> Vec<String> {
+    let mut names: Vec<String> = hosts
+        .iter()
+        .filter(|row| row.host == host && row.port == port)
+        .map(|row| row.name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+/// 忘掉一把记下的主机密钥（按 id）—— 下一次连同一台会**重新询问**。
+///
+/// 这是 D11 里那个显式动作：界面**只有**它，没有"信任新密钥"的入口。密钥变化仍然在
+/// 写路径上被拒（`remember` 对同一 `(host, port, key_type)` 上的另一把密钥返回 `Conflict`），
+/// 要接受新密钥只能先删、再在连接过程中确认。
+///
+/// 行已经不在了 → `NoSuchRow`（界面上的那一项是过期的）：目标状态虽已达成，
+/// 但"我点的是哪一行"这件事必须说得清。
+#[tauri::command]
+#[specta::specta]
+pub fn known_hosts_forget(vault: State<'_, Vault>, id: KnownHostId) -> Result<(), VaultError> {
+    vault
+        .with_conn(|conn| crate::store::pools::known_hosts::forget(conn, i64::from(id)))
+        .map_err(VaultError::from_conn)
+}
+
 // ── 从 `~/.ssh/config` 导入（plan 0506） ────────────────────────────────────
 
 /// 导入报告（过 IPC 的形状）。

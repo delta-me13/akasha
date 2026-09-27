@@ -27,6 +27,10 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::store::ipc::vault::vault_lock,
             // 池的只读读取（plan 0504）：界面据此列出主机。
             crate::store::ipc::pools::vault_hosts,
+            // 记下来的主机密钥（plan 0507）：**缓存**的看与删。添加与修改只发生在连接过程中
+            //（ADR-0003 D11）—— 这两条命令里没有"信任新密钥"的入口。
+            crate::store::ipc::pools::known_hosts_list,
+            crate::store::ipc::pools::known_hosts_forget,
             // 池的**第一条写路径**（plan 0506）：从 `~/.ssh/config` 导入。
             // ⚠️ 它同步就行：读一个小文件 + 一次事务都在毫秒级，而这条命令**不握手**
             //（会阻塞几秒的那种活儿在 `open_ssh_session` 那条 async 命令上）。

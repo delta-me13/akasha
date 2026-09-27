@@ -12,14 +12,14 @@
 
 ## 摘要
 
-**2026-09-27：可搬迁性的平台口径分档（plan 0408）** —— `portable.md` §3 与 `scope.md` §9 原先承诺
-macOS 的数据目录在 `.app` **旁边**，而 `exe_dir()` 取 `current_exe().parent()`：打包之后那是
-`Foo.app/Contents/MacOS`（不可写、写进去破坏签名），放到 `.app` 旁边又推导不到 —— 这条差异在 CI
-全绿时也不可见（问题 #182）。本轮裁定：**macOS 不做便携**（安装形态是 dmg / `.app`，数据取 OS
-标准目录），便携只保留 Windows 与 Linux；Linux 的分发形态（发行版包与 AppImage）在 `portable.md`
-§3.2 记为待定。`tests/portable.rs` 随之在 macOS 上按平台跳过那两条产品级用例（各打印一行原因），
-并补一条**标记目录被采用**的正例 —— `just test-e2e` 前两段的配置注入依赖它，所以它在哪个平台都执行。
-读数：`just test-e2e` 第三段 **4 passed / 0 failed**（6.09 s）。
+**2026-09-27：主机指纹的可视与删除（plan 0507）** —— 库里的 `known_hosts` 缓存此前只有后端在写，
+界面上看不到也删不掉。本轮加两条命令（`known_hosts_list` / `known_hosts_forget`）与一个
+**主机指纹面板**：一行一条，给出主机池里的名字（可能是多个，因为 `(host, port)` 不唯一）、
+`host:port`、算法与指纹；每行一个"删除" = **遗忘**（下次连接重新询问）。添加与修改**不在面板里**
+—— 未知密钥由连接时的提问接受、密钥变化由写路径拒绝（ADR-0003 D11），面板里没有"信任新密钥"
+这类入口。读数：`just test-e2e` 的新目标 `known_hosts_manage` **1 passed**（2.37 s）：第一次连接
+问密钥与口令 → 面板出现那一行（指纹与服务端逐字相等）→ 删除后界面与库两侧都没有 → 第二次连接
+**重新问了密钥**（口令那一步走内存缓存，问题 #124）。
 
 ## ⚠️ UI 现状：**当前界面是功能验证壳层，不是设计稿**
 
@@ -39,6 +39,7 @@ macOS 的数据目录在 `.app` **旁边**，而 `exe_dir()` 取 `current_exe().
 
 | 命令 / 检查 | 结果 |
 |---|---|
+| **`just test-e2e`（macOS，经 runner）—— plan 0507 的新目标** | `known_hosts_manage` **1 passed; 0 failed**（2.37 s）：第一次连接 `["hostKey:…", "credential:e2e@127.0.0.1:57633"]` → 面板 `行数=1`（名字来自主机池、指纹逐字等于服务端）→ 删除后 `行数=0` 且库侧无那条记录 → 第二次连接 `["hostKey:…"]`（**重新询问**成立，口令走内存缓存）。⚠️ 该次运行整体退出码 1，原因见问题 #183 |
 | **`just portable`（macOS，`just test-e2e` 第三段）—— plan 0408** | `4 passed; 0 failed`（6.09 s）：`a_portable_dir_next_to_the_binary_is_adopted` 与 `without_a_portable_dir_it_starts_anyway` 通过；`data_survives_the_move` / `an_unwritable_portable_dir_refuses_to_start` 各打印一行「跳过: macOS 不做便携（安装形态是 dmg / .app，数据取 OS 标准目录，见 docs/portable.md §3）」。⚠️ 该次运行整体退出码 1，原因见问题 #183 |
 | **`just test`（macOS 26.6.2 / arm64，经 `just runner-run test` 在沙箱外执行）** | 退出码 **0**：**463 tests run: 463 passed, 0 skipped**（333.4 s）；`akasha::session_watchdog a_sigkill_of_the_app_leaves_no_child_behind` **执行并通过**（3.18 s）—— plan 0112 之前它在 macOS 上直接 `Skipping:`。同一轮的 `just ready` **6/6**（fmt 1s · lint 21s · test 141s · deny 1s · gen-types 33s · docs 3s） |
 | **`just test-e2e`（macOS，经 runner）—— plan 0112 的判据部分** | 第二段 `exit_residue` 真的走完（0.28 s：探针 `Some(pid)` 真的启动、判活真的为真、关窗之后真的消失）；第一段 `tab_close` / `window_close` 的进程级断言同样是真的。⚠️ 该次运行**整体退出码 1**：`ssh_session` / `ssh_config_import` 的回声判据超时（问题 #183，原始工作区同样复现），其余目标与第三段 `portable` 3/3 照常通过 |
@@ -212,7 +213,8 @@ macOS 的数据目录在 `.app` **旁边**，而 `exe_dir()` 取 `current_exe().
   一个可输入库口令的位置。
 - **主机池的增删改查仍无界面**：plan 0504 只增加了**只读**的 `vault_hosts`，plan 0505 使其额外携带
   `jumpId`。**配置一条跳板链目前只能直接写入库**（E2E 即如此构造数据）—— 界面上可见"经跳板 X"，
-  但无法修改。
+  但无法修改。⚠️ plan 0507 补上的是**另一块**：主机**指纹**（库里的 `known_hosts` 缓存）看得到、
+  删得掉；主机池本身的增删改仍然没有界面。
 - **真实 agent 路径只覆盖了"不可用"**：agent 中确有密钥且服务端认可该密钥的路径从未运行。
 - **并发提问未实测**：两条连接同时提问时，两条提示会**同时**显示在面板上（前端按 id 列表渲染），
   但只运行过"一条连接一次一问"。跳板链上的提问是**串行**的（四问按序），链越长该量级乘以跳数。
