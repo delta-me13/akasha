@@ -156,7 +156,8 @@ impl Drop for Layout {
 struct App {
     child: Child,
     port: u16,
-    token: Option<String>,
+    /// 认证用的令牌。**不是可选的**：`port` 与 `token` 都读出来才算就绪（见 [`discovery`]）。
+    token: String,
     log: PathBuf,
 }
 
@@ -200,15 +201,27 @@ impl App {
         panic!("app 在 90s 内没有写出发现目录。\n日志：\n{log}");
     }
 
+    /// 连上这一份 app 的 Victauri。
+    ///
+    /// ⚠️ **有界重试**：发现目录出现之后、MCP 监听真正 accept 之前还有一个很短的窗口
+    /// （CI 上实测过这一类竞态）。重试不掩盖真错 —— 认证不过（`401`）会一直重试到
+    /// 截止时间，然后把最后那次错误连同 app 日志一起报出来。
     async fn client(&self) -> VictauriClient {
-        VictauriClient::connect_with_token(self.port, self.token.as_deref())
-            .await
-            .unwrap_or_else(|err| {
-                panic!(
-                    "连不上这一份 app 的 Victauri（{err}）—— 日志：\n{}",
-                    read(&self.log)
-                )
-            })
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match VictauriClient::connect_with_token(self.port, Some(&self.token)).await {
+                Ok(client) => return client,
+                Err(err) => {
+                    if Instant::now() > deadline {
+                        panic!(
+                            "连不上这一份 app 的 Victauri（{err}）—— 日志：\n{}",
+                            read(&self.log)
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
     }
 
     /// 等 `vault_status` **真的能应答**，返回它第一次成功的结果。
@@ -265,7 +278,11 @@ fn reap(child: &mut Child) {
 }
 
 /// 这个 pid 的 Victauri 端口与令牌（发现目录是 `<temp>/victauri/<pid>/`）。
-fn discovery(pid: u32) -> Option<(u16, Option<String>)> {
+///
+/// ⚠️ **两个文件都读出来才算就绪**：`port` 先落盘、`token` 后落盘，而客户端要靠令牌认证 ——
+/// 只看 `port` 就返回，等于把一次竞态交给调用方（CI 的 `E2E（macOS）` 上实测到的形状是
+/// `initialize returned 401 Unauthorized`：连上了，但没有令牌）。
+fn discovery(pid: u32) -> Option<(u16, String)> {
     let dir = std::env::temp_dir().join("victauri").join(pid.to_string());
     let port = fs::read_to_string(dir.join("port"))
         .ok()?
@@ -273,9 +290,12 @@ fn discovery(pid: u32) -> Option<(u16, Option<String>)> {
         .parse()
         .ok()?;
     let token = fs::read_to_string(dir.join("token"))
-        .ok()
-        .map(|text| text.trim().to_string())
-        .filter(|text| !text.is_empty());
+        .ok()?
+        .trim()
+        .to_string();
+    if token.is_empty() {
+        return None;
+    }
     Some((port, token))
 }
 
