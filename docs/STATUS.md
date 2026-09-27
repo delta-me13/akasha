@@ -12,13 +12,16 @@
 
 ## 摘要
 
-**2026-09-27：macOS 覆盖审计（本轮）** —— 按 `AGENTS.md` / `docs/scope.md` / `ROADMAP.md` 的
-需求清单逐条核对 macOS 的实现与验证状态，并用两处独立读数校正文档：CI 最新两次运行
-（`36249980440`、`36253379376`）**六格全绿**（含 `E2E（macOS）`），本次另取 `E2E（macOS）`
-的作业日志逐行读。结论：平台无关的规则域与绝大多数平台能力都有 macOS 读数，**两处真实缺陷**
-与**两处口径不一致**记为新问题 **#181** / **#182**，并开三份 plan：**0112**（进程级判据真实化）、
-**0307**（从 Dock 唤回窗口，骨架）、**0408**（可搬迁性的平台口径分档）。⚠️ **#181 是静默失效**：
-`exit_residue` 在 macOS 上 0.22 s 空过，此前"第二段 1/1"不能当作零残留判据成立。
+**2026-09-27：macOS 上的进程级判据真实化（plan 0112）** —— `exit_residue` / `session_watchdog` /
+`tab_close` / `window_close` 原先只在 Linux 上有真读数（`exit_residue` 的 `alive()` 读 `/proc`
+且无平台门控，macOS 上恒为 `false`，那一段 0.22 s 空过，问题 #181）。本轮把判活收进
+`tests/support/mod.rs` 的 `process_state_visible()` / `process_is_alive(pid)`：Linux 读
+`/proc/<pid>/stat` 的 state（`Z` = 已死），其他 unix 执行 `/bin/ps -o state= -p`（空输出 = 已回收），
+四个调用方改用它，剩下的平台门控只有 Windows 一档。读数：`just test` **463/463**（`session_watchdog`
+第一次真的执行并通过）、`just test-e2e` 第二段 `exit_residue` **真的走完**（探针真的启动、真的消失）；
+负例（非 Linux 的会话级回收临时失效）让 `session_watchdog` / `exit_residue` / `tab_close` 三条**同时变红**，
+还原后转绿。⚠️ `just test-e2e` 的整体退出码仍非 0：`ssh_session` 与 `ssh_config_import` 的回声判据超时，
+**在原始工作区上同样复现**（`git stash` 之后重新执行验证），记为新问题 #183，与本次改动无关。
 
 ## ⚠️ UI 现状：**当前界面是功能验证壳层，不是设计稿**
 
@@ -38,12 +41,14 @@
 
 | 命令 / 检查 | 结果 |
 |---|---|
+| **`just test`（macOS 26.6.2 / arm64，经 `just runner-run test` 在沙箱外执行）** | 退出码 **0**：**463 tests run: 463 passed, 0 skipped**（333.4 s）；`akasha::session_watchdog a_sigkill_of_the_app_leaves_no_child_behind` **执行并通过**（3.18 s）—— plan 0112 之前它在 macOS 上直接 `Skipping:`。同一轮的 `just ready` **6/6**（fmt 1s · lint 21s · test 141s · deny 1s · gen-types 33s · docs 3s） |
+| **`just test-e2e`（macOS，经 runner）—— plan 0112 的判据部分** | 第二段 `exit_residue` 真的走完（0.28 s：探针 `Some(pid)` 真的启动、判活真的为真、关窗之后真的消失）；第一段 `tab_close` / `window_close` 的进程级断言同样是真的。⚠️ 该次运行**整体退出码 1**：`ssh_session` / `ssh_config_import` 的回声判据超时（问题 #183，原始工作区同样复现），其余目标与第三段 `portable` 3/3 照常通过 |
+| **负例（plan 0112 步骤 5：`pty/teardown.rs` 的非 Linux 分支临时改成 `let _ = leader; 0`）** | `just test`（临时给配方加 `--no-fail-fast`）：`463 tests run: 457 passed, 6 failed`，含 `akasha::session_watchdog a_sigkill_of_the_app_leaves_no_child_behind` **FAIL**（20.1 s）与 5 条 `pty` 用例；`just test-e2e`：`exit_residue` 报「退出后仍有残留：忽略 SIGHUP 的 74434 还活着」（15.3 s），`tab_close` 报「关闭标签页之后探针 A(72845) 还活着」。还原之后三条都转绿 |
 | **`just ready`（合并后，本机 Windows 11 / MSVC）** | **6/6**：`fmt-check` 1s · `lint` 3s · `test` **18s**（前一轮同配方 139s，差别只在缓存）· `deny-offline` 3s · `gen-types-check` 28s · `docs-check` 40s。⚠️ 在此之前同一个配方在本机红了三轮，三次都停在那条已知偶发（`bw::acquire` 的 install 用例，连续执行 10 次里 7 次红）—— 定位与处置见问题 #165，修后复测 10 次全过 |
 | **`just test-e2e`（合并后，本机）** | 退出码 **0**：第一段 **28 个目标 / 33 条用例**、第二段 `exit_residue` **1/1**、第三段 `portable` **3/3**；跳过的目标与原因不变（见 #176）。`tunnel_reconnect` **27.69 s** 通过 —— #179 是在 macOS 的 CI 上红的，本机一直过，处置是否消掉那次红要等 CI |
 | **CI 运行 `36249980440`（@ `bda9324`，把分支合入 `main` 之后）** | **六格全绿**：`检查（Linux / Windows / macOS）` 与三个平台的 E2E 全部通过。上一轮的两处红都消掉了：**Linux 的 `vault_unlock`** 报出三次真实读数（`VmLck_解锁前=0 VmLck_解锁中=160 VmLck_锁定后=0`，问题 #180）、**macOS 的 `tunnel_reconnect`** 通过（问题 #179）。Windows 的 E2E 日志 **180,895 字节 / 2,230 行**、`LNK4099` **0 行**（#178 的处置在这条链上仍然成立）|
 | **`just test-e2e`（Windows 11 / MSVC，本机实测）** | 退出码 **0**，**全绿**：第一段 **28 个目标全部通过**（33 条用例，0 失败）、第二段 `exit_residue` **1/1**、第三段 `portable` **3/3**。整体跳过 4 个目标（`tab_close` / `window_close` / `bitwarden_login` / `bw_import`），另有 5 个目标里各 1 条用例按平台跳过（`vault_unlock` 的 `VmLck`、三条串口的设备节点、`single_instance` 的 `/proc` 实例计数），原因都在日志里逐条写明（见 #176）。走到这一步修掉的是四类**与平台绑定**的问题：`$!` 的 PID 命名空间与运行中覆盖 exe（#162）、ConPTY 启动时要求先答 `ESC[6n` 且行尾必须是 CR（#175）、tokio 的连接在 Windows 上读不出"连接被拒"（#173）、隧道用例清场时先删主机行后删规则行（#174）。⚠️ 仍被跳过的那两类就是**平台缺口的现状**：会话级的进程回收（Job Object，plan 0108 的遗留）与假 `bw` 的可执行形态 |
 | **`just test-e2e`（Windows runner，CI）** | 六个 job 里 `E2E（Windows）` **通过**（run `36231407751` @ `afc3d11`）—— 本轮三轮读数：第一轮 4 个目标红（`terminal_render` ×2、`single_instance`、`windows_ports`、`portable`）、第二轮只剩 `portable`、第三轮 **0 个**。⚠️ 与 Windows 无关的两处仍在：Linux 的 E2E 红在 `vault_unlock`（`读不到 app 的 /proc/<pid>/status`，三轮都在、与本次改动无关），第三轮另有一次 `sftp_host_to_host` 的凭据超时（该目标前两轮都过、文件未被本次改动触碰）|
-| **`just test-e2e`（macOS 26.6.2 / arm64，经 `just runner-run test-e2e` 在沙箱外执行）** | 退出码 **0**，**全绿**：第一段 **28 个目标 / 37 个用例**全过（0 失败），第二段（`close_behavior=exit`）**1/1**，第三段（可搬迁性）**3/3**。⚠️ 走到这一步之前红过六处，全部是**"这条路径自己的前提"**：`tab_close` / `window_close` 的进程判活读 `/proc`（非 Linux 上门控，改用 `sessions` probe 那条与平台无关的断言）、`vault_unlock` 的 `VmLck` 同理、`tab_close` 关闭最后一个标签页之后注册表**就该是 0**（写成"回到起点"会让它必红，还把界面留在空状态，后续目标由此连带红）、E2E 发现目录的 `TMPDIR` 分叉（问题 #171）、导入要的 `USER`（问题 #172）。⚠️ **第二段这个 1/1 在 macOS 上是空过**（本会话发现，问题 #181）：该用例的 `alive()` 读 `/proc` 且无平台门控，CI 日志里它 `0.22s` 通过 —— 不得把这一格当作"零残留判据成立" |
 | **`just ready`（经 `just runner-run ready` 在沙箱外执行）** | **6/6 通过**（退出码 0，`test` 一步 254s）。此前同一环境上红过两次 `just test`：一次是 `pty::local` 的 `openpty`（沙箱内，见上），一次是 4 条 `bw::acquire`（回环假上游 `Connection reset by peer`）—— 后者与上面 `just test` 那行同一条已知偶发，紧接着重新执行**全绿** |
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
 | `just test`（macOS 26.6.2 / arm64，经 `just runner-run test` 在沙箱外执行） | **458 tests run: 458 passed**（连续两次结果相同）。红过并已处置的六处：三条看门狗用例（会话枚举缺失，本会话补齐）、`pty` 的三条 `/proc` 判活与探针引号（问题 #45 那一类）、`store` 的权限对比断言（macOS 上 SQLite 建库本就 0600，对比判据退化为直接断言）、串口的 pty 脚手架（门控到 Linux，见「待验证」）。⚠️ `akasha-bw` 的 `install_takes_the_newest_release…` 在一次运行里报 `Peer disconnected`（问题 #165），随后两次运行都通过 |
@@ -492,5 +497,5 @@
 | 150 | 枚举出来的端口不保证能打开 | 本机 `/dev/ttyS*` 全部打不开 |
 | 164 | macOS 上被 `SIGKILL` 的子进程停在「正在退出」，直到主端关闭 | 关标签页必须先关主端，否则 `shutdown` 阻塞 |
 | 176 | Windows 上仍有两类 E2E 目标被显式跳过（缺 Job Object / 假 `bw` 不是 `.exe`） | 缺口仍在 |
-| 181 | macOS 上「真正退出零残留」的判据是空过的 | 未修；[plan 0112](./plans/0112-macos-liveness-criteria.md) |
 | 182 | macOS 的便携数据目录：文档写的是 `.app` 旁边，实现落在 `.app` 内部 | 按口径变更收口；[plan 0408](./plans/0408-portable-platform-scope.md) |
+| 183 | macOS 上 `ssh_session` / `ssh_config_import` 的回声判据稳定超时（30 s） | 未定位；把全部改动 `git stash` 之后重新执行 `just test-e2e` 同样复现。它拦住了 `just test-e2e` 的退出码 0 |

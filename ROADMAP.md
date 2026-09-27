@@ -41,9 +41,6 @@
 - [~] Windows 目标的类型检查通过（问题 #149、#160）
       验收：Windows 目标上的类型检查退出码 0
       → [plan 0108](./docs/plans/0108-windows-type-check.md)
-- [ ] macOS 上的进程级判据真实化（`exit_residue` / `session_watchdog` 不再空过）
-      验收：macOS 上那两条用例有非空读数，撤掉会话级回收后必红
-      → [plan 0112](./docs/plans/0112-macos-liveness-criteria.md)
 
 ---
 

@@ -615,3 +615,13 @@
       口径裁定（用户）：**macOS 不做便携**（安装形态是 dmg、数据取 OS 标准目录），
       便携只保留 Windows / Linux；Linux 的分发形态**暂定**（可能改用 AppImage，
       其可执行文件位于只读挂载点内，判据的等价物尚未定）。
+
+
+ 183. **macOS 上 `ssh_session` / `ssh_config_import` 的"回声"判据稳定超时**（2026-09-27，本机发现，
+      **未定位**）：两条用例把 SSH 会话连起来之后（界面报"已连接"）敲一行命令，屏幕在 30 s 内始终
+      等不到远端回声，用例在 `tests/support/mod.rs` 的 `wait_js` 上超时。app 日志里
+      `ssh session opening` 与 `ssh authenticated` 都在，会话之后被正常回收 —— 问题落在
+      "键入的字节到不到对端、对端的字节回不回终端"这一段。
+      ⚠️ **与 plan 0112 无关，已用原始工作区验证**：把该 plan 的全部改动 `git stash` 之后重新执行
+      `just test-e2e`，同一目标、同一断言、同样超时。它拦住的是 `just test-e2e` 的整体退出码 0
+      （其余目标与三段判据都过）。

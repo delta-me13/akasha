@@ -166,7 +166,7 @@ cargo-deny 默认只把 manifest 指向的那个包当作依赖图的根，未�
 | `just ready` 有一步失败 | 看结尾提示的那一步，或 `.just-ready-fail.log` |
 | 改了配方但 `just --list` 没显示 | 检查缩进（配方体必须是 tab 或统一缩进），以及是否写在了对的 justfile 里 |
 | 改了 `src-tauri/src/` 下的文件，app 却不重编译 | 先确认它确实在 `src-tauri/` 里面（tauri CLI 默认只监听 `src-tauri`）。源码若被放到它外面，必须另配监听范围，否则开发循环会静默失效，见 `STATUS.md` 问题 #21 |
-| CI 上失败但本地全部通过 | 先看是哪条 job：Linux 执行的就是本地这条完整门禁，Windows / macOS 只做类型检查，那两条失败多半是 cfg 分支或平台 API。构造与边界见 `AGENTS.md` §12 与 `docs/plans/0102` |
+| CI 上失败但本地全部通过 | 先看是哪条 job：`checks-linux` 执行的就是本地这条完整门禁，`checks-windows` / `checks-macos` 只做类型检查（那两条失败多半是 cfg 分支或平台 API），E2E 另有各平台的 job。构造与边界见 `AGENTS.md` §12 与 `docs/plans/0102` |
 
 受限环境里运行 app（容器 / agent 沙箱 / 无写权限的家目录）：
 Tauri 启动时要写 `$HOME` 下的数据目录，被拒时会 panic 在

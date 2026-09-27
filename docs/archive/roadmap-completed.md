@@ -38,6 +38,9 @@
 - [x] `src-tauri/crates/akasha-pty`：通用 `Transport` trait + `portable-pty` 实现
       验收：用假实现覆盖 spawn / write / shutdown 的单测通过
       → [plan 0105](./docs/plans/archive/0105-pty-transport-trait.md)
+- [x] macOS 上的进程级判据真实化（`exit_residue` / `session_watchdog` 不再空过）
+      验收：macOS 上那两条用例有非空读数，撤掉会话级回收后必红
+      → [plan 0112](./docs/plans/0112-macos-liveness-criteria.md)
 
 ## 阶段 2 — 端到端最小终端
 - [x] `Transport` 输出合批（≥16ms 或 ≥64KiB）

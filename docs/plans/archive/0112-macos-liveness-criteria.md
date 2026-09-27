@@ -3,7 +3,7 @@
 - **关联**：ROADMAP 阶段 1 ·「macOS 上的进程级判据真实化」
 - **前置**：plan 0204 / 0205（零残留的两条退出路径与伴生看门狗）；`pty/teardown.rs` 的 macOS
   分支（`ps` + `getsid`）已落地 —— 本 plan 修的是**判据**，不是回收实现
-- **状态**：未开始
+- **状态**：已完成（2026-09-27）
 - **影响面**：`src-tauri/tests/support/mod.rs`、`exit_residue.rs`、`session_watchdog.rs`、
   `tab_close.rs`、`window_close.rs`、`docs/STATUS.md`、`ROADMAP.md`、`docs/plans/README.md`
 
@@ -105,4 +105,33 @@ just runner-run ready
 
 ## 实施记录
 
-（边做边追加：负例的红、恢复后的绿、macOS 与 Linux 两侧的实际输出。）
+**2026-09-27（macOS 26.6.2 / arm64；全部经 `just runner-run` 在沙箱外执行）**
+
+1. **共享判活**（`tests/support/mod.rs`）：`process_state_visible()` / `process_is_alive(pid)`。
+   Linux 读 `/proc/<pid>/stat` 的 state（`Z` = 已死），其他 unix 执行 `/bin/ps -o state= -p <pid>`
+   （空输出 = 已回收，首字符 `Z` = 僵尸）。⚠️ **与步骤 1 的一处偏离**：`process_state_visible()`
+   取 `cfg!(unix)` 而不是「Linux 与 macOS」—— `pty/teardown.rs` 的会话级回收本来就覆盖**全部 unix**
+   （`cfg(all(unix, not(target_os = "linux")))` 那一支），只认两个平台会让 BSD 上的断言退化成恒假；
+   Windows 仍为假，语义不变。读不出来按「已死」算，由调用点的正向断言守住（只会红，不会静默通过）。
+2. 四个调用方改用共享判活：`exit_residue.rs`（连同探针的启动条件与两处文案）、`session_watchdog.rs`
+   （跳过条件与理由）、`tab_close.rs` / `window_close.rs`（各自的 `alive()` / `process_death_visible()`
+   删除）。`docs/just.md` §7 那行「Windows / macOS 只做类型检查」按现状改写。
+3. **正例**：`just test` → `463 tests run: 463 passed, 0 skipped`（333.4 s），其中
+   `akasha::session_watchdog a_sigkill_of_the_app_leaves_no_child_behind` **执行并通过**（3.18 s）；
+   `just ready` → **6/6**（fmt 1s · lint 21s · test 141s · deny 1s · gen-types 33s · docs 3s）。
+4. **正例（E2E 判据）**：`just test-e2e` 第二段 `exit_residue` 由 0.22 s 的空过变成真读数（0.28 s：
+   探针 `Some(pid)` 真的启动、`process_is_alive(probe)` 真的为真、关窗之后真的消失）；第一段的
+   `tab_close` / `window_close` 进程级断言同样是真的。⚠️ 该次运行的**整体退出码是 1**：
+   `ssh_session` / `ssh_config_import` 的回声判据超时 —— 用 `git stash` 把本 plan 的全部改动移出之后
+   重新执行 `just test-e2e`，**同一目标、同一断言、同样超时**，故与本次改动无关，记为新问题 #183。
+   ⚠️ 本文验收命令里「耗时 > 1 s」那一条的预期不成立：真实路径是「轮询到就返回」，两条等待都在
+   亚秒级完成（负例那一次才是 15 s 级）。
+5. **负例**：`pty/teardown.rs` 的非 Linux 分支临时改成 `let _ = leader; 0` →
+   * `just test`（临时给配方加 `--no-fail-fast`；不加时 nextest 在第一处失败处就结束，其后的用例一概不执行）：
+     `463 tests run: 457 passed, 6 failed`，含 `session_watchdog`（20.1 s）与 5 条 `pty` 用例；
+   * `just test-e2e`：`exit_residue` 报「退出后仍有残留：忽略 SIGHUP 的 74434 还活着」（15.3 s），
+     `tab_close` 报「关闭标签页之后探针 A(72845) 还活着」；
+   * 还原（`git checkout -- src-tauri/src/pty/teardown.rs`）之后重新执行，三条都转绿 ——
+     「判据在工作」与「断言恒真」由此分得开。
+6. **登记**：问题 #181 标为已修（索引行由 `just docs-archive` 移入归档）；新问题 #183 记
+   `ssh_session` / `ssh_config_import` 的回声超时（原始工作区同样复现）。
