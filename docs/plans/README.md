@@ -74,6 +74,7 @@
 | 0108 | Windows 目标的类型检查真的通过（问题 #149 的编译面） | 进行中 | plan 0801（平台边界）/ plan 0102（CI 矩阵要它才绿） | [0108](./0108-windows-type-check.md) |
 | 0110 | Windows 上受保护页的锁定额度（问题 #167；ADR-0009） | 已完成（2026-09-20：先落会红的用例，再抬进程最小工作集；`export_contract` / `passphrase_contract` 18/18） | ADR-0009（实现中） | [0110](./0110-windows-locked-page-budget.md) |
 | 0111 | Windows 上原生执行的另两条红（问题 #168） | 已完成（2026-09-20：SOCKS5 拒绝后读干净再关；对照物改成“先规范化、再去前缀”） | plan 0110（同一次发现） | [0111](./0111-windows-native-test-failures.md) |
+| 0112 | macOS 上进程级判据的真实化（`exit_residue` / `session_watchdog` 不再空过） | 未开始 | plan 0204 / 0205（零残留与看门狗）；`pty/teardown.rs` 的 macOS 分支已落地 | [0112](./0112-macos-liveness-criteria.md) |
 
 ### 阶段 2 — 端到端最小终端
 
@@ -95,6 +96,7 @@
 | 0304 | 单实例 | 已完成（第二个实例 150 ms 内退出并唤起**藏着的**窗口，E2E `single_instance`） | plan 0302 | [0304](./archive/0304-single-instance.md) |
 | 0305 | 关闭终端标签页 = 立刻丢弃该 Session | 已完成 | plan 0204 | [0305](./archive/0305-tab-close-discards-session.md) |
 | 0306 | 会话自己结束 = 回收它 + 关闭那个标签页 | 已完成 | plan 0305 | [0306](./archive/0306-session-ended-closes-tab.md) |
+| 0307 | macOS 上从 Dock 唤回窗口 | 未规划（骨架） | plan 0301 / 0302；展开前先实测一次 | [0307](./0307-macos-dock-reopen.md) |
 
 ### 阶段 4 — 存储与凭据池
 
@@ -108,6 +110,7 @@
 | 0404 | dump 与导出（加密 / 明文两条路 + 还原） | 已完成（2026-09-12） | plan 0403（四类池能读写） | [0404](./archive/0404-dump-export.md) |
 | 0406 | 口令的内存防护（`memsafe`） | 已完成（2026-09-12） | plan 0402（`Passphrase` 已就位） | [0406](./archive/0406-memsafe-passphrase-page.md) |
 | 0405 | 可搬迁性验证 | 已完成（2026-09-12：配方 `portable`；迁移后四类池 1/1/1/1；便携目录不可写 → 退出码 2） | plan 0403 / 0407（有数据、能读） | [0405](./archive/0405-portability-verify.md) |
+| 0408 | 可搬迁性的平台口径分档（macOS 不做便携；Linux 的形态待定） | 未开始 | plan 0405（便携本身已完成）；plan 0112（它的 macOS 验收依赖配置注入） | [0408](./0408-portable-platform-scope.md) |
 
 ### 阶段 5 — SSH 栈（`russh`）
 
@@ -119,6 +122,7 @@
 | 0504 | SSH 接进 IPC / 前端（带目标的命令 + 凭据往返 + 提示界面） | 已完成（2026-09-13：真实 app 上界面选主机 → 提示 → 双向流；凭据只询问一次；关闭标签页零残留） | plan 0503（信任策略已定） | [0504](./archive/0504-ssh-into-ipc-frontend.md) |
 | 0505 | `direct-tcpip` 原语 | 已完成（2026-09-13：跳板链连通；库内 4 用例 + 真实 app E2E；`just ready` 6/6） | plan 0504（已完成）· 形状见 ADR-0003 D9 | [0505](./archive/0505-direct-tcpip-primitive.md) |
 | 0506 | `~/.ssh/config` 受限子集导入 | 已完成（2026-09-13：三档边界落地；导入的行经跳板真实连通；含 `Match` 的整份报错且一行不写；`just ready` 6/6） | plan 0505（已完成）· 边界见 ADR-0003 D14 | [0506](./archive/0506-ssh-config-subset-import.md) |
+| 0507 | 主机指纹的可视与删除（只查看与删除；添加 / 修改在连接过程中触发） | 未开始 | plan 0503（缓存与校验）· ADR-0003 D11 | [0507](./0507-known-hosts-panel.md) |
 
 > 本阶段的执行顺序由**依赖**决定，不按原立项编号（2026-09-13 重排）：信任策略 → 接入 app →
 > 原语 → 配置导入。重排后编号与执行顺序一致；`direct-tcpip` 由 0503 移到 0505，

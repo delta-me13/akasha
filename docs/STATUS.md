@@ -4,9 +4,17 @@
 > 会话结束前必须更新 —— 下一个会话（或另一个 agent）只读这个文件 + 相关 plan 就能接手，
 > 不需要回溯对话历史。规则见 [`docs/README.md`](./README.md)。
 
-**最后更新**：2026-09-26
+**最后更新**：2026-09-27
 
 ## 摘要
+
+**2026-09-27：macOS 覆盖审计（本轮）** —— 按 `AGENTS.md` / `docs/scope.md` / `ROADMAP.md` 的
+需求清单逐条核对 macOS 的实现与验证状态，并用两处独立读数校正文档：CI 最新两次运行
+（`36249980440`、`36253379376`）**六格全绿**（含 `E2E（macOS）`），本次另取 `E2E（macOS）`
+的作业日志逐行读。结论：平台无关的规则域与绝大多数平台能力都有 macOS 读数，**两处真实缺陷**
+与**两处口径不一致**记为新问题 **#181** / **#182**，并开三份 plan：**0112**（进程级判据真实化）、
+**0307**（从 Dock 唤回窗口，骨架）、**0408**（可搬迁性的平台口径分档）。⚠️ **#181 是静默失效**：
+`exit_residue` 在 macOS 上 0.22 s 空过，此前"第二段 1/1"不能当作零残留判据成立。
 
 **2026-09-26：`fix/win-e2e-162` 合入 `main`（合并提交 `bc1fda3`）** —— 分支的 7 个提交与本地
 `main` 上那两份文档整理提交都在；三处冲突（`docs/STATUS.md` / `agent-runner.md` / `just.md`）
@@ -199,7 +207,7 @@ Windows（MSYS）上是本 shell 的 PID，配方却拿它问 `tasklist` / `task
 | ↑ **同一配方在修复前的读数**（本机首次完整执行） | 退出码 **1**：第一段 28 个目标里 **13 个通过**（其中 5 个按平台显式跳过）、**15 个红**；第二段 `exit_residue` **1/1**；第三段 `portable` **3/3**。修复前停在第一段的 `app 未登记到 discovery 目录` 并挂到取消。那 15 个红灯当时被归成三类"平台缺口"（会话 / 隧道回收为空、ConPTY 下本地终端输出到不了 raw 通道、`bw` 的假 CLI 是 `#!/bin/sh`）；后续定位表明其中**大部分是判据自己与平台绑定**，真正剩下的只有后两类里的形态问题 |
 | **`just test-e2e`（Windows runner，CI）** | 六个 job 里 `E2E（Windows）` **通过**（run `36231407751` @ `afc3d11`）—— 本轮三轮读数：第一轮 4 个目标红（`terminal_render` ×2、`single_instance`、`windows_ports`、`portable`）、第二轮只剩 `portable`、第三轮 **0 个**。⚠️ 与 Windows 无关的两处仍在：Linux 的 E2E 红在 `vault_unlock`（`读不到 app 的 /proc/<pid>/status`，三轮都在、与本次改动无关），第三轮另有一次 `sftp_host_to_host` 的凭据超时（该目标前两轮都过、文件未被本次改动触碰）|
 | ↑ **CI 的第一、二轮 Windows 读数**（`36226121050` / `36228577977`） | 第一轮 4 个目标红、第二轮 1 个（`portable`）；性质与逐条处置见 #177 |
-| **`just test-e2e`（macOS 26.6.2 / arm64，经 `just runner-run test-e2e` 在沙箱外执行）** | 退出码 **0**，**全绿**：第一段 **28 个目标 / 37 个用例**全过（0 失败），第二段（`close_behavior=exit`）**1/1**，第三段（可搬迁性）**3/3**。⚠️ 走到这一步之前红过六处，全部是**"这条路径自己的前提"**：`tab_close` / `window_close` 的进程判活读 `/proc`（非 Linux 上门控，改用 `sessions` probe 那条与平台无关的断言）、`vault_unlock` 的 `VmLck` 同理、`tab_close` 关闭最后一个标签页之后注册表**就该是 0**（写成"回到起点"会让它必红，还把界面留在空状态，后续目标由此连带红）、E2E 发现目录的 `TMPDIR` 分叉（问题 #171）、导入要的 `USER`（问题 #172） |
+| **`just test-e2e`（macOS 26.6.2 / arm64，经 `just runner-run test-e2e` 在沙箱外执行）** | 退出码 **0**，**全绿**：第一段 **28 个目标 / 37 个用例**全过（0 失败），第二段（`close_behavior=exit`）**1/1**，第三段（可搬迁性）**3/3**。⚠️ 走到这一步之前红过六处，全部是**"这条路径自己的前提"**：`tab_close` / `window_close` 的进程判活读 `/proc`（非 Linux 上门控，改用 `sessions` probe 那条与平台无关的断言）、`vault_unlock` 的 `VmLck` 同理、`tab_close` 关闭最后一个标签页之后注册表**就该是 0**（写成"回到起点"会让它必红，还把界面留在空状态，后续目标由此连带红）、E2E 发现目录的 `TMPDIR` 分叉（问题 #171）、导入要的 `USER`（问题 #172）。⚠️ **第二段这个 1/1 在 macOS 上是空过**（本会话发现，问题 #181）：该用例的 `alive()` 读 `/proc` 且无平台门控，CI 日志里它 `0.22s` 通过 —— 不得把这一格当作"零残留判据成立" |
 | **`just ready`（经 `just runner-run ready` 在沙箱外执行）** | **6/6 通过**（退出码 0，`test` 一步 254s）。此前同一环境上红过两次 `just test`：一次是 `pty::local` 的 `openpty`（沙箱内，见上），一次是 4 条 `bw::acquire`（回环假上游 `Connection reset by peer`）—— 后者与上面 `just test` 那行同一条已知偶发，紧接着重新执行**全绿** |
 | `just ready`（fmt-check + lint + test + deny-offline + gen-types-check + docs-check） | 退出码 **0**，**6/6 全部通过** |
 | ↑ **CI 第三次运行的实际读数**（run `34989700283` @ `b7f6a62`） | **Linux 的 `just ready` 通过**（门禁六步全绿）、**E2E（ubuntu-latest）通过**、**检查（macos-latest）通过**；`检查（windows-latest）` 红在类型检查：`error[E0599]: no method named tty_name`（`tests/support/mod.rs`，问题 #160）；`E2E（macos-latest）` 红在三条串口目标（`串口打不开：/dev/ttys000（Not a typewriter）`）与连带的 `bw_import`，收尾时 bash 报 `unbound variable` 把退出码换成 **127**（问题 #158 / #159）；第五个 job（`E2E（windows-latest）`）在本机读到时仍在运行。⚠️ 这次运行里 `RUSTC_WRAPPER` 为空、编译真的开始 —— #154 的处置得到验证 |
@@ -483,8 +491,19 @@ Windows（MSYS）上是本 shell 的 PID，配方却拿它问 `tasklist` / `task
   `akasha-serial` 在非 Windows 主机上能核对；`akasha-store` / `akasha-ssh` / `akasha-bw` /
   `akasha` 因为 vendored OpenSSL 与 `ring` 的 C 构建脚本在 check 阶段就失败（本机没有 MSVC 工具链），
   这四个成员只能由 CI 的 Windows 格子给出结论 —— 首次运行已由推送触发，结论待读。
-- **权限位、单实例、托盘在非 Linux 平台未验证**：CI 的类型检查无法覆盖运行期差异；CI 三个 job
-  的首次运行已由推送触发（`origin` 已配置），结论待读。
+- **权限位、单实例、托盘在非 Linux 平台的覆盖已由 CI 的 E2E 补上，但各留一档**（2026-09-27 订正；
+  原文写的是"未验证，结论待读"，那两次运行之后 macOS 与 Windows 的 E2E 都已经实际执行并转绿）：
+  **权限位**在 macOS 上退化为"直接断言库文件是 0600"（`sqlcipher_contract`，因 SQLite 在那边建库本就 0600，
+  没有"前后对比"可用）；**单实例**在 macOS 上第 1–4 层仍然执行，第 5 层（数 `/proc` 里的实例）显式跳过；
+  **托盘**在 macOS 的 CI 上**真的建成了**（日志里那条断言执行过、报"托盘菜单项数=1"），
+  但"菜单项可点"与"从托盘退出零残留"仍只有 Linux 读数。⚠️ macOS 的**单元测试**不在 CI 里
+  （`checks-macos` 只执行 `just check`，E2E 作业只多执行 `serial-unit`）—— 它的单测读数只有本机那一次。
+- **macOS 上串口没有任何运行期读数**（2026-09-27 复核）：枚举与波特率全委托上游（IOKit / `IOSSIOSPEED`），
+  本仓零 ioctl；三条串口 E2E 在 macOS 上整条跳过，`pty_roundtrip` 与两条 `serial::transport` 用例
+  门控在 Linux —— 见问题 #158。
+- **macOS 上打包成 dmg / `.app` 之后的一切行为未验证**（2026-09-27 复核）：CI 不出包
+  （`AGENTS.md` §12），`tauri.conf.json` 也没有 `bundle.macOS` 段。可搬迁性因此**不适用于 macOS**
+  （dmg 安装、数据在 OS 标准目录）—— 口径由 plan 0408 收口。
 - **前端类型检查不在任何门禁内**：`just ready` 只覆盖 Rust 与文档，`pnpm build`（tsc）需手动运行。
 - **`just dev-web` 的模拟后端未在真实浏览器中操作过**：SSH 两条命令在其中**显式报错**
   （"没有 SSH 客户端"），因此主机选择器在浏览器中只会显示该提示。
@@ -1351,3 +1370,22 @@ Windows（MSYS）上是本 shell 的 PID，配方却拿它问 `tasklist` / `task
       验证：本机把该文件里的 `target_os = "linux"` 临时翻成 `"windows"` 执行一次
       `cargo check --test vault_unlock`（退出码 0，那段 cfg 分支编译得过）后还原；
       **它是否真的在 Linux 上转绿由 CI 的 Linux 格给出**（本机没有 Linux 主机）。
+
+ 181. **macOS 上"真正退出零残留"的判据是空过的，而状态文件把它读成了通过**（2026-09-27 覆盖审计
+      发现，**未修**，plan 0112）：`tests/exit_residue.rs:92` 的 `alive()` 读 `/proc/<pid>` 且
+      **没有平台门控** —— macOS 上没有 `/proc`，它恒为 `false`，于是"关窗后 app 真的退出"那条断言
+      立刻为真；`:189` 又在非 Linux 不启动探针。CI 的 `E2E（macOS）` 日志里这一段
+      `1 passed ... finished in 0.22s`（真的走完那条路径要 30 s 级窗口）——**这就是空过的形状**。
+      同一类还有 `tests/session_watchdog.rs:170`：跳过理由写"macOS 要 `proc_listpids`"，
+      而 `pty/teardown.rs` 的 `ps` + `getsid` 实现早已落地（那条理由已过期，macOS 上因此少一条
+      端到端判据）。⚠️ 这类失效**不会变红**，只会让"验过了"变成一句没有证据的话 —— 处置与负例见 plan 0112。
+
+ 182. **macOS 的便携数据目录：文档写的是 `.app` 旁边，实现落在 `.app` 内部**（2026-09-27 覆盖审计
+      发现，**按口径变更收口**，plan 0408）：`docs/portable.md:32` 与 `docs/scope.md:583` 承诺
+      macOS 的数据目录在 `.app` **旁边**，而 `config/ipc.rs` 的 `exe_dir()` 取
+      `current_exe().parent()` —— 打包之后那是 `Foo.app/Contents/MacOS`，标记目录放不进去
+      （不可写、且破坏签名），放到 `.app` 旁边又推导不到。`tests/portable.rs` 用的是**裸二进制**
+      复制进临时目录的布局，所以这条差异在 CI 全绿的情况下也不可见。
+      口径裁定（用户）：**macOS 不做便携**（安装形态是 dmg、数据取 OS 标准目录），
+      便携只保留 Windows / Linux；Linux 的分发形态**暂定**（可能改用 AppImage，
+      其可执行文件位于只读挂载点内，判据的等价物尚未定）。

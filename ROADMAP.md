@@ -61,6 +61,9 @@
 - [x] Windows 上原生执行 `just test` 不再失败（问题 #168：SOCKS5 拒绝后的 RST、路径的 verbatim 前缀）
       验收：Windows 上原生执行完整一遍 workspace 测试，全部通过
       → [plan 0111](./docs/plans/0111-windows-native-test-failures.md)
+- [ ] macOS 上的进程级判据真实化（`exit_residue` / `session_watchdog` 不再空过）
+      验收：macOS 上那两条用例有非空读数，撤掉会话级回收后必红
+      → [plan 0112](./docs/plans/0112-macos-liveness-criteria.md)
 - [x] `src-tauri/crates/akasha-core` 骨架：`Session` 模型（**必须先于任何后端**）
       验收：单测覆盖 `SessionId` 分配、关闭一个 `Session` 不影响另一个
       → [plan 0103](./docs/plans/archive/0103-core-session-model.md)
@@ -117,6 +120,9 @@
 - [x] 会话自己结束（终端里输入 exit）= 回收它 + 关闭那个标签页（与 0305 反方向）
       验收：输入 exit 后标签页自己消失、进程零残留、app 不退出（标签页 ⇔ 会话同生命期）
       → [plan 0306](./docs/plans/archive/0306-session-ended-closes-tab.md)
+- [ ] macOS 上从 Dock 唤回窗口（隐藏之后点 Dock 图标，窗口回到前台）
+      验收：唤回的是同一个窗口，终端缓冲与子进程原样在
+      → [plan 0307](./docs/plans/0307-macos-dock-reopen.md)
 
 ---
 
@@ -150,6 +156,9 @@
       → [plan 0405](./docs/plans/archive/0405-portability-verify.md)
 - [x] ADR-0002 转「已定案」（阶段 4 落地完成之后）
       验收：状态为「已定案」，且 §10 修订记录里每次改动都有理由
+- [ ] 可搬迁性的平台口径分档（macOS 不做便携；Linux 的分发形态待定）
+      验收：文档与实现口径一致，macOS 上不再承诺 `.app` 旁的便携目录
+      → [plan 0408](./docs/plans/0408-portable-platform-scope.md)
 
 ---
 
@@ -175,6 +184,9 @@
 - [x] `~/.ssh/config` 受限子集导入（`Match` / `Include` 显式报错）
       验收：含 `Match` 的配置产生明确报错，而非静默误解析
       → [plan 0506](./docs/plans/archive/0506-ssh-config-subset-import.md)
+- [ ] 主机指纹在前端可视与可删除（添加与修改只在连接过程中触发）
+      验收：面板里看得到、删得掉，删除之后下一次连接重新询问
+      → [plan 0507](./docs/plans/0507-known-hosts-panel.md)
 
 ---
 
